@@ -64,10 +64,10 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 ---
 
 #### M1.1 项目初始化
-- [ ] Go 项目骨架（Go Modules）
-- [ ] 项目目录结构规划（cmd / internal / pkg）
-- [ ] golangci-lint 配置
-- [ ] Docker / Docker Compose 开发环境
+- [x] Go 项目骨架（Go Modules）
+- [x] 项目目录结构规划（cmd / internal / pkg）
+- [x] golangci-lint 配置
+- [x] Docker / Docker Compose 开发环境
 
 #### M1.2 CLI 框架
 - [ ] Cobra CLI 骨架搭建
