@@ -9,7 +9,8 @@ import (
 // ListRepoPullRequests 列出仓库的 PR
 // GET /api/v1/repos/{owner}/{repo}/pulls
 func (c *Client) ListRepoPullRequests(ctx context.Context, owner, repo string, opts ListPullRequestsOptions) ([]*PullRequest, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls", owner, repo)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls",
+		url.PathEscape(owner), url.PathEscape(repo))
 	params := url.Values{}
 	if opts.State != "" {
 		params.Set("state", opts.State)
@@ -40,7 +41,8 @@ func (c *Client) ListRepoPullRequests(ctx context.Context, owner, repo string, o
 // GetPullRequest 获取单个 PR
 // GET /api/v1/repos/{owner}/{repo}/pulls/{index}
 func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, index int64) (*PullRequest, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, index)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d",
+		url.PathEscape(owner), url.PathEscape(repo), index)
 	req, err := c.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, nil, err
@@ -57,7 +59,8 @@ func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, index i
 // GetPullRequestDiff 获取 PR 的 diff 文本
 // GET /api/v1/repos/{owner}/{repo}/pulls/{index}.diff
 func (c *Client) GetPullRequestDiff(ctx context.Context, owner, repo string, index int64) (string, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff", owner, repo, index)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff",
+		url.PathEscape(owner), url.PathEscape(repo), index)
 	req, err := c.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return "", nil, err
@@ -73,9 +76,19 @@ func (c *Client) GetPullRequestDiff(ctx context.Context, owner, repo string, ind
 
 // ListPullRequestFiles 列出 PR 变更的文件
 // GET /api/v1/repos/{owner}/{repo}/pulls/{index}/files
-func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, index int64) ([]*ChangedFile, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files", owner, repo, index)
-	req, err := c.newRequest(ctx, "GET", path, nil)
+func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, index int64, opts ListOptions) ([]*ChangedFile, *Response, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files",
+		url.PathEscape(owner), url.PathEscape(repo), index)
+
+	params := url.Values{}
+	if opts.Page > 0 {
+		params.Set("page", fmt.Sprintf("%d", opts.Page))
+	}
+	if opts.PageSize > 0 {
+		params.Set("limit", fmt.Sprintf("%d", opts.PageSize))
+	}
+
+	req, err := c.newRequestWithQuery(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -91,7 +104,8 @@ func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, i
 // CreatePullRequest 创建 PR
 // POST /api/v1/repos/{owner}/{repo}/pulls
 func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, opts CreatePullRequestOption) (*PullRequest, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls", owner, repo)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls",
+		url.PathEscape(owner), url.PathEscape(repo))
 	req, err := c.newRequest(ctx, "POST", path, opts)
 	if err != nil {
 		return nil, nil, err
@@ -108,7 +122,8 @@ func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, opts
 // CreatePullReview 创建 PR 评审
 // POST /api/v1/repos/{owner}/{repo}/pulls/{index}/reviews
 func (c *Client) CreatePullReview(ctx context.Context, owner, repo string, index int64, opts CreatePullReviewOptions) (*PullReview, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews", owner, repo, index)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews",
+		url.PathEscape(owner), url.PathEscape(repo), index)
 	req, err := c.newRequest(ctx, "POST", path, opts)
 	if err != nil {
 		return nil, nil, err
@@ -124,9 +139,19 @@ func (c *Client) CreatePullReview(ctx context.Context, owner, repo string, index
 
 // ListPullReviewComments 列出 PR 评审的行级评论
 // GET /api/v1/repos/{owner}/{repo}/pulls/{index}/reviews/{reviewID}/comments
-func (c *Client) ListPullReviewComments(ctx context.Context, owner, repo string, index int64, reviewID int64) ([]*Comment, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews/%d/comments", owner, repo, index, reviewID)
-	req, err := c.newRequest(ctx, "GET", path, nil)
+func (c *Client) ListPullReviewComments(ctx context.Context, owner, repo string, index int64, reviewID int64, opts ListOptions) ([]*Comment, *Response, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews/%d/comments",
+		url.PathEscape(owner), url.PathEscape(repo), index, reviewID)
+
+	params := url.Values{}
+	if opts.Page > 0 {
+		params.Set("page", fmt.Sprintf("%d", opts.Page))
+	}
+	if opts.PageSize > 0 {
+		params.Set("limit", fmt.Sprintf("%d", opts.PageSize))
+	}
+
+	req, err := c.newRequestWithQuery(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -142,7 +167,8 @@ func (c *Client) ListPullReviewComments(ctx context.Context, owner, repo string,
 // ListPullRequestCommits 列出 PR 的提交记录
 // GET /api/v1/repos/{owner}/{repo}/pulls/{index}/commits
 func (c *Client) ListPullRequestCommits(ctx context.Context, owner, repo string, index int64) ([]*Commit, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/commits", owner, repo, index)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/commits",
+		url.PathEscape(owner), url.PathEscape(repo), index)
 	req, err := c.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, nil, err

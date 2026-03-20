@@ -9,12 +9,8 @@ import (
 
 // ListRepoIssues 列出仓库的 Issue
 func (c *Client) ListRepoIssues(ctx context.Context, owner, repo string, opts ListIssueOptions) ([]*Issue, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues", owner, repo)
-
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, nil, err
-	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues",
+		url.PathEscape(owner), url.PathEscape(repo))
 
 	params := url.Values{}
 	if opts.Page > 0 {
@@ -32,8 +28,10 @@ func (c *Client) ListRepoIssues(ctx context.Context, owner, repo string, opts Li
 	if opts.Type != "" {
 		params.Set("type", opts.Type)
 	}
-	if len(params) > 0 {
-		req.URL.RawQuery = params.Encode()
+
+	req, err := c.newRequestWithQuery(ctx, http.MethodGet, path, params, nil)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	var issues []*Issue
@@ -46,7 +44,8 @@ func (c *Client) ListRepoIssues(ctx context.Context, owner, repo string, opts Li
 
 // GetIssue 获取 Issue 详情
 func (c *Client) GetIssue(ctx context.Context, owner, repo string, index int64) (*Issue, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", owner, repo, index)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d",
+		url.PathEscape(owner), url.PathEscape(repo), index)
 	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, nil, err
@@ -61,9 +60,19 @@ func (c *Client) GetIssue(ctx context.Context, owner, repo string, index int64) 
 }
 
 // ListIssueComments 列出 Issue 的评论
-func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, index int64) ([]*Comment, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", owner, repo, index)
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, index int64, opts ListOptions) ([]*Comment, *Response, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments",
+		url.PathEscape(owner), url.PathEscape(repo), index)
+
+	params := url.Values{}
+	if opts.Page > 0 {
+		params.Set("page", fmt.Sprintf("%d", opts.Page))
+	}
+	if opts.PageSize > 0 {
+		params.Set("limit", fmt.Sprintf("%d", opts.PageSize))
+	}
+
+	req, err := c.newRequestWithQuery(ctx, http.MethodGet, path, params, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -78,7 +87,8 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, inde
 
 // CreateIssueComment 创建 Issue 评论
 func (c *Client) CreateIssueComment(ctx context.Context, owner, repo string, index int64, opts CreateIssueCommentOption) (*Comment, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", owner, repo, index)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments",
+		url.PathEscape(owner), url.PathEscape(repo), index)
 	req, err := c.newRequest(ctx, http.MethodPost, path, opts)
 	if err != nil {
 		return nil, nil, err
@@ -94,7 +104,8 @@ func (c *Client) CreateIssueComment(ctx context.Context, owner, repo string, ind
 
 // GetIssueLabels 获取 Issue 的标签列表
 func (c *Client) GetIssueLabels(ctx context.Context, owner, repo string, index int64) ([]*Label, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels", owner, repo, index)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels",
+		url.PathEscape(owner), url.PathEscape(repo), index)
 	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, nil, err
@@ -110,7 +121,8 @@ func (c *Client) GetIssueLabels(ctx context.Context, owner, repo string, index i
 
 // AddIssueLabels 为 Issue 添加标签
 func (c *Client) AddIssueLabels(ctx context.Context, owner, repo string, index int64, labelIDs []int64) ([]*Label, *Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels", owner, repo, index)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels",
+		url.PathEscape(owner), url.PathEscape(repo), index)
 
 	body := struct {
 		Labels []int64 `json:"labels"`
@@ -131,7 +143,8 @@ func (c *Client) AddIssueLabels(ctx context.Context, owner, repo string, index i
 
 // RemoveIssueLabel 删除 Issue 的标签
 func (c *Client) RemoveIssueLabel(ctx context.Context, owner, repo string, index int64, labelID int64) (*Response, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels/%d", owner, repo, index, labelID)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels/%d",
+		url.PathEscape(owner), url.PathEscape(repo), index, labelID)
 	req, err := c.newRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return nil, err

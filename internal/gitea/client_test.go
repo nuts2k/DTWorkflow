@@ -3,6 +3,7 @@ package gitea
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -180,18 +181,14 @@ func TestDoRequest_ErrorResponse(t *testing.T) {
 	if !isErrorResponse(err, &errResp) {
 		t.Fatalf("期望 *ErrorResponse, 得到: %T", err)
 	}
-	if errResp.Response.StatusCode != http.StatusInternalServerError {
-		t.Errorf("StatusCode = %d, 期望 500", errResp.Response.StatusCode)
+	if errResp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("StatusCode = %d, 期望 500", errResp.StatusCode)
 	}
 }
 
 // isErrorResponse 辅助函数，检查 err 是否为 *ErrorResponse
 func isErrorResponse(err error, target **ErrorResponse) bool {
-	if e, ok := err.(*ErrorResponse); ok {
-		*target = e
-		return true
-	}
-	return false
+	return errors.As(err, target)
 }
 
 // --- 错误判断测试 ---
@@ -348,21 +345,21 @@ func TestContextCancellation(t *testing.T) {
 	}
 }
 
-// --- 查询参数测试 ---
+// --- URL 转义测试 ---
 
-func TestAddListOptions(t *testing.T) {
-	result := addListOptions("/api/v1/repos", ListOptions{Page: 2, PageSize: 10})
-	if !strings.Contains(result, "page=2") {
-		t.Errorf("结果 %q 不含 page=2", result)
-	}
-	if !strings.Contains(result, "limit=10") {
-		t.Errorf("结果 %q 不含 limit=10", result)
-	}
-}
+func TestURLPathEscape_BranchWithSlash(t *testing.T) {
+	mux, client := setup(t)
 
-func TestAddListOptions_Empty(t *testing.T) {
-	result := addListOptions("/api/v1/repos", ListOptions{})
-	if result != "/api/v1/repos" {
-		t.Errorf("空 ListOptions 应返回原路径，得到 %q", result)
+	mux.HandleFunc("/api/v1/repos/owner/repo/branches/feature%2Flogin", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "GET")
+		writeJSON(w, []byte(`{"name":"feature/login","commit":{"id":"abc123","url":""}}`))
+	})
+
+	branch, _, err := client.GetBranch(context.Background(), "owner", "repo", "feature/login")
+	if err != nil {
+		t.Fatalf("GetBranch 含斜杠分支名失败: %v", err)
+	}
+	if branch.Name != "feature/login" {
+		t.Errorf("Name = %q, 期望 %q", branch.Name, "feature/login")
 	}
 }

@@ -106,7 +106,7 @@ func TestListIssueComments(t *testing.T) {
 		writeJSON(w, loadFixture(t, "comments.json"))
 	})
 
-	comments, _, err := client.ListIssueComments(context.Background(), "owner", "repo", 1)
+	comments, _, err := client.ListIssueComments(context.Background(), "owner", "repo", 1, ListOptions{})
 	if err != nil {
 		t.Fatalf("ListIssueComments 失败: %v", err)
 	}

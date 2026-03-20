@@ -9,10 +9,15 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
+
+// Version 版本号，可通过 ldflags 在构建时注入
+var Version = "dev"
+
+// maxRawBodySize 原始响应体最大读取大小（100MB，用于 diff 等大文件）
+const maxRawBodySize = 100 << 20
 
 // Client Gitea API 客户端
 type Client struct {
@@ -35,7 +40,7 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	c := &Client{
 		baseURL:    u,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
-		userAgent:  "dtworkflow/1.0",
+		userAgent:  "dtworkflow/" + Version,
 	}
 
 	for _, opt := range opts {
@@ -109,6 +114,18 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body any) 
 	return req, nil
 }
 
+// newRequestWithQuery 构造带查询参数的 HTTP 请求
+func (c *Client) newRequestWithQuery(ctx context.Context, method, path string, params url.Values, body any) (*http.Request, error) {
+	req, err := c.newRequest(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	if len(params) > 0 {
+		req.URL.RawQuery = params.Encode()
+	}
+	return req, nil
+}
+
 // doRequest 执行请求，解析 JSON 响应，返回 *Response
 func (c *Client) doRequest(req *http.Request, v any) (*Response, error) {
 	httpResp, err := c.httpClient.Do(req)
@@ -146,25 +163,10 @@ func (c *Client) doRequestRaw(req *http.Request) ([]byte, *Response, error) {
 		return nil, resp, err
 	}
 
-	data, err := io.ReadAll(httpResp.Body)
+	data, err := io.ReadAll(io.LimitReader(httpResp.Body, maxRawBodySize))
 	if err != nil {
 		return nil, resp, fmt.Errorf("读取响应体: %w", err)
 	}
 
 	return data, resp, nil
-}
-
-// addListOptions 将 ListOptions 编码为 URL 查询参数
-func addListOptions(path string, opts ListOptions) string {
-	params := url.Values{}
-	if opts.Page > 0 {
-		params.Set("page", strconv.Itoa(opts.Page))
-	}
-	if opts.PageSize > 0 {
-		params.Set("limit", strconv.Itoa(opts.PageSize))
-	}
-	if len(params) == 0 {
-		return path
-	}
-	return path + "?" + params.Encode()
 }

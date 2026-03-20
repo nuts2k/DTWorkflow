@@ -123,7 +123,7 @@ func TestListPullRequestFiles(t *testing.T) {
 		writeJSON(w, loadFixture(t, "changed_files.json"))
 	})
 
-	files, _, err := client.ListPullRequestFiles(context.Background(), "owner", "repo", 42)
+	files, _, err := client.ListPullRequestFiles(context.Background(), "owner", "repo", 42, ListOptions{})
 	if err != nil {
 		t.Fatalf("ListPullRequestFiles 返回错误: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestListPullReviewComments(t *testing.T) {
 		writeJSON(w, loadFixture(t, "comments.json"))
 	})
 
-	comments, _, err := client.ListPullReviewComments(context.Background(), "owner", "repo", 42, 1)
+	comments, _, err := client.ListPullReviewComments(context.Background(), "owner", "repo", 42, 1, ListOptions{})
 	if err != nil {
 		t.Fatalf("ListPullReviewComments 返回错误: %v", err)
 	}

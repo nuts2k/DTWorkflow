@@ -8,30 +8,40 @@ import (
 	"net/http"
 )
 
+// maxErrorBodySize 错误响应体最大读取大小（1MB）
+const maxErrorBodySize = 1 << 20
+
 // ErrorResponse Gitea API 返回的错误
 type ErrorResponse struct {
-	Response *http.Response `json:"-"`
-	Message  string         `json:"message"`
-	URL      string         `json:"url,omitempty"`
+	StatusCode int    `json:"-"`
+	Method     string `json:"-"`
+	Path       string `json:"-"`
+	Message    string `json:"message"`
+	URL        string `json:"url,omitempty"`
 }
 
 // Error 实现 error 接口
 func (e *ErrorResponse) Error() string {
 	return fmt.Sprintf("%s %s: %d %s",
-		e.Response.Request.Method,
-		e.Response.Request.URL.Path,
-		e.Response.StatusCode,
+		e.Method,
+		e.Path,
+		e.StatusCode,
 		e.Message,
 	)
 }
 
-// checkResponse 检查 HTTP 状态码，非 2xx 时解析错误体
+// checkResponse 检查 HTTP 状态码，非 2xx 时解析错误体。
+// 注意：非 2xx 时会消费 r.Body，调用方不应在 checkResponse 返回非 nil 错误后再读取 r.Body。
 func checkResponse(r *http.Response) error {
 	if r.StatusCode >= 200 && r.StatusCode < 300 {
 		return nil
 	}
-	errResp := &ErrorResponse{Response: r}
-	data, err := io.ReadAll(r.Body)
+	errResp := &ErrorResponse{
+		StatusCode: r.StatusCode,
+		Method:     r.Request.Method,
+		Path:       r.Request.URL.Path,
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxErrorBodySize))
 	if err == nil && len(data) > 0 {
 		_ = json.Unmarshal(data, errResp)
 	}
@@ -65,7 +75,7 @@ func IsConflict(err error) bool {
 func hasStatusCode(err error, code int) bool {
 	var errResp *ErrorResponse
 	if errors.As(err, &errResp) {
-		return errResp.Response.StatusCode == code
+		return errResp.StatusCode == code
 	}
 	return false
 }
