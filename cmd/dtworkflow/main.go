@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/cmd"
@@ -10,7 +9,7 @@ import (
 func main() {
 	err := cmd.Execute()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		cmd.PrintError(err)
 		os.Exit(cmd.ExitCode(err))
 	}
 }

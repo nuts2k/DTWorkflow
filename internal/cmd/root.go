@@ -7,8 +7,9 @@ import (
 )
 
 var (
-	jsonOutput bool
-	configFile string
+	jsonOutput    bool
+	configFile    string
+	verboseOutput bool
 )
 
 // ExitCodeError 携带退出码的错误类型，用于实现 0/1/2 退出码规范
@@ -47,6 +48,7 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "以 JSON 格式输出")
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "配置文件路径")
+	rootCmd.PersistentFlags().BoolVarP(&verboseOutput, "verbose", "v", false, "详细日志输出")
 }
 
 func Execute() error {

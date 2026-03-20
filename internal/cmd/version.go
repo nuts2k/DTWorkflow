@@ -1,9 +1,7 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"runtime"
 
 	"github.com/spf13/cobra"
@@ -27,7 +25,7 @@ type versionInfo struct {
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "显示版本信息",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		info := versionInfo{
 			Version:   version,
 			Commit:    gitCommit,
@@ -37,21 +35,12 @@ var versionCmd = &cobra.Command{
 			Arch:      runtime.GOARCH,
 		}
 
-		if jsonOutput {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if err := enc.Encode(info); err != nil {
-				fmt.Fprintf(os.Stderr, "输出版本信息失败: %v\n", err)
-				os.Exit(1)
-			}
-			return
-		}
-
-		fmt.Printf("dtworkflow %s\n", info.Version)
-		fmt.Printf("  commit: %s\n", info.Commit)
-		fmt.Printf("  built:  %s\n", info.BuildTime)
-		fmt.Printf("  go:     %s\n", info.Go)
-		fmt.Printf("  os/arch: %s/%s\n", info.OS, info.Arch)
+		PrintResult(info, func(data any) string {
+			v := data.(versionInfo)
+			return fmt.Sprintf("dtworkflow %s\n  commit: %s\n  built:  %s\n  go:     %s\n  os/arch: %s/%s\n",
+				v.Version, v.Commit, v.BuildTime, v.Go, v.OS, v.Arch)
+		})
+		return nil
 	},
 }
 
