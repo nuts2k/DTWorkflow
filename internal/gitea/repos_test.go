@@ -174,7 +174,7 @@ func TestGetFileContent(t *testing.T) {
 			t.Errorf("查询参数 ref = %q, 期望 %q", got, "main")
 		}
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("Hello World")) //nolint:errcheck
+		_, _ = w.Write([]byte("Hello World"))
 	})
 
 	data, _, err := client.GetFileContent(context.Background(), "owner", "repo", "README.md", "main")

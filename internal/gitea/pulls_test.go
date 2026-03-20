@@ -102,7 +102,7 @@ func TestGetPullRequestDiff(t *testing.T) {
 			t.Errorf("Accept = %q, 期望 %q", got, "text/plain")
 		}
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("diff --git a/file.go b/file.go\n")) //nolint:errcheck
+		_, _ = w.Write([]byte("diff --git a/file.go b/file.go\n"))
 	})
 
 	diff, _, err := client.GetPullRequestDiff(context.Background(), "owner", "repo", 42)
@@ -294,7 +294,7 @@ func TestListPullRequestCommits(t *testing.T) {
 	mux.HandleFunc("/api/v1/repos/owner/repo/pulls/42/commits", func(w http.ResponseWriter, r *http.Request) {
 		testMethod(t, r, "GET")
 		testHeader(t, r, "Authorization", "token test-token")
-		w.Write([]byte(`[{"id":"abc123","url":"https://gitea.example.com/owner/repo/commit/abc123"},{"id":"def456","url":"https://gitea.example.com/owner/repo/commit/def456"}]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[{"id":"abc123","url":"https://gitea.example.com/owner/repo/commit/abc123"},{"id":"def456","url":"https://gitea.example.com/owner/repo/commit/def456"}]`))
 	})
 
 	commits, _, err := client.ListPullRequestCommits(context.Background(), "owner", "repo", 42)

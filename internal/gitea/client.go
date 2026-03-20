@@ -132,7 +132,7 @@ func (c *Client) doRequest(req *http.Request, v any) (*Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	resp := newResponse(httpResp)
 
@@ -155,7 +155,7 @@ func (c *Client) doRequestRaw(req *http.Request) ([]byte, *Response, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("HTTP 请求失败: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	resp := newResponse(httpResp)
 

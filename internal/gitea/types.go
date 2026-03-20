@@ -47,18 +47,18 @@ type Label struct {
 
 // PullRequest 表示 Gitea PR
 type PullRequest struct {
-	ID        int64      `json:"id"`
-	Number    int64      `json:"number"`
-	Title     string     `json:"title"`
-	Body      string     `json:"body"`
-	State     string     `json:"state"`
-	HTMLURL   string     `json:"html_url"`
-	Base      *PRBranch  `json:"base"`
-	Head      *PRBranch  `json:"head"`
-	User      *User      `json:"user"`
-	Mergeable bool       `json:"mergeable"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ID        int64     `json:"id"`
+	Number    int64     `json:"number"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	State     string    `json:"state"`
+	HTMLURL   string    `json:"html_url"`
+	Base      *PRBranch `json:"base"`
+	Head      *PRBranch `json:"head"`
+	User      *User     `json:"user"`
+	Mergeable bool      `json:"mergeable"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // PRBranch 表示 PR 的源/目标分支信息
@@ -133,7 +133,7 @@ type ContentsResponse struct {
 	Name     string `json:"name"`
 	Path     string `json:"path"`
 	SHA      string `json:"sha"`
-	Type     string `json:"type"`     // file, dir, symlink
+	Type     string `json:"type"` // file, dir, symlink
 	Size     int64  `json:"size"`
 	Encoding string `json:"encoding"` // base64
 	Content  string `json:"content"`  // base64 编码的文件内容

@@ -1,0 +1,19 @@
+{
+  "action": "opened",
+  "repository": {
+    "full_name": "owner/repo",
+    "clone_url": "https://gitea.example.com/owner/repo.git",
+    "default_branch": "main",
+    "owner": {"login": "owner"},
+    "name": "repo"
+  },
+  "pull_request": {
+    "number": 42,
+    "title": "Add feature",
+    "body": "PR body",
+    "html_url": "https://gitea.example.com/owner/repo/pulls/42",
+    "head": {"ref": "feature", "sha": "headsha"},
+    "base": {"ref": "main", "sha": "basesha"}
+  },
+  "sender": {"login": "alice", "full_name": "Alice"}
+}

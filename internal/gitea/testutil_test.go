@@ -41,7 +41,7 @@ func testHeader(t *testing.T, r *http.Request, name, want string) {
 // loadFixture 读取 testdata 目录下的 JSON fixture
 func loadFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", name))
+	data, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // 测试夹具文件名由测试代码固定提供
 	if err != nil {
 		t.Fatalf("加载 fixture %s: %v", name, err)
 	}
@@ -51,5 +51,5 @@ func loadFixture(t *testing.T, name string) []byte {
 // writeJSON 向 ResponseWriter 写入 JSON
 func writeJSON(w http.ResponseWriter, data []byte) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(data) //nolint:errcheck
+	_, _ = w.Write(data)
 }
