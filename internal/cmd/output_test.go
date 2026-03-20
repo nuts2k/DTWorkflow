@@ -172,3 +172,28 @@ func TestPrintError_Human(t *testing.T) {
 		t.Errorf("stderr 输出不匹配: got %q, want %q", output, "人类错误")
 	}
 }
+
+func TestPrintResult_JSON_EncodeFail(t *testing.T) {
+	oldJSON := jsonOutput
+	defer func() { jsonOutput = oldJSON }()
+	jsonOutput = true
+
+	// 捕获 stderr（编码失败时输出到 stderr）
+	oldErr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	// chan 类型无法 JSON 序列化，触发编码失败分支
+	PrintResult(make(chan int), nil)
+
+	_ = w.Close()
+	os.Stderr = oldErr
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "JSON 输出失败") {
+		t.Errorf("编码失败时应输出到 stderr, got %q", output)
+	}
+}
