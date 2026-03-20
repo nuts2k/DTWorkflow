@@ -1,0 +1,30 @@
+[
+  {
+    "id": 1,
+    "number": 42,
+    "title": "测试PR 42",
+    "body": "这是第一个测试PR",
+    "state": "open",
+    "html_url": "https://gitea.example.com/owner/repo/pulls/42",
+    "base": {"ref": "main", "sha": "abc123", "repo": {"id": 1, "name": "repo", "full_name": "owner/repo"}},
+    "head": {"ref": "feature-1", "sha": "def456", "repo": {"id": 1, "name": "repo", "full_name": "owner/repo"}},
+    "user": {"id": 1, "login": "testuser", "full_name": "Test User", "email": "test@example.com"},
+    "mergeable": true,
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-02T00:00:00Z"
+  },
+  {
+    "id": 2,
+    "number": 43,
+    "title": "测试PR 43",
+    "body": "这是第二个测试PR",
+    "state": "open",
+    "html_url": "https://gitea.example.com/owner/repo/pulls/43",
+    "base": {"ref": "main", "sha": "abc123", "repo": {"id": 1, "name": "repo", "full_name": "owner/repo"}},
+    "head": {"ref": "feature-2", "sha": "ghi789", "repo": {"id": 1, "name": "repo", "full_name": "owner/repo"}},
+    "user": {"id": 2, "login": "testuser2", "full_name": "Test User 2", "email": "test2@example.com"},
+    "mergeable": false,
+    "created_at": "2026-01-03T00:00:00Z",
+    "updated_at": "2026-01-04T00:00:00Z"
+  }
+]

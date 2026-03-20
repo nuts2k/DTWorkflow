@@ -1,0 +1,10 @@
+{
+  "id": 1,
+  "body": "发现问题需要修复",
+  "state": "REQUEST_CHANGES",
+  "html_url": "https://gitea.example.com/owner/repo/pulls/42/reviews/1",
+  "commit_id": "abc123",
+  "user": {"id": 1, "login": "reviewer", "full_name": "", "email": ""},
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z"
+}

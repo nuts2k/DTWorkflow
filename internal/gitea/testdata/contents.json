@@ -1,0 +1,9 @@
+{
+  "name": "README.md",
+  "path": "README.md",
+  "sha": "abc123def456",
+  "type": "file",
+  "size": 11,
+  "encoding": "base64",
+  "content": "SGVsbG8gV29ybGQ="
+}

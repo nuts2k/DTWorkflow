@@ -1,0 +1,18 @@
+[
+  {
+    "filename": "main.go",
+    "previous_filename": "",
+    "status": "modified",
+    "additions": 10,
+    "deletions": 3,
+    "changes": 13
+  },
+  {
+    "filename": "util.go",
+    "previous_filename": "",
+    "status": "added",
+    "additions": 25,
+    "deletions": 0,
+    "changes": 25
+  }
+]

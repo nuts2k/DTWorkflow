@@ -1,0 +1,28 @@
+[
+  {
+    "id": 1,
+    "number": 1,
+    "title": "测试Issue 1",
+    "body": "这是第一个测试Issue",
+    "state": "open",
+    "html_url": "https://gitea.example.com/owner/repo/issues/1",
+    "user": {"id": 1, "login": "testuser", "full_name": "Test User", "email": "test@example.com"},
+    "labels": [],
+    "comments": 0,
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-02T00:00:00Z"
+  },
+  {
+    "id": 2,
+    "number": 2,
+    "title": "测试Issue 2",
+    "body": "这是第二个测试Issue",
+    "state": "closed",
+    "html_url": "https://gitea.example.com/owner/repo/issues/2",
+    "user": {"id": 2, "login": "testuser2", "full_name": "Test User 2", "email": "test2@example.com"},
+    "labels": [{"id": 1, "name": "bug", "color": "#ff0000"}],
+    "comments": 3,
+    "created_at": "2026-01-03T00:00:00Z",
+    "updated_at": "2026-01-04T00:00:00Z"
+  }
+]

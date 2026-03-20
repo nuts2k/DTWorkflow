@@ -1,0 +1,7 @@
+{
+  "name": "main",
+  "commit": {
+    "id": "abc123",
+    "url": "https://gitea.example.com/owner/repo/commit/abc123"
+  }
+}
