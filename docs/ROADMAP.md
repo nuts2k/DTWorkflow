@@ -79,10 +79,12 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 单元测试（23 个测试，覆盖率 86.9%）
 
 #### M1.3 Gitea API 客户端
-- [ ] 封装 Gitea REST API 客户端（Go）
-- [ ] 实现核心 API：PR 操作（列表/详情/评论/review）、Issue 操作（列表/详情/评论/标签）、仓库操作（分支/文件）
-- [ ] API Token 认证
-- [ ] 集成测试：验证与实际 Gitea 实例的连通性
+- [x] 封装 Gitea REST API 客户端（Go），纯标准库实现，零外部依赖
+- [x] 实现 20 个核心 API：PR 操作（8 个）、Issue 操作（7 个）、仓库操作（5 个）
+- [x] API Token 认证，Functional Options 模式配置
+- [x] 错误处理：类型化 ErrorResponse + IsNotFound/IsUnauthorized/IsForbidden/IsConflict 判断
+- [x] URL 路径安全转义，响应体大小限制，分页支持
+- [x] 单元测试（53 个测试，覆盖率 85.8%）+ 集成测试框架
 
 #### M1.4 Webhook 接收器
 - [ ] Gin 路由接收 Gitea Webhook
