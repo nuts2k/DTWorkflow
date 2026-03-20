@@ -13,11 +13,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
+
+	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
 )
 
 var (
-	serveHost string
-	servePort int
+	serveHost          string
+	servePort          int
+	serveWebhookSecret string
 )
 
 var serveCmd = &cobra.Command{
@@ -29,6 +32,7 @@ var serveCmd = &cobra.Command{
 func init() {
 	serveCmd.Flags().StringVar(&serveHost, "host", "0.0.0.0", "监听地址")
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "监听端口")
+	serveCmd.Flags().StringVar(&serveWebhookSecret, "webhook-secret", "", "Gitea Webhook 签名密钥")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -36,6 +40,10 @@ func init() {
 func runServe(cmd *cobra.Command, args []string) error {
 	// 使用 Release 模式，避免 gin 输出调试信息
 	gin.SetMode(gin.ReleaseMode)
+
+	if serveWebhookSecret == "" {
+		return fmt.Errorf("webhook-secret 不能为空")
+	}
 
 	// 使用 gin.New() 而非 gin.Default()，手动控制中间件
 	router := gin.New()
@@ -47,6 +55,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			"version": version,
 		})
 	})
+
+	webhook.RegisterRoutes(router, webhook.Config{Secret: serveWebhookSecret})
 
 	addr := fmt.Sprintf("%s:%d", serveHost, servePort)
 

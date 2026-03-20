@@ -1,0 +1,7 @@
+{
+  "action": "labeled",
+  "repository": {"full_name": "owner/repo", "owner": {"login": "owner"}, "name": "repo"},
+  "issue": {"number": 8, "title": "Doc", "body": "Need docs", "html_url": "https://gitea.example.com/owner/repo/issues/8", "state": "open"},
+  "label": {"name": "triage", "color": "00ff00"},
+  "sender": {"login": "charlie", "full_name": "Charlie"}
+}

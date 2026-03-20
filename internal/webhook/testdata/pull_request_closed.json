@@ -1,0 +1,5 @@
+{
+  "action": "closed",
+  "repository": {"full_name": "owner/repo", "owner": {"login": "owner"}, "name": "repo"},
+  "pull_request": {"number": 42}
+}

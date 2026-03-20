@@ -88,7 +88,7 @@ func TestNewRequest_Authorization(t *testing.T) {
 	mux.HandleFunc("/api/v1/test", func(w http.ResponseWriter, r *http.Request) {
 		testHeader(t, r, "Authorization", "token test-token")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("{}")) //nolint:errcheck
+		_, _ = w.Write([]byte("{}"))
 	})
 
 	req, err := client.newRequest(context.Background(), http.MethodGet, "/api/v1/test", nil)
@@ -210,7 +210,7 @@ func TestCheckResponse_StatusCodes(t *testing.T) {
 			mux, client := setup(t)
 			mux.HandleFunc("/api/v1/test-"+tc.name, func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.code)
-				json.NewEncoder(w).Encode(map[string]string{"message": http.StatusText(tc.code)}) //nolint:errcheck
+				_ = json.NewEncoder(w).Encode(map[string]string{"message": http.StatusText(tc.code)})
 			})
 
 			req, err := client.newRequest(context.Background(), http.MethodGet, "/api/v1/test-"+tc.name, nil)

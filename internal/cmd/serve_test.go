@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -29,12 +30,15 @@ func TestServe_Healthz(t *testing.T) {
 
 	// 保存并恢复全局状态
 	oldHost, oldPort := serveHost, servePort
+	oldSecret := serveWebhookSecret
 	defer func() {
 		serveHost = oldHost
 		servePort = oldPort
+		serveWebhookSecret = oldSecret
 	}()
 	serveHost = "127.0.0.1"
 	servePort = port
+	serveWebhookSecret = "secret"
 
 	// 在 goroutine 中启动 serve，它会阻塞等待信号
 	errCh := make(chan error, 1)
@@ -108,16 +112,82 @@ func TestServe_PortConflict(t *testing.T) {
 	defer func() { _ = l.Close() }()
 
 	oldHost, oldPort := serveHost, servePort
+	oldSecret := serveWebhookSecret
 	defer func() {
 		serveHost = oldHost
 		servePort = oldPort
+		serveWebhookSecret = oldSecret
 	}()
 	serveHost = "127.0.0.1"
 	servePort = port
+	serveWebhookSecret = "secret"
 
 	// runServe 应立即返回端口冲突错误
 	err = runServe(nil, nil)
 	if err == nil {
 		t.Error("端口被占用时应返回错误")
+	}
+}
+
+func TestServe_RequiresWebhookSecret(t *testing.T) {
+	oldHost, oldPort := serveHost, servePort
+	oldSecret := serveWebhookSecret
+	defer func() {
+		serveHost, servePort = oldHost, oldPort
+		serveWebhookSecret = oldSecret
+	}()
+
+	serveHost = "127.0.0.1"
+	servePort = getFreePort(t)
+	serveWebhookSecret = ""
+
+	err := runServe(nil, nil)
+	if err == nil {
+		t.Fatal("runServe should fail when webhook secret is empty")
+	}
+	if !strings.Contains(err.Error(), "webhook-secret") {
+		t.Fatalf("error = %v, want message containing webhook-secret", err)
+	}
+}
+
+func TestServe_WebhookRouteReturnsUnauthorizedWithoutSignature(t *testing.T) {
+	port := getFreePort(t)
+	oldHost, oldPort := serveHost, servePort
+	oldSecret := serveWebhookSecret
+	defer func() {
+		serveHost, servePort = oldHost, oldPort
+		serveWebhookSecret = oldSecret
+	}()
+	serveHost = "127.0.0.1"
+	servePort = port
+	serveWebhookSecret = "secret"
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runServe(nil, nil) }()
+
+	addr := fmt.Sprintf("http://127.0.0.1:%d/webhooks/gitea", port)
+	var resp *http.Response
+	var err error
+	for i := 0; i < 20; i++ {
+		resp, err = http.Post(addr, "application/json", strings.NewReader(`{}`)) //nolint:gosec // 测试用固定地址
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("POST webhook failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("发送 SIGINT 失败: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("runServe 应返回 nil, got %v", err)
 	}
 }

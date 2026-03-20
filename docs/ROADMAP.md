@@ -87,10 +87,10 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 单元测试（53 个测试，覆盖率 85.8%）+ 集成测试框架
 
 #### M1.4 Webhook 接收器
-- [ ] Gin 路由接收 Gitea Webhook
-- [ ] Webhook 签名验证（安全性）
-- [ ] 事件解析：PR 事件（opened / synchronized）、Issue 标签变更事件
-- [ ] Gitea 侧 Webhook 配置指南
+- [x] Gin 路由接收 Gitea Webhook
+- [x] Webhook 签名验证（安全性）
+- [x] 事件解析：PR 事件（opened / synchronized）、Issue 标签变更事件
+- [x] Gitea 侧 Webhook 配置指南
 
 #### M1.5 任务队列
 - [ ] Redis + asynq 集成
