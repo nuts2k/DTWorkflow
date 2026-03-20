@@ -104,7 +104,7 @@ sys.exit(1)
 test_stream_json_output_format() {
   local output
   local exit_code=0
-  output=$(claude -p "回复OK" --output-format stream-json 2>&1) || exit_code=$?
+  output=$(claude -p "回复OK" --output-format stream-json --verbose 2>&1) || exit_code=$?
 
   if [ $exit_code -eq 0 ] && [ -n "$output" ]; then
     # 流式 JSON 每行是独立的 JSON 对象

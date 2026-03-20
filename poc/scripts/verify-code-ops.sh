@@ -93,7 +93,7 @@ test_create_test_project() {
   fi
 }
 
-# 测试2：用 claude -p 读取并分析代码
+# 测试2：用 claude -p --dangerously-skip-permissions 读取并分析代码
 test_claude_read_code() {
   if [ ! -f "$TEST_REPO/main.go" ]; then
     print_result "FAIL" "Claude 读取并分析代码" "测试项目未创建，跳过"
@@ -102,7 +102,7 @@ test_claude_read_code() {
 
   local output
   local exit_code=0
-  output=$(cd "$TEST_REPO" && claude -p "请读取 main.go 文件并告诉我这个程序的功能，用一句话回答" 2>&1) || exit_code=$?
+  output=$(cd "$TEST_REPO" && claude -p --dangerously-skip-permissions "请读取 main.go 文件并告诉我这个程序的功能，用一句话回答" 2>&1) || exit_code=$?
 
   if [ $exit_code -eq 0 ] && [ -n "$output" ]; then
     print_result "PASS" "Claude 读取并分析代码" "响应: ${output:0:150}"
@@ -111,7 +111,7 @@ test_claude_read_code() {
   fi
 }
 
-# 测试3：用 claude -p 修改代码文件
+# 测试3：用 claude -p --dangerously-skip-permissions 修改代码文件
 test_claude_modify_code() {
   if [ ! -f "$TEST_REPO/main.go" ]; then
     print_result "FAIL" "Claude 修改代码文件" "测试项目未创建，跳过"
@@ -125,7 +125,7 @@ test_claude_modify_code() {
   # 请求 Claude 添加一个新函数
   local output
   local exit_code=0
-  output=$(cd "$TEST_REPO" && claude -p "在 main.go 文件末尾添加一个名为 multiply 的函数，接受两个 int 参数并返回它们的乘积。直接修改文件，不要输出解释。" 2>&1) || exit_code=$?
+  output=$(cd "$TEST_REPO" && claude -p --dangerously-skip-permissions "在 main.go 文件末尾添加一个名为 multiply 的函数，接受两个 int 参数并返回它们的乘积。直接修改文件，不要输出解释。" 2>&1) || exit_code=$?
 
   # 检查文件是否被修改
   local new_hash
@@ -147,7 +147,7 @@ test_claude_modify_code() {
   fi
 }
 
-# 测试4：用 claude -p 执行 Git init 操作
+# 测试4：用 claude -p --dangerously-skip-permissions 执行 Git init 操作
 test_claude_git_init() {
   if [ ! -d "$TEST_REPO" ]; then
     print_result "FAIL" "Claude 执行 Git init" "测试目录不存在，跳过"
@@ -156,7 +156,7 @@ test_claude_git_init() {
 
   local output
   local exit_code=0
-  output=$(cd "$TEST_REPO" && claude -p "在当前目录执行 git init，然后设置 user.email 为 test@test.com，user.name 为 TestUser。只执行命令，不要解释。" 2>&1) || exit_code=$?
+  output=$(cd "$TEST_REPO" && claude -p --dangerously-skip-permissions "在当前目录执行 git init，然后设置 user.email 为 test@test.com，user.name 为 TestUser。只执行命令，不要解释。" 2>&1) || exit_code=$?
 
   if [ -d "$TEST_REPO/.git" ]; then
     print_result "PASS" "Claude 执行 Git init" ".git 目录已创建"
@@ -184,7 +184,7 @@ test_git_commit() {
   fi
 }
 
-# 测试6：用 claude -p 创建 Git 分支
+# 测试6：用 claude -p --dangerously-skip-permissions 创建 Git 分支
 test_claude_git_branch() {
   if [ ! -d "$TEST_REPO/.git" ]; then
     print_result "FAIL" "Claude 创建 Git 分支" "Git 仓库未初始化，跳过"
@@ -198,7 +198,7 @@ test_claude_git_branch() {
 
   local output
   local exit_code=0
-  output=$(cd "$TEST_REPO" && claude -p "在当前 git 仓库创建一个名为 feature/test-branch 的新分支并切换到该分支。只执行命令。" 2>&1) || exit_code=$?
+  output=$(cd "$TEST_REPO" && claude -p --dangerously-skip-permissions "在当前 git 仓库创建一个名为 feature/test-branch 的新分支并切换到该分支。只执行命令。" 2>&1) || exit_code=$?
 
   # 验证分支是否创建
   local current_branch

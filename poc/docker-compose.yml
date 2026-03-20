@@ -14,17 +14,17 @@ services:
     stdin_open: true
     tty: true
 
-    # 通过环境变量注入 Anthropic API Key（从 .env 文件读取）
+    # 从 .env 文件直接注入环境变量（不受宿主机同名环境变量覆盖）
+    env_file:
+      - .env
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # API Base URL（可选，使用代理时设置）
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
       # 设置 Claude Code 非交互模式，适合自动化场景
       - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
-    # 将本地 test-workspace 目录挂载到容器工作目录
+    # 挂载本地目录到容器
     volumes:
       - ./test-workspace:/workspace
+      - ./scripts:/scripts
 
     # 资源限制：防止单个容器占用过多资源
     deploy:
