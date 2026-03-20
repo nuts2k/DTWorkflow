@@ -135,6 +135,30 @@ func TestListPullRequestFiles(t *testing.T) {
 	}
 }
 
+func TestListPullRequestFiles_WithPagination(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/pulls/42/files", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "GET")
+		q := r.URL.Query()
+		if got := q.Get("page"); got != "1" {
+			t.Errorf("查询参数 page = %q, 期望 %q", got, "1")
+		}
+		if got := q.Get("limit"); got != "50" {
+			t.Errorf("查询参数 limit = %q, 期望 %q", got, "50")
+		}
+		writeJSON(w, loadFixture(t, "changed_files.json"))
+	})
+
+	files, _, err := client.ListPullRequestFiles(context.Background(), "owner", "repo", 42, ListOptions{Page: 1, PageSize: 50})
+	if err != nil {
+		t.Fatalf("ListPullRequestFiles 失败: %v", err)
+	}
+	if len(files) != 2 {
+		t.Errorf("返回 %d 个文件，期望 2 个", len(files))
+	}
+}
+
 func TestCreatePullRequest(t *testing.T) {
 	mux, client := setup(t)
 
@@ -237,6 +261,30 @@ func TestListPullReviewComments(t *testing.T) {
 	}
 	if comments[0].Body != "测试评论 1" {
 		t.Errorf("comments[0].Body = %q, 期望 %q", comments[0].Body, "测试评论 1")
+	}
+}
+
+func TestListPullReviewComments_WithPagination(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/pulls/42/reviews/1/comments", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "GET")
+		q := r.URL.Query()
+		if got := q.Get("page"); got != "3" {
+			t.Errorf("查询参数 page = %q, 期望 %q", got, "3")
+		}
+		if got := q.Get("limit"); got != "20" {
+			t.Errorf("查询参数 limit = %q, 期望 %q", got, "20")
+		}
+		writeJSON(w, loadFixture(t, "comments.json"))
+	})
+
+	comments, _, err := client.ListPullReviewComments(context.Background(), "owner", "repo", 42, 1, ListOptions{Page: 3, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListPullReviewComments 失败: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Errorf("返回 %d 个评论，期望 2 个", len(comments))
 	}
 }
 

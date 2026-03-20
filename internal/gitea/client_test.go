@@ -345,6 +345,22 @@ func TestContextCancellation(t *testing.T) {
 	}
 }
 
+// --- ErrorResponse 测试 ---
+
+func TestErrorResponse_Error(t *testing.T) {
+	errResp := &ErrorResponse{
+		StatusCode: 404,
+		Method:     "GET",
+		Path:       "/api/v1/repos/owner/repo",
+		Message:    "not found",
+	}
+	got := errResp.Error()
+	want := "GET /api/v1/repos/owner/repo: 404 not found"
+	if got != want {
+		t.Errorf("Error() = %q, 期望 %q", got, want)
+	}
+}
+
 // --- URL 转义测试 ---
 
 func TestURLPathEscape_BranchWithSlash(t *testing.T) {

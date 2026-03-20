@@ -118,6 +118,30 @@ func TestListIssueComments(t *testing.T) {
 	}
 }
 
+func TestListIssueComments_WithPagination(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "GET")
+		q := r.URL.Query()
+		if got := q.Get("page"); got != "2" {
+			t.Errorf("查询参数 page = %q, 期望 %q", got, "2")
+		}
+		if got := q.Get("limit"); got != "10" {
+			t.Errorf("查询参数 limit = %q, 期望 %q", got, "10")
+		}
+		writeJSON(w, loadFixture(t, "comments.json"))
+	})
+
+	comments, _, err := client.ListIssueComments(context.Background(), "owner", "repo", 1, ListOptions{Page: 2, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListIssueComments 失败: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Errorf("期望 2 个评论, 得到 %d", len(comments))
+	}
+}
+
 func TestCreateIssueComment(t *testing.T) {
 	mux, client := setup(t)
 
