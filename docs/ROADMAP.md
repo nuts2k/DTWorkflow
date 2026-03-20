@@ -70,11 +70,13 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Docker / Docker Compose 开发环境
 
 #### M1.2 CLI 框架
-- [ ] Cobra CLI 骨架搭建
-- [ ] 子命令结构设计（review-pr / fix-issue / gen-tests / task / serve）
-- [ ] 全局 flags：`--json`（结构化输出）、`--config`（配置文件路径）
-- [ ] 退出码规范：0 成功 / 1 失败 / 2 部分成功
-- [ ] `serve` 子命令：启动 HTTP 服务（API + Webhook 接收器）
+- [x] Cobra CLI 骨架搭建
+- [x] 子命令结构设计（review-pr / fix-issue / gen-tests / task / serve）
+- [x] 全局 flags：`--json`（结构化输出）、`--config`（配置文件路径）、`--verbose`（详细日志）
+- [x] 退出码规范：0 成功 / 1 失败 / 2 部分成功
+- [x] `serve` 子命令：启动 HTTP 服务（API + Webhook 接收器）
+- [x] 统一输出层（PrintResult / PrintError）
+- [x] 单元测试（23 个测试，覆盖率 86.9%）
 
 #### M1.3 Gitea API 客户端
 - [ ] 封装 Gitea REST API 客户端（Go）
