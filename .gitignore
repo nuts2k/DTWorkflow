@@ -30,3 +30,4 @@ Thumbs.db
 # 配置文件（包含敏感信息）
 dtworkflow.yaml
 dtworkflow.yml
+.worktrees/
