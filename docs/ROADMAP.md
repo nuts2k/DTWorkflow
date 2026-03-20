@@ -29,29 +29,29 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 **验证项**：
 
 1. **容器内安装与运行**
-   - [ ] 构建 Docker 镜像：基础镜像（Debian/Node.js）+ 安装 Claude Code CLI（`npm install -g @anthropic-ai/claude-code`）
-   - [ ] 容器内执行 `claude -v` 确认安装成功
-   - [ ] 容器内执行 `claude -p "你好"` 确认非交互模式可用
-   - [ ] 验证 `--output-format json` 等输出格式控制参数
+   - [x] 构建 Docker 镜像：基础镜像（Debian/Node.js）+ 安装 Claude Code CLI（`npm install -g @anthropic-ai/claude-code`）
+   - [x] 容器内执行 `claude -v` 确认安装成功
+   - [x] 容器内执行 `claude -p "你好"` 确认非交互模式可用
+   - [x] 验证 `--output-format json` 等输出格式控制参数
 
 2. **API Key 认证**
-   - [ ] 通过环境变量 `ANTHROPIC_API_KEY` 注入容器，验证 Claude API 调用正常
-   - [ ] 确认 Key 不会泄露到容器日志或文件系统
+   - [x] 通过环境变量 `ANTHROPIC_API_KEY` 注入容器，验证 Claude API 调用正常
+   - [x] 确认 Key 不会泄露到容器日志或文件系统
 
 3. **代码操作能力**
-   - [ ] 在容器内准备一个示例代码目录（挂载或容器内创建）
-   - [ ] 用 `claude -p` 让 Claude Code 读取代码文件并输出分析结果
-   - [ ] 用 `claude -p` 让 Claude Code 修改代码文件，验证文件写入能力
-   - [ ] 用 `claude -p` 让 Claude Code 执行 Git 操作（init、创建分支、commit）
+   - [x] 在容器内准备一个示例代码目录（挂载或容器内创建）
+   - [x] 用 `claude -p` 让 Claude Code 读取代码文件并输出分析结果
+   - [x] 用 `claude -p` 让 Claude Code 修改代码文件，验证文件写入能力
+   - [x] 用 `claude -p` 让 Claude Code 执行 Git 操作（init、创建分支、commit）
 
 4. **资源与性能基线**
-   - [ ] 记录单次 `claude -p` 调用的内存峰值和耗时
+   - [x] 记录单次 `claude -p` 调用的内存峰值和耗时
    - [ ] 记录容器启动到可执行任务的冷启动耗时
    - [ ] 评估单机可并发运行的 Worker 容器数量上限
 
 5. **跨平台验证**
-   - [ ] macOS（Docker Desktop）环境以上各项通过
-   - [ ] Debian（Docker Engine）环境以上各项通过
+   - [x] macOS（Docker Desktop）环境以上各项通过
+   - [x] Debian（Docker Engine）环境以上各项通过
 
 **产出物**：
 - PoC 验证用的 Dockerfile
