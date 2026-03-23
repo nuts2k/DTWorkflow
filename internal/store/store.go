@@ -2,9 +2,15 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+)
+
+var (
+	ErrTaskNotFound = errors.New("任务不存在")
+	ErrInvalidID    = errors.New("任务 ID 不能为空")
 )
 
 // Store 任务持久化接口

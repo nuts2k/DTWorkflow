@@ -1,11 +1,21 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+)
 
-// RunMigrations 执行 Schema 迁移，幂等（所有语句使用 IF NOT EXISTS）
-func RunMigrations(db *sql.DB) error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS tasks (
+// migration 表示一个版本化的数据库迁移
+type migration struct {
+	Version int
+	SQL     string
+}
+
+// migrations 按版本号顺序排列的迁移列表
+var migrations = []migration{
+	{
+		Version: 1,
+		SQL: `CREATE TABLE IF NOT EXISTS tasks (
 			id              TEXT PRIMARY KEY,
 			asynq_id        TEXT NOT NULL DEFAULT '',
 			task_type       TEXT NOT NULL CHECK(task_type IN ('review_pr', 'fix_issue', 'gen_tests')),
@@ -25,19 +35,74 @@ func RunMigrations(db *sql.DB) error {
 			started_at      DATETIME,
 			completed_at    DATETIME
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
-		`CREATE INDEX IF NOT EXISTS idx_tasks_repo ON tasks(repo_full_name)`,
-		`CREATE INDEX IF NOT EXISTS idx_tasks_type_status ON tasks(task_type, status)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_delivery_dedup ON tasks(delivery_id, task_type)
+	},
+	{
+		Version: 2,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
+	},
+	{
+		Version: 3,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_tasks_repo ON tasks(repo_full_name)`,
+	},
+	{
+		Version: 4,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_tasks_type_status ON tasks(task_type, status)`,
+	},
+	{
+		Version: 5,
+		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_delivery_dedup ON tasks(delivery_id, task_type)
 			WHERE delivery_id != ''`,
-		`CREATE INDEX IF NOT EXISTS idx_tasks_pending_created ON tasks(status, created_at)
+	},
+	{
+		Version: 6,
+		SQL: `CREATE INDEX IF NOT EXISTS idx_tasks_pending_created ON tasks(status, created_at)
 			WHERE status = 'pending'`,
+	},
+}
+
+// RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本
+func RunMigrations(db *sql.DB) error {
+	// 创建迁移版本记录表
+	const createMigrationTable = `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`
+	if _, err := db.Exec(createMigrationTable); err != nil {
+		return fmt.Errorf("创建 schema_migrations 表失败: %w", err)
 	}
 
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			return err
+	for _, m := range migrations {
+		// 检查该版本是否已执行
+		var exists int
+		err := db.QueryRow("SELECT 1 FROM schema_migrations WHERE version = ?", m.Version).Scan(&exists)
+		if err == nil {
+			// 已执行，跳过
+			continue
+		}
+		if err != sql.ErrNoRows {
+			return fmt.Errorf("查询迁移版本 %d 失败: %w", m.Version, err)
+		}
+
+		// 在事务中执行迁移
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("开启迁移事务失败 (版本 %d): %w", m.Version, err)
+		}
+
+		if _, err := tx.Exec(m.SQL); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("执行迁移版本 %d 失败: %w", m.Version, err)
+		}
+
+		if _, err := tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", m.Version); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("记录迁移版本 %d 失败: %w", m.Version, err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("提交迁移事务失败 (版本 %d): %w", m.Version, err)
 		}
 	}
+
 	return nil
 }

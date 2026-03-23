@@ -39,8 +39,8 @@ func newTestRecord(id, deliveryID string, taskType model.TaskType) *model.TaskRe
 		},
 		RepoFullName: "owner/repo",
 		MaxRetry:     3,
-		CreatedAt:    time.Now().UTC().Truncate(time.Second),
-		UpdatedAt:    time.Now().UTC().Truncate(time.Second),
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
 	}
 }
 
@@ -96,10 +96,13 @@ func TestUpdateTask(t *testing.T) {
 		t.Fatalf("CreateTask 失败: %v", err)
 	}
 
+	// 记录更新前的 UpdatedAt
+	oldUpdatedAt := record.UpdatedAt
+
 	// 更新状态为 running
 	record.Status = model.TaskStatusRunning
 	record.WorkerID = "worker-1"
-	now := time.Now().UTC().Truncate(time.Second)
+	now := time.Now().UTC()
 	record.StartedAt = &now
 
 	if err := s.UpdateTask(ctx, record); err != nil {
@@ -118,6 +121,10 @@ func TestUpdateTask(t *testing.T) {
 	}
 	if got.StartedAt == nil {
 		t.Error("StartedAt 应不为 nil")
+	}
+	// 验证 UpdatedAt 被刷新
+	if !got.UpdatedAt.After(oldUpdatedAt) && !got.UpdatedAt.Equal(record.UpdatedAt) {
+		t.Errorf("UpdatedAt 未被刷新: got %v, oldUpdatedAt %v", got.UpdatedAt, oldUpdatedAt)
 	}
 }
 
@@ -313,7 +320,7 @@ func TestListOrphanTasks(t *testing.T) {
 
 	// 创建一个"旧"任务（2小时前）
 	old := newTestRecord("orphan-old", "", model.TaskTypeReviewPR)
-	old.CreatedAt = time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	old.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
 	old.UpdatedAt = old.CreatedAt
 	if err := s.CreateTask(ctx, old); err != nil {
 		t.Fatalf("CreateTask 失败: %v", err)
@@ -345,7 +352,7 @@ func TestListOrphanTasks_ExcludesNonPending(t *testing.T) {
 	// 创建旧的 running 任务
 	r := newTestRecord("running-old", "", model.TaskTypeReviewPR)
 	r.Status = model.TaskStatusRunning
-	r.CreatedAt = time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	r.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
 	r.UpdatedAt = r.CreatedAt
 	if err := s.CreateTask(ctx, r); err != nil {
 		t.Fatalf("CreateTask 失败: %v", err)

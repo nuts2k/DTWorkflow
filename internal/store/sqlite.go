@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -47,6 +48,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	}
 
 	// 内存数据库单独设置 PRAGMA
+	// 注意：WAL 模式对内存数据库无实际效果，但设置不会报错，保持与文件模式一致
 	if dbPath == ":memory:" {
 		pragmas := []string{
 			"PRAGMA journal_mode=WAL",
@@ -62,6 +64,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	}
 
 	// 避免 SQLite 写竞争：限制最大连接数为 1
+	// 同时确保连接级 PRAGMA（如 foreign_keys）在单一连接上正确生效
 	db.SetMaxOpenConns(1)
 
 	if err := RunMigrations(db); err != nil {
@@ -76,7 +79,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 // CreateTask 创建任务记录
 func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) error {
 	if record.ID == "" {
-		return fmt.Errorf("创建任务记录失败: ID 不能为空")
+		return fmt.Errorf("创建任务记录失败: %w", ErrInvalidID)
 	}
 
 	payloadJSON, err := json.Marshal(record.Payload)
@@ -104,8 +107,8 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) 
 		record.MaxRetry,
 		record.WorkerID,
 		record.DeliveryID,
-		record.CreatedAt.UTC().Format(time.RFC3339),
-		record.UpdatedAt.UTC().Format(time.RFC3339),
+		record.CreatedAt.UTC().Format(time.RFC3339Nano),
+		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		timeToNullString(record.StartedAt),
 		timeToNullString(record.CompletedAt),
 	)
@@ -124,7 +127,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.TaskRecord
 
 	row := s.db.QueryRowContext(ctx, query, id)
 	record, err := scanTaskRecord(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -139,6 +142,9 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 	if err != nil {
 		return fmt.Errorf("序列化 payload 失败: %w", err)
 	}
+
+	// 在写入前刷新 UpdatedAt，确保调用方也能看到最新值
+	record.UpdatedAt = time.Now().UTC()
 
 	const query = `UPDATE tasks SET
 		asynq_id = ?, task_type = ?, status = ?, priority = ?, payload = ?,
@@ -160,7 +166,7 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 		record.MaxRetry,
 		record.WorkerID,
 		record.DeliveryID,
-		time.Now().UTC().Format(time.RFC3339),
+		record.UpdatedAt.Format(time.RFC3339Nano),
 		timeToNullString(record.StartedAt),
 		timeToNullString(record.CompletedAt),
 		record.ID,
@@ -168,15 +174,25 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 	if err != nil {
 		return fmt.Errorf("更新任务记录失败: %w", err)
 	}
-	rows, _ := result.RowsAffected()
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("获取更新影响行数失败: %w", err)
+	}
 	if rows == 0 {
-		return fmt.Errorf("任务 %s 不存在", record.ID)
+		return fmt.Errorf("更新任务记录失败: %w", ErrTaskNotFound)
 	}
 	return nil
 }
 
 // ListTasks 按条件列出任务记录
 func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model.TaskRecord, error) {
+	if opts.Limit < 0 {
+		return nil, fmt.Errorf("Limit 不能为负数: %d", opts.Limit)
+	}
+	if opts.Offset < 0 {
+		return nil, fmt.Errorf("Offset 不能为负数: %d", opts.Offset)
+	}
+
 	query := `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
 		created_at, updated_at, started_at, completed_at
@@ -236,7 +252,7 @@ func (s *SQLiteStore) FindByDeliveryID(ctx context.Context, deliveryID string, t
 
 	row := s.db.QueryRowContext(ctx, query, deliveryID, taskType)
 	record, err := scanTaskRecord(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -247,7 +263,7 @@ func (s *SQLiteStore) FindByDeliveryID(ctx context.Context, deliveryID string, t
 
 // ListOrphanTasks 查询 pending 状态且创建时间超过 maxAge 的孤儿任务
 func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration) ([]*model.TaskRecord, error) {
-	threshold := time.Now().UTC().Add(-maxAge).Format(time.RFC3339)
+	threshold := time.Now().UTC().Add(-maxAge).Format(time.RFC3339Nano)
 
 	const query = `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
@@ -349,12 +365,13 @@ func timeToNullString(t *time.Time) any {
 	if t == nil {
 		return nil
 	}
-	return t.UTC().Format(time.RFC3339)
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// parseTime 尝试多种格式解析时间字符串
+// parseTime 尝试多种格式解析时间字符串，优先使用高精度格式
 func parseTime(s string) (time.Time, error) {
 	formats := []string{
+		time.RFC3339Nano,
 		time.RFC3339,
 		"2006-01-02 15:04:05",
 		"2006-01-02T15:04:05",
