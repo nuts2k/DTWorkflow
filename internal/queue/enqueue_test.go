@@ -76,6 +76,8 @@ func (m *mockStore) ListOrphanTasks(_ context.Context, _ time.Duration) ([]*mode
 	return nil, nil
 }
 
+func (m *mockStore) Ping(_ context.Context) error { return nil }
+
 func (m *mockStore) Close() error { return nil }
 
 // mockClient 模拟 Client 的 Enqueue 行为

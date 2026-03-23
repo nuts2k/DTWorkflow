@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/hibiken/asynq"
@@ -77,10 +78,12 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Close 关闭底层 asynq 客户端和缓存的 Redis 连接
 func (c *Client) Close() error {
+	var pingErr error
 	if c.pingClient != nil {
-		_ = c.pingClient.Close()
+		pingErr = c.pingClient.Close()
 	}
-	return c.inner.Close()
+	innerErr := c.inner.Close()
+	return errors.Join(pingErr, innerErr)
 }
 
 // taskTypeToAsynq 将 model.TaskType 转换为 asynq 任务类型字符串

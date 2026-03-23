@@ -46,6 +46,8 @@ func (m *mockStoreForRecovery) ListOrphanTasks(_ context.Context, _ time.Duratio
 	}
 	return m.orphans, nil
 }
+func (m *mockStoreForRecovery) Ping(_ context.Context) error { return nil }
+
 func (m *mockStoreForRecovery) Close() error { return nil }
 
 // mockClientForRecovery 模拟入队行为

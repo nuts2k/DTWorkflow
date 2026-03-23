@@ -154,12 +154,17 @@ func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayl
 	}
 
 	// 2. 入队到 Redis
+	// 设计决策："先持久化再入队" 的 eventually consistent 模式。
+	// Step 1 成功但 Step 2 失败时，任务保持 pending 状态，不向调用方返回错误。
+	// RecoveryLoop 会定期扫描长时间处于 pending 的孤儿任务并重新入队，
+	// 从而保证最终一致性。这避免了分布式事务的复杂性，代价是入队可能有延迟。
 	asynqID, err := h.client.Enqueue(ctx, payload, EnqueueOptions{
 		Priority: record.Priority,
 		TaskID:   record.ID,
 	})
 	if err != nil {
-		// 入队失败，任务保持 pending 状态，由 RecoveryLoop 处理
+		// 入队失败不返回错误：任务已持久化（pending），依赖 RecoveryLoop 补偿入队。
+		// 这是 eventually consistent 设计的一部分，而非错误被吞掉。
 		h.logger.WarnContext(ctx, "任务入队失败，将由 RecoveryLoop 重试",
 			"task_id", record.ID,
 			"task_type", record.TaskType,

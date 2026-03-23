@@ -84,11 +84,22 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	record.UpdatedAt = completedAt
 
 	if runErr != nil {
-		record.Status = model.TaskStatusFailed
+		// 根据 asynq 重试上下文判断是否为最后一次重试：
+		// - 非最后一次：设为 retrying，asynq 将自动安排下次重试
+		// - 最后一次：设为 failed，不会再有重试机会
+		retryCount, _ := asynq.GetRetryCount(ctx)
+		maxRetry, _ := asynq.GetMaxRetry(ctx)
+		if retryCount >= maxRetry-1 {
+			record.Status = model.TaskStatusFailed
+		} else {
+			record.Status = model.TaskStatusRetrying
+		}
 		record.Error = runErr.Error()
 		p.logger.ErrorContext(ctx, "任务执行失败",
 			"task_id", taskID,
 			"error", runErr,
+			"retry_count", retryCount,
+			"max_retry", maxRetry,
 		)
 	} else if result != nil && result.ExitCode != 0 {
 		record.Status = model.TaskStatusFailed
@@ -131,7 +142,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	return nil
 }
 
-// findRecord 根据 payload 中的 delivery_id 或 task_id 查找任务记录
+// findRecord 根据 payload 中的 delivery_id 查找任务记录
 func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (*model.TaskRecord, error) {
 	// 优先通过 delivery_id 查找（适用于 webhook 触发的任务）
 	if payload.DeliveryID != "" {

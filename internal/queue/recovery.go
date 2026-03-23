@@ -62,6 +62,12 @@ func (r *RecoveryLoop) Run(ctx context.Context) {
 
 // recover 执行一次孤儿任务扫描与重新入队
 func (r *RecoveryLoop) recover(ctx context.Context) {
+	// ctx 取消和 ticker.C 同时就绪时 select 可能随机选择 ticker 分支，
+	// 此处提前检查避免用已取消的 ctx 执行无意义的恢复操作
+	if ctx.Err() != nil {
+		return
+	}
+
 	orphans, err := r.store.ListOrphanTasks(ctx, r.maxAge)
 	if err != nil {
 		r.logger.ErrorContext(ctx, "查询孤儿任务失败", "error", err)
@@ -79,8 +85,29 @@ func (r *RecoveryLoop) recover(ctx context.Context) {
 	}
 }
 
-// requeue 将单个孤儿任务重新入队
+// requeue 将单个孤儿任务重新入队；若重试次数已达上限则标记为 failed
 func (r *RecoveryLoop) requeue(ctx context.Context, record *model.TaskRecord) {
+	// 重试次数已达上限，标记为 failed 而非重新入队，避免无限重试
+	if record.RetryCount >= record.MaxRetry {
+		record.Status = model.TaskStatusFailed
+		record.Error = "重试次数已达上限，RecoveryLoop 放弃重新入队"
+		record.UpdatedAt = time.Now()
+		if err := r.store.UpdateTask(ctx, record); err != nil {
+			r.logger.WarnContext(ctx, "标记孤儿任务为 failed 失败",
+				"task_id", record.ID,
+				"error", err,
+			)
+			return
+		}
+		r.logger.WarnContext(ctx, "孤儿任务重试次数已达上限，标记为 failed",
+			"task_id", record.ID,
+			"task_type", record.TaskType,
+			"retry_count", record.RetryCount,
+			"max_retry", record.MaxRetry,
+		)
+		return
+	}
+
 	asynqID, err := r.client.Enqueue(ctx, record.Payload, EnqueueOptions{
 		Priority: record.Priority,
 		TaskID:   record.ID,
