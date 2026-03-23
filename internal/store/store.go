@@ -23,7 +23,7 @@ type Store interface {
 	GetTask(ctx context.Context, id string) (*model.TaskRecord, error)
 
 	// UpdateTask 更新任务记录。
-	// 注意：此方法会修改传入 record 的 UpdatedAt 字段为当前时间。
+	// 所有 Store 实现必须设置 record.UpdatedAt 为当前 UTC 时间。调用方应注意此副作用。
 	// 当目标任务不存在时返回 ErrTaskNotFound。
 	UpdateTask(ctx context.Context, record *model.TaskRecord) error
 

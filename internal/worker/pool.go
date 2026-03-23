@@ -32,10 +32,10 @@ type Pool struct {
 	wg         sync.WaitGroup
 }
 
-// NewPool 创建 Worker 池。Image 为必填项，不可为空。
+// NewPool 创建 Worker 池。必填字段由 PoolConfig.Validate() 校验。
 func NewPool(config PoolConfig, dockerClient DockerClient) (*Pool, error) {
-	if config.Image == "" {
-		return nil, fmt.Errorf("PoolConfig.Image 不可为空")
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
 	if config.NetworkName == "" {
 		config.NetworkName = "dtworkflow-net"
@@ -76,6 +76,11 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 	defer p.wg.Done()
 	p.active.Add(1)
 	defer p.active.Add(-1)
+
+	// 校验任务类型，对未知类型快速失败，避免进入容器创建流程
+	if !payload.TaskType.IsValid() {
+		return nil, fmt.Errorf("未知的任务类型: %q", payload.TaskType)
+	}
 
 	start := time.Now()
 
@@ -145,7 +150,13 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 
 	// 启动容器
 	if err := p.docker.StartContainer(ctx, containerID); err != nil {
-		return nil, fmt.Errorf("启动容器失败: %w", err)
+		// 启动失败时返回部分填充的 ExecutionResult（包含 ContainerID），
+		// 便于调用方记录和排查问题（参考 waitErr 时的处理模式）
+		return &ExecutionResult{
+			ExitCode:    -1,
+			ContainerID: containerID,
+			Error:       err.Error(),
+		}, fmt.Errorf("启动容器失败: %w", err)
 	}
 
 	// 为容器等待设置独立超时，防止 Docker daemon 无响应导致 goroutine 永远阻塞

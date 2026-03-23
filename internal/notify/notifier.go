@@ -26,10 +26,10 @@ const (
 
 // Target 通知目标（Issue 或 PR）
 type Target struct {
-	Owner  string
-	Repo   string
-	Number int64
-	IsPR   bool   `json:"is_pr"`  // true=PR, false=Issue；当前 GiteaNotifier 不使用此字段（Gitea Issue/PR 共用评论 API），保留供未来扩展
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int64  `json:"number"`
+	IsPR   bool   `json:"is_pr"` // true=PR, false=Issue；当前 GiteaNotifier 不使用此字段（Gitea Issue/PR 共用评论 API），保留供未来扩展
 }
 
 // Message 表示一条通知消息。

@@ -20,6 +20,9 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # 添加非 root 用户以提升容器安全性
 RUN useradd -m worker
 
+# 创建工作目录并设置权限（确保 worker 用户可读写）
+RUN mkdir -p /workspace && chown worker:worker /workspace
+
 # 工作目录
 WORKDIR /workspace
 

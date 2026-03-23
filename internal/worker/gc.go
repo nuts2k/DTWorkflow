@@ -216,5 +216,5 @@ func containerDisplayName(names []string) string {
 		return "<unknown>"
 	}
 	name := names[0]
-	return strings.TrimLeft(name, "/")
+	return strings.TrimPrefix(name, "/")
 }

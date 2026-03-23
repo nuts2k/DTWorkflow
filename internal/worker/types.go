@@ -3,6 +3,7 @@ package worker
 import (
 	"encoding"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 )
 
@@ -41,6 +42,23 @@ type PoolConfig struct {
 	ClaudeAPIKey SecretString `json:"-"` // Claude API Key
 	WorkDir      string // 容器内工作目录
 	NetworkName  string // Docker bridge 网络名，默认 "dtworkflow-net"
+}
+
+// Validate 校验 PoolConfig 必填字段，在 NewPool 中调用
+func (c PoolConfig) Validate() error {
+	if c.Image == "" {
+		return fmt.Errorf("PoolConfig.Image 不可为空")
+	}
+	if c.GiteaURL == "" {
+		return fmt.Errorf("PoolConfig.GiteaURL 不可为空")
+	}
+	if c.GiteaToken == "" {
+		return fmt.Errorf("PoolConfig.GiteaToken 不可为空")
+	}
+	if c.ClaudeAPIKey == "" {
+		return fmt.Errorf("PoolConfig.ClaudeAPIKey 不可为空")
+	}
+	return nil
 }
 
 // PoolStats 池状态统计

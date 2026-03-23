@@ -52,6 +52,16 @@ services:
       - dtworkflow-net
     restart: unless-stopped
 
+  # Worker 镜像构建服务（仅用于构建，不运行）
+  # 使用方式: docker compose --profile build build worker-image
+  worker-image:
+    build:
+      context: .
+      dockerfile: build/docker/Dockerfile.worker
+    image: dtworkflow-worker:1.0
+    profiles:
+      - build
+
 networks:
   dtworkflow-net:
     driver: bridge

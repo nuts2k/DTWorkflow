@@ -29,7 +29,9 @@ type Processor struct {
 	logger *slog.Logger
 }
 
-// NewProcessor 创建 Processor 实例
+// NewProcessor 创建 Processor 实例。
+// 参数 pool 和 store 为必要依赖，传入 nil 属于编程错误（programming error），
+// 因此使用 panic 而非返回 error，与 Go 标准库的惯例一致。
 func NewProcessor(pool PoolRunner, store store.Store, logger *slog.Logger) *Processor {
 	if pool == nil {
 		panic("NewProcessor: pool 不能为 nil")
@@ -181,7 +183,8 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	return nil
 }
 
-// findRecord 根据 payload 中的 delivery_id 查找任务记录
+// findRecord 根据 payload 中的 delivery_id 查找任务记录，
+// 当 delivery_id 查找不到时回退到按 task ID 查找（支持 RecoveryLoop 场景）
 func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (*model.TaskRecord, error) {
 	// 优先通过 delivery_id 查找（适用于 webhook 触发的任务）
 	if payload.DeliveryID != "" {
@@ -193,5 +196,23 @@ func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (
 			return record, nil
 		}
 	}
+
+	// Fallback：尝试通过 buildAsynqTaskID 生成的 TaskID 查找。
+	// 当 delivery_id 查找无结果时（例如记录的 delivery_id 字段在存储中不匹配，
+	// 或者任务通过非 webhook 方式创建），尝试按 TaskID 直接查找。
+	taskID := buildAsynqTaskID(payload.DeliveryID, payload.TaskType)
+	if taskID != "" {
+		record, err := p.store.GetTask(ctx, taskID)
+		if err != nil {
+			p.logger.WarnContext(ctx, "按 TaskID fallback 查找任务记录失败",
+				"task_id", taskID,
+				"error", err,
+			)
+			// fallback 失败不中断，继续返回未找到错误
+		} else if record != nil {
+			return record, nil
+		}
+	}
+
 	return nil, fmt.Errorf("找不到任务记录, delivery_id=%s, task_type=%s", payload.DeliveryID, payload.TaskType)
 }

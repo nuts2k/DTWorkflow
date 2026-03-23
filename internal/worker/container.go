@@ -19,7 +19,9 @@ func sanitizeInput(s string) string {
 	return s
 }
 
-// sanitizeEnvValue 清理环境变量值，移除可能导致注入的字符
+// sanitizeEnvValue 清理环境变量值，移除可能导致注入的字符。
+// 当前实现等同于 sanitizeInput，预留为独立函数以便未来差异化处理，
+// 例如：对环境变量中的 '=' 号进行转义或过滤、对特定 shell 元字符做额外清理等。
 func sanitizeEnvValue(s string) string {
 	return sanitizeInput(s)
 }
@@ -76,6 +78,26 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 // 注意：prompt 使用英文以获得更好的 AI 理解效果
 // buildContainerCmd 根据任务类型构建容器执行命令
 // 返回占位命令，实际 prompt 由容器内脚本动态生成
+//
+// SECURITY: prompt injection risk
+// 以下字段来源于外部用户输入，攻击者可控：
+//   - payload.IssueTitle（Issue 标题）
+//   - payload.RepoFullName（仓库全名，通过 fork 可控）
+//   - payload.Module（模块路径）
+//   - 以及其他通过 Webhook 传入的字段
+//
+// sanitizePromptInput 仅做长度截断和换行/NUL 清理，不足以防御 prompt injection。
+//
+// 当前缓解措施：
+//   1. 容器隔离：ReadonlyRootfs、CapDrop ALL、no-new-privileges
+//   2. 资源限制：CPU、内存、PID 数量上限
+//   3. 网络隔离：独立 bridge 网络
+//   4. 输入截断：sanitizePromptInput 限制各字段最大长度
+//
+// 后续改进计划：
+//   - 考虑通过文件传入用户输入（而非命令行参数），降低注入面
+//   - 将 system prompt 与 user prompt 分离，利用 Claude 的 system/user 角色区分
+//   - 对高风险字段（如 IssueTitle）做更严格的字符白名单过滤
 func buildContainerCmd(payload model.TaskPayload) []string {
 	switch payload.TaskType {
 	case model.TaskTypeReviewPR:
@@ -102,6 +124,12 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 	}
 }
 
+// maxCPUCores CPU 限制上限，超过此值视为配置错误
+const maxCPUCores = 32
+
+// maxMemoryBytes 内存限制上限（64GB），超过此值视为配置错误
+const maxMemoryBytes = 64 * 1024 * 1024 * 1024 // 64GB
+
 // parseCPULimit 将 CPU 限制字符串（如 "2.0"）转换为 NanoCPUs（整数）
 // Docker API 使用 NanoCPUs：1 CPU = 1e9 NanoCPUs
 func parseCPULimit(limit string) (int64, error) {
@@ -118,6 +146,9 @@ func parseCPULimit(limit string) (int64, error) {
 	}
 	if val == 0 {
 		return 0, nil
+	}
+	if val > maxCPUCores {
+		return 0, fmt.Errorf("CPU 限制超出上限，当前值: %g，最大允许: %d 核", val, maxCPUCores)
 	}
 	return int64(math.Round(val * 1e9)), nil
 }
@@ -156,7 +187,11 @@ func parseMemoryLimit(limit string) (int64, error) {
 		if intVal == 0 {
 			return 0, nil
 		}
-		return intVal * multiplier, nil
+		result := intVal * multiplier
+		if result > maxMemoryBytes {
+			return 0, fmt.Errorf("内存限制超出上限，当前值: %s，最大允许: 64GB", limit)
+		}
+		return result, nil
 	}
 
 	val, err := strconv.ParseFloat(numStr, 64)
@@ -169,5 +204,9 @@ func parseMemoryLimit(limit string) (int64, error) {
 	if val == 0 {
 		return 0, nil
 	}
-	return int64(val * float64(multiplier)), nil
+	result := int64(val * float64(multiplier))
+	if result > maxMemoryBytes {
+		return 0, fmt.Errorf("内存限制超出上限，当前值: %s，最大允许: 64GB", limit)
+	}
+	return result, nil
 }

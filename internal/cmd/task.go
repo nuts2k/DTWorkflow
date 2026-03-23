@@ -14,6 +14,9 @@ import (
 )
 
 // taskStore 包级 Store 实例，在 PersistentPreRunE 中初始化
+// TODO: 当前 task 命令使用包级全局变量管理配置和依赖（taskStore, taskDBPath 等），
+// 这在单元测试中需要手动保存/恢复全局状态。后续迭代中应重构为与 serve.go 一致的
+// 依赖注入模式（提取 taskConfig 结构体 + 注入 Store 实例），提升可测试性。
 var taskStore store.Store
 
 // task 子命令的 flags
@@ -182,12 +185,11 @@ var taskRetryCmd = &cobra.Command{
 		PrintResult(map[string]any{
 			"id":      id,
 			"status":  string(model.TaskStatusPending),
-			"warning": "任务将由 serve 进程的 RecoveryLoop 自动重新入队（扫描间隔约 60 秒），请确保 dtworkflow serve 正在运行",
+			"message": "任务已重置，将由 RecoveryLoop 在约 60 秒内自动重新入队",
 		}, func(data any) string {
 			var sb strings.Builder
-			fmt.Fprintf(&sb, "任务 %s 已重置为 pending 状态，将由 serve 进程的 RecoveryLoop 自动重新入队（约 60 秒内）\n", id)
-			fmt.Fprintf(&sb, "注意：任务将由 serve 进程的 RecoveryLoop 自动重新入队（扫描间隔约 60 秒）\n")
-			fmt.Fprintf(&sb, "  请确保 dtworkflow serve 正在运行\n")
+			fmt.Fprintf(&sb, "任务 %s 已重置为 pending 状态\n", id)
+			fmt.Fprintf(&sb, "任务将由 serve 进程的 RecoveryLoop 自动重新入队（约 60 秒内），请确保 dtworkflow serve 正在运行\n")
 			return sb.String()
 		})
 		return nil

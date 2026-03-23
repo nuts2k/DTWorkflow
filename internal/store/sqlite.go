@@ -20,6 +20,11 @@ import (
 // 编译时确保 SQLiteStore 实现了 Store 接口
 var _ Store = (*SQLiteStore)(nil)
 
+// taskColumns 是 tasks 表的 SELECT 列列表，统一在各查询中使用
+const taskColumns = `id, asynq_id, task_type, status, priority, payload, repo_full_name,
+		result, error, retry_count, max_retry, worker_id, delivery_id,
+		created_at, updated_at, started_at, completed_at`
+
 // SQLiteStore 基于 SQLite 的任务持久化实现
 type SQLiteStore struct {
 	db   *sql.DB
@@ -139,9 +144,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.TaskRecord
 		return nil, fmt.Errorf("查询任务失败: %w", ErrInvalidID)
 	}
 
-	const query = `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
-		result, error, retry_count, max_retry, worker_id, delivery_id,
-		created_at, updated_at, started_at, completed_at
+	query := `SELECT ` + taskColumns + `
 	FROM tasks WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, query, id)
@@ -162,6 +165,12 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 	}
 	if record.ID == "" {
 		return fmt.Errorf("更新任务记录失败: %w", ErrInvalidID)
+	}
+	if !record.TaskType.IsValid() {
+		return fmt.Errorf("更新任务记录失败: 无效的任务类型 %q", record.TaskType)
+	}
+	if !record.Status.IsValid() {
+		return fmt.Errorf("更新任务记录失败: 无效的任务状态 %q", record.Status)
 	}
 	payloadJSON, err := json.Marshal(record.Payload)
 	if err != nil {
@@ -227,9 +236,7 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model
 		return nil, fmt.Errorf("无效的任务状态: %s", opts.Status)
 	}
 
-	query := `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
-		result, error, retry_count, max_retry, worker_id, delivery_id,
-		created_at, updated_at, started_at, completed_at
+	query := `SELECT ` + taskColumns + `
 	FROM tasks WHERE 1=1`
 
 	args := []any{}
@@ -265,7 +272,7 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model
 
 	var records []*model.TaskRecord
 	for rows.Next() {
-		record, err := scanTaskRecordFromRows(rows)
+		record, err := scanTaskRecord(rows)
 		if err != nil {
 			return nil, fmt.Errorf("扫描任务记录失败: %w", err)
 		}
@@ -284,9 +291,7 @@ func (s *SQLiteStore) FindByDeliveryID(ctx context.Context, deliveryID string, t
 		return nil, nil
 	}
 
-	const query = `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
-		result, error, retry_count, max_retry, worker_id, delivery_id,
-		created_at, updated_at, started_at, completed_at
+	query := `SELECT ` + taskColumns + `
 	FROM tasks WHERE delivery_id = ? AND task_type = ? LIMIT 1`
 
 	row := s.db.QueryRowContext(ctx, query, deliveryID, taskType)
@@ -304,12 +309,10 @@ func (s *SQLiteStore) FindByDeliveryID(ctx context.Context, deliveryID string, t
 func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration) ([]*model.TaskRecord, error) {
 	threshold := time.Now().UTC().Add(-maxAge).Format(time.RFC3339Nano)
 
-	const query = `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
-		result, error, retry_count, max_retry, worker_id, delivery_id,
-		created_at, updated_at, started_at, completed_at
+	query := `SELECT ` + taskColumns + `
 	FROM tasks WHERE status = ? AND created_at < ?
 	ORDER BY created_at ASC
-	LIMIT 1000`
+	LIMIT ` + fmt.Sprintf("%d", defaultMaxLimit)
 
 	rows, err := s.db.QueryContext(ctx, query, string(model.TaskStatusPending), threshold)
 	if err != nil {
@@ -319,7 +322,7 @@ func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration)
 
 	var records []*model.TaskRecord
 	for rows.Next() {
-		record, err := scanTaskRecordFromRows(rows)
+		record, err := scanTaskRecord(rows)
 		if err != nil {
 			return nil, fmt.Errorf("扫描孤儿任务记录失败: %w", err)
 		}
@@ -333,6 +336,9 @@ func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration)
 
 // PurgeTasks 清理指定状态且早于指定时间的历史任务记录，返回清理数量
 func (s *SQLiteStore) PurgeTasks(ctx context.Context, olderThan time.Duration, status model.TaskStatus) (int64, error) {
+	if olderThan <= 0 {
+		return 0, fmt.Errorf("olderThan 必须为正数，当前值: %v", olderThan)
+	}
 	if !status.IsValid() {
 		return 0, fmt.Errorf("无效的任务状态: %s", status)
 	}
@@ -418,11 +424,6 @@ func scanTaskRecord(row rowScanner) (*model.TaskRecord, error) {
 	}
 
 	return &r, nil
-}
-
-// scanTaskRecordFromRows 从 *sql.Rows 扫描 TaskRecord
-func scanTaskRecordFromRows(rows *sql.Rows) (*model.TaskRecord, error) {
-	return scanTaskRecord(rows)
 }
 
 // timeToNullString 将 *time.Time 转换为可 NULL 的字符串

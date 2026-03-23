@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -370,8 +371,8 @@ func TestRouter_Send_EmptyEventType(t *testing.T) {
 	if err == nil {
 		t.Fatal("Send() 应在 EventType 为空时返回错误")
 	}
-	if !errors.Is(err, ErrInvalidTarget) {
-		t.Errorf("Send() error = %v, want ErrInvalidTarget", err)
+	if !errors.Is(err, ErrInvalidMessage) {
+		t.Errorf("Send() error = %v, want ErrInvalidMessage", err)
 	}
 	if len(n.calls) != 0 {
 		t.Errorf("EventType 为空时不应调用通知渠道，实际调用 %d 次", len(n.calls))
@@ -440,5 +441,22 @@ func TestRouter_WithRouterLogger(t *testing.T) {
 	}
 	if len(stub.calls) != 1 {
 		t.Errorf("stubNotifier 应被调用 1 次，实际 %d 次", len(stub.calls))
+	}
+}
+
+// TestNewRouter_DuplicateNotifier 验证重复注册同名通知渠道时返回错误（I3）
+func TestNewRouter_DuplicateNotifier(t *testing.T) {
+	n1 := &stubNotifier{name: "gitea"}
+	n2 := &stubNotifier{name: "gitea"}
+
+	_, err := NewRouter(
+		WithNotifier(n1),
+		WithNotifier(n2),
+	)
+	if err == nil {
+		t.Fatal("NewRouter 应在重复注册同名通知渠道时返回错误")
+	}
+	if !strings.Contains(err.Error(), "已注册") {
+		t.Errorf("错误信息应包含 '已注册'，实际: %v", err)
 	}
 }

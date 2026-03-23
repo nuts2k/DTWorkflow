@@ -19,6 +19,13 @@ type RecoveryLoop struct {
 	logger   *slog.Logger
 	interval time.Duration // 扫描间隔，默认 60s
 	maxAge   time.Duration // 孤儿任务判定阈值，默认 120s
+
+	// recoveryAttempts 跟踪每个任务的恢复重入队尝试次数（内存级别）。
+	// 与 record.RetryCount 分离：record.RetryCount 在 Processor 中会被 asynq 的
+	// GetRetryCount(ctx) 覆盖为 "asynq 执行重试次数"，语义不同。
+	// 此 map 仅在 RecoveryLoop 生命周期内有效，进程重启后重置为 0，
+	// 但这是可接受的，因为重启后孤儿任务的恢复尝试理应重新开始计数。
+	recoveryAttempts map[string]int
 }
 
 // NewRecoveryLoop 创建 RecoveryLoop 实例
@@ -31,11 +38,12 @@ func NewRecoveryLoop(store store.Store, client Enqueuer, logger *slog.Logger, in
 		maxAge = 120 * time.Second
 	}
 	return &RecoveryLoop{
-		store:    store,
-		client:   client,
-		logger:   logger,
-		interval: interval,
-		maxAge:   maxAge,
+		store:            store,
+		client:           client,
+		logger:           logger,
+		interval:         interval,
+		maxAge:           maxAge,
+		recoveryAttempts: make(map[string]int),
 	}
 }
 
@@ -95,12 +103,14 @@ func (r *RecoveryLoop) recover(ctx context.Context) {
 	}
 }
 
-// requeue 将单个孤儿任务重新入队；若重试次数已达上限则标记为 failed
+// requeue 将单个孤儿任务重新入队；若恢复尝试次数已达上限则标记为 failed
 func (r *RecoveryLoop) requeue(ctx context.Context, record *model.TaskRecord) {
-	// 重试次数已达上限，标记为 failed 而非重新入队，避免无限重试
-	if record.RetryCount >= record.MaxRetry {
+	// 使用内部 recoveryAttempts 计数而非 record.RetryCount 判断是否放弃。
+	// record.RetryCount 在 Processor 中会被 asynq 执行重试次数覆盖，语义不同。
+	attempts := r.recoveryAttempts[record.ID]
+	if attempts >= record.MaxRetry {
 		record.Status = model.TaskStatusFailed
-		record.Error = "重试次数已达上限，RecoveryLoop 放弃重新入队"
+		record.Error = "RecoveryLoop 恢复重入队尝试次数已达上限，放弃"
 		record.UpdatedAt = time.Now()
 		if err := r.store.UpdateTask(ctx, record); err != nil {
 			r.logger.WarnContext(ctx, "标记孤儿任务为 failed 失败",
@@ -109,18 +119,23 @@ func (r *RecoveryLoop) requeue(ctx context.Context, record *model.TaskRecord) {
 			)
 			return
 		}
-		r.logger.WarnContext(ctx, "孤儿任务重试次数已达上限，标记为 failed",
+		// 任务已标记为 failed，从 recoveryAttempts 中清除
+		delete(r.recoveryAttempts, record.ID)
+		r.logger.WarnContext(ctx, "孤儿任务恢复尝试次数已达上限，标记为 failed",
 			"task_id", record.ID,
 			"task_type", record.TaskType,
-			"retry_count", record.RetryCount,
+			"recovery_attempts", attempts,
 			"max_retry", record.MaxRetry,
 		)
 		return
 	}
 
+	// 使用共享的 buildAsynqTaskID 生成确定性 TaskID，
+	// 确保与 enqueueTask 首次入队时使用相同的 TaskID，利用 asynq 幂等去重
+	taskID := buildAsynqTaskID(record.DeliveryID, record.TaskType)
 	asynqID, err := r.client.Enqueue(ctx, record.Payload, EnqueueOptions{
 		Priority: record.Priority,
-		TaskID:   record.ID,
+		TaskID:   taskID,
 	})
 	if err != nil {
 		// TaskID 冲突说明任务已在 asynq 队列中，视为已入队
@@ -129,7 +144,7 @@ func (r *RecoveryLoop) requeue(ctx context.Context, record *model.TaskRecord) {
 				"task_id", record.ID,
 				"task_type", record.TaskType,
 			)
-			asynqID = record.ID
+			asynqID = taskID
 		} else {
 			r.logger.WarnContext(ctx, "孤儿任务重新入队失败",
 				"task_id", record.ID,
@@ -140,10 +155,9 @@ func (r *RecoveryLoop) requeue(ctx context.Context, record *model.TaskRecord) {
 		}
 	}
 
-	// 更新状态为 queued，递增重试次数
+	// 更新状态为 queued，递增恢复尝试计数
 	record.AsynqID = asynqID
 	record.Status = model.TaskStatusQueued
-	record.RetryCount++
 	record.UpdatedAt = time.Now()
 	if err := r.store.UpdateTask(ctx, record); err != nil {
 		r.logger.WarnContext(ctx, "更新孤儿任务状态失败",
@@ -152,6 +166,10 @@ func (r *RecoveryLoop) requeue(ctx context.Context, record *model.TaskRecord) {
 		)
 		return
 	}
+
+	// 入队成功后递增恢复计数；任务成功入队后 Processor 处理完会将状态变为
+	// succeeded/failed，下次扫描不会再命中此任务，计数不会误累积
+	r.recoveryAttempts[record.ID]++
 
 	r.logger.InfoContext(ctx, "孤儿任务已重新入队",
 		"task_id", record.ID,

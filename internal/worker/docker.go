@@ -148,11 +148,16 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 
 	// 构建主机资源配置
 	hostCfg := &container.HostConfig{
-		SecurityOpt: []string{"no-new-privileges"},
-		CapDrop:     []string{"ALL"},
+		SecurityOpt:    []string{"no-new-privileges"},
+		CapDrop:        []string{"ALL"},
+		ReadonlyRootfs: true,
+		Tmpfs: map[string]string{
+			"/tmp":       "rw,noexec,nosuid,size=256m",
+			"/workspace": "rw,noexec,nosuid,size=2g",
+		},
 		Resources: container.Resources{
-			NanoCPUs: nanoCPUs,
-			Memory:   memBytes,
+			NanoCPUs:  nanoCPUs,
+			Memory:    memBytes,
 			PidsLimit: int64Ptr(512),
 		},
 	}

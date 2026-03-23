@@ -629,6 +629,43 @@ func TestNewSQLiteStore_EmptyPath(t *testing.T) {
 	}
 }
 
+func TestCreateTask_DuplicateID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r1 := newTestRecord("dup-id-001", "", model.TaskTypeReviewPR)
+	if err := s.CreateTask(ctx, r1); err != nil {
+		t.Fatalf("第一次 CreateTask 失败: %v", err)
+	}
+
+	// 使用相同 ID 再次插入，应返回错误（主键冲突）
+	r2 := newTestRecord("dup-id-001", "", model.TaskTypeFixIssue)
+	err := s.CreateTask(ctx, r2)
+	if err == nil {
+		t.Fatal("相同 ID 的二次插入应返回错误，但成功了")
+	}
+}
+
+func TestListTasks_NegativeLimit(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.ListTasks(ctx, ListOptions{Limit: -1})
+	if err == nil {
+		t.Fatal("负数 Limit 应返回错误")
+	}
+}
+
+func TestListTasks_NegativeOffset(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.ListTasks(ctx, ListOptions{Offset: -1})
+	if err == nil {
+		t.Fatal("负数 Offset 应返回错误")
+	}
+}
+
 func TestCreateTask_InvalidStatus(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

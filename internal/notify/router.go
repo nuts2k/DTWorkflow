@@ -62,11 +62,14 @@ func NewRouter(opts ...RouterOption) (*Router, error) {
 	return r, nil
 }
 
-// WithNotifier 注册通知渠道
+// WithNotifier 注册通知渠道。同名渠道不允许重复注册，重复时返回错误。
 func WithNotifier(n Notifier) RouterOption {
 	return func(r *Router) error {
 		if n == nil {
 			return errors.New("通知渠道不能为 nil")
+		}
+		if _, exists := r.notifiers[n.Name()]; exists {
+			return fmt.Errorf("通知渠道 %q 已注册，不允许重复注册", n.Name())
 		}
 		r.notifiers[n.Name()] = n
 		return nil
@@ -107,11 +110,17 @@ func WithRouterLogger(logger *slog.Logger) RouterOption {
 	}
 }
 
-// Send 根据路由规则将消息发送到匹配的通知渠道
-// 单个渠道失败不中止其余渠道，最终通过 errors.Join 返回聚合错误
+// Send 根据路由规则将消息发送到匹配的通知渠道。
+// 单个渠道失败不中止其余渠道，最终通过 errors.Join 返回聚合错误。
+//
+// 与设计文档的偏差说明：
+//   - 设计文档要求无匹配渠道时静默返回 nil，实际实现返回 ErrNoChannelMatched，
+//     以避免通知被静默丢弃，便于调用者感知和排查路由配置问题。
+//   - 设计文档未要求入口参数校验，实际实现在入口处检查 EventType 和 Target 字段，
+//     使无效消息能尽早失败，避免进入路由匹配流程。
 func (r *Router) Send(ctx context.Context, msg Message) error {
 	if msg.EventType == "" {
-		return fmt.Errorf("EventType 不能为空: %w", ErrInvalidTarget)
+		return fmt.Errorf("EventType 不能为空: %w", ErrInvalidMessage)
 	}
 	if msg.Target.Owner == "" || msg.Target.Repo == "" {
 		return fmt.Errorf("Target.Owner 和 Target.Repo 不能为空: %w", ErrInvalidTarget)

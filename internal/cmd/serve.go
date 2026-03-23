@@ -47,8 +47,10 @@ type serveConfig struct {
 	GiteaToken    string
 	MaxWorkers    int
 	WorkerImage   string
-	MemoryLimit   string
-	CPULimit      string
+	// TODO(M1.8): MemoryLimit 和 CPULimit 当前使用硬编码默认值（4g / 2.0），
+	// 将在 M1.8 配置管理阶段通过 CLI flags 和 YAML 配置文件暴露给用户。
+	MemoryLimit string
+	CPULimit    string
 }
 
 var serveCmd = &cobra.Command{
@@ -123,9 +125,10 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 		return nil, nil, fmt.Errorf("初始化 asynq Client 失败: %w", err)
 	}
 	cleanups = append(cleanups, func() { _ = queueClient.Close() })
-	// 创建后验证 Redis 连通性（非致命，降级运行）
+	// 验证 Redis 连通性：Redis 是任务队列的核心依赖，不可用时必须快速失败
 	if err := queueClient.Ping(context.Background()); err != nil {
-		slog.Warn("Redis 连接检查失败，队列功能可能不可用", "error", err)
+		cleanup()
+		return nil, nil, fmt.Errorf("Redis 连接失败，服务无法启动: %w", err)
 	}
 
 	// 4. 初始化 Docker Client 和 Worker Pool
@@ -165,6 +168,9 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	})
 
 	// 5. 初始化 asynq Server（并发由此控制）
+	// 注意：MaxWorkers 的并发控制由 asynq Server 的 Concurrency 参数管理，
+	// 而非 Worker Pool 自身。Pool 仅负责容器生命周期管理，不限制并发数量。
+	// 这是有意的架构决策：asynq 作为任务调度层统一管控并发，Pool 作为执行层专注于容器操作。
 	asynqServer := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency: cfg.MaxWorkers,
 		Queues: map[string]int{
@@ -237,7 +243,11 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		return fmt.Errorf("--port 必须在 1-65535 范围内，当前值: %d", cfg.Port)
 	}
 
-	// 敏感 flag 默认值为空，优先读取环境变量作为回退（避免 --help 泄露敏感信息）
+	// 敏感 flag 默认值为空，优先读取环境变量作为回退（避免 --help 泄露敏感信息）。
+	// 设计说明：非敏感配置（redis-addr, db-path）在 init() 的 flag 默认值中通过
+	// getEnvDefault 处理，因为可以安全地在 --help 中显示默认值；
+	// 敏感配置（webhook-secret, claude-api-key 等）在此处运行时处理，
+	// 避免 flag 默认值在 --help 输出中泄露真实凭据。
 	if cfg.ClaudeAPIKey == "" {
 		cfg.ClaudeAPIKey = os.Getenv("DTWORKFLOW_CLAUDE_API_KEY")
 	}
@@ -277,8 +287,16 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		c.AbortWithStatus(http.StatusInternalServerError)
 	}))
 
-	// 健康检查（包含 Redis 和 SQLite 状态）
+	// Liveness 探针：只要进程存活就返回 200，用于 Docker HEALTHCHECK
 	router.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "alive",
+			"version": version,
+		})
+	})
+
+	// Readiness 探针：检查所有子系统状态，degraded 时返回 503
+	router.GET("/readyz", func(c *gin.Context) {
 		ctx := c.Request.Context()
 		redisOK := deps.QueueClient.Ping(ctx) == nil
 		poolStats := deps.Pool.Stats()
@@ -373,7 +391,30 @@ func getEnvDefault(key, defaultVal string) string {
 // gracefulShutdown 分层关闭所有组件。
 // 注意：Store、QueueClient、Pool 由 defer cleanup() 统一关闭，
 // 此处只负责关闭 HTTP Server 和 asynq Server，避免与 cleanup 双重关闭。
+// 总超时 60 秒，防止关闭流程无限阻塞。
 func gracefulShutdown(server *http.Server, deps *ServiceDeps, cancelRecovery, cancelGC context.CancelFunc) error {
+	// 设置总超时保护，确保关闭流程不会无限阻塞
+	totalCtx, totalCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer totalCancel()
+
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- doGracefulShutdown(server, deps, cancelRecovery, cancelGC)
+	}()
+
+	select {
+	case err := <-doneCh:
+		return err
+	case <-totalCtx.Done():
+		// 总超时到达，强制取消 Recovery 和 GC 协程
+		cancelRecovery()
+		cancelGC()
+		return fmt.Errorf("优雅关闭超时（60s），强制退出")
+	}
+}
+
+// doGracefulShutdown 执行实际的分层关闭逻辑
+func doGracefulShutdown(server *http.Server, deps *ServiceDeps, cancelRecovery, cancelGC context.CancelFunc) error {
 	var firstErr error
 	recordErr := func(layer string, err error) {
 		slog.Error("关闭失败", "layer", layer, "error", err)

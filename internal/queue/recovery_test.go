@@ -72,12 +72,13 @@ func (mc *mockEnqueuerForRecovery) Enqueue(_ context.Context, _ model.TaskPayloa
 
 func TestRecoveryLoop_RequeuesOrphans(t *testing.T) {
 	orphan := &model.TaskRecord{
-		ID:       "orphan-1",
-		TaskType: model.TaskTypeReviewPR,
-		Status:   model.TaskStatusPending,
-		Priority: model.PriorityHigh,
-		Payload:  model.TaskPayload{TaskType: model.TaskTypeReviewPR},
-		MaxRetry: 3,
+		ID:         "orphan-1",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusPending,
+		Priority:   model.PriorityHigh,
+		Payload:    model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+		DeliveryID: "delivery-orphan-1",
+		MaxRetry:   3,
 	}
 
 	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
@@ -111,12 +112,13 @@ func TestRecoveryLoop_NoOrphans(t *testing.T) {
 
 func TestRecoveryLoop_ErrTaskIDConflict_StillUpdatesQueued(t *testing.T) {
 	orphan := &model.TaskRecord{
-		ID:       "orphan-conflict-1",
-		TaskType: model.TaskTypeReviewPR,
-		Status:   model.TaskStatusPending,
-		Priority: model.PriorityHigh,
-		Payload:  model.TaskPayload{TaskType: model.TaskTypeReviewPR},
-		MaxRetry: 3,
+		ID:         "orphan-conflict-1",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusPending,
+		Priority:   model.PriorityHigh,
+		Payload:    model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+		DeliveryID: "delivery-conflict-1",
+		MaxRetry:   3,
 	}
 
 	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
@@ -132,20 +134,22 @@ func TestRecoveryLoop_ErrTaskIDConflict_StillUpdatesQueued(t *testing.T) {
 	if s.updated[0].Status != model.TaskStatusQueued {
 		t.Errorf("updated status = %q, want %q", s.updated[0].Status, model.TaskStatusQueued)
 	}
-	// ErrTaskIDConflict 时 AsynqID 应设为记录本身的 ID
-	if s.updated[0].AsynqID != "orphan-conflict-1" {
-		t.Errorf("updated AsynqID = %q, want %q", s.updated[0].AsynqID, "orphan-conflict-1")
+	// ErrTaskIDConflict 时 AsynqID 应设为 buildAsynqTaskID 生成的 TaskID
+	expectedAsynqID := buildAsynqTaskID(orphan.DeliveryID, orphan.TaskType)
+	if s.updated[0].AsynqID != expectedAsynqID {
+		t.Errorf("updated AsynqID = %q, want %q", s.updated[0].AsynqID, expectedAsynqID)
 	}
 }
 
 func TestRecoveryLoop_EnqueueFail_SkipsUpdate(t *testing.T) {
 	orphan := &model.TaskRecord{
-		ID:       "orphan-2",
-		TaskType: model.TaskTypeFixIssue,
-		Status:   model.TaskStatusPending,
-		Priority: model.PriorityNormal,
-		Payload:  model.TaskPayload{TaskType: model.TaskTypeFixIssue},
-		MaxRetry: 3,
+		ID:         "orphan-2",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusPending,
+		Priority:   model.PriorityNormal,
+		Payload:    model.TaskPayload{TaskType: model.TaskTypeFixIssue},
+		DeliveryID: "delivery-orphan-2",
+		MaxRetry:   3,
 	}
 
 	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
@@ -179,13 +183,16 @@ func TestRecoveryLoop_MaxRetryExceeded_MarksFailed(t *testing.T) {
 		Status:     model.TaskStatusPending,
 		Priority:   model.PriorityHigh,
 		Payload:    model.TaskPayload{TaskType: model.TaskTypeReviewPR},
-		RetryCount: 3,
+		DeliveryID: "delivery-orphan-maxed",
 		MaxRetry:   3,
 	}
 
 	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
 	mc := &mockEnqueuerForRecovery{}
 	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
+
+	// 预设恢复尝试次数已达上限（使用内部 recoveryAttempts 而非 record.RetryCount）
+	r.recoveryAttempts[orphan.ID] = 3
 
 	r.recover(context.Background())
 
@@ -198,10 +205,10 @@ func TestRecoveryLoop_MaxRetryExceeded_MarksFailed(t *testing.T) {
 }
 
 func TestNewRecoveryLoop_Defaults(t *testing.T) {
-	s := newMockStore()
-	// &Client{} 仅用于默认值测试，不会实际调用 Enqueue 方法
-	client := &Client{}
-	loop := NewRecoveryLoop(s, client, slog.Default(), 0, 0)
+	s := &mockStoreForRecovery{}
+	// 使用 mock 而非 &Client{} 零值，避免对 Client 内部结构的隐式依赖
+	mc := &mockEnqueuerForRecovery{}
+	loop := NewRecoveryLoop(s, mc, slog.Default(), 0, 0)
 
 	if loop.interval != 60*time.Second {
 		t.Errorf("default interval = %v, want 60s", loop.interval)
