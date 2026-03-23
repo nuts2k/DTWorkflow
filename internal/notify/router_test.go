@@ -307,3 +307,15 @@ func TestNewRouter_NilNotifier(t *testing.T) {
 		t.Fatal("NewRouter with nil notifier should return error")
 	}
 }
+
+func TestNewRouter_UnregisteredFallback(t *testing.T) {
+	_, err := NewRouter(
+		WithFallback("not-registered"),
+	)
+	if err == nil {
+		t.Fatal("NewRouter 应在 fallback 渠道未注册时返回错误")
+	}
+	if !errors.Is(err, ErrNotifierNotFound) {
+		t.Errorf("error should wrap ErrNotifierNotFound, got: %v", err)
+	}
+}

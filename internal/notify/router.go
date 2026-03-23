@@ -41,6 +41,14 @@ func NewRouter(opts ...RouterOption) (*Router, error) {
 			return nil, fmt.Errorf("应用路由器选项: %w", err)
 		}
 	}
+
+	// 校验 fallback 渠道是否已注册
+	if r.fallback != "" {
+		if _, ok := r.notifiers[r.fallback]; !ok {
+			return nil, fmt.Errorf("fallback 渠道 %q 未注册: %w", r.fallback, ErrNotifierNotFound)
+		}
+	}
+
 	return r, nil
 }
 

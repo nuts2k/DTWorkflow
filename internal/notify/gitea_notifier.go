@@ -14,7 +14,9 @@ type GiteaCommentCreator interface {
 
 // GiteaNotifierOption 配置选项函数类型。
 // 注意：此处签名为 func(*GiteaNotifier)（无返回值），与设计文档中
-// func(*GiteaNotifier) error 的签名有所不同，当前实现选择更简洁的无错误返回形式。
+// func(*GiteaNotifier) error 的签名有所不同。当前所有 Option（如 WithLogger）
+// 仅做简单赋值，无需返回错误，故选择更简洁的无错误返回形式。
+// 若后续新增可能失败的 Option，应迁移为 func(*GiteaNotifier) error 签名。
 type GiteaNotifierOption func(*GiteaNotifier)
 
 // GiteaNotifier 通过 Gitea Issue/PR 评论发送通知

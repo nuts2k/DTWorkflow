@@ -136,6 +136,40 @@ func TestGiteaNotifier_Send_APIError(t *testing.T) {
 	if !errors.Is(err, apiErr) {
 		t.Errorf("error should wrap API error, got: %v", err)
 	}
+	// 双 %w 包装：同时验证 ErrSendFailed 哨兵错误（Go 1.20+ 支持多 %w）
+	if !errors.Is(err, ErrSendFailed) {
+		t.Errorf("error should wrap ErrSendFailed, got: %v", err)
+	}
+}
+
+func TestGiteaNotifier_Send_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	stub := &stubCommentCreator{}
+	n, err := NewGiteaNotifier(stub)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier() error: %v", err)
+	}
+
+	msg := Message{
+		EventType: EventSystemError,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "owner", Repo: "repo", Number: 1},
+		Title:     "测试取消",
+		Body:      "context 取消场景",
+	}
+
+	err = n.Send(ctx, msg)
+	if err == nil {
+		t.Fatal("期望返回错误")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("期望 context.Canceled 错误，实际: %v", err)
+	}
+	if len(stub.calls) != 0 {
+		t.Errorf("取消后不应调用 API，实际调用了 %d 次", len(stub.calls))
+	}
 }
 
 func TestGiteaNotifier_WithLogger(t *testing.T) {
