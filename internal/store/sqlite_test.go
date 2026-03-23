@@ -243,23 +243,35 @@ func TestListTasks_LimitOffset(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
+	// 使用递增的 CreatedAt 确保排序确定性
+	base := time.Now().UTC()
 	for i := 0; i < 5; i++ {
 		r := newTestRecord(
 			fmt.Sprintf("limit-task-%d", i),
 			"",
 			model.TaskTypeReviewPR,
 		)
+		r.CreatedAt = base.Add(time.Duration(i) * time.Second)
+		r.UpdatedAt = r.CreatedAt
 		if err := s.CreateTask(ctx, r); err != nil {
 			t.Fatalf("CreateTask 失败: %v", err)
 		}
 	}
 
+	// ORDER BY created_at DESC，所以 limit-task-4 最新排第一
+	// Offset=1 跳过第一条(limit-task-4)，Limit=2 取两条: limit-task-3, limit-task-2
 	records, err := s.ListTasks(ctx, ListOptions{Limit: 2, Offset: 1})
 	if err != nil {
 		t.Fatalf("ListTasks 失败: %v", err)
 	}
 	if len(records) != 2 {
-		t.Errorf("期望 2 条记录，得到 %d", len(records))
+		t.Fatalf("期望 2 条记录，得到 %d", len(records))
+	}
+	if records[0].ID != "limit-task-3" {
+		t.Errorf("第一条记录期望 limit-task-3，得到 %s", records[0].ID)
+	}
+	if records[1].ID != "limit-task-2" {
+		t.Errorf("第二条记录期望 limit-task-2，得到 %s", records[1].ID)
 	}
 }
 
@@ -422,5 +434,209 @@ func TestFindByDeliveryID_EmptyDeliveryID(t *testing.T) {
 	}
 	if got != nil {
 		t.Error("FindByDeliveryID('', ...) 应返回 nil record")
+	}
+}
+
+func TestPurgeTasks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 创建旧的 succeeded 任务（2小时前）
+	old1 := newTestRecord("purge-old-1", "", model.TaskTypeReviewPR)
+	old1.Status = model.TaskStatusSucceeded
+	old1.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	old1.UpdatedAt = old1.CreatedAt
+	if err := s.CreateTask(ctx, old1); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	old2 := newTestRecord("purge-old-2", "", model.TaskTypeFixIssue)
+	old2.Status = model.TaskStatusSucceeded
+	old2.CreatedAt = time.Now().UTC().Add(-3 * time.Hour)
+	old2.UpdatedAt = old2.CreatedAt
+	if err := s.CreateTask(ctx, old2); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 创建新的 succeeded 任务（刚刚）
+	fresh := newTestRecord("purge-fresh", "", model.TaskTypeReviewPR)
+	fresh.Status = model.TaskStatusSucceeded
+	if err := s.CreateTask(ctx, fresh); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 清理 1 小时前的 succeeded 任务，应删除 2 条
+	affected, err := s.PurgeTasks(ctx, 1*time.Hour, model.TaskStatusSucceeded)
+	if err != nil {
+		t.Fatalf("PurgeTasks 失败: %v", err)
+	}
+	if affected != 2 {
+		t.Errorf("期望删除 2 条，实际删除 %d 条", affected)
+	}
+
+	// 验证剩余记录
+	records, err := s.ListTasks(ctx, ListOptions{})
+	if err != nil {
+		t.Fatalf("ListTasks 失败: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("期望剩余 1 条记录，得到 %d", len(records))
+	}
+	if records[0].ID != "purge-fresh" {
+		t.Errorf("期望剩余 purge-fresh，得到 %s", records[0].ID)
+	}
+}
+
+func TestPurgeTasks_NoMatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 创建新的 succeeded 任务（刚刚）
+	r := newTestRecord("purge-new", "", model.TaskTypeReviewPR)
+	r.Status = model.TaskStatusSucceeded
+	if err := s.CreateTask(ctx, r); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 清理 1 小时前的，但所有记录都是新的，应返回 0
+	affected, err := s.PurgeTasks(ctx, 1*time.Hour, model.TaskStatusSucceeded)
+	if err != nil {
+		t.Fatalf("PurgeTasks 失败: %v", err)
+	}
+	if affected != 0 {
+		t.Errorf("期望删除 0 条，实际删除 %d 条", affected)
+	}
+}
+
+func TestPing(t *testing.T) {
+	s := newTestStore(t)
+	err := s.Ping(context.Background())
+	if err != nil {
+		t.Fatalf("Ping 失败: %v", err)
+	}
+}
+
+func TestAllTaskTypesCanBeInserted(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	allTypes := []model.TaskType{
+		model.TaskTypeReviewPR,
+		model.TaskTypeFixIssue,
+		model.TaskTypeGenTests,
+	}
+
+	for i, tt := range allTypes {
+		r := newTestRecord(fmt.Sprintf("type-enum-%d", i), "", tt)
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Errorf("TaskType %q 插入失败: %v", tt, err)
+		}
+	}
+}
+
+func TestAllTaskStatusesCanBeUpdated(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	allStatuses := []model.TaskStatus{
+		model.TaskStatusPending,
+		model.TaskStatusQueued,
+		model.TaskStatusRunning,
+		model.TaskStatusSucceeded,
+		model.TaskStatusFailed,
+		model.TaskStatusRetrying,
+		model.TaskStatusCancelled,
+	}
+
+	for i, st := range allStatuses {
+		// 每个状态创建一条新记录然后更新
+		r := newTestRecord(fmt.Sprintf("status-enum-%d", i), "", model.TaskTypeReviewPR)
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask 失败: %v", err)
+		}
+		r.Status = st
+		if err := s.UpdateTask(ctx, r); err != nil {
+			t.Errorf("更新到状态 %q 失败: %v", st, err)
+		}
+		// 回读验证
+		got, err := s.GetTask(ctx, r.ID)
+		if err != nil {
+			t.Fatalf("GetTask 失败: %v", err)
+		}
+		if got.Status != st {
+			t.Errorf("状态不匹配: got %s, want %s", got.Status, st)
+		}
+	}
+}
+
+func TestParseTime(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{
+			name:    "RFC3339Nano",
+			input:   "2024-01-15T10:30:00.123456789Z",
+			wantErr: false,
+		},
+		{
+			name:    "RFC3339",
+			input:   "2024-01-15T10:30:00Z",
+			wantErr: false,
+		},
+		{
+			name:    "日期时间（空格分隔）",
+			input:   "2024-01-15 10:30:00",
+			wantErr: false,
+		},
+		{
+			name:    "日期时间（T分隔，无时区）",
+			input:   "2024-01-15T10:30:00",
+			wantErr: false,
+		},
+		{
+			name:    "无效格式",
+			input:   "not-a-time",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := parseTime(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("parseTime(%q) 应返回错误，但返回: %v", tc.input, result)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("parseTime(%q) 失败: %v", tc.input, err)
+				return
+			}
+			if result.IsZero() {
+				t.Errorf("parseTime(%q) 返回了零值时间", tc.input)
+			}
+		})
+	}
+}
+
+func TestNewSQLiteStore_EmptyPath(t *testing.T) {
+	_, err := NewSQLiteStore("")
+	if err == nil {
+		t.Fatal("NewSQLiteStore('') 应返回错误")
+	}
+}
+
+func TestCreateTask_InvalidStatus(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r := newTestRecord("bad-status", "", model.TaskTypeReviewPR)
+	r.Status = model.TaskStatus("invalid_status")
+	err := s.CreateTask(ctx, r)
+	if err == nil {
+		t.Fatal("CreateTask 使用无效状态应返回错误")
 	}
 }

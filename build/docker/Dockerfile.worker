@@ -1,7 +1,7 @@
 # DTWorkflow Worker 镜像
 # 基于 Node.js + Claude Code CLI + Git
 # 注意：0.2 会解析到 0.2.x 的最新版本，生产环境建议锁定精确版本（如 0.2.40）
-ARG CLAUDE_CODE_VERSION=0.2
+ARG CLAUDE_CODE_VERSION=0.2.40
 FROM node:20.18.0-bookworm-slim
 
 # FROM 之后重新声明 ARG，使其在当前构建阶段可用

@@ -27,7 +27,8 @@ type Store interface {
 	// 当目标任务不存在时返回 ErrTaskNotFound。
 	UpdateTask(ctx context.Context, record *model.TaskRecord) error
 
-	// ListTasks 列表查询任务
+	// ListTasks 列表查询任务。
+	// Limit 为 0 时默认返回最多 1000 条记录。
 	ListTasks(ctx context.Context, opts ListOptions) ([]*model.TaskRecord, error)
 
 	// FindByDeliveryID 按 delivery_id + task_type 查找任务（幂等去重），未找到时返回 (nil, nil)

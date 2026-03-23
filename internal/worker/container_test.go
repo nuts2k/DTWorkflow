@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"strings"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -241,11 +242,8 @@ func TestSanitizeInput(t *testing.T) {
 func envSliceToMap(env []string) map[string]string {
 	result := make(map[string]string, len(env))
 	for _, e := range env {
-		for i := 0; i < len(e); i++ {
-			if e[i] == '=' {
-				result[e[:i]] = e[i+1:]
-				break
-			}
+		if key, val, ok := strings.Cut(e, "="); ok {
+			result[key] = val
 		}
 	}
 	return result

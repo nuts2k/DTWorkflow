@@ -13,6 +13,9 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
 )
 
+// 编译时检查 *EnqueueHandler 实现 webhook.Handler 接口
+var _ webhook.Handler = (*EnqueueHandler)(nil)
+
 // EnqueueHandler 实现 webhook.Handler 接口，将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
 	client Enqueuer
@@ -22,6 +25,15 @@ type EnqueueHandler struct {
 
 // NewEnqueueHandler 创建 EnqueueHandler 实例
 func NewEnqueueHandler(client Enqueuer, store store.Store, logger *slog.Logger) *EnqueueHandler {
+	if client == nil {
+		panic("NewEnqueueHandler: client 不能为 nil")
+	}
+	if store == nil {
+		panic("NewEnqueueHandler: store 不能为 nil")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &EnqueueHandler{
 		client: client,
 		store:  store,
@@ -174,9 +186,14 @@ func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayl
 	// Step 1 成功但 Step 2 失败时，任务保持 pending 状态，不向调用方返回错误。
 	// RecoveryLoop 会定期扫描长时间处于 pending 的孤儿任务并重新入队，
 	// 从而保证最终一致性。这避免了分布式事务的复杂性，代价是入队可能有延迟。
+	// TaskID 使用基于 DeliveryID 的确定性值，asynq 层面也能提供去重保障
+	taskID := record.ID
+	if record.DeliveryID != "" {
+		taskID = fmt.Sprintf("%s:%s", record.DeliveryID, record.TaskType)
+	}
 	asynqID, err := h.client.Enqueue(ctx, payload, EnqueueOptions{
 		Priority: record.Priority,
-		TaskID:   record.ID,
+		TaskID:   taskID,
 	})
 	if err != nil {
 		// 入队失败不返回错误：任务已持久化（pending），依赖 RecoveryLoop 补偿入队。

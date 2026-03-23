@@ -140,9 +140,10 @@ func (r *RecoveryLoop) requeue(ctx context.Context, record *model.TaskRecord) {
 		}
 	}
 
-	// 更新状态为 queued
+	// 更新状态为 queued，递增重试次数
 	record.AsynqID = asynqID
 	record.Status = model.TaskStatusQueued
+	record.RetryCount++
 	record.UpdatedAt = time.Now()
 	if err := r.store.UpdateTask(ctx, record); err != nil {
 		r.logger.WarnContext(ctx, "更新孤儿任务状态失败",

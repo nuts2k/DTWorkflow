@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -254,5 +256,39 @@ func TestBuildContainerName(t *testing.T) {
 	// 名称应包含任务类型前缀
 	if len(name) < 4 {
 		t.Errorf("容器名称太短: %s", name)
+	}
+}
+
+// TestPool_RunAfterShutdown 验证 Shutdown 后并发调用 Run 返回错误且不会泄漏 goroutine
+func TestPool_RunAfterShutdown(t *testing.T) {
+	mock := &mockDockerClient{}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+
+	// 先关闭池
+	ctx := context.Background()
+	if err := pool.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown 返回非预期错误: %v", err)
+	}
+
+	// 并发发起多个 Run 调用，全部应返回错误
+	const concurrency = 10
+	var wg sync.WaitGroup
+	var errCount atomic.Int32
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := pool.Run(ctx, defaultPayload())
+			if err != nil {
+				errCount.Add(1)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if int(errCount.Load()) != concurrency {
+		t.Errorf("期望 %d 个 Run 调用返回错误，实际 %d 个", concurrency, errCount.Load())
 	}
 }

@@ -14,6 +14,9 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
+// 编译时检查 *Processor 实现 asynq.Handler 接口
+var _ asynq.Handler = (*Processor)(nil)
+
 // PoolRunner 抽象 Pool.Run 接口，便于 mock 测试
 type PoolRunner interface {
 	Run(ctx context.Context, payload model.TaskPayload) (*worker.ExecutionResult, error)
@@ -28,6 +31,15 @@ type Processor struct {
 
 // NewProcessor 创建 Processor 实例
 func NewProcessor(pool PoolRunner, store store.Store, logger *slog.Logger) *Processor {
+	if pool == nil {
+		panic("NewProcessor: pool 不能为 nil")
+	}
+	if store == nil {
+		panic("NewProcessor: store 不能为 nil")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Processor{
 		pool:   pool,
 		store:  store,

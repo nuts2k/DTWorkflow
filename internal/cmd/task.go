@@ -95,6 +95,10 @@ var taskListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "列出任务",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if taskListLimit <= 0 || taskListLimit > 1000 {
+			return fmt.Errorf("--limit 必须在 1-1000 范围内，当前值: %d", taskListLimit)
+		}
+
 		ctx := cmd.Context()
 
 		opts := store.ListOptions{
@@ -175,8 +179,16 @@ var taskRetryCmd = &cobra.Command{
 
 		// 注意：此处仅重置 Store 中的状态为 pending，不直接入队。
 		// 任务将由 RecoveryLoop 在下一个扫描周期（默认 60s）内自动重新入队。
-		PrintResult(map[string]string{"id": id, "status": string(model.TaskStatusPending)}, func(data any) string {
-			return fmt.Sprintf("任务 %s 已重置为 pending 状态，将由 serve 进程的 RecoveryLoop 自动重新入队（约 60 秒内）\n", id)
+		PrintResult(map[string]any{
+			"id":      id,
+			"status":  string(model.TaskStatusPending),
+			"warning": "任务将由 serve 进程的 RecoveryLoop 自动重新入队（扫描间隔约 60 秒），请确保 dtworkflow serve 正在运行",
+		}, func(data any) string {
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "任务 %s 已重置为 pending 状态，将由 serve 进程的 RecoveryLoop 自动重新入队（约 60 秒内）\n", id)
+			fmt.Fprintf(&sb, "注意：任务将由 serve 进程的 RecoveryLoop 自动重新入队（扫描间隔约 60 秒）\n")
+			fmt.Fprintf(&sb, "  请确保 dtworkflow serve 正在运行\n")
+			return sb.String()
 		})
 		return nil
 	},

@@ -28,6 +28,10 @@ type SQLiteStore struct {
 
 // NewSQLiteStore 创建 SQLiteStore 实例，初始化连接并执行 Schema 迁移
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
+	if dbPath == "" {
+		return nil, fmt.Errorf("数据库路径不能为空")
+	}
+
 	// 非内存数据库需要确保父目录存在
 	if dbPath != ":memory:" {
 		dir := filepath.Dir(dbPath)
@@ -88,6 +92,9 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) 
 	}
 	if !record.TaskType.IsValid() {
 		return fmt.Errorf("创建任务记录失败: 无效的任务类型 %q", record.TaskType)
+	}
+	if !record.Status.IsValid() {
+		return fmt.Errorf("创建任务记录失败: 无效的任务状态 %q", record.Status)
 	}
 
 	payloadJSON, err := json.Marshal(record.Payload)
@@ -300,11 +307,11 @@ func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration)
 	const query = `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
 		created_at, updated_at, started_at, completed_at
-	FROM tasks WHERE status = 'pending' AND created_at < ?
+	FROM tasks WHERE status = ? AND created_at < ?
 	ORDER BY created_at ASC
 	LIMIT 1000`
 
-	rows, err := s.db.QueryContext(ctx, query, threshold)
+	rows, err := s.db.QueryContext(ctx, query, string(model.TaskStatusPending), threshold)
 	if err != nil {
 		return nil, fmt.Errorf("查询孤儿任务失败: %w", err)
 	}
@@ -334,7 +341,11 @@ func (s *SQLiteStore) PurgeTasks(ctx context.Context, olderThan time.Duration, s
 	if err != nil {
 		return 0, fmt.Errorf("清理历史任务失败: %w", err)
 	}
-	return result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("获取清理影响行数失败: %w", err)
+	}
+	return affected, nil
 }
 
 // Ping 检测数据库连接是否可用，用于健康检查

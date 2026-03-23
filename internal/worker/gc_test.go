@@ -12,12 +12,16 @@ import (
 // mockDockerClientWithList 扩展 mockDockerClient，支持容器列表查询（用于 GC 测试）
 type mockDockerClientWithList struct {
 	mockDockerClient
-	containers []container.Summary
-	removedIDs []string
+	containers        []container.Summary // exited/dead 容器
+	runningContainers []container.Summary // running 容器
+	removedIDs        []string
 }
 
-// ListContainers 实现 DockerClient 接口的 ListContainers 方法
-func (m *mockDockerClientWithList) ListContainers(_ context.Context, _ filters.Args) ([]container.Summary, error) {
+// ListContainers 根据 filters 中的 status 参数返回不同的容器列表
+func (m *mockDockerClientWithList) ListContainers(_ context.Context, f filters.Args) ([]container.Summary, error) {
+	if f.Contains("status") && f.ExactMatch("status", "running") {
+		return m.runningContainers, nil
+	}
 	return m.containers, nil
 }
 

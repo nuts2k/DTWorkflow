@@ -22,8 +22,6 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
-// TODO(M1.8): 将 serve 命令的全局配置变量封装为 serveConfig 结构体，
-// 使 runServe 接受配置参数而非读取全局变量，便于测试隔离和并行测试。
 var (
 	serveHost          string
 	servePort          int
@@ -36,6 +34,22 @@ var (
 	serveGiteaURL      string
 	serveGiteaToken    string
 )
+
+// serveConfig 封装 serve 命令的所有配置，避免测试直接修改包级全局变量
+type serveConfig struct {
+	Host          string
+	Port          int
+	RedisAddr     string
+	DBPath        string
+	WebhookSecret string
+	ClaudeAPIKey  string
+	GiteaURL      string
+	GiteaToken    string
+	MaxWorkers    int
+	WorkerImage   string
+	MemoryLimit   string
+	CPULimit      string
+}
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -57,7 +71,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveClaudeAPIKey, "claude-api-key",
 		"", "Claude API Key（也可通过 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveGiteaURL, "gitea-url",
-		os.Getenv("DTWORKFLOW_GITEA_URL"), "Gitea 实例地址（也可通过 DTWORKFLOW_GITEA_URL 环境变量设置）")
+		"", "Gitea 实例地址（也可通过 DTWORKFLOW_GITEA_URL 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveGiteaToken, "gitea-token",
 		"", "Gitea API Token（也可通过 DTWORKFLOW_GITEA_TOKEN 环境变量设置）")
 	rootCmd.AddCommand(serveCmd)
@@ -75,8 +89,8 @@ type ServiceDeps struct {
 	Handler     webhook.Handler
 }
 
-// BuildServiceDeps 从 CLI flags 构建所有依赖，返回 ServiceDeps 和清理函数
-func BuildServiceDeps() (*ServiceDeps, func(), error) {
+// BuildServiceDeps 从 serveConfig 构建所有依赖，返回 ServiceDeps 和清理函数
+func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	var cleanups []func()
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
@@ -85,7 +99,7 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 	}
 
 	// 1. 初始化 SQLite Store
-	s, err := store.NewSQLiteStore(serveDBPath)
+	s, err := store.NewSQLiteStore(cfg.DBPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("初始化 SQLite 失败: %w", err)
 	}
@@ -93,8 +107,8 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 
 	// 2. 初始化 Gitea Client
 	var giteaClient *gitea.Client
-	if serveGiteaURL != "" && serveGiteaToken != "" {
-		giteaClient, err = gitea.NewClient(serveGiteaURL, gitea.WithToken(serveGiteaToken))
+	if cfg.GiteaURL != "" && cfg.GiteaToken != "" {
+		giteaClient, err = gitea.NewClient(cfg.GiteaURL, gitea.WithToken(cfg.GiteaToken))
 		if err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("初始化 Gitea Client 失败: %w", err)
@@ -102,7 +116,7 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 	}
 
 	// 3. 初始化 asynq Client（用于入队）
-	redisOpt := asynq.RedisClientOpt{Addr: serveRedisAddr}
+	redisOpt := asynq.RedisClientOpt{Addr: cfg.RedisAddr}
 	queueClient, err := queue.NewClient(redisOpt)
 	if err != nil {
 		cleanup()
@@ -122,14 +136,22 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 	}
 	cleanups = append(cleanups, func() { _ = dockerClient.Close() })
 
-	// TODO: 后续通过 CLI flags 或 Viper 配置文件暴露以下配置
+	cpuLimit := cfg.CPULimit
+	if cpuLimit == "" {
+		cpuLimit = "2.0"
+	}
+	memoryLimit := cfg.MemoryLimit
+	if memoryLimit == "" {
+		memoryLimit = "4g"
+	}
+
 	pool, err := worker.NewPool(worker.PoolConfig{
-		Image:        serveWorkerImage,
-		CPULimit:     "2.0",
-		MemoryLimit:  "4g",
-		GiteaURL:     serveGiteaURL,
-		GiteaToken:   worker.SecretString(serveGiteaToken),
-		ClaudeAPIKey: worker.SecretString(serveClaudeAPIKey),
+		Image:        cfg.WorkerImage,
+		CPULimit:     cpuLimit,
+		MemoryLimit:  memoryLimit,
+		GiteaURL:     cfg.GiteaURL,
+		GiteaToken:   worker.SecretString(cfg.GiteaToken),
+		ClaudeAPIKey: worker.SecretString(cfg.ClaudeAPIKey),
 		NetworkName:  "dtworkflow-net",
 	}, dockerClient)
 	if err != nil {
@@ -144,7 +166,7 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 
 	// 5. 初始化 asynq Server（并发由此控制）
 	asynqServer := asynq.NewServer(redisOpt, asynq.Config{
-		Concurrency: serveMaxWorkers,
+		Concurrency: cfg.MaxWorkers,
 		Queues: map[string]int{
 			queue.QueueCritical: 6,
 			queue.QueueDefault:  3,
@@ -176,41 +198,73 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 	}, cleanup, nil
 }
 
-// runServe 启动 HTTP 服务，注册路由，并支持优雅关闭
+// runServe 是 Cobra 命令入口，将全局变量读入 serveConfig 后委托给 runServeWithConfig。
 func runServe(cmd *cobra.Command, args []string) error {
-	// 参数校验
-	if serveMaxWorkers <= 0 {
-		return fmt.Errorf("--max-workers 必须为正整数，当前值: %d", serveMaxWorkers)
+	cfg := serveConfig{
+		Host:          serveHost,
+		Port:          servePort,
+		RedisAddr:     serveRedisAddr,
+		DBPath:        serveDBPath,
+		WebhookSecret: serveWebhookSecret,
+		ClaudeAPIKey:  serveClaudeAPIKey,
+		GiteaURL:      serveGiteaURL,
+		GiteaToken:    serveGiteaToken,
+		MaxWorkers:    serveMaxWorkers,
+		WorkerImage:   serveWorkerImage,
 	}
-	if servePort < 1 || servePort > 65535 {
-		return fmt.Errorf("--port 必须在 1-65535 范围内，当前值: %d", servePort)
+
+	// 使用 OS 信号作为 stopCh
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	stopCh := make(chan struct{})
+	go func() {
+		<-quit
+		signal.Stop(quit)
+		close(stopCh)
+	}()
+
+	return runServeWithConfig(cfg, stopCh)
+}
+
+// runServeWithConfig 启动 HTTP 服务，注册路由，并支持优雅关闭。
+// stopCh 关闭时触发分层关闭流程，便于测试通过 close(stopCh) 代替 syscall.Kill。
+func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
+	// 参数校验
+	if cfg.MaxWorkers <= 0 {
+		return fmt.Errorf("--max-workers 必须为正整数，当前值: %d", cfg.MaxWorkers)
+	}
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return fmt.Errorf("--port 必须在 1-65535 范围内，当前值: %d", cfg.Port)
 	}
 
 	// 敏感 flag 默认值为空，优先读取环境变量作为回退（避免 --help 泄露敏感信息）
-	if serveClaudeAPIKey == "" {
-		serveClaudeAPIKey = os.Getenv("DTWORKFLOW_CLAUDE_API_KEY")
+	if cfg.ClaudeAPIKey == "" {
+		cfg.ClaudeAPIKey = os.Getenv("DTWORKFLOW_CLAUDE_API_KEY")
 	}
-	if serveGiteaToken == "" {
-		serveGiteaToken = os.Getenv("DTWORKFLOW_GITEA_TOKEN")
+	if cfg.GiteaToken == "" {
+		cfg.GiteaToken = os.Getenv("DTWORKFLOW_GITEA_TOKEN")
 	}
-	if serveWebhookSecret == "" {
-		serveWebhookSecret = os.Getenv("DTWORKFLOW_WEBHOOK_SECRET")
+	if cfg.WebhookSecret == "" {
+		cfg.WebhookSecret = os.Getenv("DTWORKFLOW_WEBHOOK_SECRET")
+	}
+	if cfg.GiteaURL == "" {
+		cfg.GiteaURL = os.Getenv("DTWORKFLOW_GITEA_URL")
 	}
 
-	if serveWebhookSecret == "" {
+	if cfg.WebhookSecret == "" {
 		return fmt.Errorf("webhook-secret 不能为空")
 	}
-	if serveClaudeAPIKey == "" {
+	if cfg.ClaudeAPIKey == "" {
 		return fmt.Errorf("claude-api-key 不能为空（通过 --claude-api-key 或 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
 	}
-	if serveGiteaURL == "" || serveGiteaToken == "" {
+	if cfg.GiteaURL == "" || cfg.GiteaToken == "" {
 		slog.Warn("Gitea 配置不完整，通知功能将不可用",
-			"gitea-url", serveGiteaURL != "",
-			"gitea-token", serveGiteaToken != "")
+			"gitea-url", cfg.GiteaURL != "",
+			"gitea-token", cfg.GiteaToken != "")
 	}
 
 	// 构建所有依赖
-	deps, cleanup, err := BuildServiceDeps()
+	deps, cleanup, err := BuildServiceDeps(cfg)
 	if err != nil {
 		return err
 	}
@@ -247,7 +301,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 注册 Webhook 路由，注入 EnqueueHandler
 	webhook.RegisterRoutes(router, webhook.Config{
-		Secret:  serveWebhookSecret,
+		Secret:  cfg.WebhookSecret,
 		Handler: deps.Handler,
 	})
 
@@ -264,18 +318,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 启动 Recovery Goroutine
 	recoveryCtx, recoveryCancel := context.WithCancel(context.Background())
-	defer recoveryCancel()
 	go deps.Recovery.Run(recoveryCtx)
 
 	// 启动容器 GC Goroutine
 	gcCtx, gcCancel := context.WithCancel(context.Background())
-	defer gcCancel()
 	go deps.GC.Run(gcCtx)
 
 	// 启动 HTTP 服务
-	addr := fmt.Sprintf("%s:%d", serveHost, servePort)
+	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
+		recoveryCancel()
+		gcCancel()
 		return fmt.Errorf("监听地址 %s 失败: %w", addr, err)
 	}
 
@@ -293,19 +347,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}()
 
 	slog.Info("服务启动",
-		"host", serveHost,
-		"port", servePort,
-		"max_workers", serveMaxWorkers,
-		"worker_image", serveWorkerImage,
-		"redis", serveRedisAddr,
-		"db", serveDBPath,
+		"host", cfg.Host,
+		"port", cfg.Port,
+		"max_workers", cfg.MaxWorkers,
+		"worker_image", cfg.WorkerImage,
+		"redis", cfg.RedisAddr,
+		"db", cfg.DBPath,
 	)
 
-	// 等待信号 -> 分层关闭
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	signal.Stop(quit)
+	// 等待 stopCh 关闭 -> 分层关闭
+	<-stopCh
 
 	slog.Info("收到关闭信号，开始分层关闭...")
 	return gracefulShutdown(server, deps, recoveryCancel, gcCancel)

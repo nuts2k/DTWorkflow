@@ -98,7 +98,10 @@ func (c *Client) Close() error {
 	if c.pingClient != nil {
 		pingErr = c.pingClient.Close()
 	}
-	innerErr := c.inner.Close()
+	var innerErr error
+	if c.inner != nil {
+		innerErr = c.inner.Close()
+	}
 	return errors.Join(pingErr, innerErr)
 }
 

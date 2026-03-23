@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
+
+// consecutiveHyphens 匹配连续的连字符，用于容器名称清理
+var consecutiveHyphens = regexp.MustCompile(`-{2,}`)
 
 // Pool 管理 Docker 容器生命周期的 Worker 池
 // 不做并发控制（由 asynq 控制并发度），只负责容器创建和清理
@@ -21,10 +25,11 @@ type Pool struct {
 	networkMu      sync.Mutex // 保护网络创建，支持失败后重试
 	networkCreated bool
 
-	closed atomic.Bool  // 标记池是否已关闭
-	active atomic.Int32 // 当前活跃容器数
-	total  atomic.Int64 // 累计完成任务数
-	wg     sync.WaitGroup
+	shutdownMu sync.RWMutex // 保护 closed 检查与 wg.Add 之间的原子性，防止 TOCTOU 竞态
+	closed     atomic.Bool  // 标记池是否已关闭
+	active     atomic.Int32 // 当前活跃容器数
+	total      atomic.Int64 // 累计完成任务数
+	wg         sync.WaitGroup
 }
 
 // NewPool 创建 Worker 池。Image 为必填项，不可为空。
@@ -61,11 +66,13 @@ func (p *Pool) ensureNetwork(ctx context.Context) error {
 // 注意：当容器执行失败时，同时返回 result（包含日志和退出码）和 error，
 // 调用方应同时检查两者以获取完整的调试信息。
 func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionResult, error) {
+	p.shutdownMu.RLock()
 	if p.closed.Load() {
+		p.shutdownMu.RUnlock()
 		return nil, fmt.Errorf("Worker 池已关闭")
 	}
-
 	p.wg.Add(1)
+	p.shutdownMu.RUnlock()
 	defer p.wg.Done()
 	p.active.Add(1)
 	defer p.active.Add(-1)
@@ -189,9 +196,12 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 
 // Shutdown 优雅关闭 Worker 池，等待所有正在运行的容器完成
 func (p *Pool) Shutdown(ctx context.Context) error {
+	p.shutdownMu.Lock()
 	if !p.closed.CompareAndSwap(false, true) {
+		p.shutdownMu.Unlock()
 		return nil // 已经在关闭中
 	}
+	p.shutdownMu.Unlock()
 
 	p.logger.Info("Worker 池正在关闭...",
 		slog.Int("active", int(p.active.Load())),
@@ -248,7 +258,7 @@ func buildContainerName(payload model.TaskPayload) string {
 	return fmt.Sprintf("dtw-%s-%s", payload.TaskType, safe)
 }
 
-// sanitizeName 将字符串中非字母数字字符替换为连字符
+// sanitizeName 将字符串中非字母数字字符替换为连字符，并压缩连续连字符
 func sanitizeName(s string) string {
 	result := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
@@ -259,5 +269,7 @@ func sanitizeName(s string) string {
 			result = append(result, '-')
 		}
 	}
+	// 压缩连续连字符为单个
+	result = consecutiveHyphens.ReplaceAllLiteral(result, []byte("-"))
 	return string(result)
 }

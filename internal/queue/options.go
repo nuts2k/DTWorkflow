@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"math"
 	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -42,8 +41,8 @@ func TaskRetryDelay(retryCount int) time.Duration {
 		retryCount = maxRetryForDelay
 	}
 	base := 30 * time.Second
-	delay := float64(base) * math.Pow(2, float64(retryCount))
-	return time.Duration(delay)
+	delay := base << uint(retryCount)
+	return delay
 }
 
 // PriorityToQueue 将 model.TaskPriority 映射到 asynq 队列名称

@@ -1,10 +1,26 @@
 package worker
 
+import (
+	"encoding"
+	"encoding/json"
+	"log/slog"
+)
+
+// 编译时接口检查
+var (
+	_ json.Marshaler         = SecretString("")
+	_ encoding.TextMarshaler = SecretString("")
+	_ slog.LogValuer         = SecretString("")
+)
+
 // SecretString 防止敏感信息在日志或 fmt.Printf 中泄漏
 type SecretString string
 
-func (s SecretString) String() string   { return "[REDACTED]" }
-func (s SecretString) GoString() string { return "[REDACTED]" }
+func (s SecretString) String() string                { return "[REDACTED]" }
+func (s SecretString) GoString() string              { return "[REDACTED]" }
+func (s SecretString) MarshalJSON() ([]byte, error)  { return []byte(`"[REDACTED]"`), nil }
+func (s SecretString) MarshalText() ([]byte, error)  { return []byte("[REDACTED]"), nil }
+func (s SecretString) LogValue() slog.Value          { return slog.StringValue("[REDACTED]") }
 
 // ExecutionResult Worker 执行结果
 type ExecutionResult struct {

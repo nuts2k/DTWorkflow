@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -142,6 +143,11 @@ func (gc *GarbageCollector) runOnce(ctx context.Context) {
 		}
 	}
 
+	// 检查 ctx 是否已取消，避免不必要的第二次扫描
+	if ctx.Err() != nil {
+		return
+	}
+
 	// 额外扫描 running 状态的容器：
 	// - 超过 maxAge*2 记录 WARN 日志供运维关注
 	// - 超过 forceKillAge 强制删除并记录 ERROR 日志
@@ -210,8 +216,5 @@ func containerDisplayName(names []string) string {
 		return "<unknown>"
 	}
 	name := names[0]
-	if len(name) > 0 && name[0] == '/' {
-		return name[1:]
-	}
-	return name
+	return strings.TrimLeft(name, "/")
 }

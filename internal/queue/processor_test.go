@@ -167,8 +167,11 @@ func TestProcessTask_NonZeroExitCode(t *testing.T) {
 	p := NewProcessor(pool, s, slog.Default())
 	task := buildAsynqTask(t, payload)
 
-	// 非零退出码不返回 Go error，但状态应为 failed
-	_ = p.ProcessTask(context.Background(), task)
+	// 非零退出码应返回 error
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("非零退出码应返回 error")
+	}
 
 	got := s.tasks["proc-task-3"]
 	if got.Status != model.TaskStatusFailed {
@@ -186,6 +189,57 @@ func TestProcessTask_InvalidPayload(t *testing.T) {
 	err := p.ProcessTask(context.Background(), badTask)
 	if err == nil {
 		t.Fatal("ProcessTask should return error on invalid payload")
+	}
+}
+
+func TestShouldRetry(t *testing.T) {
+	// shouldRetry 依赖 asynq context 中的 retry_count 和 max_retry，
+	// 但 asynq 的 context key 是未导出的，无法在外部注入。
+	// 因此这里直接用 context.Background() 测试"无 asynq 上下文"路径，
+	// 验证 shouldRetry 在获取不到重试信息时返回 false。
+	if shouldRetry(context.Background()) {
+		t.Error("shouldRetry 应在无 asynq 上下文时返回 false")
+	}
+}
+
+func TestProcessTask_RetryingStatus(t *testing.T) {
+	// 验证非零退出码（非确定性失败）在无 asynq 重试上下文时标记为 failed
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-retrying-1",
+		RepoFullName: "org/repo",
+		PRNumber:     10,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-retrying",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{
+		err: errors.New("temporary failure"),
+	}
+
+	p := NewProcessor(pool, s, slog.Default())
+	task := buildAsynqTask(t, payload)
+
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("ProcessTask 应在 pool.Run 失败时返回 error")
+	}
+
+	got := s.tasks["proc-task-retrying"]
+	// 无 asynq 重试上下文时 shouldRetry 返回 false，应标记为 failed
+	if got.Status != model.TaskStatusFailed {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
 	}
 }
 

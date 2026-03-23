@@ -3,6 +3,8 @@ package notify
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 )
 
@@ -411,5 +413,32 @@ func TestRouter_Send_EmptyTarget(t *testing.T) {
 				t.Errorf("Send() error = %v, want ErrInvalidTarget", err)
 			}
 		})
+	}
+}
+
+// TestRouter_WithRouterLogger 验证 WithRouterLogger 设置自定义日志器后路由器仍能正常发送（MEDIUM-3）
+func TestRouter_WithRouterLogger(t *testing.T) {
+	stub := &stubNotifier{name: "test-ch"}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	r, err := NewRouter(
+		WithNotifier(stub),
+		WithRouterLogger(logger),
+		WithFallback("test-ch"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 验证 router 能正常发送（间接验证 logger 被设置）
+	msg := Message{
+		EventType: EventPRReviewDone,
+		Severity:  SeverityInfo,
+		Body:      "test",
+		Target:    Target{Owner: "o", Repo: "r", Number: 1},
+	}
+	if err := r.Send(context.Background(), msg); err != nil {
+		t.Errorf("Send with custom logger failed: %v", err)
+	}
+	if len(stub.calls) != 1 {
+		t.Errorf("stubNotifier 应被调用 1 次，实际 %d 次", len(stub.calls))
 	}
 }

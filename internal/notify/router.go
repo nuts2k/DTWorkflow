@@ -76,6 +76,7 @@ func WithNotifier(n Notifier) RouterOption {
 // WithRules 设置路由规则列表
 func WithRules(rules []RoutingRule) RouterOption {
 	return func(r *Router) error {
+		// 防御性拷贝：避免调用者后续修改切片影响已注册的路由规则
 		r.rules = make([]RoutingRule, len(rules))
 		for i, rule := range rules {
 			r.rules[i] = RoutingRule{

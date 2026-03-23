@@ -113,8 +113,11 @@ func parseCPULimit(limit string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("无效的 CPU 限制值 %q: %w", limit, err)
 	}
-	if val <= 0 {
-		return 0, fmt.Errorf("CPU 限制必须大于 0，当前值: %g", val)
+	if val < 0 {
+		return 0, fmt.Errorf("CPU 限制不可为负数，当前值: %g", val)
+	}
+	if val == 0 {
+		return 0, nil
 	}
 	return int64(math.Round(val * 1e9)), nil
 }
@@ -147,8 +150,11 @@ func parseMemoryLimit(limit string) (int64, error) {
 
 	// 优先尝试整数解析，避免浮点精度损失；失败再回退浮点解析
 	if intVal, intErr := strconv.ParseInt(numStr, 10, 64); intErr == nil {
-		if intVal <= 0 {
-			return 0, fmt.Errorf("内存限制必须大于 0，当前值: %d", intVal)
+		if intVal < 0 {
+			return 0, fmt.Errorf("内存限制不可为负数，当前值: %d", intVal)
+		}
+		if intVal == 0 {
+			return 0, nil
 		}
 		return intVal * multiplier, nil
 	}
@@ -157,8 +163,11 @@ func parseMemoryLimit(limit string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("无效的内存限制值 %q: %w", limit, err)
 	}
-	if val <= 0 {
-		return 0, fmt.Errorf("内存限制必须大于 0，当前值: %g", val)
+	if val < 0 {
+		return 0, fmt.Errorf("内存限制不可为负数，当前值: %g", val)
+	}
+	if val == 0 {
+		return 0, nil
 	}
 	return int64(val * float64(multiplier)), nil
 }

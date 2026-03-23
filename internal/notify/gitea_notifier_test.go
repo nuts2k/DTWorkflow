@@ -3,6 +3,8 @@ package notify
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -235,5 +237,77 @@ func TestFormatGiteaComment_Critical(t *testing.T) {
 
 	if !strings.HasPrefix(comment, "## 🚨") {
 		t.Errorf("critical comment should start with 🚨, got: %q", comment)
+	}
+}
+
+// TestGiteaNotifier_Send_NegativeNumber 验证负数 Number 返回 ErrInvalidTarget（MEDIUM-1）
+func TestGiteaNotifier_Send_NegativeNumber(t *testing.T) {
+	stub := &stubCommentCreator{}
+	n, err := NewGiteaNotifier(stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := Message{
+		EventType: EventPRReviewDone,
+		Severity:  SeverityInfo,
+		Body:      "test",
+		Target:    Target{Owner: "org", Repo: "repo", Number: -1},
+	}
+	err = n.Send(context.Background(), msg)
+	if !errors.Is(err, ErrInvalidTarget) {
+		t.Errorf("负数 Number 应返回 ErrInvalidTarget, got: %v", err)
+	}
+}
+
+// TestGiteaNotifier_Send_EmptyTitle 验证 Title 为空时使用 EventType 作为标题（MEDIUM-4）
+func TestGiteaNotifier_Send_EmptyTitle(t *testing.T) {
+	stub := &stubCommentCreator{}
+	n, err := NewGiteaNotifier(stub)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier() error: %v", err)
+	}
+	msg := Message{
+		EventType: EventSystemError,
+		Severity:  SeverityInfo,
+		Body:      "some body",
+		Target:    Target{Owner: "org", Repo: "repo", Number: 1},
+		// Title 留空
+	}
+	if err := n.Send(context.Background(), msg); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	if len(stub.calls) == 0 {
+		t.Fatal("CreateIssueComment 未被调用")
+	}
+	body := stub.calls[0].body
+	if body == "" {
+		t.Error("评论内容不应为空")
+	}
+	// Title 为空时应使用 EventType 作为标题
+	if !strings.Contains(body, string(EventSystemError)) {
+		t.Errorf("Title 为空时评论应包含事件类型名称, got: %q", body)
+	}
+}
+
+// TestGiteaNotifier_Send_WithDiscardLogger 验证传入 discard logger 不影响正常发送（LOW-2）
+func TestGiteaNotifier_Send_WithDiscardLogger(t *testing.T) {
+	stub := &stubCommentCreator{}
+	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	n, err := NewGiteaNotifier(stub, WithLogger(discardLogger))
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier() with discard logger error: %v", err)
+	}
+	msg := Message{
+		EventType: EventPRReviewDone,
+		Severity:  SeverityInfo,
+		Title:     "测试",
+		Body:      "discard logger 测试",
+		Target:    Target{Owner: "org", Repo: "repo", Number: 1},
+	}
+	if err := n.Send(context.Background(), msg); err != nil {
+		t.Errorf("Send() with discard logger failed: %v", err)
+	}
+	if len(stub.calls) != 1 {
+		t.Errorf("CreateIssueComment 应被调用 1 次，实际 %d 次", len(stub.calls))
 	}
 }

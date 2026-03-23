@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -24,33 +23,33 @@ func getFreePort(t *testing.T) int {
 	return port
 }
 
+// newTestConfig 构造测试用的 serveConfig，使用独立的随机端口
+func newTestConfig(t *testing.T) serveConfig {
+	t.Helper()
+	return serveConfig{
+		Host:          "127.0.0.1",
+		Port:          getFreePort(t),
+		RedisAddr:     "localhost:6379",
+		DBPath:        t.TempDir() + "/test.db",
+		WebhookSecret: "secret",
+		ClaudeAPIKey:  "test-api-key",
+		MaxWorkers:    1,
+		WorkerImage:   "dtworkflow-worker:1.0",
+	}
+}
+
 // TestServe_Healthz 测试 /healthz 端点返回正确的 JSON 响应
 func TestServe_Healthz(t *testing.T) {
-	port := getFreePort(t)
+	cfg := newTestConfig(t)
+	stopCh := make(chan struct{})
 
-	// 保存并恢复全局状态
-	oldHost, oldPort := serveHost, servePort
-	oldSecret := serveWebhookSecret
-	oldAPIKey := serveClaudeAPIKey
-	defer func() {
-		serveHost = oldHost
-		servePort = oldPort
-		serveWebhookSecret = oldSecret
-		serveClaudeAPIKey = oldAPIKey
-	}()
-	serveHost = "127.0.0.1"
-	servePort = port
-	serveWebhookSecret = "secret"
-	serveClaudeAPIKey = "test-api-key"
-
-	// 在 goroutine 中启动 serve，它会阻塞等待信号
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runServe(nil, nil)
+		errCh <- runServeWithConfig(cfg, stopCh)
 	}()
 
 	// 等待服务就绪
-	addr := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	addr := fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)
 	var resp *http.Response
 	var err error
 	for i := 0; i < 20; i++ {
@@ -95,20 +94,17 @@ func TestServe_Healthz(t *testing.T) {
 		t.Error("响应应包含 sqlite 字段")
 	}
 
-	// 注意：向当前进程发送 SIGINT 在 CI 环境中可能影响其他 goroutine。
-	// 后续考虑重构为 channel-based 关闭触发。
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
-		t.Fatalf("发送 SIGINT 失败: %v", err)
-	}
+	// 通过关闭 stopCh 触发优雅关闭，无需 syscall.Kill
+	close(stopCh)
 
 	// 等待 serve 退出
 	select {
 	case err := <-errCh:
 		if err != nil {
-			t.Errorf("runServe 应返回 nil, got %v", err)
+			t.Errorf("runServeWithConfig 应返回 nil, got %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("runServe 未在 10 秒内退出")
+		t.Fatal("runServeWithConfig 未在 10 秒内退出")
 	}
 }
 
@@ -122,45 +118,29 @@ func TestServe_PortConflict(t *testing.T) {
 	port := l.Addr().(*net.TCPAddr).Port
 	defer func() { _ = l.Close() }()
 
-	oldHost, oldPort := serveHost, servePort
-	oldSecret := serveWebhookSecret
-	oldAPIKey := serveClaudeAPIKey
-	defer func() {
-		serveHost = oldHost
-		servePort = oldPort
-		serveWebhookSecret = oldSecret
-		serveClaudeAPIKey = oldAPIKey
-	}()
-	serveHost = "127.0.0.1"
-	servePort = port
-	serveWebhookSecret = "secret"
-	serveClaudeAPIKey = "test-api-key"
+	cfg := newTestConfig(t)
+	cfg.Port = port
 
-	// runServe 应立即返回端口冲突错误
-	err = runServe(nil, nil)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	// runServeWithConfig 应立即返回端口冲突错误
+	err = runServeWithConfig(cfg, stopCh)
 	if err == nil {
 		t.Error("端口被占用时应返回错误")
 	}
 }
 
 func TestServe_RequiresWebhookSecret(t *testing.T) {
-	oldHost, oldPort := serveHost, servePort
-	oldSecret := serveWebhookSecret
-	oldAPIKey := serveClaudeAPIKey
-	defer func() {
-		serveHost, servePort = oldHost, oldPort
-		serveWebhookSecret = oldSecret
-		serveClaudeAPIKey = oldAPIKey
-	}()
+	cfg := newTestConfig(t)
+	cfg.WebhookSecret = ""
 
-	serveHost = "127.0.0.1"
-	servePort = getFreePort(t)
-	serveWebhookSecret = ""
-	serveClaudeAPIKey = "test-api-key"
+	stopCh := make(chan struct{})
+	defer close(stopCh)
 
-	err := runServe(nil, nil)
+	err := runServeWithConfig(cfg, stopCh)
 	if err == nil {
-		t.Fatal("runServe should fail when webhook secret is empty")
+		t.Fatal("runServeWithConfig should fail when webhook secret is empty")
 	}
 	if !strings.Contains(err.Error(), "webhook-secret") {
 		t.Fatalf("error = %v, want message containing webhook-secret", err)
@@ -168,24 +148,13 @@ func TestServe_RequiresWebhookSecret(t *testing.T) {
 }
 
 func TestServe_WebhookRouteReturnsUnauthorizedWithoutSignature(t *testing.T) {
-	port := getFreePort(t)
-	oldHost, oldPort := serveHost, servePort
-	oldSecret := serveWebhookSecret
-	oldAPIKey := serveClaudeAPIKey
-	defer func() {
-		serveHost, servePort = oldHost, oldPort
-		serveWebhookSecret = oldSecret
-		serveClaudeAPIKey = oldAPIKey
-	}()
-	serveHost = "127.0.0.1"
-	servePort = port
-	serveWebhookSecret = "secret"
-	serveClaudeAPIKey = "test-api-key"
+	cfg := newTestConfig(t)
+	stopCh := make(chan struct{})
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- runServe(nil, nil) }()
+	go func() { errCh <- runServeWithConfig(cfg, stopCh) }()
 
-	addr := fmt.Sprintf("http://127.0.0.1:%d/webhooks/gitea", port)
+	addr := fmt.Sprintf("http://127.0.0.1:%d/webhooks/gitea", cfg.Port)
 	var resp *http.Response
 	var err error
 	for i := 0; i < 20; i++ {
@@ -204,17 +173,14 @@ func TestServe_WebhookRouteReturnsUnauthorizedWithoutSignature(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 
-	// 注意：向当前进程发送 SIGINT 在 CI 环境中可能影响其他 goroutine。
-	// 后续考虑重构为 channel-based 关闭触发。
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
-		t.Fatalf("发送 SIGINT 失败: %v", err)
-	}
+	// 通过关闭 stopCh 触发优雅关闭，无需 syscall.Kill
+	close(stopCh)
 	select {
 	case err := <-errCh:
 		if err != nil {
-			t.Fatalf("runServe 应返回 nil, got %v", err)
+			t.Fatalf("runServeWithConfig 应返回 nil, got %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("runServe 未在 10 秒内退出")
+		t.Fatal("runServeWithConfig 未在 10 秒内退出")
 	}
 }

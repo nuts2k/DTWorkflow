@@ -1,3 +1,7 @@
+volumes:
+  redis-data:
+  app-data:
+
 services:
   redis:
     image: redis:7-alpine
@@ -40,16 +44,13 @@ services:
       - DTWORKFLOW_GITEA_TOKEN=${GITEA_TOKEN}
       - DTWORKFLOW_CLAUDE_API_KEY=${CLAUDE_API_KEY}
     volumes:
-      - ./data:/app/data
+      - app-data:/app/data
       # 警告：Docker socket 挂载赋予容器完整 Docker 控制权限。
       # 这是 Worker 管理容器的必要条件，后续考虑使用 Docker API over TCP + TLS。
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - dtworkflow-net
     restart: unless-stopped
-
-volumes:
-  redis-data:
 
 networks:
   dtworkflow-net:

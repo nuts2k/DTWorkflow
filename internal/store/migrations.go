@@ -106,5 +106,8 @@ func executeMigration(db *sql.DB, m migration) error {
 		return fmt.Errorf("记录迁移版本 %d 失败: %w", m.Version, err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移版本 %d 事务失败: %w", m.Version, err)
+	}
+	return nil
 }
