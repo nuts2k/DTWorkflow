@@ -11,13 +11,13 @@
 - `notify.GiteaNotifier`：通过 Gitea Issue/PR 评论发送通知
 - `giteaCommentAdapter`：将 `gitea.Client` 适配为 `notify.GiteaCommentCreator`
 
-但这些能力尚未接入任务执行主流程，导致：
+截至 2026-03-23 晚间，本设计对应的最小通知闭环已经在代码中落地，并接入任务执行主流程：
 
-- 任务执行成功/失败后不会真正发出通知
-- M1.7 仅完成了“框架骨架”，未达到“功能可用”
-- 任务可观测性不足，用户无法通过 Gitea 获知任务结果
+- `serve` 启动时会在 Gitea 配置可用的前提下构造 `notify.Router`
+- `queue.Processor` 会在任务最终状态成功落库后尝试发送通知
+- `review_pr` 与 `fix_issue` 的最终成功/失败已可自动回写 Gitea 评论
 
-本轮目标是以最小改动打通通知主流程，显著提升 M1.7 的验收完整性。
+因此，M1.7 当前已从“框架骨架”推进到“主流程最小可用接线”，后续重点转向配置化与能力扩展，而非是否接线。
 
 ## 2. 范围与非目标
 
@@ -82,20 +82,20 @@
 
 ### 4.2 执行层（`internal/queue/processor.go`）
 
-`Processor` 新增可选通知依赖。推荐做法：
+`Processor` 已新增可选通知依赖，当前实现使用 `TaskNotifier` 窄接口承接通知发送：
 
-- 在结构体中保存一个 `Notifier` 接口或 `*notify.Router`
-- `NewProcessor(...)` 增加相应参数
+- `NewProcessor(...)` 接收可选 notifier 参数
 - `nil` 表示当前运行模式未启用通知
+- 仅在最终状态成功落库后才调用 `sendCompletionNotification(...)`
 
-执行顺序：
+当前实际执行顺序：
 
 1. 查找任务记录
 2. 更新状态为 `running`
 3. 调用 `pool.Run(...)`
-4. 根据执行结果设置最终状态
+4. 根据执行结果设置最终状态（`succeeded` / `failed` / `retrying`）
 5. 落库最终状态
-6. 尝试发送通知
+6. 仅在最终状态已成功持久化时尝试发送通知
 7. 保持原有返回语义
 
 **关键原则**：先写库，后通知。SQLite 记录是事实来源，通知只是副作用。
@@ -165,7 +165,7 @@
 
 采用：
 
-- `EventType = issue.analysis.done`
+- `EventType = fix.issue.done`
 - `Severity = info`
 - 标题：`Issue 自动修复任务完成`
 
@@ -267,7 +267,13 @@
 
 ## 10. 后续演进
 
-本轮完成后，后续可继续演进：
+当前已落地的主流程链路为：
+
+```text
+serve -> BuildServiceDeps -> notify.Router -> queue.Processor -> GiteaNotifier
+```
+
+在此基础上，后续可继续演进：
 
 1. 在 M1.8 中将默认硬编码路由替换为配置驱动路由
 2. 为 `gen_tests` 建立明确的通知目标模型

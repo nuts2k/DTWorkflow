@@ -93,24 +93,26 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Gitea 侧 Webhook 配置指南
 
 #### M1.5 任务队列
-- [ ] Redis + asynq 集成
-- [ ] 任务类型定义（PR 评审 / Issue 修复 / 测试生成）
-- [ ] 优先级、重试、超时机制
-- [ ] 任务状态持久化到 SQLite
-- [ ] CLI 命令：`dtworkflow task status/list/retry`
+> 说明：本轮 M1.5 与 M1.6 按“任务执行引擎”合并实施，以下条目按实际交付状态同步。
+- [x] Redis + asynq 集成
+- [x] 任务类型定义（PR 评审 / Issue 修复 / 测试生成）
+- [x] 优先级、重试、超时机制
+- [x] 任务状态持久化到 SQLite
+- [x] CLI 命令：`dtworkflow task status/list/retry`
 
 #### M1.6 Docker Worker 池
-- [ ] Claude Code CLI Docker 镜像构建（基础镜像 + Claude Code + Git + 常用工具）
-- [ ] Docker SDK for Go 集成，程序化创建/销毁容器
-- [ ] Worker 池管理：并发数控制、资源限制（CPU / 内存）
-- [ ] 容器内 Git 仓库 clone + worktree 验证
-- [ ] Claude Code CLI 非交互模式验证（`claude -p` 在容器内运行）
-- [ ] API Key 安全注入（环境变量 / Docker secrets）
+- [x] Claude Code CLI Docker 镜像构建（基础镜像 + Claude Code + Git + 常用工具）
+- [x] Docker SDK for Go 集成，程序化创建/销毁容器
+- [x] Worker 池管理：并发数控制、资源限制（CPU / 内存）
+- [ ] 容器内 Git 仓库 clone + worktree 验证（待后续业务阶段接入真实仓库执行链路）
+- [x] Claude Code CLI 非交互模式验证（`claude -p` 在容器内运行）
+- [x] API Key 安全注入（环境变量 / Docker secrets）
 
-#### M1.7 通知框架（骨架）
-- [ ] 通知接口定义（Go interface，策略模式）
-- [ ] Gitea 评论通知实现（默认通道）
-- [ ] 按仓库/事件类型的通知路由配置
+#### M1.7 通知框架
+- [x] 通知接口定义（Go interface，策略模式）
+- [x] Gitea 评论通知实现（默认通道）
+- [x] 主流程最小接线：`serve -> queue.Processor -> notify.Router`
+- [ ] 按仓库/事件类型的配置化通知路由（待 M1.8）
 
 #### M1.8 配置管理
 - [ ] Viper 集成，全局配置文件格式定义（YAML）
@@ -120,12 +122,14 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 ### 交付物
 - `dtworkflow` 单二进制文件，包含 CLI 命令和 `serve` 模式
 - Gitea API 客户端库
-- 通知框架骨架
-- Docker Compose 一键启动脚本（Redis + dtworkflow serve）
+- M1.5-6 任务执行引擎（队列 / 持久化 / Worker / task CLI）
+- M1.7 通知框架与主流程最小接线
+- Docker Compose 一键启动脚本（Redis + dtworkflow serve + Worker 镜像构建配置）
 
 ### 验证标准
-- Gitea 发送 Webhook → 服务接收 → 创建任务 → 启动 Docker 容器 → 容器内 Claude Code CLI 执行简单 prompt → 结果回写 Gitea 评论
-- 端到端流程打通即为通过
+- Gitea 发送 Webhook → 服务接收 → 创建任务 → 写入 SQLite / 入队 Redis → 启动 Docker 容器 → 容器内 Claude Code CLI 执行基础 prompt → 最终状态可通过 `task` 命令查询
+- 当 Gitea 配置完整且任务目标明确时，`review_pr` / `fix_issue` 任务最终成功或失败可回写 Gitea 评论通知
+- 基础设施主链路打通即为通过；完整业务语义在后续 Phase 继续补齐
 
 ### 风险项
 - **Claude Code CLI Docker 兼容性**：需尽早验证 CLI 在容器中的行为，包括认证、文件系统访问、Git 操作

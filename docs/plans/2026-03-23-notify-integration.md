@@ -246,7 +246,7 @@ git commit -m "feat: notify on failed review tasks"
 - `TestProcessTask_FailedFixIssue_SendNotification`
 
 成功路径断言：
-- `EventType == notify.EventIssueAnalysisDone`
+- `EventType == notify.EventFixIssueDone`
 - `Target.Number == IssueNumber`
 - `Target.IsPR == false`
 - 标题 `Issue 自动修复任务完成`
