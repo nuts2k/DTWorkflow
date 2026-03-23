@@ -2,6 +2,7 @@ package worker
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -37,14 +38,14 @@ func sanitizePromptInput(s string, maxLen int) string {
 // 包含 Gitea、Claude API 凭证和任务相关信息
 func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	env := []string{
-		fmt.Sprintf("GITEA_URL=%s", config.GiteaURL),
-		fmt.Sprintf("GITEA_TOKEN=%s", config.GiteaToken),
-		fmt.Sprintf("ANTHROPIC_API_KEY=%s", config.ClaudeAPIKey),
+		fmt.Sprintf("GITEA_URL=%s", sanitizeEnvValue(config.GiteaURL)),
+		fmt.Sprintf("GITEA_TOKEN=%s", sanitizeEnvValue(config.GiteaToken)),
+		fmt.Sprintf("ANTHROPIC_API_KEY=%s", sanitizeEnvValue(config.ClaudeAPIKey)),
 		fmt.Sprintf("REPO_CLONE_URL=%s", sanitizeEnvValue(payload.CloneURL)),
 		fmt.Sprintf("REPO_OWNER=%s", sanitizeEnvValue(payload.RepoOwner)),
 		fmt.Sprintf("REPO_NAME=%s", sanitizeEnvValue(payload.RepoName)),
 		fmt.Sprintf("REPO_FULL_NAME=%s", sanitizeEnvValue(payload.RepoFullName)),
-		fmt.Sprintf("TASK_TYPE=%s", string(payload.TaskType)),
+		fmt.Sprintf("TASK_TYPE=%s", sanitizeEnvValue(string(payload.TaskType))),
 	}
 
 	// 按任务类型追加额外环境变量
@@ -113,7 +114,7 @@ func parseCPULimit(limit string) (int64, error) {
 	if val <= 0 {
 		return 0, fmt.Errorf("CPU 限制必须大于 0，当前值: %g", val)
 	}
-	return int64(val * 1e9), nil
+	return int64(math.Round(val * 1e9)), nil
 }
 
 // parseMemoryLimit 将内存限制字符串（如 "4g", "512m", "1024k"）转换为字节数

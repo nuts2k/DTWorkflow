@@ -85,14 +85,15 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 	if runErr != nil {
 		// 根据 asynq 重试上下文判断是否为最后一次重试：
-		// - 非最后一次：设为 retrying，asynq 将自动安排下次重试
-		// - 最后一次：设为 failed，不会再有重试机会
-		retryCount, _ := asynq.GetRetryCount(ctx)
-		maxRetry, _ := asynq.GetMaxRetry(ctx)
-		if retryCount >= maxRetry-1 {
-			record.Status = model.TaskStatusFailed
-		} else {
+		// - 无法获取重试信息（context 不含 asynq 元数据）：视为已失败
+		// - 非最后一次重试：设为 retrying，asynq 将自动安排下次重试
+		// - 最后一次重试：设为 failed，不会再有重试机会
+		retryCount, rcOk := asynq.GetRetryCount(ctx)
+		maxRetry, mrOk := asynq.GetMaxRetry(ctx)
+		if rcOk && mrOk && maxRetry > 0 && retryCount < maxRetry-1 {
 			record.Status = model.TaskStatusRetrying
+		} else {
+			record.Status = model.TaskStatusFailed
 		}
 		record.Error = runErr.Error()
 		p.logger.ErrorContext(ctx, "任务执行失败",
@@ -102,7 +103,19 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			"max_retry", maxRetry,
 		)
 	} else if result != nil && result.ExitCode != 0 {
-		record.Status = model.TaskStatusFailed
+		// 退出码 2 为确定性失败（如参数错误），直接标记 failed 不重试
+		// 其他非零退出码可能是暂时性问题，按重试上下文判断
+		if result.ExitCode == 2 {
+			record.Status = model.TaskStatusFailed
+		} else {
+			retryCount, rcOk := asynq.GetRetryCount(ctx)
+			maxRetry, mrOk := asynq.GetMaxRetry(ctx)
+			if rcOk && mrOk && maxRetry > 0 && retryCount < maxRetry-1 {
+				record.Status = model.TaskStatusRetrying
+			} else {
+				record.Status = model.TaskStatusFailed
+			}
+		}
 		record.Error = result.Error
 		record.Result = result.Output
 		p.logger.ErrorContext(ctx, "任务执行返回非零退出码",
@@ -136,8 +149,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		return fmt.Errorf("任务执行失败: %w", runErr)
 	}
 	if result != nil && result.ExitCode != 0 {
-		// 非零退出码属于确定性失败，跳过重试
-		return fmt.Errorf("任务执行失败，退出码 %d: %w", result.ExitCode, asynq.SkipRetry)
+		// 退出码 2 为确定性失败（如参数错误），跳过重试
+		// 其他非零退出码允许 asynq 自动重试
+		if result.ExitCode == 2 {
+			return fmt.Errorf("任务确定性失败，退出码 %d: %w", result.ExitCode, asynq.SkipRetry)
+		}
+		return fmt.Errorf("任务执行失败，退出码 %d", result.ExitCode)
 	}
 	return nil
 }

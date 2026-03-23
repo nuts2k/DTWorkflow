@@ -59,8 +59,8 @@ func (n *GiteaNotifier) Send(ctx context.Context, msg Message) error {
 	if msg.Target.Owner == "" || msg.Target.Repo == "" {
 		return fmt.Errorf("gitea 通知器需要指定 Owner 和 Repo: %w", ErrInvalidTarget)
 	}
-	if msg.Target.Number == 0 {
-		return fmt.Errorf("gitea 通知器需要指定 Issue/PR 编号: %w", ErrInvalidTarget)
+	if msg.Target.Number <= 0 {
+		return fmt.Errorf("gitea 通知器需要指定有效的 Issue/PR 编号（> 0）: %w", ErrInvalidTarget)
 	}
 
 	comment := formatGiteaComment(msg)
@@ -77,7 +77,7 @@ func (n *GiteaNotifier) Send(ctx context.Context, msg Message) error {
 	}
 
 	if err := n.client.CreateIssueComment(ctx, msg.Target.Owner, msg.Target.Repo, msg.Target.Number, comment); err != nil {
-		return fmt.Errorf("创建 Gitea 评论失败: %w: %w", ErrSendFailed, err)
+		return fmt.Errorf("创建 Gitea 评论失败 (%w): %w", ErrSendFailed, err)
 	}
 
 	return nil

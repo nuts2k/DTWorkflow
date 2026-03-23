@@ -101,6 +101,10 @@ func (r *Router) Send(ctx context.Context, msg Message) error {
 
 	var errs []error
 	for _, ch := range channels {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, fmt.Errorf("context 已取消，跳过剩余渠道: %w", err))
+			break
+		}
 		n, ok := r.notifiers[ch]
 		if !ok {
 			r.logger.WarnContext(ctx, "引用了未注册的通知渠道", "channel", ch)

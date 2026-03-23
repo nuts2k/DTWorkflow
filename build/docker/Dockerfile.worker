@@ -1,5 +1,6 @@
 # DTWorkflow Worker 镜像
 # 基于 Node.js + Claude Code CLI + Git
+ARG CLAUDE_CODE_VERSION=0.2
 FROM node:20.18.0-bookworm-slim
 
 # 安装 Git 和常用工具
@@ -10,8 +11,7 @@ RUN apt-get update && \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# TODO: 发布正式版前更新 claude-code 版本
-RUN npm install -g @anthropic-ai/claude-code@0.2
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # 添加非 root 用户以提升容器安全性
 RUN useradd -m worker

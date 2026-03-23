@@ -78,6 +78,9 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 
 // CreateTask 创建任务记录
 func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) error {
+	if record == nil {
+		return fmt.Errorf("创建任务记录失败: record 不能为 nil")
+	}
 	if record.ID == "" {
 		return fmt.Errorf("创建任务记录失败: %w", ErrInvalidID)
 	}
@@ -138,6 +141,9 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.TaskRecord
 
 // UpdateTask 更新任务记录，自动刷新 updated_at
 func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) error {
+	if record == nil {
+		return fmt.Errorf("更新任务记录失败: record 不能为 nil")
+	}
 	payloadJSON, err := json.Marshal(record.Payload)
 	if err != nil {
 		return fmt.Errorf("序列化 payload 失败: %w", err)
@@ -184,6 +190,9 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 	return nil
 }
 
+// defaultMaxLimit 是 ListTasks 无 Limit 时的安全上限，防止无限返回
+const defaultMaxLimit = 1000
+
 // ListTasks 按条件列出任务记录
 func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model.TaskRecord, error) {
 	if opts.Limit < 0 {
@@ -215,15 +224,12 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model
 	query += " ORDER BY created_at DESC"
 
 	if opts.Limit > 0 {
-		query += " LIMIT ?"
-		args = append(args, opts.Limit)
-	} else if opts.Offset > 0 {
-		// SQLite 要求 OFFSET 前必须有 LIMIT，使用 -1 表示无限制
-		query += " LIMIT -1"
-	}
-	if opts.Offset > 0 {
-		query += " OFFSET ?"
-		args = append(args, opts.Offset)
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, opts.Limit, opts.Offset)
+	} else {
+		// 安全上限，防止无限返回
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, defaultMaxLimit, opts.Offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -240,7 +246,10 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model
 		}
 		records = append(records, record)
 	}
-	return records, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历任务记录失败: %w", err)
+	}
+	return records, nil
 }
 
 // FindByDeliveryID 按 delivery_id + task_type 查找任务（幂等去重），未找到返回 nil, nil
@@ -285,7 +294,10 @@ func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration)
 		}
 		records = append(records, record)
 	}
-	return records, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历任务记录失败: %w", err)
+	}
+	return records, nil
 }
 
 // Ping 检测数据库连接是否可用，用于健康检查

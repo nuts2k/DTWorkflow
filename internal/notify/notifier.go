@@ -39,7 +39,9 @@ type Message struct {
 	Target    Target
 	Title     string
 	Body      string
-	Metadata  map[string]string
+	// Metadata 扩展元数据，供后续通知渠道使用（如企微/钉钉的额外参数）。
+	// 当前 GiteaNotifier 不使用此字段。
+	Metadata map[string]string
 }
 
 // Notifier 通知渠道接口

@@ -34,6 +34,34 @@ const (
 	TaskStatusCancelled TaskStatus = "cancelled"  // 手动取消
 )
 
+// IsValid 检查任务类型是否为已知值
+func (t TaskType) IsValid() bool {
+	switch t {
+	case TaskTypeReviewPR, TaskTypeFixIssue, TaskTypeGenTests:
+		return true
+	}
+	return false
+}
+
+// IsValid 检查任务状态是否为已知值
+func (s TaskStatus) IsValid() bool {
+	switch s {
+	case TaskStatusPending, TaskStatusQueued, TaskStatusRunning,
+		TaskStatusSucceeded, TaskStatusFailed, TaskStatusRetrying, TaskStatusCancelled:
+		return true
+	}
+	return false
+}
+
+// IsValid 检查任务优先级是否为已知值
+func (p TaskPriority) IsValid() bool {
+	switch p {
+	case PriorityCritical, PriorityHigh, PriorityNormal, PriorityLow:
+		return true
+	}
+	return false
+}
+
 // TaskPayload 任务定位符（非完整快照）
 // Processor 执行时通过 Gitea API 获取最新数据
 type TaskPayload struct {

@@ -177,6 +177,13 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 
 // Shutdown 优雅关闭 Worker 池，等待所有正在运行的容器完成
 func (p *Pool) Shutdown(ctx context.Context) error {
+	// 无论正常退出还是超时，都确保关闭 Docker 客户端连接
+	defer func() {
+		if err := p.docker.Close(); err != nil {
+			p.logger.Warn("关闭 Docker 客户端失败", slog.String("error", err.Error()))
+		}
+	}()
+
 	p.logger.Info("Worker 池正在关闭，等待活跃容器完成",
 		slog.Int("active", int(p.active.Load())),
 	)
@@ -190,10 +197,6 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	select {
 	case <-done:
 		p.logger.Info("Worker 池已关闭")
-		// 关闭 Docker 客户端连接，释放资源
-		if err := p.docker.Close(); err != nil {
-			p.logger.Warn("关闭 Docker 客户端失败", slog.String("error", err.Error()))
-		}
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("Worker 池关闭超时: %w", ctx.Err())

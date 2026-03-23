@@ -1,11 +1,10 @@
 package cmd
 
 import (
-	"context"
+	"bytes"
 	"fmt"
 	"strings"
 	"text/tabwriter"
-	"bytes"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -50,7 +49,7 @@ var taskStatusCmd = &cobra.Command{
 	Short: "查看任务状态",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx := cmd.Context()
 		id := args[0]
 
 		record, err := taskStore.GetTask(ctx, id)
@@ -96,14 +95,18 @@ var taskListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "列出任务",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx := cmd.Context()
 
 		opts := store.ListOptions{
 			RepoFullName: taskListRepo,
 			Limit:        taskListLimit,
 		}
 		if taskListStatus != "" {
-			opts.Status = model.TaskStatus(taskListStatus)
+			s := model.TaskStatus(taskListStatus)
+			if !s.IsValid() {
+				return fmt.Errorf("无效的任务状态: %s", taskListStatus)
+			}
+			opts.Status = s
 		}
 
 		records, err := taskStore.ListTasks(ctx, opts)
@@ -141,7 +144,7 @@ var taskRetryCmd = &cobra.Command{
 	Short: "重试失败的任务",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx := cmd.Context()
 		id := args[0]
 
 		record, err := taskStore.GetTask(ctx, id)
@@ -180,7 +183,9 @@ var taskRetryCmd = &cobra.Command{
 }
 
 func init() {
-	taskCmd.PersistentFlags().StringVar(&taskDBPath, "db-path", "data/dtworkflow.db", "SQLite 数据库路径")
+	taskCmd.PersistentFlags().StringVar(&taskDBPath, "db-path",
+		getEnvDefault("DTWORKFLOW_DB_PATH", "data/dtworkflow.db"),
+		"SQLite 数据库路径（也可通过 DTWORKFLOW_DB_PATH 环境变量设置）")
 
 	taskListCmd.Flags().StringVar(&taskListRepo, "repo", "", "按仓库过滤")
 	taskListCmd.Flags().StringVar(&taskListStatus, "status", "", "按状态过滤")

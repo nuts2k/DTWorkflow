@@ -46,7 +46,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveHost, "host", "0.0.0.0", "监听地址")
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "监听端口")
 	serveCmd.Flags().StringVar(&serveWebhookSecret, "webhook-secret",
-		os.Getenv("DTWORKFLOW_WEBHOOK_SECRET"), "Webhook Secret（也可通过 DTWORKFLOW_WEBHOOK_SECRET 环境变量设置）")
+		"", "Webhook 签名密钥（也可通过 DTWORKFLOW_WEBHOOK_SECRET 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveRedisAddr, "redis-addr",
 		getEnvDefault("DTWORKFLOW_REDIS_ADDR", "localhost:6379"), "Redis 地址（也可通过 DTWORKFLOW_REDIS_ADDR 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveDBPath, "db-path",
@@ -54,11 +54,11 @@ func init() {
 	serveCmd.Flags().IntVar(&serveMaxWorkers, "max-workers", 3, "最大并发 Worker 数")
 	serveCmd.Flags().StringVar(&serveWorkerImage, "worker-image", "dtworkflow-worker:1.0", "Worker Docker 镜像")
 	serveCmd.Flags().StringVar(&serveClaudeAPIKey, "claude-api-key",
-		os.Getenv("DTWORKFLOW_CLAUDE_API_KEY"), "Claude API Key（也可通过 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
+		"", "Claude API Key（也可通过 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveGiteaURL, "gitea-url",
 		os.Getenv("DTWORKFLOW_GITEA_URL"), "Gitea 实例地址（也可通过 DTWORKFLOW_GITEA_URL 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveGiteaToken, "gitea-token",
-		os.Getenv("DTWORKFLOW_GITEA_TOKEN"), "Gitea API Token（也可通过 DTWORKFLOW_GITEA_TOKEN 环境变量设置）")
+		"", "Gitea API Token（也可通过 DTWORKFLOW_GITEA_TOKEN 环境变量设置）")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -169,6 +169,17 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 
 // runServe 启动 HTTP 服务，注册路由，并支持优雅关闭
 func runServe(cmd *cobra.Command, args []string) error {
+	// 敏感 flag 默认值为空，优先读取环境变量作为回退（避免 --help 泄露敏感信息）
+	if serveClaudeAPIKey == "" {
+		serveClaudeAPIKey = os.Getenv("DTWORKFLOW_CLAUDE_API_KEY")
+	}
+	if serveGiteaToken == "" {
+		serveGiteaToken = os.Getenv("DTWORKFLOW_GITEA_TOKEN")
+	}
+	if serveWebhookSecret == "" {
+		serveWebhookSecret = os.Getenv("DTWORKFLOW_WEBHOOK_SECRET")
+	}
+
 	if serveWebhookSecret == "" {
 		return fmt.Errorf("webhook-secret 不能为空")
 	}
@@ -190,6 +201,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
+	router.Use(gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, err any) {
+		slog.Error("HTTP handler panic recovered", slog.Any("error", err), slog.String("path", c.Request.URL.Path))
+		c.AbortWithStatus(http.StatusInternalServerError)
+	}))
 
 	// storePinger 是一个可选接口，Store 实现了此接口时可用于健康检查
 	type storePinger interface {

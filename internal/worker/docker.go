@@ -208,6 +208,7 @@ func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string)
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     false,
+		Tail:       "5000", // 限制最后 5000 行，防止 OOM
 	})
 	if err != nil {
 		return "", fmt.Errorf("获取容器 %s 日志失败: %w", containerID, err)

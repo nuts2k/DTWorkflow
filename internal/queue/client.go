@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
@@ -96,6 +97,7 @@ func taskTypeToAsynq(t model.TaskType) string {
 	case model.TaskTypeGenTests:
 		return AsynqTypeGenTests
 	default:
+		slog.Warn("未知的任务类型，将原样使用", slog.String("task_type", string(t)))
 		return string(t)
 	}
 }
