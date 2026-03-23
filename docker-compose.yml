@@ -6,6 +6,26 @@ services:
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  dtworkflow:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+    environment:
+      - DTWORKFLOW_REDIS_ADDR=redis:6379
+      - DTWORKFLOW_WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - DTWORKFLOW_GITEA_URL=${GITEA_URL}
+      - DTWORKFLOW_GITEA_TOKEN=${GITEA_TOKEN}
+      - DTWORKFLOW_CLAUDE_API_KEY=${CLAUDE_API_KEY}
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 
 volumes:
   redis-data:

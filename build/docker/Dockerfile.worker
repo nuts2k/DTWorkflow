@@ -1,0 +1,25 @@
+# DTWorkflow Worker 镜像
+# 基于 Node.js + Claude Code CLI + Git
+FROM node:20-bookworm-slim
+
+# 安装 Git 和常用工具
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
+# 配置 Git（容器内 Claude Code 需要）
+RUN git config --global user.name "DTWorkflow Bot" && \
+    git config --global user.email "dtworkflow@noreply.local" && \
+    git config --global init.defaultBranch main
+
+# 工作目录
+WORKDIR /workspace
+
+# 默认入口点（由 Pool.Run 覆盖 Cmd）
+ENTRYPOINT ["claude"]

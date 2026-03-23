@@ -73,16 +73,19 @@ func TestServe_Healthz(t *testing.T) {
 		t.Fatalf("读取响应体失败: %v", err)
 	}
 
-	var result map[string]string
+	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatalf("JSON 解析失败: %v, body: %s", err, body)
 	}
 
 	if result["status"] != "ok" {
-		t.Errorf("status 应为 ok, got %q", result["status"])
+		t.Errorf("status 应为 ok, got %v", result["status"])
 	}
 	if _, exists := result["version"]; !exists {
 		t.Error("响应应包含 version 字段")
+	}
+	if _, exists := result["redis"]; !exists {
+		t.Error("响应应包含 redis 字段")
 	}
 
 	// 发送 SIGINT 触发优雅关闭
