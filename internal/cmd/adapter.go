@@ -4,7 +4,11 @@ import (
 	"context"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 )
+
+// 编译时断言 giteaCommentAdapter 实现 notify.GiteaCommentCreator 接口
+var _ notify.GiteaCommentCreator = (*giteaCommentAdapter)(nil)
 
 // giteaCommentAdapter 将 gitea.Client 适配为 notify.GiteaCommentCreator 窄接口。
 //

@@ -10,22 +10,22 @@ RUN apt-get update && \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Claude Code CLI（锁定版本以保证构建可复现，TODO: 升级到最新稳定版时同步更新此版本号）
+# TODO: 发布正式版前更新 claude-code 版本并固定 Node.js 完整版本号（如 node:20.x.y-bookworm-slim）
 RUN npm install -g @anthropic-ai/claude-code@0.2
 
 # 添加非 root 用户以提升容器安全性
 RUN useradd -m worker
-
-# 配置 Git（容器内 Claude Code 需要）
-RUN git config --global user.name "DTWorkflow Bot" && \
-    git config --global user.email "dtworkflow@noreply.local" && \
-    git config --global init.defaultBranch main
 
 # 工作目录
 WORKDIR /workspace
 
 # 以非 root 用户运行
 USER worker
+
+# 配置 Git（必须在 USER worker 之后执行，确保 .gitconfig 属于 worker 用户）
+RUN git config --global user.name "DTWorkflow Bot" && \
+    git config --global user.email "dtworkflow@noreply.local" && \
+    git config --global init.defaultBranch main
 
 # 默认入口点（由 Pool.Run 覆盖 Cmd）
 ENTRYPOINT ["claude"]

@@ -31,14 +31,17 @@ func TestServe_Healthz(t *testing.T) {
 	// 保存并恢复全局状态
 	oldHost, oldPort := serveHost, servePort
 	oldSecret := serveWebhookSecret
+	oldAPIKey := serveClaudeAPIKey
 	defer func() {
 		serveHost = oldHost
 		servePort = oldPort
 		serveWebhookSecret = oldSecret
+		serveClaudeAPIKey = oldAPIKey
 	}()
 	serveHost = "127.0.0.1"
 	servePort = port
 	serveWebhookSecret = "secret"
+	serveClaudeAPIKey = "test-api-key"
 
 	// 在 goroutine 中启动 serve，它会阻塞等待信号
 	errCh := make(chan error, 1)
@@ -92,7 +95,8 @@ func TestServe_Healthz(t *testing.T) {
 		t.Error("响应应包含 sqlite 字段")
 	}
 
-	// 发送 SIGINT 触发优雅关闭
+	// 注意：向当前进程发送 SIGINT 在 CI 环境中可能影响其他 goroutine。
+	// 后续考虑重构为 channel-based 关闭触发。
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
 		t.Fatalf("发送 SIGINT 失败: %v", err)
 	}
@@ -120,14 +124,17 @@ func TestServe_PortConflict(t *testing.T) {
 
 	oldHost, oldPort := serveHost, servePort
 	oldSecret := serveWebhookSecret
+	oldAPIKey := serveClaudeAPIKey
 	defer func() {
 		serveHost = oldHost
 		servePort = oldPort
 		serveWebhookSecret = oldSecret
+		serveClaudeAPIKey = oldAPIKey
 	}()
 	serveHost = "127.0.0.1"
 	servePort = port
 	serveWebhookSecret = "secret"
+	serveClaudeAPIKey = "test-api-key"
 
 	// runServe 应立即返回端口冲突错误
 	err = runServe(nil, nil)
@@ -139,14 +146,17 @@ func TestServe_PortConflict(t *testing.T) {
 func TestServe_RequiresWebhookSecret(t *testing.T) {
 	oldHost, oldPort := serveHost, servePort
 	oldSecret := serveWebhookSecret
+	oldAPIKey := serveClaudeAPIKey
 	defer func() {
 		serveHost, servePort = oldHost, oldPort
 		serveWebhookSecret = oldSecret
+		serveClaudeAPIKey = oldAPIKey
 	}()
 
 	serveHost = "127.0.0.1"
 	servePort = getFreePort(t)
 	serveWebhookSecret = ""
+	serveClaudeAPIKey = "test-api-key"
 
 	err := runServe(nil, nil)
 	if err == nil {
@@ -161,13 +171,16 @@ func TestServe_WebhookRouteReturnsUnauthorizedWithoutSignature(t *testing.T) {
 	port := getFreePort(t)
 	oldHost, oldPort := serveHost, servePort
 	oldSecret := serveWebhookSecret
+	oldAPIKey := serveClaudeAPIKey
 	defer func() {
 		serveHost, servePort = oldHost, oldPort
 		serveWebhookSecret = oldSecret
+		serveClaudeAPIKey = oldAPIKey
 	}()
 	serveHost = "127.0.0.1"
 	servePort = port
 	serveWebhookSecret = "secret"
+	serveClaudeAPIKey = "test-api-key"
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- runServe(nil, nil) }()
@@ -191,6 +204,8 @@ func TestServe_WebhookRouteReturnsUnauthorizedWithoutSignature(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 
+	// 注意：向当前进程发送 SIGINT 在 CI 环境中可能影响其他 goroutine。
+	// 后续考虑重构为 channel-based 关闭触发。
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
 		t.Fatalf("发送 SIGINT 失败: %v", err)
 	}

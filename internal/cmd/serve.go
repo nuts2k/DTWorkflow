@@ -45,14 +45,17 @@ var serveCmd = &cobra.Command{
 func init() {
 	serveCmd.Flags().StringVar(&serveHost, "host", "0.0.0.0", "监听地址")
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "监听端口")
-	serveCmd.Flags().StringVar(&serveWebhookSecret, "webhook-secret", "", "Gitea Webhook 签名密钥")
+	serveCmd.Flags().StringVar(&serveWebhookSecret, "webhook-secret",
+		os.Getenv("DTWORKFLOW_WEBHOOK_SECRET"), "Webhook Secret（也可通过 DTWORKFLOW_WEBHOOK_SECRET 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveRedisAddr, "redis-addr", "localhost:6379", "Redis 地址")
 	serveCmd.Flags().StringVar(&serveDBPath, "db-path", "data/dtworkflow.db", "SQLite 数据库路径")
 	serveCmd.Flags().IntVar(&serveMaxWorkers, "max-workers", 3, "最大并发 Worker 数")
 	serveCmd.Flags().StringVar(&serveWorkerImage, "worker-image", "dtworkflow-worker:1.0", "Worker Docker 镜像")
-	serveCmd.Flags().StringVar(&serveClaudeAPIKey, "claude-api-key", "", "Claude API Key")
+	serveCmd.Flags().StringVar(&serveClaudeAPIKey, "claude-api-key",
+		os.Getenv("DTWORKFLOW_CLAUDE_API_KEY"), "Claude API Key（也可通过 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveGiteaURL, "gitea-url", "", "Gitea 实例地址")
-	serveCmd.Flags().StringVar(&serveGiteaToken, "gitea-token", "", "Gitea API Token")
+	serveCmd.Flags().StringVar(&serveGiteaToken, "gitea-token",
+		os.Getenv("DTWORKFLOW_GITEA_TOKEN"), "Gitea API Token（也可通过 DTWORKFLOW_GITEA_TOKEN 环境变量设置）")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -111,6 +114,7 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 	}
 	cleanups = append(cleanups, func() { _ = dockerClient.Close() })
 
+	// TODO: 后续通过 CLI flags 或 Viper 配置文件暴露以下配置
 	pool := worker.NewPool(worker.PoolConfig{
 		Image:        serveWorkerImage,
 		CPULimit:     "2.0",
@@ -133,6 +137,9 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 			queue.QueueCritical: 6,
 			queue.QueueDefault:  3,
 			queue.QueueLow:      1,
+		},
+		RetryDelayFunc: func(n int, err error, task *asynq.Task) time.Duration {
+			return queue.TaskRetryDelay(n)
 		},
 	})
 
@@ -161,6 +168,14 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 func runServe(cmd *cobra.Command, args []string) error {
 	if serveWebhookSecret == "" {
 		return fmt.Errorf("webhook-secret 不能为空")
+	}
+	if serveClaudeAPIKey == "" {
+		return fmt.Errorf("claude-api-key 不能为空（通过 --claude-api-key 或 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
+	}
+	if serveGiteaURL == "" || serveGiteaToken == "" {
+		slog.Warn("Gitea 配置不完整，通知功能将不可用",
+			"gitea-url", serveGiteaURL != "",
+			"gitea-token", serveGiteaToken != "")
 	}
 
 	// 构建所有依赖
