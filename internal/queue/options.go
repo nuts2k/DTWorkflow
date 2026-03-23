@@ -22,6 +22,8 @@ func TaskTimeout(taskType model.TaskType) time.Duration {
 	}
 }
 
+// TODO(M1.8): 从 Viper 配置读取，支持按任务类型区分最大重试次数
+
 // TaskMaxRetry 返回任务最大重试次数
 func TaskMaxRetry() int {
 	return 3

@@ -1,5 +1,11 @@
 package worker
 
+// SecretString 防止敏感信息在日志或 fmt.Printf 中泄漏
+type SecretString string
+
+func (s SecretString) String() string   { return "[REDACTED]" }
+func (s SecretString) GoString() string { return "[REDACTED]" }
+
 // ExecutionResult Worker 执行结果
 type ExecutionResult struct {
 	ExitCode    int    `json:"exit_code"`
@@ -15,8 +21,8 @@ type PoolConfig struct {
 	CPULimit     string // 容器 CPU 限制，如 "2.0"
 	MemoryLimit  string // 容器内存限制，如 "4g"
 	GiteaURL     string // Gitea 实例地址
-	GiteaToken   string `json:"-"` // Gitea API Token
-	ClaudeAPIKey string `json:"-"` // Claude API Key
+	GiteaToken   SecretString `json:"-"` // Gitea API Token
+	ClaudeAPIKey SecretString `json:"-"` // Claude API Key
 	WorkDir      string // 容器内工作目录
 	NetworkName  string // Docker bridge 网络名，默认 "dtworkflow-net"
 }

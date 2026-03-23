@@ -91,8 +91,12 @@ func (n *GiteaNotifier) Send(ctx context.Context, msg Message) error {
 // 即便包含 HTML 标签，Gitea 服务端在渲染 Markdown 时会自行做 HTML sanitize，XSS 风险可接受。
 func formatGiteaComment(msg Message) string {
 	emoji := severityEmoji(msg.Severity)
+	title := msg.Title
+	if title == "" {
+		title = string(msg.EventType)
+	}
 	return fmt.Sprintf("## %s %s\n\n%s\n\n---\n_由 DTWorkflow 自动发送 | 事件类型: %s_",
-		emoji, msg.Title, msg.Body, string(msg.EventType))
+		emoji, title, msg.Body, string(msg.EventType))
 }
 
 // severityEmoji 根据紧急程度返回对应的 emoji

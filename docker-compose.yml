@@ -21,7 +21,8 @@ services:
       dockerfile: build/Dockerfile
     command: ["serve"]
     ports:
-      - "8080:8080"
+      # 仅绑定本地回环地址，如需外部访问应通过反向代理（如 Nginx/Caddy）转发
+      - "127.0.0.1:8080:8080"
     depends_on:
       redis:
         condition: service_healthy

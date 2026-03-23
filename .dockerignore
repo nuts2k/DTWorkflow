@@ -1,0 +1,8 @@
+.git
+.omc
+data
+poc
+*.db
+.env*
+docker-compose.yml
+.claude

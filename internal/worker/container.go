@@ -41,8 +41,8 @@ func sanitizePromptInput(s string, maxLen int) string {
 func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	env := []string{
 		fmt.Sprintf("GITEA_URL=%s", sanitizeEnvValue(config.GiteaURL)),
-		fmt.Sprintf("GITEA_TOKEN=%s", sanitizeEnvValue(config.GiteaToken)),
-		fmt.Sprintf("ANTHROPIC_API_KEY=%s", sanitizeEnvValue(config.ClaudeAPIKey)),
+		fmt.Sprintf("GITEA_TOKEN=%s", sanitizeEnvValue(string(config.GiteaToken))),
+		fmt.Sprintf("ANTHROPIC_API_KEY=%s", sanitizeEnvValue(string(config.ClaudeAPIKey))),
 		fmt.Sprintf("REPO_CLONE_URL=%s", sanitizeEnvValue(payload.CloneURL)),
 		fmt.Sprintf("REPO_OWNER=%s", sanitizeEnvValue(payload.RepoOwner)),
 		fmt.Sprintf("REPO_NAME=%s", sanitizeEnvValue(payload.RepoName)),

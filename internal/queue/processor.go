@@ -35,7 +35,11 @@ func NewProcessor(pool PoolRunner, store store.Store, logger *slog.Logger) *Proc
 	}
 }
 
-// shouldRetry 判断当前任务是否还有剩余重试机会
+// shouldRetry 判断任务是否应标记为 retrying 状态。
+// asynq 语义：GetRetryCount 返回当前已重试次数（从 0 开始），
+// GetMaxRetry 返回最大重试总次数。当 retryCount == maxRetry-1 时，
+// 这是最后一次重试尝试，handler 返回错误后 asynq 不会再重试，
+// 因此此时应标记为 failed 而非 retrying。
 func shouldRetry(ctx context.Context) bool {
 	retryCount, rcOk := asynq.GetRetryCount(ctx)
 	maxRetry, mrOk := asynq.GetMaxRetry(ctx)
@@ -86,9 +90,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	result, runErr := p.pool.Run(ctx, payload)
 
 	// 5. 根据执行结果更新状态
-	completedAt := time.Now()
-	record.CompletedAt = &completedAt
-	record.UpdatedAt = completedAt
+	record.UpdatedAt = time.Now()
 
 	if runErr != nil {
 		// 根据 shouldRetry 判断是否还有剩余重试机会：
@@ -135,6 +137,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			"task_id", taskID,
 			"task_type", payload.TaskType,
 		)
+	}
+
+	// CompletedAt 仅在任务达到最终状态时设置
+	if record.Status == model.TaskStatusSucceeded || record.Status == model.TaskStatusFailed {
+		completedAt := time.Now()
+		record.CompletedAt = &completedAt
 	}
 
 	if err := p.store.UpdateTask(ctx, record); err != nil {

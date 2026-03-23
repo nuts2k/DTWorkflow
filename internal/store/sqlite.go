@@ -63,8 +63,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		}
 	}
 
-	// 避免 SQLite 写竞争：限制最大连接数为 1
-	// 同时确保连接级 PRAGMA（如 foreign_keys）在单一连接上正确生效
+	// 限制最大连接数为 1：
+	// 1. 避免 SQLite 写竞争（SQLite 不支持并发写）
+	// 2. 对于内存数据库（:memory:），这是必需的：database/sql 的每个新连接会创建独立的内存实例，多连接会导致数据不共享
+	// 3. 确保连接级 PRAGMA（如 foreign_keys、journal_mode）在单一连接上正确生效
 	db.SetMaxOpenConns(1)
 
 	if err := RunMigrations(db); err != nil {
@@ -83,6 +85,9 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) 
 	}
 	if record.ID == "" {
 		return fmt.Errorf("创建任务记录失败: %w", ErrInvalidID)
+	}
+	if !record.TaskType.IsValid() {
+		return fmt.Errorf("创建任务记录失败: 无效的任务类型 %q", record.TaskType)
 	}
 
 	payloadJSON, err := json.Marshal(record.Payload)
@@ -148,6 +153,9 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 	if record == nil {
 		return fmt.Errorf("更新任务记录失败: %w", ErrNilRecord)
 	}
+	if record.ID == "" {
+		return fmt.Errorf("更新任务记录失败: %w", ErrInvalidID)
+	}
 	payloadJSON, err := json.Marshal(record.Payload)
 	if err != nil {
 		return fmt.Errorf("序列化 payload 失败: %w", err)
@@ -204,6 +212,12 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model
 	}
 	if opts.Offset < 0 {
 		return nil, fmt.Errorf("Offset 不能为负数: %d", opts.Offset)
+	}
+	if opts.TaskType != "" && !opts.TaskType.IsValid() {
+		return nil, fmt.Errorf("无效的任务类型: %s", opts.TaskType)
+	}
+	if opts.Status != "" && !opts.Status.IsValid() {
+		return nil, fmt.Errorf("无效的任务状态: %s", opts.Status)
 	}
 
 	query := `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
@@ -310,6 +324,19 @@ func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration)
 	return records, nil
 }
 
+// PurgeTasks 清理指定状态且早于指定时间的历史任务记录，返回清理数量
+func (s *SQLiteStore) PurgeTasks(ctx context.Context, olderThan time.Duration, status model.TaskStatus) (int64, error) {
+	if !status.IsValid() {
+		return 0, fmt.Errorf("无效的任务状态: %s", status)
+	}
+	cutoff := time.Now().Add(-olderThan)
+	result, err := s.db.ExecContext(ctx, "DELETE FROM tasks WHERE status = ? AND created_at < ?", string(status), cutoff.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, fmt.Errorf("清理历史任务失败: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 // Ping 检测数据库连接是否可用，用于健康检查
 func (s *SQLiteStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
@@ -397,14 +424,24 @@ func timeToNullString(t *time.Time) any {
 
 // parseTime 尝试多种格式解析时间字符串，优先使用高精度格式
 func parseTime(s string) (time.Time, error) {
-	formats := []string{
+	// 含时区信息的格式，使用 time.Parse（自动解析时区）
+	tzFormats := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
+	}
+	for _, f := range tzFormats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, nil
+		}
+	}
+
+	// 对于不含时区信息的格式，显式指定 UTC
+	noTZFormats := []string{
 		"2006-01-02 15:04:05",
 		"2006-01-02T15:04:05",
 	}
-	for _, f := range formats {
-		if t, err := time.Parse(f, s); err == nil {
+	for _, f := range noTZFormats {
+		if t, err := time.ParseInLocation(f, s, time.UTC); err == nil {
 			return t, nil
 		}
 	}

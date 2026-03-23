@@ -72,19 +72,6 @@ func RunMigrations(db *sql.DB) error {
 	}
 
 	for _, m := range migrations {
-		// 检查该版本是否已执行
-		// 注意：此查询在事务外执行，依赖 NewSQLiteStore 中 MaxOpenConns=1 的串行保证，
-		// 不会出现并发迁移竞争。若未来放宽连接数限制，需将版本检查移入事务内。
-		var exists int
-		err := db.QueryRow("SELECT 1 FROM schema_migrations WHERE version = ?", m.Version).Scan(&exists)
-		if err == nil {
-			// 已执行，跳过
-			continue
-		}
-		if err != sql.ErrNoRows {
-			return fmt.Errorf("查询迁移版本 %d 失败: %w", m.Version, err)
-		}
-
 		if err := executeMigration(db, m); err != nil {
 			return err
 		}
@@ -101,6 +88,16 @@ func executeMigration(db *sql.DB, m migration) error {
 	}
 	defer tx.Rollback() // Commit 后 Rollback 是安全的无操作
 
+	// 在事务内检查版本是否已执行（消除 TOCTOU 窗口）
+	var exists int
+	err = tx.QueryRow("SELECT 1 FROM schema_migrations WHERE version = ?", m.Version).Scan(&exists)
+	if err == nil {
+		return nil // 已执行，跳过
+	}
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("查询迁移版本 %d 失败: %w", m.Version, err)
+	}
+
 	if _, err := tx.Exec(m.SQL); err != nil {
 		return fmt.Errorf("执行迁移版本 %d 失败: %w", m.Version, err)
 	}
@@ -109,8 +106,5 @@ func executeMigration(db *sql.DB, m migration) error {
 		return fmt.Errorf("记录迁移版本 %d 失败: %w", m.Version, err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交迁移事务失败 (版本 %d): %w", m.Version, err)
-	}
-	return nil
+	return tx.Commit()
 }

@@ -76,7 +76,14 @@ func WithNotifier(n Notifier) RouterOption {
 // WithRules 设置路由规则列表
 func WithRules(rules []RoutingRule) RouterOption {
 	return func(r *Router) error {
-		r.rules = rules
+		r.rules = make([]RoutingRule, len(rules))
+		for i, rule := range rules {
+			r.rules[i] = RoutingRule{
+				RepoPattern: rule.RepoPattern,
+				EventTypes:  append([]EventType(nil), rule.EventTypes...),
+				Channels:    append([]string(nil), rule.Channels...),
+			}
+		}
 		return nil
 	}
 }
@@ -102,6 +109,13 @@ func WithRouterLogger(logger *slog.Logger) RouterOption {
 // Send 根据路由规则将消息发送到匹配的通知渠道
 // 单个渠道失败不中止其余渠道，最终通过 errors.Join 返回聚合错误
 func (r *Router) Send(ctx context.Context, msg Message) error {
+	if msg.EventType == "" {
+		return fmt.Errorf("EventType 不能为空: %w", ErrInvalidTarget)
+	}
+	if msg.Target.Owner == "" || msg.Target.Repo == "" {
+		return fmt.Errorf("Target.Owner 和 Target.Repo 不能为空: %w", ErrInvalidTarget)
+	}
+
 	channels := r.resolveChannels(msg)
 
 	// 注意：设计文档中无匹配渠道时静默返回 nil，实际实现选择返回错误以避免通知被静默丢弃

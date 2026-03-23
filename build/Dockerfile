@@ -7,7 +7,8 @@ RUN go mod download
 COPY . .
 
 ARG LDFLAGS
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -ldflags "${LDFLAGS}" -o /out/dtworkflow ./cmd/dtworkflow
 
 FROM debian:bookworm-slim
@@ -21,7 +22,9 @@ COPY --from=builder /out/dtworkflow /usr/local/bin/
 
 WORKDIR /app
 RUN useradd --uid 1001 --create-home dtworkflow && \
-    chown dtworkflow:dtworkflow /app
+    chown dtworkflow:dtworkflow /app && \
+    # 添加 docker 组，使 dtworkflow 用户可访问挂载的 docker.sock
+    groupadd -g 999 docker && usermod -aG docker dtworkflow
 
 EXPOSE 8080
 

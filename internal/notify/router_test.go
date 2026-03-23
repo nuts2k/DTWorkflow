@@ -347,3 +347,69 @@ func TestNewRouter_UnregisteredFallback(t *testing.T) {
 		t.Errorf("error should wrap ErrNotifierNotFound, got: %v", err)
 	}
 }
+
+func TestRouter_Send_EmptyEventType(t *testing.T) {
+	n := &stubNotifier{name: "gitea"}
+	r := makeRouter(t,
+		WithNotifier(n),
+		WithRules([]RoutingRule{
+			{RepoPattern: "*", Channels: []string{"gitea"}},
+		}),
+	)
+
+	msg := Message{
+		EventType: "", // 空 EventType
+		Target:    Target{Owner: "org", Repo: "repo", Number: 1},
+		Title:     "测试",
+		Body:      "内容",
+	}
+
+	err := r.Send(context.Background(), msg)
+	if err == nil {
+		t.Fatal("Send() 应在 EventType 为空时返回错误")
+	}
+	if !errors.Is(err, ErrInvalidTarget) {
+		t.Errorf("Send() error = %v, want ErrInvalidTarget", err)
+	}
+	if len(n.calls) != 0 {
+		t.Errorf("EventType 为空时不应调用通知渠道，实际调用 %d 次", len(n.calls))
+	}
+}
+
+func TestRouter_Send_EmptyTarget(t *testing.T) {
+	n := &stubNotifier{name: "gitea"}
+	r := makeRouter(t,
+		WithNotifier(n),
+		WithRules([]RoutingRule{
+			{RepoPattern: "*", Channels: []string{"gitea"}},
+		}),
+	)
+
+	tests := []struct {
+		name   string
+		target Target
+	}{
+		{"Owner 为空", Target{Owner: "", Repo: "repo", Number: 1}},
+		{"Repo 为空", Target{Owner: "org", Repo: "", Number: 1}},
+		{"Owner 和 Repo 均为空", Target{Owner: "", Repo: "", Number: 1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := Message{
+				EventType: EventPRReviewDone,
+				Target:    tt.target,
+				Title:     "测试",
+				Body:      "内容",
+			}
+
+			err := r.Send(context.Background(), msg)
+			if err == nil {
+				t.Fatal("Send() 应在 Target 不完整时返回错误")
+			}
+			if !errors.Is(err, ErrInvalidTarget) {
+				t.Errorf("Send() error = %v, want ErrInvalidTarget", err)
+			}
+		})
+	}
+}

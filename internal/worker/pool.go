@@ -21,6 +21,7 @@ type Pool struct {
 	networkMu      sync.Mutex // 保护网络创建，支持失败后重试
 	networkCreated bool
 
+	closed atomic.Bool  // 标记池是否已关闭
 	active atomic.Int32 // 当前活跃容器数
 	total  atomic.Int64 // 累计完成任务数
 	wg     sync.WaitGroup
@@ -60,6 +61,10 @@ func (p *Pool) ensureNetwork(ctx context.Context) error {
 // 注意：当容器执行失败时，同时返回 result（包含日志和退出码）和 error，
 // 调用方应同时检查两者以获取完整的调试信息。
 func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionResult, error) {
+	if p.closed.Load() {
+		return nil, fmt.Errorf("Worker 池已关闭")
+	}
+
 	p.wg.Add(1)
 	defer p.wg.Done()
 	p.active.Add(1)
@@ -136,8 +141,10 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 		return nil, fmt.Errorf("启动容器失败: %w", err)
 	}
 
-	// 等待容器退出（结合 ctx 取消）
-	exitCode, waitErr := p.docker.WaitContainer(ctx, containerID)
+	// 为容器等待设置独立超时，防止 Docker daemon 无响应导致 goroutine 永远阻塞
+	waitCtx, waitCancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer waitCancel()
+	exitCode, waitErr := p.docker.WaitContainer(waitCtx, containerID)
 
 	// 无论成功与否，都尝试获取日志（使用独立 context，避免原 ctx 已取消导致无法获取日志）
 	logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -182,6 +189,10 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 
 // Shutdown 优雅关闭 Worker 池，等待所有正在运行的容器完成
 func (p *Pool) Shutdown(ctx context.Context) error {
+	if !p.closed.CompareAndSwap(false, true) {
+		return nil // 已经在关闭中
+	}
+
 	p.logger.Info("Worker 池正在关闭...",
 		slog.Int("active", int(p.active.Load())),
 	)
@@ -220,11 +231,14 @@ func (p *Pool) Stats() PoolStats {
 	}
 }
 
+// containerSeq 包级别原子计数器，用于避免容器名称碰撞
+var containerSeq atomic.Int64
+
 // buildContainerName 根据任务 payload 构建唯一的容器名称
 func buildContainerName(payload model.TaskPayload) string {
 	id := payload.DeliveryID
 	if id == "" {
-		id = fmt.Sprintf("%d", time.Now().UnixNano())
+		id = fmt.Sprintf("%d-%d", time.Now().UnixNano(), containerSeq.Add(1))
 	}
 	// 仅保留字母数字和连字符，截断到合理长度
 	safe := sanitizeName(id)

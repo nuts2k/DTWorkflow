@@ -33,8 +33,8 @@ type Target struct {
 }
 
 // Message 表示一条通知消息。
-// 基础验证（如 EventType 非空）由 Router.Send 在入口处检查，
-// 渠道特定验证（如 Gitea 的 Owner/Repo/Number）由各 Notifier 实现负责。
+// 基础验证（EventType 非空、Target.Owner/Repo 非空）由 Router.Send 在入口处检查，
+// 渠道特定验证（如 Gitea 的 Number > 0）由各 Notifier 实现负责。
 type Message struct {
 	EventType EventType
 	Severity  Severity

@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"strings"
+	"io"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
@@ -107,7 +108,10 @@ func (d *dockerClient) EnsureNetwork(ctx context.Context, networkName string) er
 			"managed-by": "dtworkflow",
 		},
 	})
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
+	if err != nil {
+		if errdefs.IsConflict(err) {
+			return nil // 网络已存在，正常情况
+		}
 		return fmt.Errorf("创建 Docker 网络 %s 失败: %w", networkName, err)
 	}
 	return nil
@@ -145,6 +149,7 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 	// 构建主机资源配置
 	hostCfg := &container.HostConfig{
 		SecurityOpt: []string{"no-new-privileges"},
+		CapDrop:     []string{"ALL"},
 		Resources: container.Resources{
 			NanoCPUs: nanoCPUs,
 			Memory:   memBytes,
@@ -232,9 +237,12 @@ func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string)
 	}
 	defer reader.Close()
 
+	// 限制日志总读取量为 10MB，防止极端长行导致 OOM
+	limitedReader := io.LimitReader(reader, 10*1024*1024)
+
 	// 使用 stdcopy.StdCopy 正确解复用 Docker 日志流（stdout + stderr）
 	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, reader); err != nil {
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, limitedReader); err != nil {
 		return "", fmt.Errorf("读取容器 %s 日志失败: %w", containerID, err)
 	}
 	return stdout.String() + stderr.String(), nil

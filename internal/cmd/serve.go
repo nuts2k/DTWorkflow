@@ -128,8 +128,8 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 		CPULimit:     "2.0",
 		MemoryLimit:  "4g",
 		GiteaURL:     serveGiteaURL,
-		GiteaToken:   serveGiteaToken,
-		ClaudeAPIKey: serveClaudeAPIKey,
+		GiteaToken:   worker.SecretString(serveGiteaToken),
+		ClaudeAPIKey: worker.SecretString(serveClaudeAPIKey),
 		NetworkName:  "dtworkflow-net",
 	}, dockerClient)
 	if err != nil {
@@ -178,6 +178,14 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 
 // runServe 启动 HTTP 服务，注册路由，并支持优雅关闭
 func runServe(cmd *cobra.Command, args []string) error {
+	// 参数校验
+	if serveMaxWorkers <= 0 {
+		return fmt.Errorf("--max-workers 必须为正整数，当前值: %d", serveMaxWorkers)
+	}
+	if servePort < 1 || servePort > 65535 {
+		return fmt.Errorf("--port 必须在 1-65535 范围内，当前值: %d", servePort)
+	}
+
 	// 敏感 flag 默认值为空，优先读取环境变量作为回退（避免 --help 泄露敏感信息）
 	if serveClaudeAPIKey == "" {
 		serveClaudeAPIKey = os.Getenv("DTWORKFLOW_CLAUDE_API_KEY")

@@ -73,12 +73,20 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		return err
 	}
 
-	h.logger.InfoContext(ctx, "PR 评审任务已入队",
-		"task_id", record.ID,
-		"asynq_id", record.AsynqID,
-		"repo", event.Repository.FullName,
-		"pr", event.PullRequest.Number,
-	)
+	if record.Status == model.TaskStatusQueued {
+		h.logger.InfoContext(ctx, "PR 评审任务已入队",
+			"task_id", record.ID,
+			"asynq_id", record.AsynqID,
+			"repo", event.Repository.FullName,
+			"pr", event.PullRequest.Number,
+		)
+	} else {
+		h.logger.InfoContext(ctx, "PR 评审任务已创建（pending），等待 RecoveryLoop 入队",
+			"task_id", record.ID,
+			"repo", event.Repository.FullName,
+			"pr", event.PullRequest.Number,
+		)
+	}
 	return nil
 }
 
@@ -129,12 +137,20 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 		return err
 	}
 
-	h.logger.InfoContext(ctx, "Issue 修复任务已入队",
-		"task_id", record.ID,
-		"asynq_id", record.AsynqID,
-		"repo", event.Repository.FullName,
-		"issue", event.Issue.Number,
-	)
+	if record.Status == model.TaskStatusQueued {
+		h.logger.InfoContext(ctx, "Issue 修复任务已入队",
+			"task_id", record.ID,
+			"asynq_id", record.AsynqID,
+			"repo", event.Repository.FullName,
+			"issue", event.Issue.Number,
+		)
+	} else {
+		h.logger.InfoContext(ctx, "Issue 修复任务已创建（pending），等待 RecoveryLoop 入队",
+			"task_id", record.ID,
+			"repo", event.Repository.FullName,
+			"issue", event.Issue.Number,
+		)
+	}
 	return nil
 }
 

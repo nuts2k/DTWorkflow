@@ -46,6 +46,10 @@ func (m *mockStoreForRecovery) ListOrphanTasks(_ context.Context, _ time.Duratio
 	}
 	return m.orphans, nil
 }
+
+func (m *mockStoreForRecovery) PurgeTasks(_ context.Context, _ time.Duration, _ model.TaskStatus) (int64, error) {
+	return 0, nil
+}
 func (m *mockStoreForRecovery) Ping(_ context.Context) error { return nil }
 
 func (m *mockStoreForRecovery) Close() error { return nil }

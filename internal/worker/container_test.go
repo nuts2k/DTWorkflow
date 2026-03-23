@@ -215,6 +215,28 @@ func TestParseMemoryLimit(t *testing.T) {
 	}
 }
 
+func TestSanitizeInput(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"正常输入", "hello world", "hello world"},
+		{"换行符", "line1\nline2", "line1 line2"},
+		{"回车符", "cr\rhere", "cr here"},
+		{"空字节", "has\x00null", "hasnull"},
+		{"混合恶意字符", "a\nb\rc\x00d", "a b cd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeInput(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeInput(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 // envSliceToMap 将 KEY=VALUE 格式的环境变量切片转换为 map
 func envSliceToMap(env []string) map[string]string {
 	result := make(map[string]string, len(env))

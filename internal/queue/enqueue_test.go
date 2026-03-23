@@ -76,6 +76,10 @@ func (m *mockStore) ListOrphanTasks(_ context.Context, _ time.Duration) ([]*mode
 	return nil, nil
 }
 
+func (m *mockStore) PurgeTasks(_ context.Context, _ time.Duration, _ model.TaskStatus) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockStore) Ping(_ context.Context) error { return nil }
 
 func (m *mockStore) Close() error { return nil }

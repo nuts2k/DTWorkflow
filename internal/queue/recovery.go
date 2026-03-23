@@ -80,7 +80,17 @@ func (r *RecoveryLoop) recover(ctx context.Context) {
 
 	r.logger.InfoContext(ctx, "发现孤儿任务，开始重新入队", "count", len(orphans))
 
-	for _, record := range orphans {
+	// 每次恢复最多处理 100 条，避免大量孤儿任务阻塞整个恢复周期
+	maxBatch := 100
+	for i, record := range orphans {
+		if i >= maxBatch {
+			r.logger.WarnContext(ctx, "本轮恢复已达批次上限，剩余将在下次扫描处理",
+				"processed", maxBatch, "remaining", len(orphans)-maxBatch)
+			break
+		}
+		if ctx.Err() != nil {
+			return // 上下文已取消，停止恢复
+		}
 		r.requeue(ctx, record)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 
 	"github.com/hibiken/asynq"
@@ -53,8 +54,13 @@ type EnqueueOptions struct {
 // 注意：创建时不验证 Redis 连通性，调用方可通过 Ping() 方法按需检查。
 func NewClient(redisOpt asynq.RedisConnOpt) (*Client, error) {
 	inner := asynq.NewClient(redisOpt)
-	pingClient, ok := redisOpt.MakeRedisClient().(redis.UniversalClient)
+	rawClient := redisOpt.MakeRedisClient()
+	pingClient, ok := rawClient.(redis.UniversalClient)
 	if !ok {
+		_ = inner.Close()
+		if closer, cok := rawClient.(io.Closer); cok {
+			_ = closer.Close()
+		}
 		return nil, fmt.Errorf("NewClient: 不支持的 Redis 客户端类型")
 	}
 	return &Client{inner: inner, pingClient: pingClient}, nil

@@ -36,6 +36,9 @@ type Store interface {
 	// ListOrphanTasks 查询 pending 状态且创建时间超过 maxAge 的孤儿任务
 	ListOrphanTasks(ctx context.Context, maxAge time.Duration) ([]*model.TaskRecord, error)
 
+	// PurgeTasks 清理指定状态且早于指定时间的历史任务记录，返回清理数量
+	PurgeTasks(ctx context.Context, olderThan time.Duration, status model.TaskStatus) (int64, error)
+
 	// Ping 检测数据库连接是否可用，用于健康检查
 	Ping(ctx context.Context) error
 

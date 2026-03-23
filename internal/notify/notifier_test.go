@@ -3,12 +3,13 @@ package notify
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
-// stubNotifier 用于测试的桩通知渠道。
-// 非并发安全：calls 切片没有加锁保护，不得在多 goroutine 中并发调用 Send。
+// stubNotifier 用于测试的桩通知渠道，并发安全。
 type stubNotifier struct {
+	mu      sync.Mutex
 	name    string
 	sendErr error
 	calls   []Message
@@ -17,6 +18,8 @@ type stubNotifier struct {
 func (s *stubNotifier) Name() string { return s.name }
 
 func (s *stubNotifier) Send(_ context.Context, msg Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls = append(s.calls, msg)
 	return s.sendErr
 }
