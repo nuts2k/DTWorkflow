@@ -377,6 +377,7 @@ import "time"
 type Config struct {
     Server   ServerConfig   `mapstructure:"server"`
     Gitea    GiteaConfig    `mapstructure:"gitea"`
+    Claude   ClaudeConfig   `mapstructure:"claude"`   // M1.5-6 引入
     Redis    RedisConfig    `mapstructure:"redis"`
     Database DatabaseConfig `mapstructure:"database"`
     Log      LogConfig      `mapstructure:"log"`
@@ -384,6 +385,11 @@ type Config struct {
     Webhook  WebhookConfig  `mapstructure:"webhook"`
     Notify   NotifyConfig   `mapstructure:"notify"`
     Repos    []RepoConfig   `mapstructure:"repos"`
+}
+
+// ClaudeConfig Claude Code 配置（M1.5-6 引入）
+type ClaudeConfig struct {
+    APIKey string `mapstructure:"api_key"` // 仅通过环境变量 DTWORKFLOW_CLAUDE_API_KEY 或配置文件设置，不绑定 CLI flag
 }
 
 // ServerConfig 服务器配置
@@ -418,9 +424,15 @@ type LogConfig struct {
 }
 
 // WorkerConfig Worker 池配置
+// 注意：Image/CPULimit/MemoryLimit/NetworkName 由 M1.5-6 引入，
+// 对应 serve 命令的 --worker-image/--cpu-limit/--memory-limit/--network-name flags。
 type WorkerConfig struct {
     Concurrency int           `mapstructure:"concurrency"`
     Timeout     time.Duration `mapstructure:"timeout"`
+    Image       string        `mapstructure:"image"`         // Worker 容器镜像（锁定 tag，如 dtworkflow-worker:1.0）
+    CPULimit    string        `mapstructure:"cpu_limit"`     // 容器 CPU 限制（如 "2.0"）
+    MemoryLimit string        `mapstructure:"memory_limit"`  // 容器内存限制（如 "4g"）
+    NetworkName string        `mapstructure:"network_name"`  // Docker bridge 网络名（如 "dtworkflow-net"）
 }
 
 // WebhookConfig Webhook 配置
@@ -559,6 +571,10 @@ func WithDefaults() ManagerOption {
         m.v.SetDefault("log.format", "text")
         m.v.SetDefault("worker.concurrency", 3)
         m.v.SetDefault("worker.timeout", "30m")
+        m.v.SetDefault("worker.image", "dtworkflow-worker:1.0")
+        m.v.SetDefault("worker.cpu_limit", "2.0")
+        m.v.SetDefault("worker.memory_limit", "4g")
+        m.v.SetDefault("worker.network_name", "dtworkflow-net")
         m.v.SetDefault("database.path", "data/dtworkflow.db")
         m.v.SetDefault("redis.addr", "localhost:6379")
         m.v.SetDefault("redis.db", 0)
@@ -762,10 +778,19 @@ func init() {
         }
 
         // CLI flags 绑定到 Viper（使 flag 值优先于配置文件）
+        // 包含 M1.5-6 引入的 serve 命令 flags
         v := mgr.Viper()
         _ = v.BindPFlag("server.host", serveCmd.Flags().Lookup("host"))
         _ = v.BindPFlag("server.port", serveCmd.Flags().Lookup("port"))
         _ = v.BindPFlag("webhook.secret", serveCmd.Flags().Lookup("webhook-secret"))
+        _ = v.BindPFlag("redis.addr", serveCmd.Flags().Lookup("redis-addr"))
+        _ = v.BindPFlag("database.path", serveCmd.Flags().Lookup("db-path"))
+        _ = v.BindPFlag("worker.concurrency", serveCmd.Flags().Lookup("max-workers"))
+        _ = v.BindPFlag("worker.image", serveCmd.Flags().Lookup("worker-image"))
+        _ = v.BindPFlag("gitea.url", serveCmd.Flags().Lookup("gitea-url"))
+        _ = v.BindPFlag("gitea.token", serveCmd.Flags().Lookup("gitea-token"))
+        // 注意：claude-api-key 仅通过环境变量 DTWORKFLOW_CLAUDE_API_KEY 或配置文件设置，
+        // 不绑定 CLI flag，避免敏感信息出现在进程列表中
 
         if err := mgr.Load(); err != nil {
             return err
@@ -796,33 +821,52 @@ func isConfigOptionalCmd(cmd *cobra.Command) bool {
 
 #### 3.6.3 现有 serve.go 包级变量迁移方案
 
-现有 `serve.go` 中定义了三个包级变量：
+M1.5-6 完成后，`serve.go` 中将存在以下包级变量（含 M1.4 原有 3 个 + M1.5-6 新增 7 个）：
 ```go
 var (
-    serveHost          string
-    servePort          int
-    serveWebhookSecret string
+    serveHost          string  // M1.4 原有
+    servePort          int     // M1.4 原有
+    serveWebhookSecret string  // M1.4 原有
+    serveRedisAddr     string  // M1.5-6 新增
+    serveDBPath        string  // M1.5-6 新增
+    serveMaxWorkers    int     // M1.5-6 新增
+    serveWorkerImage   string  // M1.5-6 新增
+    serveClaudeAPIKey  string  // M1.5-6 新增
+    serveGiteaURL      string  // M1.5-6 新增
+    serveGiteaToken    string  // M1.5-6 新增
 )
 ```
 
 迁移策略为**渐进式**：
-1. **Phase 1（本次 M1.8）**：保留包级变量和 `init()` 中的 flag 注册不变。在 `PersistentPreRunE` 中通过 `viper.BindPFlag` 将这些 flag 绑定到 Viper。`runServe()` 中从 `cfgManager.Get()` 读取配置值，不再直接读包级变量。
+1. **Phase 1（本次 M1.8）**：保留包级变量和 `init()` 中的 flag 注册不变。在 `PersistentPreRunE` 中通过 `viper.BindPFlag` 将这些 flag 绑定到 Viper（见 3.6.1 节，已覆盖全部 10 个变量中可绑定的 9 个，`claude-api-key` 仅通过环境变量/配置文件设置）。`runServe()` 和 `BuildServiceDeps()` 中从 `cfgManager.Get()` 读取配置值，不再直接读包级变量。
 2. **Phase 2（后续清理）**：当所有命令都迁移到 config.Manager 后，移除包级变量，flag 注册改为直接在 `PersistentPreRunE` 或命令的 `PreRunE` 中完成。
 
-Phase 1 中 `runServe()` 的改动示意：
+Phase 1 中 `BuildServiceDeps()` 的改动示意（替代原先直接读包级变量）：
 ```go
-func runServe(cmd *cobra.Command, args []string) error {
+func BuildServiceDeps() (*ServiceDeps, func(), error) {
     cfg := cfgManager.Get()
 
     // 从统一配置中获取值（CLI flag > 环境变量 > 配置文件 > 默认值）
-    host := cfg.Server.Host
-    port := cfg.Server.Port
     secret := cfg.Webhook.Secret
-
     if secret == "" {
-        return fmt.Errorf("webhook.secret 不能为空（通过 --webhook-secret flag、DTWORKFLOW_WEBHOOK_SECRET 环境变量或配置文件设置）")
+        return nil, nil, fmt.Errorf("webhook.secret 不能为空（通过 --webhook-secret flag、DTWORKFLOW_WEBHOOK_SECRET 环境变量或配置文件设置）")
     }
-    // ... 后续逻辑使用 host, port, secret ...
+
+    // 初始化 SQLite Store
+    s, err := store.NewSQLiteStore(cfg.Database.Path)
+    // ...
+
+    // 初始化 Worker Pool
+    pool, err := worker.NewPool(worker.PoolConfig{
+        Image:        cfg.Worker.Image,
+        CPULimit:     cfg.Worker.CPULimit,
+        MemoryLimit:  cfg.Worker.MemoryLimit,
+        GiteaURL:     cfg.Gitea.URL,
+        GiteaToken:   cfg.Gitea.Token,
+        ClaudeAPIKey: cfg.Claude.APIKey,  // 仅来自环境变量/配置文件
+        NetworkName:  cfg.Worker.NetworkName,
+    })
+    // ...
 }
 ```
 
@@ -864,6 +908,10 @@ gitea:
 webhook:
   secret: ""
 
+# Claude Code 配置（M1.5-6 引入）
+claude:
+  api_key: ""  # 建议通过环境变量 DTWORKFLOW_CLAUDE_API_KEY 设置，避免明文写入配置文件
+
 # Redis 配置（任务队列使用）
 redis:
   addr: "localhost:6379"
@@ -883,6 +931,10 @@ log:
 worker:
   concurrency: 3
   timeout: "30m"
+  image: "dtworkflow-worker:1.0"    # 容器镜像（锁定 tag，M1.5-6 决策 #20）
+  cpu_limit: "2.0"                  # 容器 CPU 限制
+  memory_limit: "4g"                # 容器内存限制
+  network_name: "dtworkflow-net"    # Docker bridge 网络名（M1.5-6 决策 #17）
 
 # 通知框架配置
 notify:
