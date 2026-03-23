@@ -17,7 +17,9 @@ type RoutingRule struct {
 	Channels []string
 }
 
-// Router 通知路由器，根据规则将消息分发到对应的通知渠道
+// Router 是通知路由器，负责将消息分发到匹配的通知渠道。
+// 并发安全：Router 在 NewRouter 完成构建后，Send 方法可安全被多 goroutine 并发调用。
+// 但 Router 的配置（notifiers/rules/fallback）在创建后不应被修改。
 type Router struct {
 	notifiers map[string]Notifier
 	rules     []RoutingRule
@@ -84,6 +86,7 @@ func WithRouterLogger(logger *slog.Logger) RouterOption {
 func (r *Router) Send(ctx context.Context, msg Message) error {
 	channels := r.resolveChannels(msg)
 
+	// 注意：设计文档中无匹配渠道时静默返回 nil，实际实现选择返回错误以避免通知被静默丢弃
 	if len(channels) == 0 {
 		return ErrNoChannelMatched
 	}
@@ -102,6 +105,8 @@ func (r *Router) Send(ctx context.Context, msg Message) error {
 				"error", err,
 			)
 			errs = append(errs, fmt.Errorf("渠道 %q: %w", ch, err))
+		} else {
+			r.logger.InfoContext(ctx, "通知发送成功", "channel", ch, "event", string(msg.EventType))
 		}
 	}
 

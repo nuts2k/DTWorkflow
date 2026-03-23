@@ -6,7 +6,8 @@ import (
 	"testing"
 )
 
-// stubNotifier 用于测试的桩通知渠道
+// stubNotifier 用于测试的桩通知渠道。
+// 非并发安全：calls 切片没有加锁保护，不得在多 goroutine 中并发调用 Send。
 type stubNotifier struct {
 	name    string
 	sendErr error

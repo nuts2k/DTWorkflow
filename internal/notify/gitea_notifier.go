@@ -12,7 +12,9 @@ type GiteaCommentCreator interface {
 	CreateIssueComment(ctx context.Context, owner, repo string, index int64, body string) error
 }
 
-// GiteaNotifierOption 配置选项
+// GiteaNotifierOption 配置选项函数类型。
+// 注意：此处签名为 func(*GiteaNotifier)（无返回值），与设计文档中
+// func(*GiteaNotifier) error 的签名有所不同，当前实现选择更简洁的无错误返回形式。
 type GiteaNotifierOption func(*GiteaNotifier)
 
 // GiteaNotifier 通过 Gitea Issue/PR 评论发送通知
@@ -68,14 +70,20 @@ func (n *GiteaNotifier) Send(ctx context.Context, msg Message) error {
 		"event", msg.EventType,
 	)
 
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("发送通知前 context 已取消: %w", err)
+	}
+
 	if err := n.client.CreateIssueComment(ctx, msg.Target.Owner, msg.Target.Repo, msg.Target.Number, comment); err != nil {
-		return fmt.Errorf("%w: 创建 Gitea 评论失败: %w", ErrSendFailed, err)
+		return fmt.Errorf("创建 Gitea 评论失败: %w: %w", ErrSendFailed, err)
 	}
 
 	return nil
 }
 
 // formatGiteaComment 将消息格式化为 Gitea Markdown 评论
+// 安全说明：msg.Title 和 msg.Body 的内容由 DTWorkflow 内部生成，不直接来自外部用户输入。
+// 即便包含 HTML 标签，Gitea 服务端在渲染 Markdown 时会自行做 HTML sanitize，XSS 风险可接受。
 func formatGiteaComment(msg Message) string {
 	emoji := severityEmoji(msg.Severity)
 	return fmt.Sprintf("## %s %s\n\n%s\n\n---\n_由 DTWorkflow 自动发送 | 事件类型: %s_",
