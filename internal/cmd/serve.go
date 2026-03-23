@@ -47,13 +47,16 @@ func init() {
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "监听端口")
 	serveCmd.Flags().StringVar(&serveWebhookSecret, "webhook-secret",
 		os.Getenv("DTWORKFLOW_WEBHOOK_SECRET"), "Webhook Secret（也可通过 DTWORKFLOW_WEBHOOK_SECRET 环境变量设置）")
-	serveCmd.Flags().StringVar(&serveRedisAddr, "redis-addr", "localhost:6379", "Redis 地址")
-	serveCmd.Flags().StringVar(&serveDBPath, "db-path", "data/dtworkflow.db", "SQLite 数据库路径")
+	serveCmd.Flags().StringVar(&serveRedisAddr, "redis-addr",
+		getEnvDefault("DTWORKFLOW_REDIS_ADDR", "localhost:6379"), "Redis 地址（也可通过 DTWORKFLOW_REDIS_ADDR 环境变量设置）")
+	serveCmd.Flags().StringVar(&serveDBPath, "db-path",
+		getEnvDefault("DTWORKFLOW_DB_PATH", "data/dtworkflow.db"), "SQLite 数据库路径（也可通过 DTWORKFLOW_DB_PATH 环境变量设置）")
 	serveCmd.Flags().IntVar(&serveMaxWorkers, "max-workers", 3, "最大并发 Worker 数")
 	serveCmd.Flags().StringVar(&serveWorkerImage, "worker-image", "dtworkflow-worker:1.0", "Worker Docker 镜像")
 	serveCmd.Flags().StringVar(&serveClaudeAPIKey, "claude-api-key",
 		os.Getenv("DTWORKFLOW_CLAUDE_API_KEY"), "Claude API Key（也可通过 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
-	serveCmd.Flags().StringVar(&serveGiteaURL, "gitea-url", "", "Gitea 实例地址")
+	serveCmd.Flags().StringVar(&serveGiteaURL, "gitea-url",
+		os.Getenv("DTWORKFLOW_GITEA_URL"), "Gitea 实例地址（也可通过 DTWORKFLOW_GITEA_URL 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveGiteaToken, "gitea-token",
 		os.Getenv("DTWORKFLOW_GITEA_TOKEN"), "Gitea API Token（也可通过 DTWORKFLOW_GITEA_TOKEN 环境变量设置）")
 	rootCmd.AddCommand(serveCmd)
@@ -253,7 +256,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("监听地址 %s 失败: %w", addr, err)
 	}
 
-	server := &http.Server{Handler: router, ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			slog.Error("HTTP 服务异常退出", "error", err)
@@ -277,6 +285,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	slog.Info("收到关闭信号，开始分层关闭...")
 	return gracefulShutdown(server, deps, recoveryCancel, gcCancel)
+}
+
+// getEnvDefault 读取环境变量，若为空则返回默认值
+func getEnvDefault(key, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultVal
 }
 
 // gracefulShutdown 分层关闭所有组件。

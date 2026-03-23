@@ -209,7 +209,12 @@ func TestServe_WebhookRouteReturnsUnauthorizedWithoutSignature(t *testing.T) {
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
 		t.Fatalf("发送 SIGINT 失败: %v", err)
 	}
-	if err := <-errCh; err != nil {
-		t.Fatalf("runServe 应返回 nil, got %v", err)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runServe 应返回 nil, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runServe 未在 10 秒内退出")
 	}
 }

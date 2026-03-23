@@ -160,10 +160,11 @@ var taskRetryCmd = &cobra.Command{
 			}
 		}
 
-		// 重置重试计数和状态
+		// 重置重试计数和状态，同时更新时间戳以便 RecoveryLoop 及时检测
 		record.RetryCount = 0
 		record.Status = model.TaskStatusPending
 		record.Error = ""
+		record.UpdatedAt = time.Now()
 
 		if err := taskStore.UpdateTask(ctx, record); err != nil {
 			return &ExitCodeError{Code: 1, Err: fmt.Errorf("更新任务失败: %w", err)}
