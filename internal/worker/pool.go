@@ -26,8 +26,11 @@ type Pool struct {
 	wg     sync.WaitGroup
 }
 
-// NewPool 创建 Worker 池
-func NewPool(config PoolConfig, dockerClient DockerClient) *Pool {
+// NewPool 创建 Worker 池。Image 为必填项，不可为空。
+func NewPool(config PoolConfig, dockerClient DockerClient) (*Pool, error) {
+	if config.Image == "" {
+		return nil, fmt.Errorf("PoolConfig.Image 不可为空")
+	}
 	if config.NetworkName == "" {
 		config.NetworkName = "dtworkflow-net"
 	}
@@ -35,7 +38,7 @@ func NewPool(config PoolConfig, dockerClient DockerClient) *Pool {
 		config: config,
 		docker: dockerClient,
 		logger: slog.Default(),
-	}
+	}, nil
 }
 
 // ensureNetwork 确保 Docker 网络存在，支持失败后重试
@@ -54,6 +57,8 @@ func (p *Pool) ensureNetwork(ctx context.Context) error {
 
 // Run 在独立 Docker 容器中执行任务，容器用完即销毁
 // 流程：EnsureNetwork → CreateContainer → StartContainer → WaitContainer → GetLogs → RemoveContainer
+// 注意：当容器执行失败时，同时返回 result（包含日志和退出码）和 error，
+// 调用方应同时检查两者以获取完整的调试信息。
 func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionResult, error) {
 	p.wg.Add(1)
 	defer p.wg.Done()
@@ -177,14 +182,7 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 
 // Shutdown 优雅关闭 Worker 池，等待所有正在运行的容器完成
 func (p *Pool) Shutdown(ctx context.Context) error {
-	// 无论正常退出还是超时，都确保关闭 Docker 客户端连接
-	defer func() {
-		if err := p.docker.Close(); err != nil {
-			p.logger.Warn("关闭 Docker 客户端失败", slog.String("error", err.Error()))
-		}
-	}()
-
-	p.logger.Info("Worker 池正在关闭，等待活跃容器完成",
+	p.logger.Info("Worker 池正在关闭...",
 		slog.Int("active", int(p.active.Load())),
 	)
 
@@ -196,11 +194,22 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
-		p.logger.Info("Worker 池已关闭")
-		return nil
+		p.logger.Info("所有 Worker 已完成")
 	case <-ctx.Done():
-		return fmt.Errorf("Worker 池关闭超时: %w", ctx.Err())
+		p.logger.Error("Worker 池关闭超时，等待容器清理完成...")
+		// 不立即关闭 docker client，给 defer RemoveContainer 留出时间
+		// 额外等待一段时间让 defer 中的清理逻辑执行
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		select {
+		case <-done:
+			p.logger.Info("容器清理完成")
+		case <-cleanupCtx.Done():
+			p.logger.Error("容器清理超时，部分容器可能需要手动清理")
+		}
 	}
+
+	return p.docker.Close()
 }
 
 // Stats 返回当前池的统计信息

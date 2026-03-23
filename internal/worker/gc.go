@@ -89,6 +89,10 @@ func (gc *GarbageCollector) Run(ctx context.Context) {
 
 // runOnce 执行一次 GC 扫描，清理超龄容器
 func (gc *GarbageCollector) runOnce(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	// 仅扫描带有 managed-by=dtworkflow 标签且已退出的容器
 	f := filters.NewArgs()
 	f.Add("label", "managed-by=dtworkflow")
@@ -185,9 +189,10 @@ func (gc *GarbageCollector) runOnce(ctx context.Context) {
 		}
 	}
 
-	if cleaned > 0 || removed > 0 || len(containers) > 0 {
+	if cleaned > 0 || removed > 0 || len(containers) > 0 || len(runningContainers) > 0 {
 		gc.logger.Info("GC 扫描完成",
-			slog.Int("scanned", len(containers)),
+			slog.Int("scanned_exited", len(containers)),
+			slog.Int("scanned_running", len(runningContainers)),
 			slog.Int("cleaned", cleaned),
 			slog.Int("force_killed", removed),
 		)

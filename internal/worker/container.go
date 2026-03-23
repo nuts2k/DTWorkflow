@@ -9,8 +9,9 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
 
-// sanitizeInput 清理外部输入，移除可能导致注入的字符
-// 作为 sanitizeEnvValue 和 sanitizePromptInput 的公共基础函数
+// sanitizeInput 清理环境变量值，去除换行和 NUL 字符。
+// 注意：Docker SDK 的 Env 参数直接传递给容器进程，不经 shell 解析，
+// 因此无需转义 shell 元字符。此函数主要防止日志注入和 NUL 截断。
 func sanitizeInput(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
@@ -23,8 +24,9 @@ func sanitizeEnvValue(s string) string {
 	return sanitizeInput(s)
 }
 
-// sanitizePromptInput 清理用于 CLI prompt 的用户输入
-// 使用 []rune 按字符截断，避免截断 UTF-8 多字节字符
+// sanitizePromptInput 清理用于 CLI prompt 的用户输入。
+// 基于 sanitizeInput 去除换行和 NUL 字符后，按 []rune 截断到 maxLen，
+// 避免截断 UTF-8 多字节字符。用于构建传给 Claude CLI 的 prompt 参数。
 func sanitizePromptInput(s string, maxLen int) string {
 	s = sanitizeInput(s)
 	runes := []rune(s)
@@ -96,7 +98,7 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 			fmt.Sprintf("Generate tests for module %s in repository %s. Analyze existing code, identify untested paths, and write comprehensive unit tests.", sanitizePromptInput(module, 200), sanitizePromptInput(payload.RepoFullName, 200)),
 		}
 	default:
-		return []string{"claude", "-p", fmt.Sprintf("Process task of type %s for repository %s.", payload.TaskType, sanitizePromptInput(payload.RepoFullName, 200))}
+		return []string{"claude", "-p", fmt.Sprintf("Process task of type %s for repository %s.", sanitizePromptInput(string(payload.TaskType), 50), sanitizePromptInput(payload.RepoFullName, 200))}
 	}
 }
 
@@ -141,6 +143,14 @@ func parseMemoryLimit(limit string) (int64, error) {
 		numStr = strings.TrimSuffix(strings.TrimSuffix(lower, "kb"), "k")
 	case strings.HasSuffix(lower, "b"):
 		numStr = strings.TrimSuffix(lower, "b")
+	}
+
+	// 优先尝试整数解析，避免浮点精度损失；失败再回退浮点解析
+	if intVal, intErr := strconv.ParseInt(numStr, 10, 64); intErr == nil {
+		if intVal <= 0 {
+			return 0, fmt.Errorf("内存限制必须大于 0，当前值: %d", intVal)
+		}
+		return intVal * multiplier, nil
 	}
 
 	val, err := strconv.ParseFloat(numStr, 64)

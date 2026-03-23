@@ -14,11 +14,18 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/dtworkflow /usr/local/bin/
 
-RUN useradd --uid 1001 --create-home dtworkflow
+WORKDIR /app
+RUN useradd --uid 1001 --create-home dtworkflow && \
+    chown dtworkflow:dtworkflow /app
+
+EXPOSE 8080
+
 USER dtworkflow
 
 ENTRYPOINT ["dtworkflow"]
+CMD ["serve"]

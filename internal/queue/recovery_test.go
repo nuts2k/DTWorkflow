@@ -50,13 +50,13 @@ func (m *mockStoreForRecovery) Ping(_ context.Context) error { return nil }
 
 func (m *mockStoreForRecovery) Close() error { return nil }
 
-// mockClientForRecovery 模拟入队行为
-type mockClientForRecovery struct {
+// mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
+type mockEnqueuerForRecovery struct {
 	enqueueErr error
 	enqueueID  string
 }
 
-func (mc *mockClientForRecovery) Enqueue(_ context.Context, _ model.TaskPayload, opts EnqueueOptions) (string, error) {
+func (mc *mockEnqueuerForRecovery) Enqueue(_ context.Context, _ model.TaskPayload, opts EnqueueOptions) (string, error) {
 	if mc.enqueueErr != nil {
 		return "", mc.enqueueErr
 	}
@@ -66,59 +66,6 @@ func (mc *mockClientForRecovery) Enqueue(_ context.Context, _ model.TaskPayload,
 	return opts.TaskID + "-requeued", nil
 }
 
-// recoveryLoopWithMock 使用 mock 依赖的 RecoveryLoop（直接调用 recover 方法测试）
-type recoveryLoopWithMock struct {
-	store  *mockStoreForRecovery
-	client *mockClientForRecovery
-	logger *slog.Logger
-	maxAge time.Duration
-}
-
-func (r *recoveryLoopWithMock) recover(ctx context.Context) {
-	orphans, err := r.store.ListOrphanTasks(ctx, r.maxAge)
-	if err != nil {
-		return
-	}
-	for _, record := range orphans {
-		asynqID, err := r.client.Enqueue(ctx, record.Payload, EnqueueOptions{
-			Priority: record.Priority,
-			TaskID:   record.ID,
-		})
-		if err != nil {
-			continue
-		}
-		record.AsynqID = asynqID
-		record.Status = model.TaskStatusQueued
-		record.UpdatedAt = time.Now()
-		_ = r.store.UpdateTask(ctx, record)
-	}
-}
-
-// recoverWithConflict 与 production 代码 requeue 逻辑一致，处理 ErrTaskIDConflict 分支
-func (r *recoveryLoopWithMock) recoverWithConflict(ctx context.Context) {
-	orphans, err := r.store.ListOrphanTasks(ctx, r.maxAge)
-	if err != nil {
-		return
-	}
-	for _, record := range orphans {
-		asynqID, err := r.client.Enqueue(ctx, record.Payload, EnqueueOptions{
-			Priority: record.Priority,
-			TaskID:   record.ID,
-		})
-		if err != nil {
-			if errors.Is(err, asynq.ErrTaskIDConflict) {
-				asynqID = record.ID
-			} else {
-				continue
-			}
-		}
-		record.AsynqID = asynqID
-		record.Status = model.TaskStatusQueued
-		record.UpdatedAt = time.Now()
-		_ = r.store.UpdateTask(ctx, record)
-	}
-}
-
 func TestRecoveryLoop_RequeuesOrphans(t *testing.T) {
 	orphan := &model.TaskRecord{
 		ID:       "orphan-1",
@@ -126,11 +73,12 @@ func TestRecoveryLoop_RequeuesOrphans(t *testing.T) {
 		Status:   model.TaskStatusPending,
 		Priority: model.PriorityHigh,
 		Payload:  model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+		MaxRetry: 3,
 	}
 
 	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
-	mc := &mockClientForRecovery{}
-	r := &recoveryLoopWithMock{store: s, client: mc, logger: slog.Default(), maxAge: 120 * time.Second}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
 
 	r.recover(context.Background())
 
@@ -147,8 +95,8 @@ func TestRecoveryLoop_RequeuesOrphans(t *testing.T) {
 
 func TestRecoveryLoop_NoOrphans(t *testing.T) {
 	s := &mockStoreForRecovery{orphans: nil}
-	mc := &mockClientForRecovery{}
-	r := &recoveryLoopWithMock{store: s, client: mc, logger: slog.Default(), maxAge: 120 * time.Second}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
 
 	r.recover(context.Background())
 
@@ -164,15 +112,15 @@ func TestRecoveryLoop_ErrTaskIDConflict_StillUpdatesQueued(t *testing.T) {
 		Status:   model.TaskStatusPending,
 		Priority: model.PriorityHigh,
 		Payload:  model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+		MaxRetry: 3,
 	}
 
 	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
 	// 模拟入队返回 ErrTaskIDConflict（任务已在 asynq 队列中）
-	mc := &mockClientForRecovery{enqueueErr: asynq.ErrTaskIDConflict}
-	r := &recoveryLoopWithMock{store: s, client: mc, logger: slog.Default(), maxAge: 120 * time.Second}
+	mc := &mockEnqueuerForRecovery{enqueueErr: asynq.ErrTaskIDConflict}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
 
-	// 修改 recover 方法以匹配 production 代码中的 ErrTaskIDConflict 处理逻辑
-	r.recoverWithConflict(context.Background())
+	r.recover(context.Background())
 
 	if len(s.updated) != 1 {
 		t.Fatalf("expected 1 updated record on ErrTaskIDConflict, got %d", len(s.updated))
@@ -193,11 +141,12 @@ func TestRecoveryLoop_EnqueueFail_SkipsUpdate(t *testing.T) {
 		Status:   model.TaskStatusPending,
 		Priority: model.PriorityNormal,
 		Payload:  model.TaskPayload{TaskType: model.TaskTypeFixIssue},
+		MaxRetry: 3,
 	}
 
 	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
-	mc := &mockClientForRecovery{enqueueErr: errors.New("redis down")}
-	r := &recoveryLoopWithMock{store: s, client: mc, logger: slog.Default(), maxAge: 120 * time.Second}
+	mc := &mockEnqueuerForRecovery{enqueueErr: errors.New("redis down")}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
 
 	r.recover(context.Background())
 
@@ -209,8 +158,8 @@ func TestRecoveryLoop_EnqueueFail_SkipsUpdate(t *testing.T) {
 
 func TestRecoveryLoop_ListFail_NoUpdate(t *testing.T) {
 	s := &mockStoreForRecovery{listErr: errors.New("db error")}
-	mc := &mockClientForRecovery{}
-	r := &recoveryLoopWithMock{store: s, client: mc, logger: slog.Default(), maxAge: 120 * time.Second}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
 
 	r.recover(context.Background())
 
@@ -219,9 +168,35 @@ func TestRecoveryLoop_ListFail_NoUpdate(t *testing.T) {
 	}
 }
 
+func TestRecoveryLoop_MaxRetryExceeded_MarksFailed(t *testing.T) {
+	orphan := &model.TaskRecord{
+		ID:         "orphan-maxed",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusPending,
+		Priority:   model.PriorityHigh,
+		Payload:    model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+		RetryCount: 3,
+		MaxRetry:   3,
+	}
+
+	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
+
+	r.recover(context.Background())
+
+	if len(s.updated) != 1 {
+		t.Fatalf("expected 1 updated record, got %d", len(s.updated))
+	}
+	if s.updated[0].Status != model.TaskStatusFailed {
+		t.Errorf("updated status = %q, want %q", s.updated[0].Status, model.TaskStatusFailed)
+	}
+}
+
 func TestNewRecoveryLoop_Defaults(t *testing.T) {
 	s := newMockStore()
-	client := &Client{} // 空 client，仅测试默认值
+	// &Client{} 仅用于默认值测试，不会实际调用 Enqueue 方法
+	client := &Client{}
 	loop := NewRecoveryLoop(s, client, slog.Default(), 0, 0)
 
 	if loop.interval != 60*time.Second {

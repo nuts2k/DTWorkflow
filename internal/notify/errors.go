@@ -1,14 +1,17 @@
 package notify
 
-import "errors"
+// sentinelError 是不可变的 sentinel error 类型，确保外部无法覆盖。
+type sentinelError string
 
-var (
+func (e sentinelError) Error() string { return string(e) }
+
+const (
 	// ErrNotifierNotFound 通知渠道未注册
-	ErrNotifierNotFound = errors.New("通知渠道未注册")
+	ErrNotifierNotFound = sentinelError("通知渠道未注册")
 	// ErrInvalidTarget 无效的通知目标
-	ErrInvalidTarget = errors.New("无效的通知目标")
+	ErrInvalidTarget = sentinelError("无效的通知目标")
 	// ErrSendFailed 通知发送失败
-	ErrSendFailed = errors.New("通知发送失败")
+	ErrSendFailed = sentinelError("通知发送失败")
 	// ErrNoChannelMatched 无匹配的通知渠道
-	ErrNoChannelMatched = errors.New("无匹配的通知渠道")
+	ErrNoChannelMatched = sentinelError("无匹配的通知渠道")
 )

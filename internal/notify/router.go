@@ -9,7 +9,8 @@ import (
 
 // RoutingRule 路由规则，用于将事件映射到通知渠道
 type RoutingRule struct {
-	// RepoPattern 仓库匹配模式："*" 匹配全部，"owner/repo" 精确匹配
+	// RepoPattern 当前仅支持 "*"（全匹配）和精确的 "owner/repo" 匹配。
+	// TODO: 后续支持 glob 模式（如 "myorg/*"）以满足多仓库组织需求。
 	RepoPattern string
 	// EventTypes 匹配的事件类型列表，空切片匹配全部事件
 	EventTypes []EventType
@@ -46,6 +47,15 @@ func NewRouter(opts ...RouterOption) (*Router, error) {
 	if r.fallback != "" {
 		if _, ok := r.notifiers[r.fallback]; !ok {
 			return nil, fmt.Errorf("fallback 渠道 %q 未注册: %w", r.fallback, ErrNotifierNotFound)
+		}
+	}
+
+	// 校验所有路由规则引用的渠道是否已注册
+	for i, rule := range r.rules {
+		for _, ch := range rule.Channels {
+			if _, ok := r.notifiers[ch]; !ok {
+				return nil, fmt.Errorf("规则 #%d 引用了未注册的渠道 %q: %w", i, ch, ErrNotifierNotFound)
+			}
 		}
 	}
 
@@ -99,6 +109,7 @@ func (r *Router) Send(ctx context.Context, msg Message) error {
 		return ErrNoChannelMatched
 	}
 
+	// TODO: 当扩展到多个外部通知渠道时，考虑使用 errgroup 并行发送以降低延迟
 	var errs []error
 	for _, ch := range channels {
 		if err := ctx.Err(); err != nil {

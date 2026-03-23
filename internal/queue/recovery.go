@@ -15,7 +15,7 @@ import (
 // RecoveryLoop 定期扫描孤儿任务（pending 超过 maxAge），将其重新入队
 type RecoveryLoop struct {
 	store    store.Store
-	client   *Client
+	client   Enqueuer
 	logger   *slog.Logger
 	interval time.Duration // 扫描间隔，默认 60s
 	maxAge   time.Duration // 孤儿任务判定阈值，默认 120s
@@ -23,7 +23,7 @@ type RecoveryLoop struct {
 
 // NewRecoveryLoop 创建 RecoveryLoop 实例
 // interval 为 0 时使用默认值 60s，maxAge 为 0 时使用默认值 120s
-func NewRecoveryLoop(store store.Store, client *Client, logger *slog.Logger, interval, maxAge time.Duration) *RecoveryLoop {
+func NewRecoveryLoop(store store.Store, client Enqueuer, logger *slog.Logger, interval, maxAge time.Duration) *RecoveryLoop {
 	if interval <= 0 {
 		interval = 60 * time.Second
 	}

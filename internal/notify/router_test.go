@@ -251,20 +251,14 @@ func TestRouter_MultiChannel_PartialFailure(t *testing.T) {
 }
 
 func TestRouter_UnregisteredChannel(t *testing.T) {
-	r := makeRouter(t,
+	// NewRouter 现在会在创建时校验规则引用的渠道是否已注册
+	_, err := NewRouter(
 		WithRules([]RoutingRule{
 			{RepoPattern: "*", Channels: []string{"nonexistent-channel"}},
 		}),
 	)
-
-	msg := Message{
-		EventType: EventPRReviewDone,
-		Target:    Target{Owner: "org", Repo: "repo", Number: 1},
-	}
-
-	err := r.Send(context.Background(), msg)
 	if err == nil {
-		t.Fatal("Send() should return error for unregistered channel")
+		t.Fatal("NewRouter() should return error for unregistered channel in rules")
 	}
 	if !errors.Is(err, ErrNotifierNotFound) {
 		t.Errorf("error should wrap ErrNotifierNotFound, got: %v", err)
@@ -298,6 +292,40 @@ func TestRouter_WildcardEventType(t *testing.T) {
 
 	if len(n.calls) != 3 {
 		t.Errorf("notifier called %d times, want 3", len(n.calls))
+	}
+}
+
+func TestRouter_Send_ContextCancelled(t *testing.T) {
+	n1 := &stubNotifier{name: "ch1"}
+	n2 := &stubNotifier{name: "ch2"}
+	r := makeRouter(t,
+		WithNotifier(n1),
+		WithNotifier(n2),
+		WithRules([]RoutingRule{
+			{RepoPattern: "*", Channels: []string{"ch1", "ch2"}},
+		}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	msg := Message{
+		EventType: EventPRReviewDone,
+		Target:    Target{Owner: "org", Repo: "repo", Number: 1},
+		Title:     "测试取消",
+		Body:      "context 取消场景",
+	}
+
+	err := r.Send(ctx, msg)
+	if err == nil {
+		t.Fatal("Send() 应在 context 取消时返回错误")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("期望 context.Canceled 错误，实际: %v", err)
+	}
+	// context 已取消，路由器应在检测到取消后不再尝试任何渠道
+	if len(n1.calls) != 0 || len(n2.calls) != 0 {
+		t.Errorf("取消后不应调用任何渠道，ch1 调用 %d 次，ch2 调用 %d 次", len(n1.calls), len(n2.calls))
 	}
 }
 

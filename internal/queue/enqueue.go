@@ -15,13 +15,13 @@ import (
 
 // EnqueueHandler 实现 webhook.Handler 接口，将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
-	client *Client
+	client Enqueuer
 	store  store.Store
 	logger *slog.Logger
 }
 
 // NewEnqueueHandler 创建 EnqueueHandler 实例
-func NewEnqueueHandler(client *Client, store store.Store, logger *slog.Logger) *EnqueueHandler {
+func NewEnqueueHandler(client Enqueuer, store store.Store, logger *slog.Logger) *EnqueueHandler {
 	return &EnqueueHandler{
 		client: client,
 		store:  store,
@@ -178,7 +178,7 @@ func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayl
 	record.Status = model.TaskStatusQueued
 	record.UpdatedAt = time.Now()
 	if err := h.store.UpdateTask(ctx, record); err != nil {
-		h.logger.WarnContext(ctx, "更新任务状态为 queued 失败",
+		h.logger.ErrorContext(ctx, "更新任务状态为 queued 失败",
 			"task_id", record.ID,
 			"error", err,
 		)

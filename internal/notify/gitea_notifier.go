@@ -72,6 +72,9 @@ func (n *GiteaNotifier) Send(ctx context.Context, msg Message) error {
 		"event", msg.EventType,
 	)
 
+	// 提前快速失败：如果 context 已取消则避免网络调用。
+	// 注意：此检查存在 TOCTOU 窗口，底层 HTTP 客户端也会处理 context 取消，
+	// 此处仅为减少无效网络请求的优化。
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("发送通知前 context 已取消: %w", err)
 	}

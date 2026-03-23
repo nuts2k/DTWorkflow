@@ -2,7 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes
@@ -19,19 +19,21 @@ services:
     build:
       context: .
       dockerfile: build/Dockerfile
+    command: ["serve"]
     ports:
       - "8080:8080"
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
     environment:
       - DTWORKFLOW_REDIS_ADDR=redis:6379
+      - DTWORKFLOW_DB_PATH=/app/data/dtworkflow.db
       - DTWORKFLOW_WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - DTWORKFLOW_GITEA_URL=${GITEA_URL}
       - DTWORKFLOW_GITEA_TOKEN=${GITEA_TOKEN}

@@ -13,6 +13,17 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
+// ContainerExitError 容器退出错误，包含容器 ID、退出码和错误信息
+type ContainerExitError struct {
+	ContainerID string
+	ExitCode    int64
+	Message     string
+}
+
+func (e *ContainerExitError) Error() string {
+	return fmt.Sprintf("容器 %s 退出错误 (code=%d): %s", e.ContainerID, e.ExitCode, e.Message)
+}
+
 // DockerClient Docker SDK 操作接口（便于 mock 测试）
 type DockerClient interface {
 	// ImageExists 检查镜像是否存在于本地
@@ -133,9 +144,11 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 
 	// 构建主机资源配置
 	hostCfg := &container.HostConfig{
+		SecurityOpt: []string{"no-new-privileges"},
 		Resources: container.Resources{
 			NanoCPUs: nanoCPUs,
 			Memory:   memBytes,
+			PidsLimit: int64Ptr(512),
 		},
 	}
 
@@ -179,7 +192,11 @@ func (d *dockerClient) WaitContainer(ctx context.Context, containerID string) (i
 		}
 	case status := <-statusCh:
 		if status.Error != nil {
-			return status.StatusCode, fmt.Errorf("容器 %s 退出错误: %s", containerID, status.Error.Message)
+			return status.StatusCode, &ContainerExitError{
+				ContainerID: containerID,
+				ExitCode:    status.StatusCode,
+				Message:     status.Error.Message,
+			}
 		}
 		return status.StatusCode, nil
 	case <-ctx.Done():
@@ -234,4 +251,9 @@ func (d *dockerClient) ListContainers(ctx context.Context, f filters.Args) ([]co
 // Close 关闭 Docker 客户端连接
 func (d *dockerClient) Close() error {
 	return d.cli.Close()
+}
+
+// int64Ptr 返回 int64 值的指针，用于 Docker API 中需要 *int64 的字段
+func int64Ptr(v int64) *int64 {
+	return &v
 }

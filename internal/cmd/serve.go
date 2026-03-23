@@ -22,7 +22,8 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
-// serve 命令的 CLI flags
+// TODO(M1.8): 将 serve 命令的全局配置变量封装为 serveConfig 结构体，
+// 使 runServe 接受配置参数而非读取全局变量，便于测试隔离和并行测试。
 var (
 	serveHost          string
 	servePort          int
@@ -108,6 +109,10 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 		return nil, nil, fmt.Errorf("初始化 asynq Client 失败: %w", err)
 	}
 	cleanups = append(cleanups, func() { _ = queueClient.Close() })
+	// 创建后验证 Redis 连通性（非致命，降级运行）
+	if err := queueClient.Ping(context.Background()); err != nil {
+		slog.Warn("Redis 连接检查失败，队列功能可能不可用", "error", err)
+	}
 
 	// 4. 初始化 Docker Client 和 Worker Pool
 	dockerClient, err := worker.NewDockerClient()
@@ -118,7 +123,7 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 	cleanups = append(cleanups, func() { _ = dockerClient.Close() })
 
 	// TODO: 后续通过 CLI flags 或 Viper 配置文件暴露以下配置
-	pool := worker.NewPool(worker.PoolConfig{
+	pool, err := worker.NewPool(worker.PoolConfig{
 		Image:        serveWorkerImage,
 		CPULimit:     "2.0",
 		MemoryLimit:  "4g",
@@ -127,6 +132,10 @@ func BuildServiceDeps() (*ServiceDeps, func(), error) {
 		ClaudeAPIKey: serveClaudeAPIKey,
 		NetworkName:  "dtworkflow-net",
 	}, dockerClient)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("初始化 Worker Pool 失败: %w", err)
+	}
 	cleanups = append(cleanups, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -206,21 +215,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		c.AbortWithStatus(http.StatusInternalServerError)
 	}))
 
-	// storePinger 是一个可选接口，Store 实现了此接口时可用于健康检查
-	type storePinger interface {
-		Ping(ctx context.Context) error
-	}
-
 	// 健康检查（包含 Redis 和 SQLite 状态）
 	router.GET("/healthz", func(c *gin.Context) {
 		ctx := c.Request.Context()
 		redisOK := deps.QueueClient.Ping(ctx) == nil
 		poolStats := deps.Pool.Stats()
-
-		sqliteOK := true
-		if pinger, ok := deps.Store.(storePinger); ok {
-			sqliteOK = pinger.Ping(ctx) == nil
-		}
+		sqliteOK := deps.Store.Ping(ctx) == nil
 
 		status := "ok"
 		httpStatus := http.StatusOK
@@ -273,6 +273,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	server := &http.Server{
 		Handler:           router,
+		ReadTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,

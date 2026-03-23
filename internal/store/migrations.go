@@ -73,6 +73,8 @@ func RunMigrations(db *sql.DB) error {
 
 	for _, m := range migrations {
 		// 检查该版本是否已执行
+		// 注意：此查询在事务外执行，依赖 NewSQLiteStore 中 MaxOpenConns=1 的串行保证，
+		// 不会出现并发迁移竞争。若未来放宽连接数限制，需将版本检查移入事务内。
 		var exists int
 		err := db.QueryRow("SELECT 1 FROM schema_migrations WHERE version = ?", m.Version).Scan(&exists)
 		if err == nil {

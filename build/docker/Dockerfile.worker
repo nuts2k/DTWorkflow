@@ -3,6 +3,9 @@
 ARG CLAUDE_CODE_VERSION=0.2
 FROM node:20.18.0-bookworm-slim
 
+# FROM 之后重新声明 ARG，使其在当前构建阶段可用
+ARG CLAUDE_CODE_VERSION
+
 # 安装 Git 和常用工具
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

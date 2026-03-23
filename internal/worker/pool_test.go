@@ -35,6 +35,33 @@ func defaultPayload() model.TaskPayload {
 	}
 }
 
+// mustNewPool 创建 Pool，失败则终止测试
+func mustNewPool(t *testing.T, config PoolConfig, docker DockerClient) *Pool {
+	t.Helper()
+	pool, err := NewPool(config, docker)
+	if err != nil {
+		t.Fatalf("NewPool 返回非预期错误: %v", err)
+	}
+	return pool
+}
+
+// TestPool_NewPoolValidation 验证 NewPool 配置校验
+func TestPool_NewPoolValidation(t *testing.T) {
+	mock := &mockDockerClient{}
+
+	// Image 为空应返回错误
+	_, err := NewPool(PoolConfig{}, mock)
+	if err == nil {
+		t.Error("Image 为空时 NewPool 应返回错误")
+	}
+
+	// Image 非空应成功
+	_, err = NewPool(defaultPoolConfig(), mock)
+	if err != nil {
+		t.Errorf("NewPool 返回非预期错误: %v", err)
+	}
+}
+
 // TestPool_RunSuccess 测试容器正常执行并返回成功结果
 func TestPool_RunSuccess(t *testing.T) {
 	mock := &mockDockerClient{
@@ -53,7 +80,7 @@ func TestPool_RunSuccess(t *testing.T) {
 		},
 	}
 
-	pool := NewPool(defaultPoolConfig(), mock)
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
 	result, err := pool.Run(context.Background(), defaultPayload())
 	if err != nil {
 		t.Fatalf("Run 返回非预期错误: %v", err)
@@ -88,7 +115,7 @@ func TestPool_RunContainerRemoved(t *testing.T) {
 		},
 	}
 
-	pool := NewPool(defaultPoolConfig(), mock)
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
 	_, _ = pool.Run(context.Background(), defaultPayload())
 
 	if !removed {
@@ -116,7 +143,7 @@ func TestPool_RunContextCancelled(t *testing.T) {
 		},
 	}
 
-	pool := NewPool(defaultPoolConfig(), mock)
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
 	_, err := pool.Run(ctx, defaultPayload())
 	if err == nil {
 		t.Error("ctx 取消后 Run 应返回错误")
@@ -129,7 +156,7 @@ func TestPool_RunContextCancelled(t *testing.T) {
 // TestPool_Stats 验证统计数据更新
 func TestPool_Stats(t *testing.T) {
 	mock := &mockDockerClient{}
-	pool := NewPool(defaultPoolConfig(), mock)
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
 
 	stats := pool.Stats()
 	if stats.Active != 0 {
@@ -161,7 +188,7 @@ func TestPool_Shutdown(t *testing.T) {
 		},
 	}
 
-	pool := NewPool(defaultPoolConfig(), mock)
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
 
 	// 在 goroutine 中运行任务
 	go func() {
@@ -206,7 +233,7 @@ func TestPool_DefaultNetworkName(t *testing.T) {
 		},
 	}
 
-	pool := NewPool(config, mock)
+	pool := mustNewPool(t, config, mock)
 	pool.Run(context.Background(), defaultPayload())
 
 	if capturedNetworkName != "dtworkflow-net" {

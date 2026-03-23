@@ -27,12 +27,19 @@ const (
 	QueueLow      = "low"
 )
 
+// Enqueuer 定义任务入队能力的接口，便于测试时注入 mock
+type Enqueuer interface {
+	Enqueue(ctx context.Context, payload model.TaskPayload, opts EnqueueOptions) (string, error)
+}
+
 // Client 封装 asynq.Client，提供任务入队能力
 type Client struct {
 	inner      *asynq.Client
-	redisOpt   asynq.RedisConnOpt
 	pingClient redis.UniversalClient // 缓存的 Redis 客户端，用于 Ping 健康检查
 }
+
+// 编译时检查 *Client 实现 Enqueuer 接口
+var _ Enqueuer = (*Client)(nil)
 
 // EnqueueOptions 入队选项
 type EnqueueOptions struct {
@@ -42,13 +49,15 @@ type EnqueueOptions struct {
 }
 
 // NewClient 创建并返回一个新的 Client
-func NewClient(redisOpt asynq.RedisClientOpt) (*Client, error) {
+// redisOpt 接受 asynq.RedisConnOpt 接口类型（如 asynq.RedisClientOpt、asynq.RedisClusterClientOpt 等）
+// 注意：创建时不验证 Redis 连通性，调用方可通过 Ping() 方法按需检查。
+func NewClient(redisOpt asynq.RedisConnOpt) (*Client, error) {
 	inner := asynq.NewClient(redisOpt)
 	pingClient, ok := redisOpt.MakeRedisClient().(redis.UniversalClient)
 	if !ok {
 		return nil, fmt.Errorf("NewClient: 不支持的 Redis 客户端类型")
 	}
-	return &Client{inner: inner, redisOpt: redisOpt, pingClient: pingClient}, nil
+	return &Client{inner: inner, pingClient: pingClient}, nil
 }
 
 // Enqueue 将任务 payload 序列化后入队，返回 asynq 任务 ID

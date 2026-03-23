@@ -79,7 +79,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 // CreateTask 创建任务记录
 func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) error {
 	if record == nil {
-		return fmt.Errorf("创建任务记录失败: record 不能为 nil")
+		return fmt.Errorf("创建任务记录失败: %w", ErrNilRecord)
 	}
 	if record.ID == "" {
 		return fmt.Errorf("创建任务记录失败: %w", ErrInvalidID)
@@ -123,6 +123,10 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) 
 
 // GetTask 按 ID 获取任务记录，未找到返回 nil, nil
 func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.TaskRecord, error) {
+	if id == "" {
+		return nil, fmt.Errorf("查询任务失败: %w", ErrInvalidID)
+	}
+
 	const query = `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
 		created_at, updated_at, started_at, completed_at
@@ -142,7 +146,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.TaskRecord
 // UpdateTask 更新任务记录，自动刷新 updated_at
 func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) error {
 	if record == nil {
-		return fmt.Errorf("更新任务记录失败: record 不能为 nil")
+		return fmt.Errorf("更新任务记录失败: %w", ErrNilRecord)
 	}
 	payloadJSON, err := json.Marshal(record.Payload)
 	if err != nil {
@@ -254,6 +258,11 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model
 
 // FindByDeliveryID 按 delivery_id + task_type 查找任务（幂等去重），未找到返回 nil, nil
 func (s *SQLiteStore) FindByDeliveryID(ctx context.Context, deliveryID string, taskType model.TaskType) (*model.TaskRecord, error) {
+	// 空 deliveryID 不可能匹配有效的幂等记录，直接返回未找到
+	if deliveryID == "" {
+		return nil, nil
+	}
+
 	const query = `SELECT id, asynq_id, task_type, status, priority, payload, repo_full_name,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
 		created_at, updated_at, started_at, completed_at
@@ -278,7 +287,8 @@ func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration)
 		result, error, retry_count, max_retry, worker_id, delivery_id,
 		created_at, updated_at, started_at, completed_at
 	FROM tasks WHERE status = 'pending' AND created_at < ?
-	ORDER BY created_at ASC`
+	ORDER BY created_at ASC
+	LIMIT 1000`
 
 	rows, err := s.db.QueryContext(ctx, query, threshold)
 	if err != nil {

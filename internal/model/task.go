@@ -65,7 +65,10 @@ func (p TaskPriority) IsValid() bool {
 // TaskPayload 任务定位符（非完整快照）
 // Processor 执行时通过 Gitea API 获取最新数据
 type TaskPayload struct {
-	TaskType   TaskType `json:"task_type"`
+	// TaskType 与 TaskRecord.TaskType 存在设计上的冗余：
+	// TaskRecord.TaskType 用于 SQLite 列查询和索引过滤；
+	// TaskPayload.TaskType 随 JSON 序列化传递给 asynq Worker，使 Processor 无需反查数据库即可路由任务。
+	TaskType TaskType `json:"task_type"`
 	DeliveryID string   `json:"delivery_id,omitempty"` // Webhook delivery ID，用于幂等
 
 	// 仓库定位（所有任务类型共享）

@@ -14,11 +14,11 @@ import (
 
 // mockStore 实现 store.Store 接口的内存 mock
 type mockStore struct {
-	tasks         map[string]*model.TaskRecord
-	byDeliveryID  map[string]*model.TaskRecord
-	createErr     error
-	updateErr     error
-	findErr       error
+	tasks        map[string]*model.TaskRecord
+	byDeliveryID map[string]*model.TaskRecord
+	createErr    error
+	updateErr    error
+	findErr      error
 }
 
 func newMockStore() *mockStore {
@@ -80,13 +80,13 @@ func (m *mockStore) Ping(_ context.Context) error { return nil }
 
 func (m *mockStore) Close() error { return nil }
 
-// mockClient 模拟 Client 的 Enqueue 行为
-type mockClient struct {
+// mockEnqueuer 实现 Enqueuer 接口的 mock
+type mockEnqueuer struct {
 	enqueueErr error
 	enqueuedID string
 }
 
-func (mc *mockClient) Enqueue(_ context.Context, _ model.TaskPayload, opts EnqueueOptions) (string, error) {
+func (mc *mockEnqueuer) Enqueue(_ context.Context, _ model.TaskPayload, opts EnqueueOptions) (string, error) {
 	if mc.enqueueErr != nil {
 		return "", mc.enqueueErr
 	}
@@ -97,120 +97,14 @@ func (mc *mockClient) Enqueue(_ context.Context, _ model.TaskPayload, opts Enque
 	return id, nil
 }
 
-// enqueueHandlerWithMockClient 使用 mock client 的 EnqueueHandler（测试辅助）
-type enqueueHandlerWithMockClient struct {
-	client *mockClient
-	store  store.Store
-	logger *slog.Logger
-}
-
-func (h *enqueueHandlerWithMockClient) HandlePullRequest(ctx context.Context, event webhook.PullRequestEvent) error {
-	// 复用 EnqueueHandler 的逻辑，但使用 mockClient
-	existing, err := h.store.FindByDeliveryID(ctx, event.DeliveryID, model.TaskTypeReviewPR)
-	if err != nil {
-		return err
-	}
-	if existing != nil {
-		return nil
-	}
-
-	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeReviewPR,
-		DeliveryID:   event.DeliveryID,
-		RepoOwner:    event.Repository.Owner,
-		RepoName:     event.Repository.Name,
-		RepoFullName: event.Repository.FullName,
-		CloneURL:     event.Repository.CloneURL,
-		PRNumber:     event.PullRequest.Number,
-	}
-
-	now := time.Now()
-	record := &model.TaskRecord{
-		ID:           "test-id-1",
-		TaskType:     model.TaskTypeReviewPR,
-		Status:       model.TaskStatusPending,
-		Priority:     model.PriorityHigh,
-		Payload:      payload,
-		RepoFullName: event.Repository.FullName,
-		DeliveryID:   event.DeliveryID,
-		MaxRetry:     TaskMaxRetry(),
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-	if err := h.store.CreateTask(ctx, record); err != nil {
-		return err
-	}
-
-	asynqID, err := h.client.Enqueue(ctx, payload, EnqueueOptions{Priority: model.PriorityHigh, TaskID: record.ID})
-	if err != nil {
-		return nil // 入队失败保持 pending，由 recovery 处理
-	}
-
-	record.AsynqID = asynqID
-	record.Status = model.TaskStatusQueued
-	record.UpdatedAt = time.Now()
-	_ = h.store.UpdateTask(ctx, record)
-	return nil
-}
-
-func (h *enqueueHandlerWithMockClient) HandleIssueLabel(ctx context.Context, event webhook.IssueLabelEvent) error {
-	if !event.AutoFixAdded {
-		return nil
-	}
-	existing, err := h.store.FindByDeliveryID(ctx, event.DeliveryID, model.TaskTypeFixIssue)
-	if err != nil {
-		return err
-	}
-	if existing != nil {
-		return nil
-	}
-
-	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
-		DeliveryID:   event.DeliveryID,
-		RepoOwner:    event.Repository.Owner,
-		RepoName:     event.Repository.Name,
-		RepoFullName: event.Repository.FullName,
-		IssueNumber:  event.Issue.Number,
-	}
-
-	now := time.Now()
-	record := &model.TaskRecord{
-		ID:           "test-id-2",
-		TaskType:     model.TaskTypeFixIssue,
-		Status:       model.TaskStatusPending,
-		Priority:     model.PriorityNormal,
-		Payload:      payload,
-		RepoFullName: event.Repository.FullName,
-		DeliveryID:   event.DeliveryID,
-		MaxRetry:     TaskMaxRetry(),
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-	if err := h.store.CreateTask(ctx, record); err != nil {
-		return err
-	}
-
-	asynqID, err := h.client.Enqueue(ctx, payload, EnqueueOptions{Priority: model.PriorityNormal, TaskID: record.ID})
-	if err != nil {
-		return nil
-	}
-
-	record.AsynqID = asynqID
-	record.Status = model.TaskStatusQueued
-	record.UpdatedAt = time.Now()
-	_ = h.store.UpdateTask(ctx, record)
-	return nil
-}
-
 func TestHandlePullRequest_CreatesTask(t *testing.T) {
 	s := newMockStore()
-	mc := &mockClient{enqueuedID: "asynq-123"}
-	h := &enqueueHandlerWithMockClient{client: mc, store: s, logger: slog.Default()}
+	mc := &mockEnqueuer{enqueuedID: "asynq-123"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
-		DeliveryID: "delivery-001",
-		Repository: webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo"},
+		DeliveryID:  "delivery-001",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 42},
 	}
 
@@ -219,26 +113,27 @@ func TestHandlePullRequest_CreatesTask(t *testing.T) {
 	}
 
 	// 验证任务已创建且状态为 queued
-	record, err := s.GetTask(context.Background(), "test-id-1")
-	if err != nil {
-		t.Fatalf("GetTask error: %v", err)
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
 	}
-	if record.Status != model.TaskStatusQueued {
-		t.Errorf("task status = %q, want %q", record.Status, model.TaskStatusQueued)
-	}
-	if record.AsynqID == "" {
-		t.Error("task AsynqID should not be empty")
+	for _, record := range s.tasks {
+		if record.Status != model.TaskStatusQueued {
+			t.Errorf("task status = %q, want %q", record.Status, model.TaskStatusQueued)
+		}
+		if record.AsynqID == "" {
+			t.Error("task AsynqID should not be empty")
+		}
 	}
 }
 
 func TestHandlePullRequest_Idempotent(t *testing.T) {
 	s := newMockStore()
-	mc := &mockClient{enqueuedID: "asynq-456"}
-	h := &enqueueHandlerWithMockClient{client: mc, store: s, logger: slog.Default()}
+	mc := &mockEnqueuer{enqueuedID: "asynq-456"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
-		DeliveryID: "delivery-dup",
-		Repository: webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo"},
+		DeliveryID:  "delivery-dup",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 1},
 	}
 
@@ -259,12 +154,12 @@ func TestHandlePullRequest_Idempotent(t *testing.T) {
 
 func TestHandlePullRequest_EnqueueFail_KeepsPending(t *testing.T) {
 	s := newMockStore()
-	mc := &mockClient{enqueueErr: errors.New("redis unavailable")}
-	h := &enqueueHandlerWithMockClient{client: mc, store: s, logger: slog.Default()}
+	mc := &mockEnqueuer{enqueueErr: errors.New("redis unavailable")}
+	h := NewEnqueueHandler(mc, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
-		DeliveryID: "delivery-fail",
-		Repository: webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo"},
+		DeliveryID:  "delivery-fail",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 99},
 	}
 
@@ -273,25 +168,26 @@ func TestHandlePullRequest_EnqueueFail_KeepsPending(t *testing.T) {
 	}
 
 	// 任务应存在，状态仍为 pending（未被更新为 queued）
-	record, err := s.GetTask(context.Background(), "test-id-1")
-	if err != nil {
-		t.Fatalf("GetTask error: %v", err)
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
 	}
-	if record.Status != model.TaskStatusPending {
-		t.Errorf("task status = %q, want %q", record.Status, model.TaskStatusPending)
+	for _, record := range s.tasks {
+		if record.Status != model.TaskStatusPending {
+			t.Errorf("task status = %q, want %q", record.Status, model.TaskStatusPending)
+		}
 	}
 }
 
 func TestHandleIssueLabel_OnlyWhenAutoFixAdded(t *testing.T) {
 	s := newMockStore()
-	mc := &mockClient{enqueuedID: "asynq-789"}
-	h := &enqueueHandlerWithMockClient{client: mc, store: s, logger: slog.Default()}
+	mc := &mockEnqueuer{enqueuedID: "asynq-789"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
 
 	// AutoFixAdded=false，不应创建任务
 	event := webhook.IssueLabelEvent{
 		DeliveryID:   "delivery-issue-1",
 		AutoFixAdded: false,
-		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo"},
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		Issue:        webhook.IssueRef{Number: 10},
 	}
 	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
@@ -305,7 +201,7 @@ func TestHandleIssueLabel_OnlyWhenAutoFixAdded(t *testing.T) {
 	event2 := webhook.IssueLabelEvent{
 		DeliveryID:   "delivery-issue-2",
 		AutoFixAdded: true,
-		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo"},
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		Issue:        webhook.IssueRef{Number: 20},
 	}
 	if err := h.HandleIssueLabel(context.Background(), event2); err != nil {

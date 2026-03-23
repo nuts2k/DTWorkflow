@@ -35,6 +35,13 @@ func NewProcessor(pool PoolRunner, store store.Store, logger *slog.Logger) *Proc
 	}
 }
 
+// shouldRetry 判断当前任务是否还有剩余重试机会
+func shouldRetry(ctx context.Context) bool {
+	retryCount, rcOk := asynq.GetRetryCount(ctx)
+	maxRetry, mrOk := asynq.GetMaxRetry(ctx)
+	return rcOk && mrOk && maxRetry > 0 && retryCount < maxRetry-1
+}
+
 // ProcessTask 是 asynq.Handler 的实现，处理单个任务
 func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	// 1. 反序列化 payload
@@ -84,18 +91,17 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	record.UpdatedAt = completedAt
 
 	if runErr != nil {
-		// 根据 asynq 重试上下文判断是否为最后一次重试：
-		// - 无法获取重试信息（context 不含 asynq 元数据）：视为已失败
-		// - 非最后一次重试：设为 retrying，asynq 将自动安排下次重试
-		// - 最后一次重试：设为 failed，不会再有重试机会
-		retryCount, rcOk := asynq.GetRetryCount(ctx)
-		maxRetry, mrOk := asynq.GetMaxRetry(ctx)
-		if rcOk && mrOk && maxRetry > 0 && retryCount < maxRetry-1 {
+		// 根据 shouldRetry 判断是否还有剩余重试机会：
+		// - 有剩余重试：设为 retrying，asynq 将自动安排下次重试
+		// - 无剩余重试或无法获取重试信息：设为 failed
+		if shouldRetry(ctx) {
 			record.Status = model.TaskStatusRetrying
 		} else {
 			record.Status = model.TaskStatusFailed
 		}
 		record.Error = runErr.Error()
+		retryCount, _ := asynq.GetRetryCount(ctx)
+		maxRetry, _ := asynq.GetMaxRetry(ctx)
 		p.logger.ErrorContext(ctx, "任务执行失败",
 			"task_id", taskID,
 			"error", runErr,
@@ -104,17 +110,13 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		)
 	} else if result != nil && result.ExitCode != 0 {
 		// 退出码 2 为确定性失败（如参数错误），直接标记 failed 不重试
-		// 其他非零退出码可能是暂时性问题，按重试上下文判断
+		// 其他非零退出码可能是暂时性问题，按 shouldRetry 判断
 		if result.ExitCode == 2 {
 			record.Status = model.TaskStatusFailed
+		} else if shouldRetry(ctx) {
+			record.Status = model.TaskStatusRetrying
 		} else {
-			retryCount, rcOk := asynq.GetRetryCount(ctx)
-			maxRetry, mrOk := asynq.GetMaxRetry(ctx)
-			if rcOk && mrOk && maxRetry > 0 && retryCount < maxRetry-1 {
-				record.Status = model.TaskStatusRetrying
-			} else {
-				record.Status = model.TaskStatusFailed
-			}
+			record.Status = model.TaskStatusFailed
 		}
 		record.Error = result.Error
 		record.Result = result.Output
@@ -143,7 +145,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		)
 	}
 
-	// TODO: 任务完成后通过 Gitea API 发送评论通知（M1.7 通知框架实现后接入）
+	// TODO: 接入 notify.Router 发送任务完成通知（M1.8 配置管理完成后集成）
 
 	if runErr != nil {
 		return fmt.Errorf("任务执行失败: %w", runErr)

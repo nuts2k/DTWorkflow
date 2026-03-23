@@ -24,7 +24,8 @@ var _ notify.GiteaCommentCreator = (*giteaCommentAdapter)(nil)
 // (a) 将 body string 包装为 CreateIssueCommentOption{Body: body}
 // (b) 丢弃 *Comment 和 *Response 返回值，只保留 error
 //
-// TODO: 在 M1.8 配置管理完成后，通过此适配器将 GiteaNotifier 接入通知框架。
+// TODO(M1.8): 在配置管理完成后，通过此适配器将 GiteaNotifier 接入通知框架。
+// 届时在 BuildServiceDeps 中构造 notify.GiteaNotifier{Creator: &giteaCommentAdapter{client: giteaClient}}。
 type giteaCommentAdapter struct {
 	client *gitea.Client
 }

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -379,5 +380,47 @@ func TestClose_Idempotent(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("第二次 Close 失败: %v", err)
+	}
+}
+
+func TestCreateTask_NilRecord(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	err := s.CreateTask(ctx, nil)
+	if err == nil {
+		t.Fatal("CreateTask(nil) 应返回错误")
+	}
+	if !errors.Is(err, ErrNilRecord) {
+		t.Errorf("期望错误包含 ErrNilRecord，得到: %v", err)
+	}
+}
+
+func TestGetTask_EmptyID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	got, err := s.GetTask(ctx, "")
+	if err == nil {
+		t.Fatal("GetTask('') 应返回错误")
+	}
+	if !errors.Is(err, ErrInvalidID) {
+		t.Errorf("期望错误包含 ErrInvalidID，得到: %v", err)
+	}
+	if got != nil {
+		t.Error("GetTask('') 应返回 nil record")
+	}
+}
+
+func TestFindByDeliveryID_EmptyDeliveryID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	got, err := s.FindByDeliveryID(ctx, "", model.TaskTypeReviewPR)
+	if err != nil {
+		t.Fatalf("FindByDeliveryID('', ...) 应返回 nil error，但返回: %v", err)
+	}
+	if got != nil {
+		t.Error("FindByDeliveryID('', ...) 应返回 nil record")
 	}
 }

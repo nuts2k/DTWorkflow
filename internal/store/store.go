@@ -11,6 +11,7 @@ import (
 var (
 	ErrTaskNotFound = errors.New("任务不存在")
 	ErrInvalidID    = errors.New("任务 ID 不能为空")
+	ErrNilRecord    = errors.New("record 不能为 nil")
 )
 
 // Store 任务持久化接口
@@ -23,6 +24,7 @@ type Store interface {
 
 	// UpdateTask 更新任务记录。
 	// 注意：此方法会修改传入 record 的 UpdatedAt 字段为当前时间。
+	// 当目标任务不存在时返回 ErrTaskNotFound。
 	UpdateTask(ctx context.Context, record *model.TaskRecord) error
 
 	// ListTasks 列表查询任务
