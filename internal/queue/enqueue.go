@@ -58,6 +58,10 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		HeadSHA:      event.PullRequest.HeadSHA,
 	}
 
+	if payload.RepoFullName == "" || payload.CloneURL == "" {
+		return fmt.Errorf("webhook 数据不完整: RepoFullName 或 CloneURL 为空")
+	}
+
 	record := &model.TaskRecord{
 		TaskType:     model.TaskTypeReviewPR,
 		Priority:     model.PriorityHigh,
@@ -108,6 +112,10 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 		CloneURL:     event.Repository.CloneURL,
 		IssueNumber:  event.Issue.Number,
 		IssueTitle:   event.Issue.Title,
+	}
+
+	if payload.RepoFullName == "" || payload.CloneURL == "" {
+		return fmt.Errorf("webhook 数据不完整: RepoFullName 或 CloneURL 为空")
 	}
 
 	record := &model.TaskRecord{

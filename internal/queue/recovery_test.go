@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hibiken/asynq"
+
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 )
@@ -90,6 +92,31 @@ func (r *recoveryLoopWithMock) recover(ctx context.Context) {
 	}
 }
 
+// recoverWithConflict 与 production 代码 requeue 逻辑一致，处理 ErrTaskIDConflict 分支
+func (r *recoveryLoopWithMock) recoverWithConflict(ctx context.Context) {
+	orphans, err := r.store.ListOrphanTasks(ctx, r.maxAge)
+	if err != nil {
+		return
+	}
+	for _, record := range orphans {
+		asynqID, err := r.client.Enqueue(ctx, record.Payload, EnqueueOptions{
+			Priority: record.Priority,
+			TaskID:   record.ID,
+		})
+		if err != nil {
+			if errors.Is(err, asynq.ErrTaskIDConflict) {
+				asynqID = record.ID
+			} else {
+				continue
+			}
+		}
+		record.AsynqID = asynqID
+		record.Status = model.TaskStatusQueued
+		record.UpdatedAt = time.Now()
+		_ = r.store.UpdateTask(ctx, record)
+	}
+}
+
 func TestRecoveryLoop_RequeuesOrphans(t *testing.T) {
 	orphan := &model.TaskRecord{
 		ID:       "orphan-1",
@@ -125,6 +152,35 @@ func TestRecoveryLoop_NoOrphans(t *testing.T) {
 
 	if len(s.updated) != 0 {
 		t.Errorf("expected 0 updates when no orphans, got %d", len(s.updated))
+	}
+}
+
+func TestRecoveryLoop_ErrTaskIDConflict_StillUpdatesQueued(t *testing.T) {
+	orphan := &model.TaskRecord{
+		ID:       "orphan-conflict-1",
+		TaskType: model.TaskTypeReviewPR,
+		Status:   model.TaskStatusPending,
+		Priority: model.PriorityHigh,
+		Payload:  model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+	}
+
+	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
+	// 模拟入队返回 ErrTaskIDConflict（任务已在 asynq 队列中）
+	mc := &mockClientForRecovery{enqueueErr: asynq.ErrTaskIDConflict}
+	r := &recoveryLoopWithMock{store: s, client: mc, logger: slog.Default(), maxAge: 120 * time.Second}
+
+	// 修改 recover 方法以匹配 production 代码中的 ErrTaskIDConflict 处理逻辑
+	r.recoverWithConflict(context.Background())
+
+	if len(s.updated) != 1 {
+		t.Fatalf("expected 1 updated record on ErrTaskIDConflict, got %d", len(s.updated))
+	}
+	if s.updated[0].Status != model.TaskStatusQueued {
+		t.Errorf("updated status = %q, want %q", s.updated[0].Status, model.TaskStatusQueued)
+	}
+	// ErrTaskIDConflict 时 AsynqID 应设为记录本身的 ID
+	if s.updated[0].AsynqID != "orphan-conflict-1" {
+		t.Errorf("updated AsynqID = %q, want %q", s.updated[0].AsynqID, "orphan-conflict-1")
 	}
 }
 

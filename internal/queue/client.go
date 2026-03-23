@@ -27,8 +27,9 @@ const (
 
 // Client 封装 asynq.Client，提供任务入队能力
 type Client struct {
-	inner    *asynq.Client
-	redisOpt asynq.RedisConnOpt
+	inner      *asynq.Client
+	redisOpt   asynq.RedisConnOpt
+	pingClient redis.UniversalClient // 缓存的 Redis 客户端，用于 Ping 健康检查
 }
 
 // EnqueueOptions 入队选项
@@ -41,7 +42,11 @@ type EnqueueOptions struct {
 // NewClient 创建并返回一个新的 Client
 func NewClient(redisOpt asynq.RedisClientOpt) (*Client, error) {
 	inner := asynq.NewClient(redisOpt)
-	return &Client{inner: inner, redisOpt: redisOpt}, nil
+	pingClient, ok := redisOpt.MakeRedisClient().(redis.UniversalClient)
+	if !ok {
+		return nil, fmt.Errorf("NewClient: 不支持的 Redis 客户端类型")
+	}
+	return &Client{inner: inner, redisOpt: redisOpt, pingClient: pingClient}, nil
 }
 
 // Enqueue 将任务 payload 序列化后入队，返回 asynq 任务 ID
@@ -62,21 +67,19 @@ func (c *Client) Enqueue(ctx context.Context, payload model.TaskPayload, opts En
 	return info.ID, nil
 }
 
-// Ping 检测 Redis 连接是否可用
+// Ping 检测 Redis 连接是否可用，复用缓存的 pingClient 而非每次创建新连接
 func (c *Client) Ping(ctx context.Context) error {
-	rc, ok := c.redisOpt.MakeRedisClient().(*redis.Client)
-	if !ok {
-		return fmt.Errorf("Ping: 不支持的 Redis 客户端类型")
-	}
-	defer rc.Close()
-	if err := rc.Ping(ctx).Err(); err != nil {
+	if err := c.pingClient.Ping(ctx).Err(); err != nil {
 		return fmt.Errorf("Redis Ping 失败: %w", err)
 	}
 	return nil
 }
 
-// Close 关闭底层 asynq 客户端
+// Close 关闭底层 asynq 客户端和缓存的 Redis 连接
 func (c *Client) Close() error {
+	if c.pingClient != nil {
+		_ = c.pingClient.Close()
+	}
 	return c.inner.Close()
 }
 

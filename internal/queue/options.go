@@ -29,7 +29,11 @@ func TaskMaxRetry() int {
 
 // TaskRetryDelay 返回第 retryCount 次重试的指数退避延迟
 // base=30s，factor=2，即 30s, 60s, 120s ...
+// retryCount 为负数时按 0 处理
 func TaskRetryDelay(retryCount int) time.Duration {
+	if retryCount < 0 {
+		retryCount = 0
+	}
 	base := 30 * time.Second
 	delay := float64(base) * math.Pow(2, float64(retryCount))
 	return time.Duration(delay)

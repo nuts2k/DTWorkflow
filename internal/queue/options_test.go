@@ -33,10 +33,13 @@ func TestTaskMaxRetry(t *testing.T) {
 
 func TestTaskRetryDelay(t *testing.T) {
 	// base=30s, factor=2: 第0次=30s, 第1次=60s, 第2次=120s
+	// 负数 retryCount 按 0 处理，返回 base 值 30s
 	tests := []struct {
 		retryCount int
 		expected   time.Duration
 	}{
+		{-1, 30 * time.Second},  // 负数防御
+		{-10, 30 * time.Second}, // 负数防御
 		{0, 30 * time.Second},
 		{1, 60 * time.Second},
 		{2, 120 * time.Second},

@@ -51,6 +51,11 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 	taskID := record.ID
 
+	// 从 asynq context 中获取当前重试次数并更新记录
+	if retryCount, ok := asynq.GetRetryCount(ctx); ok {
+		record.RetryCount = retryCount
+	}
+
 	p.logger.InfoContext(ctx, "开始处理任务",
 		"task_id", taskID,
 		"task_type", payload.TaskType,
@@ -120,7 +125,8 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		return fmt.Errorf("任务执行失败: %w", runErr)
 	}
 	if result != nil && result.ExitCode != 0 {
-		return fmt.Errorf("任务执行失败，退出码: %d", result.ExitCode)
+		// 非零退出码属于确定性失败，跳过重试
+		return fmt.Errorf("任务执行失败，退出码 %d: %w", result.ExitCode, asynq.SkipRetry)
 	}
 	return nil
 }
