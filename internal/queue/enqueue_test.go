@@ -18,6 +18,8 @@ type mockStore struct {
 	byDeliveryID map[string]*model.TaskRecord
 	createErr    error
 	updateErr    error
+	failUpdateAt int
+	updateCalls  int
 	findErr      error
 }
 
@@ -49,8 +51,12 @@ func (m *mockStore) GetTask(_ context.Context, id string) (*model.TaskRecord, er
 }
 
 func (m *mockStore) UpdateTask(_ context.Context, record *model.TaskRecord) error {
+	m.updateCalls++
 	if m.updateErr != nil {
 		return m.updateErr
+	}
+	if m.failUpdateAt > 0 && m.updateCalls == m.failUpdateAt {
+		return errors.New("update failed at configured call")
 	}
 	m.tasks[record.ID] = record
 	return nil

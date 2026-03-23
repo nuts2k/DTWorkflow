@@ -2,14 +2,18 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/hibiken/asynq"
 	"github.com/spf13/cobra"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 )
 
@@ -18,6 +22,7 @@ import (
 // 这在单元测试中需要手动保存/恢复全局状态。后续迭代中应重构为与 serve.go 一致的
 // 依赖注入模式（提取 taskConfig 结构体 + 注入 Store 实例），提升可测试性。
 var taskStore store.Store
+var taskQueueClient *queue.Client
 
 // task 子命令的 flags
 var (
@@ -25,25 +30,87 @@ var (
 	taskListStatus string
 	taskListLimit  int
 	taskDBPath     string
+	taskRedisAddr  string
 )
+
+type taskEnqueuer interface {
+	Enqueue(ctx context.Context, payload model.TaskPayload, opts queue.EnqueueOptions) (string, error)
+}
+
+func buildRetryTaskID(deliveryID string, taskType model.TaskType) string {
+	if deliveryID != "" {
+		return fmt.Sprintf("%s:%s", deliveryID, taskType)
+	}
+	return ""
+}
+
+func retryTask(ctx context.Context, s store.Store, q taskEnqueuer, id string) (*model.TaskRecord, string, error) {
+	record, err := s.GetTask(ctx, id)
+	if err != nil {
+		return nil, "", fmt.Errorf("查询任务失败: %w", err)
+	}
+	if record == nil {
+		return nil, "", fmt.Errorf("任务 %s 不存在", id)
+	}
+	if record.Status != model.TaskStatusFailed && record.Status != model.TaskStatusCancelled {
+		return nil, "", fmt.Errorf("任务 %s 状态为 %s，只有 failed 或 cancelled 状态的任务可以重试", id, record.Status)
+	}
+	if !record.Payload.TaskType.IsValid() {
+		return nil, "", fmt.Errorf("任务 %s 的 TaskType 非法: %s", id, record.Payload.TaskType)
+	}
+
+	taskID := buildRetryTaskID(record.DeliveryID, record.TaskType)
+	asynqID, err := q.Enqueue(ctx, record.Payload, queue.EnqueueOptions{Priority: record.Priority, TaskID: taskID})
+	message := "任务已重新入队"
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		asynqID = taskID
+		message = "任务已在队列中，状态已同步为 queued"
+	} else if err != nil {
+		return nil, "", fmt.Errorf("任务重新入队失败: %w", err)
+	}
+
+	record.RetryCount = 0
+	record.Error = ""
+	record.StartedAt = nil
+	record.CompletedAt = nil
+	record.WorkerID = ""
+	record.Status = model.TaskStatusQueued
+	record.AsynqID = asynqID
+	record.UpdatedAt = time.Now()
+	if err := s.UpdateTask(ctx, record); err != nil {
+		return nil, "", fmt.Errorf("任务可能已重新入队，但状态同步失败: %w", err)
+	}
+	return record, message, nil
+}
 
 var taskCmd = &cobra.Command{
 	Use:   "task",
 	Short: "管理任务",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// 初始化 SQLite Store
 		var err error
 		taskStore, err = store.NewSQLiteStore(taskDBPath)
 		if err != nil {
 			return fmt.Errorf("初始化数据库失败: %w", err)
 		}
+		taskQueueClient, err = queue.NewClient(asynq.RedisClientOpt{Addr: taskRedisAddr})
+		if err != nil {
+			_ = taskStore.Close()
+			taskStore = nil
+			return fmt.Errorf("初始化队列客户端失败: %w", err)
+		}
 		return nil
 	},
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
-		if taskStore != nil {
-			return taskStore.Close()
+		var errs []error
+		if taskQueueClient != nil {
+			errs = append(errs, taskQueueClient.Close())
+			taskQueueClient = nil
 		}
-		return nil
+		if taskStore != nil {
+			errs = append(errs, taskStore.Close())
+			taskStore = nil
+		}
+		return errors.Join(errs...)
 	},
 }
 
@@ -154,42 +221,20 @@ var taskRetryCmd = &cobra.Command{
 		ctx := cmd.Context()
 		id := args[0]
 
-		record, err := taskStore.GetTask(ctx, id)
+		record, message, err := retryTask(ctx, taskStore, taskQueueClient, id)
 		if err != nil {
-			return &ExitCodeError{Code: 1, Err: fmt.Errorf("查询任务失败: %w", err)}
-		}
-		if record == nil {
-			return &ExitCodeError{Code: 1, Err: fmt.Errorf("任务 %s 不存在", id)}
+			return &ExitCodeError{Code: 1, Err: err}
 		}
 
-		// 只有 failed 或 cancelled 的任务可以重试
-		if record.Status != model.TaskStatusFailed && record.Status != model.TaskStatusCancelled {
-			return &ExitCodeError{
-				Code: 1,
-				Err:  fmt.Errorf("任务 %s 状态为 %s，只有 failed 或 cancelled 状态的任务可以重试", id, record.Status),
-			}
-		}
-
-		// 重置重试计数和状态，同时更新时间戳以便 RecoveryLoop 及时检测
-		record.RetryCount = 0
-		record.Status = model.TaskStatusPending
-		record.Error = ""
-		record.UpdatedAt = time.Now()
-
-		if err := taskStore.UpdateTask(ctx, record); err != nil {
-			return &ExitCodeError{Code: 1, Err: fmt.Errorf("更新任务失败: %w", err)}
-		}
-
-		// 注意：此处仅重置 Store 中的状态为 pending，不直接入队。
-		// 任务将由 RecoveryLoop 在下一个扫描周期（默认 60s）内自动重新入队。
 		PrintResult(map[string]any{
-			"id":      id,
-			"status":  string(model.TaskStatusPending),
-			"message": "任务已重置，将由 RecoveryLoop 在约 60 秒内自动重新入队",
+			"id":       id,
+			"status":   string(record.Status),
+			"asynq_id": record.AsynqID,
+			"message":  message,
 		}, func(data any) string {
 			var sb strings.Builder
-			fmt.Fprintf(&sb, "任务 %s 已重置为 pending 状态\n", id)
-			fmt.Fprintf(&sb, "任务将由 serve 进程的 RecoveryLoop 自动重新入队（约 60 秒内），请确保 dtworkflow serve 正在运行\n")
+			fmt.Fprintf(&sb, "%s\n", message)
+			fmt.Fprintf(&sb, "当前状态: %s\n", record.Status)
 			return sb.String()
 		})
 		return nil
@@ -200,6 +245,9 @@ func init() {
 	taskCmd.PersistentFlags().StringVar(&taskDBPath, "db-path",
 		getEnvDefault("DTWORKFLOW_DB_PATH", "data/dtworkflow.db"),
 		"SQLite 数据库路径（也可通过 DTWORKFLOW_DB_PATH 环境变量设置）")
+	taskCmd.PersistentFlags().StringVar(&taskRedisAddr, "redis-addr",
+		getEnvDefault("DTWORKFLOW_REDIS_ADDR", "localhost:6379"),
+		"Redis 地址（也可通过 DTWORKFLOW_REDIS_ADDR 环境变量设置）")
 
 	taskListCmd.Flags().StringVar(&taskListRepo, "repo", "", "按仓库过滤")
 	taskListCmd.Flags().StringVar(&taskListStatus, "status", "", "按状态过滤")

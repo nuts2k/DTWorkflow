@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 )
 
 // getFreePort 获取一个可用的随机端口
@@ -54,6 +56,133 @@ func newTestConfig(t *testing.T) serveConfig {
 }
 
 // TestServe_Healthz 测试 /healthz（liveness）端点始终返回 200
+func TestBuildNotifier_NilClient(t *testing.T) {
+	router, err := buildNotifier(nil)
+	if err != nil {
+		t.Fatalf("buildNotifier(nil) error: %v", err)
+	}
+	if router != nil {
+		t.Fatal("buildNotifier(nil) should return nil router")
+	}
+}
+
+func TestBuildNotifier_WithClient(t *testing.T) {
+	client, err := gitea.NewClient("https://gitea.example.com", gitea.WithToken("test-token"))
+	if err != nil {
+		t.Fatalf("NewClient error: %v", err)
+	}
+	router, err := buildNotifier(client)
+	if err != nil {
+		t.Fatalf("buildNotifier(client) error: %v", err)
+	}
+	if router == nil {
+		t.Fatal("buildNotifier(client) should return non-nil router")
+	}
+}
+
+func TestComputeReadyStatus_DegradedWhenWorkerImageMissing(t *testing.T) {
+	payload, httpStatus := computeReadyStatus(readinessSnapshot{
+		RedisOK:            true,
+		SQLiteOK:           true,
+		GiteaConfigured:    true,
+		NotifierEnabled:    true,
+		WorkerImagePresent: false,
+		ActiveWorkers:      0,
+	})
+	if httpStatus != http.StatusServiceUnavailable {
+		t.Fatalf("http status = %d, want %d", httpStatus, http.StatusServiceUnavailable)
+	}
+	if payload["worker_image_present"] != false {
+		t.Fatalf("worker_image_present = %v, want false", payload["worker_image_present"])
+	}
+}
+
+func TestBuildServiceDeps_WithoutGiteaConfig_NotifierIsNil(t *testing.T) {
+	cfg := newTestConfig(t)
+	skipIfNoRedis(t, cfg.RedisAddr)
+	deps, cleanup, err := BuildServiceDeps(cfg)
+	if err != nil {
+		t.Fatalf("BuildServiceDeps error: %v", err)
+	}
+	defer cleanup()
+	if deps.Notifier != nil {
+		t.Fatal("deps.Notifier should be nil when Gitea config is absent")
+	}
+	if deps.GiteaConfigured {
+		t.Fatal("deps.GiteaConfigured should be false when Gitea config is absent")
+	}
+	if deps.NotifierEnabled {
+		t.Fatal("deps.NotifierEnabled should be false when notifier is absent")
+	}
+}
+
+func TestBuildServiceDeps_WithGiteaConfig_BuildsNotifier(t *testing.T) {
+	cfg := newTestConfig(t)
+	skipIfNoRedis(t, cfg.RedisAddr)
+	cfg.GiteaURL = "https://gitea.example.com"
+	cfg.GiteaToken = "test-token"
+	deps, cleanup, err := BuildServiceDeps(cfg)
+	if err != nil {
+		t.Fatalf("BuildServiceDeps error: %v", err)
+	}
+	defer cleanup()
+	if deps.Notifier == nil {
+		t.Fatal("deps.Notifier should be non-nil when Gitea config is present")
+	}
+	if !deps.GiteaConfigured {
+		t.Fatal("deps.GiteaConfigured should be true when Gitea config is present")
+	}
+	if !deps.NotifierEnabled {
+		t.Fatal("deps.NotifierEnabled should be true when notifier is present")
+	}
+}
+
+func TestComputeReadyStatus_DegradedWhenGiteaMissing(t *testing.T) {
+	payload, httpStatus := computeReadyStatus(readinessSnapshot{
+		RedisOK:            true,
+		SQLiteOK:           true,
+		GiteaConfigured:    false,
+		NotifierEnabled:    false,
+		WorkerImagePresent: true,
+		ActiveWorkers:      0,
+	})
+	if httpStatus != http.StatusServiceUnavailable {
+		t.Fatalf("http status = %d, want %d", httpStatus, http.StatusServiceUnavailable)
+	}
+	if payload["status"] != "degraded" {
+		t.Fatalf("status = %v, want degraded", payload["status"])
+	}
+	if payload["gitea_configured"] != false {
+		t.Fatalf("gitea_configured = %v, want false", payload["gitea_configured"])
+	}
+	if payload["notifier_enabled"] != false {
+		t.Fatalf("notifier_enabled = %v, want false", payload["notifier_enabled"])
+	}
+}
+
+func TestComputeReadyStatus_OkWhenAllCriticalDepsPresent(t *testing.T) {
+	payload, httpStatus := computeReadyStatus(readinessSnapshot{
+		RedisOK:            true,
+		SQLiteOK:           true,
+		GiteaConfigured:    true,
+		NotifierEnabled:    true,
+		WorkerImagePresent: true,
+		ActiveWorkers:      1,
+	})
+	if httpStatus != http.StatusOK {
+		t.Fatalf("http status = %d, want %d", httpStatus, http.StatusOK)
+	}
+	if payload["status"] != "ok" {
+		t.Fatalf("status = %v, want ok", payload["status"])
+	}
+	if payload["worker_image_present"] != true {
+		t.Fatalf("worker_image_present = %v, want true", payload["worker_image_present"])
+	}
+	if payload["active_workers"] != 1 {
+		t.Fatalf("active_workers = %v, want 1", payload["active_workers"])
+	}
+}
+
 func TestServe_Healthz(t *testing.T) {
 	cfg := newTestConfig(t)
 	skipIfNoRedis(t, cfg.RedisAddr)
@@ -147,9 +276,9 @@ func TestServe_Readyz(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Redis 可用时 readyz 应返回 200
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Redis 可用时状态码应为 200, got %d", resp.StatusCode)
+	// 缺少 Gitea 配置时，即使 Redis/SQLite 可用，readyz 也应返回 503
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("缺少 Gitea 配置时状态码应为 503, got %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -162,17 +291,29 @@ func TestServe_Readyz(t *testing.T) {
 		t.Fatalf("JSON 解析失败: %v, body: %s", err, body)
 	}
 
-	if result["status"] != "ok" {
-		t.Errorf("Redis 可用时 status 应为 ok, got %v", result["status"])
+	if result["status"] != "degraded" {
+		t.Errorf("缺少关键依赖时 status 应为 degraded, got %v", result["status"])
 	}
 	if _, exists := result["version"]; !exists {
 		t.Error("响应应包含 version 字段")
 	}
-	if _, exists := result["redis"]; !exists {
-		t.Error("响应应包含 redis 字段")
+	if result["redis"] != true {
+		t.Errorf("redis 应为 true, got %v", result["redis"])
 	}
-	if _, exists := result["sqlite"]; !exists {
-		t.Error("响应应包含 sqlite 字段")
+	if result["sqlite"] != true {
+		t.Errorf("sqlite 应为 true, got %v", result["sqlite"])
+	}
+	if result["gitea_configured"] != false {
+		t.Errorf("gitea_configured 应为 false, got %v", result["gitea_configured"])
+	}
+	if result["notifier_enabled"] != false {
+		t.Errorf("notifier_enabled 应为 false, got %v", result["notifier_enabled"])
+	}
+	if _, exists := result["worker_image_present"]; !exists {
+		t.Error("响应应包含 worker_image_present 字段")
+	}
+	if _, exists := result["active_workers"]; !exists {
+		t.Error("响应应包含 active_workers 字段")
 	}
 
 	close(stopCh)

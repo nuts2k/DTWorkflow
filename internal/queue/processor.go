@@ -10,6 +10,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
@@ -22,17 +23,24 @@ type PoolRunner interface {
 	Run(ctx context.Context, payload model.TaskPayload) (*worker.ExecutionResult, error)
 }
 
+// TaskNotifier 抽象通知发送接口，便于在 Processor 中解耦 Router 实现并进行测试。
+type TaskNotifier interface {
+	Send(ctx context.Context, msg notify.Message) error
+}
+
 // Processor 处理 asynq 任务，协调 Store 状态更新与 PoolRunner 执行
 type Processor struct {
-	pool   PoolRunner
-	store  store.Store
-	logger *slog.Logger
+	pool     PoolRunner
+	store    store.Store
+	notifier TaskNotifier
+	logger   *slog.Logger
 }
 
 // NewProcessor 创建 Processor 实例。
 // 参数 pool 和 store 为必要依赖，传入 nil 属于编程错误（programming error），
 // 因此使用 panic 而非返回 error，与 Go 标准库的惯例一致。
-func NewProcessor(pool PoolRunner, store store.Store, logger *slog.Logger) *Processor {
+// notifier 为可选依赖，传入 nil 表示当前运行模式未启用通知。
+func NewProcessor(pool PoolRunner, store store.Store, notifier TaskNotifier, logger *slog.Logger) *Processor {
 	if pool == nil {
 		panic("NewProcessor: pool 不能为 nil")
 	}
@@ -43,9 +51,10 @@ func NewProcessor(pool PoolRunner, store store.Store, logger *slog.Logger) *Proc
 		logger = slog.Default()
 	}
 	return &Processor{
-		pool:   pool,
-		store:  store,
-		logger: logger,
+		pool:     pool,
+		store:    store,
+		notifier: notifier,
+		logger:   logger,
 	}
 }
 
@@ -159,7 +168,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		record.CompletedAt = &completedAt
 	}
 
+	finalStatePersisted := true
 	if err := p.store.UpdateTask(ctx, record); err != nil {
+		finalStatePersisted = false
 		p.logger.ErrorContext(ctx, "更新任务最终状态失败",
 			"task_id", taskID,
 			"status", record.Status,
@@ -167,7 +178,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		)
 	}
 
-	// TODO: 接入 notify.Router 发送任务完成通知（M1.8 配置管理完成后集成）
+	if finalStatePersisted {
+		p.sendCompletionNotification(ctx, record)
+	}
 
 	if runErr != nil {
 		return fmt.Errorf("任务执行失败: %w", runErr)
@@ -185,6 +198,107 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 // findRecord 根据 payload 中的 delivery_id 查找任务记录，
 // 当 delivery_id 查找不到时回退到按 task ID 查找（支持 RecoveryLoop 场景）
+func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord) {
+	if p.notifier == nil || record == nil {
+		return
+	}
+	msg, ok := p.buildNotificationMessage(record)
+	if !ok {
+		return
+	}
+	if err := p.notifier.Send(ctx, msg); err != nil {
+		p.logger.ErrorContext(ctx, "发送任务完成通知失败",
+			"task_id", record.ID,
+			"status", record.Status,
+			"error", err,
+		)
+	}
+}
+
+func (p *Processor) buildNotificationMessage(record *model.TaskRecord) (notify.Message, bool) {
+	if record == nil {
+		return notify.Message{}, false
+	}
+	if record.Status != model.TaskStatusSucceeded && record.Status != model.TaskStatusFailed {
+		return notify.Message{}, false
+	}
+
+	payload := record.Payload
+	if payload.RepoOwner == "" || payload.RepoName == "" {
+		return notify.Message{}, false
+	}
+
+	body := fmt.Sprintf("任务 %s 执行完成\n\n仓库：%s\n任务类型：%s\n状态：%s", record.ID, payload.RepoFullName, payload.TaskType, record.Status)
+	if record.Error != "" {
+		body += fmt.Sprintf("\n错误：%s", record.Error)
+	}
+
+	switch payload.TaskType {
+	case model.TaskTypeReviewPR:
+		if payload.PRNumber <= 0 {
+			return notify.Message{}, false
+		}
+		if record.Status == model.TaskStatusSucceeded {
+			return notify.Message{
+				EventType: notify.EventPRReviewDone,
+				Severity:  notify.SeverityInfo,
+				Target: notify.Target{
+					Owner:  payload.RepoOwner,
+					Repo:   payload.RepoName,
+					Number: payload.PRNumber,
+					IsPR:   true,
+				},
+				Title: "PR 自动评审任务完成",
+				Body:  body,
+			}, true
+		}
+		return notify.Message{
+			EventType: notify.EventSystemError,
+			Severity:  notify.SeverityWarning,
+			Target: notify.Target{
+				Owner:  payload.RepoOwner,
+				Repo:   payload.RepoName,
+				Number: payload.PRNumber,
+				IsPR:   true,
+			},
+			Title: "PR 自动评审任务失败",
+			Body:  body,
+		}, true
+	case model.TaskTypeFixIssue:
+		if payload.IssueNumber <= 0 {
+			return notify.Message{}, false
+		}
+		if record.Status == model.TaskStatusSucceeded {
+			return notify.Message{
+				EventType: notify.EventFixIssueDone,
+				Severity:  notify.SeverityInfo,
+				Target: notify.Target{
+					Owner:  payload.RepoOwner,
+					Repo:   payload.RepoName,
+					Number: payload.IssueNumber,
+					IsPR:   false,
+				},
+				Title: "Issue 自动修复任务完成",
+				Body:  body,
+			}, true
+		}
+		return notify.Message{
+			EventType: notify.EventSystemError,
+			Severity:  notify.SeverityWarning,
+			Target: notify.Target{
+				Owner:  payload.RepoOwner,
+				Repo:   payload.RepoName,
+				Number: payload.IssueNumber,
+				IsPR:   false,
+			},
+			Title: "Issue 自动修复任务失败",
+			Body:  body,
+		}, true
+	default:
+		return notify.Message{}, false
+	}
+}
+
 func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (*model.TaskRecord, error) {
 	// 优先通过 delivery_id 查找（适用于 webhook 触发的任务）
 	if payload.DeliveryID != "" {

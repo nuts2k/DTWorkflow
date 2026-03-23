@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
@@ -81,17 +82,71 @@ func init() {
 
 // ServiceDeps 封装 serve 命令运行时的所有依赖
 type ServiceDeps struct {
-	Store       store.Store
-	GiteaClient *gitea.Client
-	QueueClient *queue.Client
-	AsynqServer *asynq.Server
-	Pool        *worker.Pool
-	Recovery    *queue.RecoveryLoop
-	GC          *worker.GarbageCollector
-	Handler     webhook.Handler
+	Store              store.Store
+	GiteaClient        *gitea.Client
+	QueueClient        *queue.Client
+	AsynqServer        *asynq.Server
+	Pool               *worker.Pool
+	Recovery           *queue.RecoveryLoop
+	GC                 *worker.GarbageCollector
+	Handler            webhook.Handler
+	Notifier           queue.TaskNotifier
+	GiteaConfigured    bool
+	NotifierEnabled    bool
+	WorkerImagePresent bool
+}
+
+type readinessSnapshot struct {
+	RedisOK            bool
+	SQLiteOK           bool
+	GiteaConfigured    bool
+	NotifierEnabled    bool
+	WorkerImagePresent bool
+	ActiveWorkers      int
+}
+
+func computeReadyStatus(s readinessSnapshot) (map[string]any, int) {
+	status := "ok"
+	httpStatus := http.StatusOK
+	if !s.RedisOK || !s.SQLiteOK || !s.GiteaConfigured || !s.NotifierEnabled || !s.WorkerImagePresent {
+		status = "degraded"
+		httpStatus = http.StatusServiceUnavailable
+	}
+	return map[string]any{
+		"status":               status,
+		"version":              version,
+		"redis":                s.RedisOK,
+		"sqlite":               s.SQLiteOK,
+		"gitea_configured":     s.GiteaConfigured,
+		"notifier_enabled":     s.NotifierEnabled,
+		"worker_image_present": s.WorkerImagePresent,
+		"active_workers":       s.ActiveWorkers,
+	}, httpStatus
 }
 
 // BuildServiceDeps 从 serveConfig 构建所有依赖，返回 ServiceDeps 和清理函数
+func buildNotifier(giteaClient *gitea.Client) (queue.TaskNotifier, error) {
+	if giteaClient == nil {
+		return nil, nil
+	}
+
+	giteaNotifier, err := notify.NewGiteaNotifier(&giteaCommentAdapter{client: giteaClient}, notify.WithLogger(slog.Default()))
+	if err != nil {
+		return nil, fmt.Errorf("构造 GiteaNotifier 失败: %w", err)
+	}
+
+	router, err := notify.NewRouter(
+		notify.WithNotifier(giteaNotifier),
+		notify.WithRules([]notify.RoutingRule{{RepoPattern: "*", Channels: []string{"gitea"}}}),
+		notify.WithFallback("gitea"),
+		notify.WithRouterLogger(slog.Default()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("构造通知路由失败: %w", err)
+	}
+	return router, nil
+}
+
 func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	var cleanups []func()
 	cleanup := func() {
@@ -108,13 +163,21 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	cleanups = append(cleanups, func() { _ = s.Close() })
 
 	// 2. 初始化 Gitea Client
+	giteaConfigured := cfg.GiteaURL != "" && cfg.GiteaToken != ""
 	var giteaClient *gitea.Client
-	if cfg.GiteaURL != "" && cfg.GiteaToken != "" {
+	if giteaConfigured {
 		giteaClient, err = gitea.NewClient(cfg.GiteaURL, gitea.WithToken(cfg.GiteaToken))
 		if err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("初始化 Gitea Client 失败: %w", err)
 		}
+	}
+
+	// 2.1 初始化可选通知路由
+	notifier, err := buildNotifier(giteaClient)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
 	}
 
 	// 3. 初始化 asynq Client（用于入队）
@@ -138,6 +201,12 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 		return nil, nil, fmt.Errorf("初始化 Docker Client 失败: %w", err)
 	}
 	cleanups = append(cleanups, func() { _ = dockerClient.Close() })
+
+	workerImagePresent, err := dockerClient.ImageExists(context.Background(), cfg.WorkerImage)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("检查 Worker 镜像失败: %w", err)
+	}
 
 	cpuLimit := cfg.CPULimit
 	if cpuLimit == "" {
@@ -193,14 +262,18 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	gc := worker.NewGarbageCollector(dockerClient)
 
 	return &ServiceDeps{
-		Store:       s,
-		GiteaClient: giteaClient,
-		QueueClient: queueClient,
-		AsynqServer: asynqServer,
-		Pool:        pool,
-		Recovery:    recovery,
-		GC:          gc,
-		Handler:     handler,
+		Store:              s,
+		GiteaClient:        giteaClient,
+		QueueClient:        queueClient,
+		AsynqServer:        asynqServer,
+		Pool:               pool,
+		Recovery:           recovery,
+		GC:                 gc,
+		Handler:            handler,
+		Notifier:           notifier,
+		GiteaConfigured:    giteaConfigured,
+		NotifierEnabled:    notifier != nil,
+		WorkerImagePresent: workerImagePresent,
 	}, cleanup, nil
 }
 
@@ -295,26 +368,18 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		})
 	})
 
-	// Readiness 探针：检查所有子系统状态，degraded 时返回 503
+	// Readiness 探针：检查执行任务所需的关键前提，缺失时返回 503
 	router.GET("/readyz", func(c *gin.Context) {
 		ctx := c.Request.Context()
-		redisOK := deps.QueueClient.Ping(ctx) == nil
-		poolStats := deps.Pool.Stats()
-		sqliteOK := deps.Store.Ping(ctx) == nil
-
-		status := "ok"
-		httpStatus := http.StatusOK
-		if !redisOK || !sqliteOK {
-			status = "degraded"
-			httpStatus = http.StatusServiceUnavailable
-		}
-		c.JSON(httpStatus, gin.H{
-			"status":         status,
-			"version":        version,
-			"redis":          redisOK,
-			"sqlite":         sqliteOK,
-			"active_workers": poolStats.Active,
+		payload, httpStatus := computeReadyStatus(readinessSnapshot{
+			RedisOK:            deps.QueueClient.Ping(ctx) == nil,
+			SQLiteOK:           deps.Store.Ping(ctx) == nil,
+			GiteaConfigured:    deps.GiteaConfigured,
+			NotifierEnabled:    deps.NotifierEnabled,
+			WorkerImagePresent: deps.WorkerImagePresent,
+			ActiveWorkers:      deps.Pool.Stats().Active,
 		})
+		c.JSON(httpStatus, payload)
 	})
 
 	// 注册 Webhook 路由，注入 EnqueueHandler
@@ -324,7 +389,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	})
 
 	// 启动 asynq Processor（消费端）
-	processor := queue.NewProcessor(deps.Pool, deps.Store, slog.Default())
+	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default())
 	mux := asynq.NewServeMux()
 	mux.Handle(queue.AsynqTypeReviewPR, processor)
 	mux.Handle(queue.AsynqTypeFixIssue, processor)

@@ -11,6 +11,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
@@ -22,6 +23,16 @@ type mockPoolRunner struct {
 
 func (m *mockPoolRunner) Run(_ context.Context, _ model.TaskPayload) (*worker.ExecutionResult, error) {
 	return m.result, m.err
+}
+
+type stubNotifier struct {
+	messages []notify.Message
+	err      error
+}
+
+func (s *stubNotifier) Send(_ context.Context, msg notify.Message) error {
+	s.messages = append(s.messages, msg)
+	return s.err
 }
 
 // buildAsynqTask 构建测试用的 asynq.Task（仅序列化 payload，不依赖 ResultWriter）
@@ -40,6 +51,73 @@ func seedRecord(s *mockStore, record *model.TaskRecord) {
 	if record.DeliveryID != "" {
 		key := record.DeliveryID + ":" + string(record.TaskType)
 		s.byDeliveryID[key] = record
+	}
+}
+
+func TestNewProcessor_WithNotifier(t *testing.T) {
+	s := newMockStore()
+	pool := &mockPoolRunner{}
+	notifier := &stubNotifier{}
+
+	p := NewProcessor(pool, s, notifier, slog.Default())
+	if p == nil {
+		t.Fatal("NewProcessor should return non-nil processor")
+	}
+}
+
+func TestProcessTask_Success_SendReviewNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-success-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-success",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{
+			ExitCode:    0,
+			Output:      "review ok",
+			ContainerID: "container-review-1",
+		},
+	}
+
+	p := NewProcessor(pool, s, notifier, slog.Default())
+	task := buildAsynqTask(t, payload)
+
+	if err := p.ProcessTask(context.Background(), task); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+	msg := notifier.messages[0]
+	if msg.EventType != notify.EventPRReviewDone {
+		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventPRReviewDone)
+	}
+	if msg.Target.Number != 42 {
+		t.Errorf("target number = %d, want 42", msg.Target.Number)
+	}
+	if !msg.Target.IsPR {
+		t.Error("target IsPR should be true")
+	}
+	if msg.Target.Owner != "org" || msg.Target.Repo != "repo" {
+		t.Errorf("target repo = %s/%s, want org/repo", msg.Target.Owner, msg.Target.Repo)
 	}
 }
 
@@ -72,7 +150,7 @@ func TestProcessTask_Success(t *testing.T) {
 		},
 	}
 
-	p := NewProcessor(pool, s, slog.Default())
+	p := NewProcessor(pool, s, nil, slog.Default())
 	task := buildAsynqTask(t, payload)
 
 	if err := p.ProcessTask(context.Background(), task); err != nil {
@@ -91,6 +169,341 @@ func TestProcessTask_Success(t *testing.T) {
 	}
 	if got.CompletedAt == nil {
 		t.Error("completed_at should be set")
+	}
+}
+
+func TestProcessTask_FailedReview_SendNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-failed-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     7,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-failed",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	p := NewProcessor(&mockPoolRunner{err: errors.New("review failed")}, s, notifier, slog.Default())
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("ProcessTask should return error when review task fails")
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+	msg := notifier.messages[0]
+	if msg.EventType != notify.EventSystemError {
+		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventSystemError)
+	}
+	if msg.Title != "PR 自动评审任务失败" {
+		t.Errorf("title = %q, want %q", msg.Title, "PR 自动评审任务失败")
+	}
+	if msg.Target.Number != 7 || !msg.Target.IsPR {
+		t.Errorf("unexpected target: %+v", msg.Target)
+	}
+}
+
+func TestProcessTask_NotificationFailure_DoesNotAffectTaskResult(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{err: errors.New("notify failed")}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-notify-fail-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     9,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-notify-failed",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	expectedErr := "docker daemon unavailable"
+	p := NewProcessor(&mockPoolRunner{err: errors.New(expectedErr)}, s, notifier, slog.Default())
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("ProcessTask should return original execution error")
+	}
+	if err.Error() != "任务执行失败: "+expectedErr {
+		t.Fatalf("error = %q, want %q", err.Error(), "任务执行失败: "+expectedErr)
+	}
+	got := s.tasks["proc-task-review-notify-failed"]
+	if got.Status != model.TaskStatusFailed {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+}
+
+func TestProcessTask_Success_NotificationFailure_DoesNotAffectTaskResult(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{err: errors.New("notify failed")}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-success-notify-fail-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     11,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-success-notify-failed",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	p := NewProcessor(&mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "review ok"}}, s, notifier, slog.Default())
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask should return nil on success even when notify fails: %v", err)
+	}
+	got := s.tasks["proc-task-review-success-notify-failed"]
+	if got.Status != model.TaskStatusSucceeded {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+}
+
+func TestProcessTask_Success_SendFixIssueNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-success-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  15,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-fix-success",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	p := NewProcessor(&mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "fix done"}}, s, notifier, slog.Default())
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+	msg := notifier.messages[0]
+	if msg.EventType != notify.EventFixIssueDone {
+		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventFixIssueDone)
+	}
+	if msg.Title != "Issue 自动修复任务完成" {
+		t.Errorf("title = %q, want %q", msg.Title, "Issue 自动修复任务完成")
+	}
+	if msg.Target.Number != 15 || msg.Target.IsPR {
+		t.Errorf("unexpected target: %+v", msg.Target)
+	}
+}
+
+func TestProcessTask_FailedFixIssue_SendNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-failed-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  16,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-fix-failed",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	p := NewProcessor(&mockPoolRunner{err: errors.New("fix failed")}, s, notifier, slog.Default())
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("ProcessTask should return error when fix task fails")
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+	msg := notifier.messages[0]
+	if msg.EventType != notify.EventSystemError {
+		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventSystemError)
+	}
+	if msg.Title != "Issue 自动修复任务失败" {
+		t.Errorf("title = %q, want %q", msg.Title, "Issue 自动修复任务失败")
+	}
+	if msg.Target.Number != 16 || msg.Target.IsPR {
+		t.Errorf("unexpected target: %+v", msg.Target)
+	}
+}
+
+func TestProcessTask_GenTests_NoNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		DeliveryID:   "dlv-gentests-success-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-gentests-success",
+		TaskType:   model.TaskTypeGenTests,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	p := NewProcessor(&mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "tests done"}}, s, notifier, slog.Default())
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	}
+}
+
+func TestProcessTask_FinalStatusPersistFailure_NoNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-persist-fail-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     12,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-persist-fail",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	s.failUpdateAt = 2
+	p := NewProcessor(&mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "review ok"}}, s, notifier, slog.Default())
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err != nil {
+		t.Fatalf("ProcessTask should still return nil when final status persist fails: %v", err)
+	}
+	if s.updateCalls != 2 {
+		t.Fatalf("update calls = %d, want 2", s.updateCalls)
+	}
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	}
+}
+
+func TestProcessTask_InvalidTarget_NoNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-invalid-target-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     0,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-invalid-target",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	p := NewProcessor(&mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "done"}}, s, notifier, slog.Default())
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	}
+}
+
+func TestProcessTask_Retrying_NoNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	record := &model.TaskRecord{
+		ID:       "proc-task-retrying-no-notify",
+		TaskType: model.TaskTypeReviewPR,
+		Status:   model.TaskStatusRetrying,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			PRNumber:     1,
+		},
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default())
+	p.sendCompletionNotification(context.Background(), record)
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
 	}
 }
 
@@ -119,7 +532,7 @@ func TestProcessTask_PoolRunFail(t *testing.T) {
 		err: errors.New("docker daemon unavailable"),
 	}
 
-	p := NewProcessor(pool, s, slog.Default())
+	p := NewProcessor(pool, s, nil, slog.Default())
 	task := buildAsynqTask(t, payload)
 
 	err := p.ProcessTask(context.Background(), task)
@@ -164,7 +577,7 @@ func TestProcessTask_NonZeroExitCode(t *testing.T) {
 		},
 	}
 
-	p := NewProcessor(pool, s, slog.Default())
+	p := NewProcessor(pool, s, nil, slog.Default())
 	task := buildAsynqTask(t, payload)
 
 	// 非零退出码应返回 error
@@ -182,7 +595,7 @@ func TestProcessTask_NonZeroExitCode(t *testing.T) {
 func TestProcessTask_InvalidPayload(t *testing.T) {
 	s := newMockStore()
 	pool := &mockPoolRunner{}
-	p := NewProcessor(pool, s, slog.Default())
+	p := NewProcessor(pool, s, nil, slog.Default())
 
 	// 构造损坏的 payload
 	badTask := asynq.NewTask(AsynqTypeReviewPR, []byte("not-json"))
@@ -228,7 +641,7 @@ func TestProcessTask_RetryingStatus(t *testing.T) {
 		err: errors.New("temporary failure"),
 	}
 
-	p := NewProcessor(pool, s, slog.Default())
+	p := NewProcessor(pool, s, nil, slog.Default())
 	task := buildAsynqTask(t, payload)
 
 	err := p.ProcessTask(context.Background(), task)
@@ -246,7 +659,7 @@ func TestProcessTask_RetryingStatus(t *testing.T) {
 func TestProcessTask_RecordNotFound(t *testing.T) {
 	s := newMockStore()
 	pool := &mockPoolRunner{}
-	p := NewProcessor(pool, s, slog.Default())
+	p := NewProcessor(pool, s, nil, slog.Default())
 
 	// payload 有 DeliveryID 但 store 中没有对应记录
 	payload := model.TaskPayload{

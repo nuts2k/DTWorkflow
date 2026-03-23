@@ -10,6 +10,7 @@ const (
 	EventPRRejected        EventType = "pr.rejected"
 	EventIssueAnalysisDone EventType = "issue.analysis.done"
 	EventIssueNeedInfo     EventType = "issue.need_info"
+	EventFixIssueDone      EventType = "fix.issue.done"
 	EventFixPRCreated      EventType = "fix.pr.created"
 	EventE2ETestFailed     EventType = "e2e.test.failed"
 	EventSystemError       EventType = "system.error"
