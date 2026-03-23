@@ -1,0 +1,230 @@
+package worker
+
+import (
+	"testing"
+
+	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+)
+
+func TestBuildContainerEnv_ReviewPR(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token123",
+		ClaudeAPIKey: "sk-claude-key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		PRNumber:     42,
+		HeadRef:      "feature/test",
+		BaseRef:      "main",
+		HeadSHA:      "abc123",
+	}
+
+	env := buildContainerEnv(config, payload)
+
+	// 检查必填字段
+	mustContain := map[string]string{
+		"GITEA_URL":       "http://gitea.example.com",
+		"GITEA_TOKEN":     "token123",
+		"ANTHROPIC_API_KEY": "sk-claude-key",
+		"REPO_CLONE_URL":  "http://gitea.example.com/owner/repo.git",
+		"REPO_OWNER":      "owner",
+		"REPO_NAME":       "repo",
+		"REPO_FULL_NAME":  "owner/repo",
+		"PR_NUMBER":       "42",
+		"HEAD_REF":        "feature/test",
+		"BASE_REF":        "main",
+		"HEAD_SHA":        "abc123",
+	}
+
+	envMap := envSliceToMap(env)
+	for key, expectedVal := range mustContain {
+		if got, ok := envMap[key]; !ok {
+			t.Errorf("缺少环境变量 %s", key)
+		} else if got != expectedVal {
+			t.Errorf("环境变量 %s = %q, 期望 %q", key, got, expectedVal)
+		}
+	}
+
+	// review_pr 不应包含 ISSUE_NUMBER
+	if _, ok := envMap["ISSUE_NUMBER"]; ok {
+		t.Error("review_pr 任务不应包含 ISSUE_NUMBER")
+	}
+}
+
+func TestBuildContainerEnv_FixIssue(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		IssueNumber:  10,
+		IssueTitle:   "Bug in login",
+	}
+
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	if envMap["ISSUE_NUMBER"] != "10" {
+		t.Errorf("ISSUE_NUMBER = %q, 期望 10", envMap["ISSUE_NUMBER"])
+	}
+	if envMap["ISSUE_TITLE"] != "Bug in login" {
+		t.Errorf("ISSUE_TITLE = %q, 期望 Bug in login", envMap["ISSUE_TITLE"])
+	}
+	// fix_issue 不应包含 PR_NUMBER
+	if _, ok := envMap["PR_NUMBER"]; ok {
+		t.Error("fix_issue 任务不应包含 PR_NUMBER")
+	}
+}
+
+func TestBuildContainerEnv_GenTests(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		Module:       "internal/auth",
+	}
+
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	if envMap["MODULE"] != "internal/auth" {
+		t.Errorf("MODULE = %q, 期望 internal/auth", envMap["MODULE"])
+	}
+}
+
+func TestBuildContainerCmd_ReviewPR(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		RepoFullName: "owner/repo",
+		PRNumber:     42,
+	}
+	cmd := buildContainerCmd(payload)
+	if len(cmd) < 3 {
+		t.Fatalf("命令长度不足: %v", cmd)
+	}
+	if cmd[0] != "claude" {
+		t.Errorf("命令第一个参数应为 claude, 得到 %s", cmd[0])
+	}
+	if cmd[1] != "-p" {
+		t.Errorf("命令第二个参数应为 -p, 得到 %s", cmd[1])
+	}
+}
+
+func TestBuildContainerCmd_FixIssue(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		RepoFullName: "owner/repo",
+		IssueNumber:  5,
+		IssueTitle:   "crash on startup",
+	}
+	cmd := buildContainerCmd(payload)
+	if cmd[0] != "claude" || cmd[1] != "-p" {
+		t.Errorf("命令格式错误: %v", cmd)
+	}
+}
+
+func TestBuildContainerCmd_GenTests(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		RepoFullName: "owner/repo",
+	}
+	cmd := buildContainerCmd(payload)
+	if cmd[0] != "claude" || cmd[1] != "-p" {
+		t.Errorf("命令格式错误: %v", cmd)
+	}
+}
+
+func TestParseCPULimit(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int64
+		wantErr  bool
+	}{
+		{"2.0", 2_000_000_000, false},
+		{"1.5", 1_500_000_000, false},
+		{"0.5", 500_000_000, false},
+		{"", 0, false},
+		{"-1", 0, true},
+		{"abc", 0, true},
+	}
+
+	for _, tc := range tests {
+		got, err := parseCPULimit(tc.input)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseCPULimit(%q) 期望错误，但没有", tc.input)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("parseCPULimit(%q) 非预期错误: %v", tc.input, err)
+			}
+			if got != tc.expected {
+				t.Errorf("parseCPULimit(%q) = %d, 期望 %d", tc.input, got, tc.expected)
+			}
+		}
+	}
+}
+
+func TestParseMemoryLimit(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int64
+		wantErr  bool
+	}{
+		{"4g", 4 * 1024 * 1024 * 1024, false},
+		{"512m", 512 * 1024 * 1024, false},
+		{"1024k", 1024 * 1024, false},
+		{"1024", 1024, false},
+		{"", 0, false},
+		{"-1g", 0, true},
+		{"abc", 0, true},
+	}
+
+	for _, tc := range tests {
+		got, err := parseMemoryLimit(tc.input)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseMemoryLimit(%q) 期望错误，但没有", tc.input)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("parseMemoryLimit(%q) 非预期错误: %v", tc.input, err)
+			}
+			if got != tc.expected {
+				t.Errorf("parseMemoryLimit(%q) = %d, 期望 %d", tc.input, got, tc.expected)
+			}
+		}
+	}
+}
+
+// envSliceToMap 将 KEY=VALUE 格式的环境变量切片转换为 map
+func envSliceToMap(env []string) map[string]string {
+	result := make(map[string]string, len(env))
+	for _, e := range env {
+		for i := 0; i < len(e); i++ {
+			if e[i] == '=' {
+				result[e[:i]] = e[i+1:]
+				break
+			}
+		}
+	}
+	return result
+}
