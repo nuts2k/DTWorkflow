@@ -125,6 +125,33 @@ func (gc *GarbageCollector) runOnce(ctx context.Context) {
 		}
 	}
 
+	// 额外扫描 running 状态的容器，对超过 maxAge*2 的记录警告日志供运维关注
+	rf := filters.NewArgs()
+	rf.Add("label", "managed-by=dtworkflow")
+	rf.Add("status", "running")
+	runningContainers, runErr := gc.listContainers(ctx, rf)
+	if runErr != nil {
+		gc.logger.Error("GC 扫描运行中容器列表失败", slog.String("error", runErr.Error()))
+	} else {
+		stuckThreshold := gc.maxAge * 2
+		for _, c := range runningContainers {
+			createdAt := time.Unix(c.Created, 0)
+			age := now.Sub(createdAt)
+			if age > stuckThreshold {
+				shortID := c.ID
+				if len(shortID) > 12 {
+					shortID = shortID[:12]
+				}
+				gc.logger.Warn("发现疑似卡死的运行中容器，请运维关注",
+					slog.String("container_id", shortID),
+					slog.String("name", containerDisplayName(c.Names)),
+					slog.Duration("age", age),
+					slog.Duration("stuck_threshold", stuckThreshold),
+				)
+			}
+		}
+	}
+
 	if cleaned > 0 || len(containers) > 0 {
 		gc.logger.Info("GC 扫描完成",
 			slog.Int("scanned", len(containers)),

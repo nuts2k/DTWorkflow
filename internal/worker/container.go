@@ -8,21 +8,27 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
 
-// sanitizeEnvValue 清理环境变量值，移除可能导致注入的字符
-func sanitizeEnvValue(s string) string {
+// sanitizeInput 清理外部输入，移除可能导致注入的字符
+// 作为 sanitizeEnvValue 和 sanitizePromptInput 的公共基础函数
+func sanitizeInput(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\x00", "")
 	return s
 }
 
+// sanitizeEnvValue 清理环境变量值，移除可能导致注入的字符
+func sanitizeEnvValue(s string) string {
+	return sanitizeInput(s)
+}
+
 // sanitizePromptInput 清理用于 CLI prompt 的用户输入
+// 使用 []rune 按字符截断，避免截断 UTF-8 多字节字符
 func sanitizePromptInput(s string, maxLen int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, "\x00", "")
-	if len(s) > maxLen {
-		s = s[:maxLen]
+	s = sanitizeInput(s)
+	runes := []rune(s)
+	if len(runes) > maxLen {
+		s = string(runes[:maxLen])
 	}
 	return s
 }
@@ -34,10 +40,10 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		fmt.Sprintf("GITEA_URL=%s", config.GiteaURL),
 		fmt.Sprintf("GITEA_TOKEN=%s", config.GiteaToken),
 		fmt.Sprintf("ANTHROPIC_API_KEY=%s", config.ClaudeAPIKey),
-		fmt.Sprintf("REPO_CLONE_URL=%s", payload.CloneURL),
-		fmt.Sprintf("REPO_OWNER=%s", payload.RepoOwner),
-		fmt.Sprintf("REPO_NAME=%s", payload.RepoName),
-		fmt.Sprintf("REPO_FULL_NAME=%s", payload.RepoFullName),
+		fmt.Sprintf("REPO_CLONE_URL=%s", sanitizeEnvValue(payload.CloneURL)),
+		fmt.Sprintf("REPO_OWNER=%s", sanitizeEnvValue(payload.RepoOwner)),
+		fmt.Sprintf("REPO_NAME=%s", sanitizeEnvValue(payload.RepoName)),
+		fmt.Sprintf("REPO_FULL_NAME=%s", sanitizeEnvValue(payload.RepoFullName)),
 		fmt.Sprintf("TASK_TYPE=%s", string(payload.TaskType)),
 	}
 
@@ -46,9 +52,9 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	case model.TaskTypeReviewPR:
 		env = append(env,
 			fmt.Sprintf("PR_NUMBER=%d", payload.PRNumber),
-			fmt.Sprintf("HEAD_REF=%s", payload.HeadRef),
-			fmt.Sprintf("BASE_REF=%s", payload.BaseRef),
-			fmt.Sprintf("HEAD_SHA=%s", payload.HeadSHA),
+			fmt.Sprintf("HEAD_REF=%s", sanitizeEnvValue(payload.HeadRef)),
+			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
+			fmt.Sprintf("HEAD_SHA=%s", sanitizeEnvValue(payload.HeadSHA)),
 		)
 	case model.TaskTypeFixIssue:
 		env = append(env,
@@ -57,7 +63,7 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		)
 	case model.TaskTypeGenTests:
 		if payload.Module != "" {
-			env = append(env, fmt.Sprintf("MODULE=%s", payload.Module))
+			env = append(env, fmt.Sprintf("MODULE=%s", sanitizeEnvValue(payload.Module)))
 		}
 	}
 
@@ -72,12 +78,12 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 	case model.TaskTypeReviewPR:
 		return []string{
 			"claude", "-p",
-			fmt.Sprintf("Review the PR #%d in repository %s. Analyze the code changes, check for bugs, style issues, and security concerns. Provide constructive feedback.", payload.PRNumber, payload.RepoFullName),
+			fmt.Sprintf("Review the PR #%d in repository %s. Analyze the code changes, check for bugs, style issues, and security concerns. Provide constructive feedback.", payload.PRNumber, sanitizePromptInput(payload.RepoFullName, 200)),
 		}
 	case model.TaskTypeFixIssue:
 		return []string{
 			"claude", "-p",
-			fmt.Sprintf("Fix the issue #%d (%s) in repository %s. Clone the repository, understand the issue, implement a fix, and create a pull request.", payload.IssueNumber, sanitizePromptInput(payload.IssueTitle, 500), payload.RepoFullName),
+			fmt.Sprintf("Fix the issue #%d (%s) in repository %s. Clone the repository, understand the issue, implement a fix, and create a pull request.", payload.IssueNumber, sanitizePromptInput(payload.IssueTitle, 500), sanitizePromptInput(payload.RepoFullName, 200)),
 		}
 	case model.TaskTypeGenTests:
 		module := payload.Module
@@ -86,10 +92,10 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 		}
 		return []string{
 			"claude", "-p",
-			fmt.Sprintf("Generate tests for module %s in repository %s. Analyze existing code, identify untested paths, and write comprehensive unit tests.", module, payload.RepoFullName),
+			fmt.Sprintf("Generate tests for module %s in repository %s. Analyze existing code, identify untested paths, and write comprehensive unit tests.", sanitizePromptInput(module, 200), sanitizePromptInput(payload.RepoFullName, 200)),
 		}
 	default:
-		return []string{"claude", "-p", fmt.Sprintf("Process task of type %s for repository %s.", payload.TaskType, payload.RepoFullName)}
+		return []string{"claude", "-p", fmt.Sprintf("Process task of type %s for repository %s.", payload.TaskType, sanitizePromptInput(payload.RepoFullName, 200))}
 	}
 }
 

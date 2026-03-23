@@ -190,6 +190,10 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	select {
 	case <-done:
 		p.logger.Info("Worker 池已关闭")
+		// 关闭 Docker 客户端连接，释放资源
+		if err := p.docker.Close(); err != nil {
+			p.logger.Warn("关闭 Docker 客户端失败", slog.String("error", err.Error()))
+		}
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("Worker 池关闭超时: %w", ctx.Err())

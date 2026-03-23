@@ -170,9 +170,13 @@ func (d *dockerClient) WaitContainer(ctx context.Context, containerID string) (i
 		if err != nil {
 			return -1, fmt.Errorf("等待容器 %s 失败: %w", containerID, err)
 		}
-		// errCh 收到 nil 时，继续等待 statusCh 获取退出码
-		body := <-statusCh
-		return body.StatusCode, nil
+		// errCh 收到 nil 时，继续等待 statusCh 获取退出码（带超时保护）
+		select {
+		case body := <-statusCh:
+			return body.StatusCode, nil
+		case <-ctx.Done():
+			return -1, fmt.Errorf("等待容器 %s 状态超时: %w", containerID, ctx.Err())
+		}
 	case status := <-statusCh:
 		if status.Error != nil {
 			return status.StatusCode, fmt.Errorf("容器 %s 退出错误: %s", containerID, status.Error.Message)
