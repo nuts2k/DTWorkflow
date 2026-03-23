@@ -21,7 +21,8 @@ type Store interface {
 	// GetTask 按 ID 获取任务记录，未找到时返回 (nil, nil)
 	GetTask(ctx context.Context, id string) (*model.TaskRecord, error)
 
-	// UpdateTask 更新任务记录
+	// UpdateTask 更新任务记录。
+	// 注意：此方法会修改传入 record 的 UpdatedAt 字段为当前时间。
 	UpdateTask(ctx context.Context, record *model.TaskRecord) error
 
 	// ListTasks 列表查询任务
@@ -32,6 +33,9 @@ type Store interface {
 
 	// ListOrphanTasks 查询 pending 状态且创建时间超过 maxAge 的孤儿任务
 	ListOrphanTasks(ctx context.Context, maxAge time.Duration) ([]*model.TaskRecord, error)
+
+	// Ping 检测数据库连接是否可用，用于健康检查
+	Ping(ctx context.Context) error
 
 	// Close 关闭底层连接
 	Close() error

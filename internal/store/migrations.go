@@ -83,26 +83,32 @@ func RunMigrations(db *sql.DB) error {
 			return fmt.Errorf("查询迁移版本 %d 失败: %w", m.Version, err)
 		}
 
-		// 在事务中执行迁移
-		tx, err := db.Begin()
-		if err != nil {
-			return fmt.Errorf("开启迁移事务失败 (版本 %d): %w", m.Version, err)
-		}
-
-		if _, err := tx.Exec(m.SQL); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("执行迁移版本 %d 失败: %w", m.Version, err)
-		}
-
-		if _, err := tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", m.Version); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("记录迁移版本 %d 失败: %w", m.Version, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("提交迁移事务失败 (版本 %d): %w", m.Version, err)
+		if err := executeMigration(db, m); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// executeMigration 在事务中执行单个迁移，使用 defer 确保事务回滚安全
+func executeMigration(db *sql.DB, m migration) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务失败 (版本 %d): %w", m.Version, err)
+	}
+	defer tx.Rollback() // Commit 后 Rollback 是安全的无操作
+
+	if _, err := tx.Exec(m.SQL); err != nil {
+		return fmt.Errorf("执行迁移版本 %d 失败: %w", m.Version, err)
+	}
+
+	if _, err := tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", m.Version); err != nil {
+		return fmt.Errorf("记录迁移版本 %d 失败: %w", m.Version, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移事务失败 (版本 %d): %w", m.Version, err)
+	}
 	return nil
 }

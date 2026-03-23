@@ -288,6 +288,11 @@ func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration)
 	return records, rows.Err()
 }
 
+// Ping 检测数据库连接是否可用，用于健康检查
+func (s *SQLiteStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // Close 关闭数据库连接，幂等（多次调用安全）
 func (s *SQLiteStore) Close() error {
 	var closeErr error
