@@ -1,0 +1,82 @@
+package model
+
+import "time"
+
+// TaskType 任务类型枚举
+type TaskType string
+
+const (
+	TaskTypeReviewPR TaskType = "review_pr"
+	TaskTypeFixIssue TaskType = "fix_issue"
+	TaskTypeGenTests TaskType = "gen_tests"
+)
+
+// TaskPriority 任务优先级（asynq 使用整数，越小越高）
+type TaskPriority int
+
+const (
+	PriorityCritical TaskPriority = 1 // 安全问题等紧急任务
+	PriorityHigh     TaskPriority = 3 // PR 评审（用户在等）
+	PriorityNormal   TaskPriority = 5 // Issue 修复
+	PriorityLow      TaskPriority = 7 // 测试生成
+)
+
+// TaskStatus 任务状态
+type TaskStatus string
+
+const (
+	TaskStatusPending   TaskStatus = "pending"   // 已创建（SQLite），尚未入队（Redis）
+	TaskStatusQueued    TaskStatus = "queued"     // 已入 asynq 队列
+	TaskStatusRunning   TaskStatus = "running"    // Worker 正在执行
+	TaskStatusSucceeded TaskStatus = "succeeded"  // 执行成功
+	TaskStatusFailed    TaskStatus = "failed"     // 执行失败（重试耗尽）
+	TaskStatusRetrying  TaskStatus = "retrying"   // 等待重试
+	TaskStatusCancelled TaskStatus = "cancelled"  // 手动取消
+)
+
+// TaskPayload 任务定位符（非完整快照）
+// Processor 执行时通过 Gitea API 获取最新数据
+type TaskPayload struct {
+	TaskType   TaskType `json:"task_type"`
+	DeliveryID string   `json:"delivery_id,omitempty"` // Webhook delivery ID，用于幂等
+
+	// 仓库定位（所有任务类型共享）
+	RepoOwner    string `json:"repo_owner"`
+	RepoName     string `json:"repo_name"`
+	RepoFullName string `json:"repo_full_name"`
+	CloneURL     string `json:"clone_url"`
+
+	// PR 评审定位
+	PRNumber int64  `json:"pr_number,omitempty"`
+	BaseRef  string `json:"base_ref,omitempty"`
+	HeadRef  string `json:"head_ref,omitempty"`
+	HeadSHA  string `json:"head_sha,omitempty"`
+
+	// Issue 修复定位
+	IssueNumber int64  `json:"issue_number,omitempty"`
+	IssueTitle  string `json:"issue_title,omitempty"`
+
+	// 测试生成定位
+	Module string `json:"module,omitempty"`
+}
+
+// TaskRecord 持久化到 SQLite 的任务记录
+type TaskRecord struct {
+	ID           string       `json:"id"`
+	AsynqID      string       `json:"asynq_id"`
+	TaskType     TaskType     `json:"task_type"`
+	Status       TaskStatus   `json:"status"`
+	Priority     TaskPriority `json:"priority"`
+	Payload      TaskPayload  `json:"payload"`
+	RepoFullName string       `json:"repo_full_name"` // 冗余列，便于过滤查询
+	Result       string       `json:"result,omitempty"`
+	Error        string       `json:"error,omitempty"`
+	RetryCount   int          `json:"retry_count"`
+	MaxRetry     int          `json:"max_retry"`
+	WorkerID     string       `json:"worker_id,omitempty"`
+	DeliveryID   string       `json:"delivery_id,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+	StartedAt    *time.Time   `json:"started_at,omitempty"`
+	CompletedAt  *time.Time   `json:"completed_at,omitempty"`
+}
