@@ -77,9 +77,11 @@ func (gc *GarbageCollector) Run(ctx context.Context) {
 
 // runOnce 执行一次 GC 扫描，清理超龄容器
 func (gc *GarbageCollector) runOnce(ctx context.Context) {
-	// 仅扫描带有 managed-by=dtworkflow 标签的容器
+	// 仅扫描带有 managed-by=dtworkflow 标签且已退出的容器
 	f := filters.NewArgs()
 	f.Add("label", "managed-by=dtworkflow")
+	f.Add("status", "exited")
+	f.Add("status", "dead")
 
 	containers, err := gc.listContainers(ctx, f)
 	if err != nil {
@@ -104,6 +106,7 @@ func (gc *GarbageCollector) runOnce(ctx context.Context) {
 				slog.Duration("age", age),
 				slog.Duration("max_age", gc.maxAge),
 			)
+			// 使用 context.Background() 而非传入的 ctx，确保即使 GC 循环被取消也能完成容器清理
 			cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			removeErr := gc.docker.RemoveContainer(cleanCtx, c.ID)
 			cleanCancel()

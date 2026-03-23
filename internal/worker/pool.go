@@ -14,10 +14,12 @@ import (
 // Pool 管理 Docker 容器生命周期的 Worker 池
 // 不做并发控制（由 asynq 控制并发度），只负责容器创建和清理
 type Pool struct {
-	config      PoolConfig
-	docker      DockerClient
-	logger      *slog.Logger
-	networkOnce sync.Once // 确保 EnsureNetwork 只调用一次
+	config PoolConfig
+	docker DockerClient
+	logger *slog.Logger
+
+	networkMu      sync.Mutex // 保护网络创建，支持失败后重试
+	networkCreated bool
 
 	active atomic.Int32 // 当前活跃容器数
 	total  atomic.Int64 // 累计完成任务数
@@ -34,6 +36,20 @@ func NewPool(config PoolConfig, dockerClient DockerClient) *Pool {
 		docker: dockerClient,
 		logger: slog.Default(),
 	}
+}
+
+// ensureNetwork 确保 Docker 网络存在，支持失败后重试
+func (p *Pool) ensureNetwork(ctx context.Context) error {
+	p.networkMu.Lock()
+	defer p.networkMu.Unlock()
+	if p.networkCreated {
+		return nil
+	}
+	if err := p.docker.EnsureNetwork(ctx, p.config.NetworkName); err != nil {
+		return err
+	}
+	p.networkCreated = true
+	return nil
 }
 
 // Run 在独立 Docker 容器中执行任务，容器用完即销毁
@@ -66,15 +82,21 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 		CPULimit:    p.config.CPULimit,
 		MemoryLimit: p.config.MemoryLimit,
 		NetworkName: p.config.NetworkName,
+		WorkDir:     p.config.WorkDir,
 	}
 
-	// 确保 Docker 网络存在（只执行一次）
-	var networkErr error
-	p.networkOnce.Do(func() {
-		networkErr = p.docker.EnsureNetwork(ctx, p.config.NetworkName)
-	})
-	if networkErr != nil {
-		return nil, fmt.Errorf("确保 Docker 网络失败: %w", networkErr)
+	// 确保 Docker 网络存在（支持失败后重试）
+	if err := p.ensureNetwork(ctx); err != nil {
+		return nil, fmt.Errorf("确保 Docker 网络失败: %w", err)
+	}
+
+	// 检查镜像是否存在
+	exists, err := p.docker.ImageExists(ctx, p.config.Image)
+	if err != nil {
+		return nil, fmt.Errorf("检查镜像 %s 失败: %w", p.config.Image, err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("镜像 %s 不存在，请先构建或拉取", p.config.Image)
 	}
 
 	// 创建容器
@@ -112,8 +134,10 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 	// 等待容器退出（结合 ctx 取消）
 	exitCode, waitErr := p.docker.WaitContainer(ctx, containerID)
 
-	// 无论成功与否，都尝试获取日志
-	logs, logErr := p.docker.GetContainerLogs(ctx, containerID)
+	// 无论成功与否，都尝试获取日志（使用独立 context，避免原 ctx 已取消导致无法获取日志）
+	logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer logCancel()
+	logs, logErr := p.docker.GetContainerLogs(logCtx, containerID)
 	if logErr != nil {
 		p.logger.WarnContext(ctx, "获取容器日志失败",
 			slog.String("container_id", containerID),

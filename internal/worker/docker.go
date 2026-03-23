@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -44,6 +45,7 @@ type ContainerConfig struct {
 	CPULimit    string            // CPU 限制，如 "2.0"
 	MemoryLimit string            // 内存限制，如 "4g"
 	NetworkName string            // Docker 网络名称
+	WorkDir     string            // 容器内工作目录
 }
 
 // dockerClient DockerClient 的真实实现
@@ -94,7 +96,7 @@ func (d *dockerClient) EnsureNetwork(ctx context.Context, networkName string) er
 			"managed-by": "dtworkflow",
 		},
 	})
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
 		return fmt.Errorf("创建 Docker 网络 %s 失败: %w", networkName, err)
 	}
 	return nil
@@ -122,10 +124,11 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 
 	// 构建容器配置
 	containerCfg := &container.Config{
-		Image:  cfg.Image,
-		Env:    cfg.Env,
-		Cmd:    cfg.Cmd,
-		Labels: cfg.Labels,
+		Image:      cfg.Image,
+		Env:        cfg.Env,
+		Cmd:        cfg.Cmd,
+		Labels:     cfg.Labels,
+		WorkingDir: cfg.WorkDir,
 	}
 
 	// 构建主机资源配置
@@ -134,7 +137,6 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 			NanoCPUs: nanoCPUs,
 			Memory:   memBytes,
 		},
-		NetworkMode: container.NetworkMode(cfg.NetworkName),
 	}
 
 	// 构建网络配置
@@ -168,7 +170,9 @@ func (d *dockerClient) WaitContainer(ctx context.Context, containerID string) (i
 		if err != nil {
 			return -1, fmt.Errorf("等待容器 %s 失败: %w", containerID, err)
 		}
-		return 0, nil
+		// errCh 收到 nil 时，继续等待 statusCh 获取退出码
+		body := <-statusCh
+		return body.StatusCode, nil
 	case status := <-statusCh:
 		if status.Error != nil {
 			return status.StatusCode, fmt.Errorf("容器 %s 退出错误: %s", containerID, status.Error.Message)

@@ -8,6 +8,25 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
 
+// sanitizeEnvValue 清理环境变量值，移除可能导致注入的字符
+func sanitizeEnvValue(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\x00", "")
+	return s
+}
+
+// sanitizePromptInput 清理用于 CLI prompt 的用户输入
+func sanitizePromptInput(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\x00", "")
+	if len(s) > maxLen {
+		s = s[:maxLen]
+	}
+	return s
+}
+
 // buildContainerEnv 构建容器环境变量列表
 // 包含 Gitea、Claude API 凭证和任务相关信息
 func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
@@ -34,7 +53,7 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	case model.TaskTypeFixIssue:
 		env = append(env,
 			fmt.Sprintf("ISSUE_NUMBER=%d", payload.IssueNumber),
-			fmt.Sprintf("ISSUE_TITLE=%s", payload.IssueTitle),
+			fmt.Sprintf("ISSUE_TITLE=%s", sanitizeEnvValue(payload.IssueTitle)),
 		)
 	case model.TaskTypeGenTests:
 		if payload.Module != "" {
@@ -45,6 +64,7 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	return env
 }
 
+// 注意：prompt 使用英文以获得更好的 AI 理解效果
 // buildContainerCmd 根据任务类型构建容器执行命令
 // 返回占位命令，实际 prompt 由容器内脚本动态生成
 func buildContainerCmd(payload model.TaskPayload) []string {
@@ -57,7 +77,7 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 	case model.TaskTypeFixIssue:
 		return []string{
 			"claude", "-p",
-			fmt.Sprintf("Fix the issue #%d (%s) in repository %s. Clone the repository, understand the issue, implement a fix, and create a pull request.", payload.IssueNumber, payload.IssueTitle, payload.RepoFullName),
+			fmt.Sprintf("Fix the issue #%d (%s) in repository %s. Clone the repository, understand the issue, implement a fix, and create a pull request.", payload.IssueNumber, sanitizePromptInput(payload.IssueTitle, 500), payload.RepoFullName),
 		}
 	case model.TaskTypeGenTests:
 		module := payload.Module
@@ -123,5 +143,5 @@ func parseMemoryLimit(limit string) (int64, error) {
 	if val <= 0 {
 		return 0, fmt.Errorf("内存限制必须大于 0，当前值: %g", val)
 	}
-	return int64(val) * multiplier, nil
+	return int64(val * float64(multiplier)), nil
 }
