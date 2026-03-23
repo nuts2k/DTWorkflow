@@ -19,6 +19,8 @@ import (
 // 适配器负责：
 // (a) 将 body string 包装为 CreateIssueCommentOption{Body: body}
 // (b) 丢弃 *Comment 和 *Response 返回值，只保留 error
+//
+// TODO: 在 M1.8 配置管理完成后，通过此适配器将 GiteaNotifier 接入通知框架。
 type giteaCommentAdapter struct {
 	client *gitea.Client
 }

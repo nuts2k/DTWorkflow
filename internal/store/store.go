@@ -12,7 +12,7 @@ type Store interface {
 	// CreateTask 创建任务记录
 	CreateTask(ctx context.Context, record *model.TaskRecord) error
 
-	// GetTask 按 ID 获取任务记录
+	// GetTask 按 ID 获取任务记录，未找到时返回 (nil, nil)
 	GetTask(ctx context.Context, id string) (*model.TaskRecord, error)
 
 	// UpdateTask 更新任务记录
@@ -21,7 +21,7 @@ type Store interface {
 	// ListTasks 列表查询任务
 	ListTasks(ctx context.Context, opts ListOptions) ([]*model.TaskRecord, error)
 
-	// FindByDeliveryID 按 delivery_id + task_type 查找任务（幂等去重）
+	// FindByDeliveryID 按 delivery_id + task_type 查找任务（幂等去重），未找到时返回 (nil, nil)
 	FindByDeliveryID(ctx context.Context, deliveryID string, taskType model.TaskType) (*model.TaskRecord, error)
 
 	// ListOrphanTasks 查询 pending 状态且创建时间超过 maxAge 的孤儿任务

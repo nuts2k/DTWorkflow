@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ func TestListTasks_NoFilter(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		r := newTestRecord(
-			"list-task-"+string(rune('a'+i)),
+			fmt.Sprintf("list-task-%d", i),
 			"",
 			model.TaskTypeReviewPR,
 		)
@@ -236,7 +237,7 @@ func TestListTasks_LimitOffset(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		r := newTestRecord(
-			"limit-task-"+string(rune('a'+i)),
+			fmt.Sprintf("limit-task-%d", i),
 			"",
 			model.TaskTypeReviewPR,
 		)

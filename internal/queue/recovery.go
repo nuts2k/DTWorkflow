@@ -2,8 +2,11 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/hibiken/asynq"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
@@ -83,12 +86,21 @@ func (r *RecoveryLoop) requeue(ctx context.Context, record *model.TaskRecord) {
 		TaskID:   record.ID,
 	})
 	if err != nil {
-		r.logger.WarnContext(ctx, "孤儿任务重新入队失败",
-			"task_id", record.ID,
-			"task_type", record.TaskType,
-			"error", err,
-		)
-		return
+		// TaskID 冲突说明任务已在 asynq 队列中，视为已入队
+		if errors.Is(err, asynq.ErrTaskIDConflict) {
+			r.logger.InfoContext(ctx, "孤儿任务已在 asynq 队列中（TaskID 冲突），更新状态为 queued",
+				"task_id", record.ID,
+				"task_type", record.TaskType,
+			)
+			asynqID = record.ID
+		} else {
+			r.logger.WarnContext(ctx, "孤儿任务重新入队失败",
+				"task_id", record.ID,
+				"task_type", record.TaskType,
+				"error", err,
+			)
+			return
+		}
 	}
 
 	// 更新状态为 queued

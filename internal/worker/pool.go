@@ -14,9 +14,10 @@ import (
 // Pool 管理 Docker 容器生命周期的 Worker 池
 // 不做并发控制（由 asynq 控制并发度），只负责容器创建和清理
 type Pool struct {
-	config PoolConfig
-	docker DockerClient
-	logger *slog.Logger
+	config      PoolConfig
+	docker      DockerClient
+	logger      *slog.Logger
+	networkOnce sync.Once // 确保 EnsureNetwork 只调用一次
 
 	active atomic.Int32 // 当前活跃容器数
 	total  atomic.Int64 // 累计完成任务数
@@ -38,10 +39,10 @@ func NewPool(config PoolConfig, dockerClient DockerClient) *Pool {
 // Run 在独立 Docker 容器中执行任务，容器用完即销毁
 // 流程：EnsureNetwork → CreateContainer → StartContainer → WaitContainer → GetLogs → RemoveContainer
 func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionResult, error) {
-	p.active.Add(1)
-	defer p.active.Add(-1)
 	p.wg.Add(1)
 	defer p.wg.Done()
+	p.active.Add(1)
+	defer p.active.Add(-1)
 
 	start := time.Now()
 
@@ -67,9 +68,13 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 		NetworkName: p.config.NetworkName,
 	}
 
-	// 确保 Docker 网络存在
-	if err := p.docker.EnsureNetwork(ctx, p.config.NetworkName); err != nil {
-		return nil, fmt.Errorf("确保 Docker 网络失败: %w", err)
+	// 确保 Docker 网络存在（只执行一次）
+	var networkErr error
+	p.networkOnce.Do(func() {
+		networkErr = p.docker.EnsureNetwork(ctx, p.config.NetworkName)
+	})
+	if networkErr != nil {
+		return nil, fmt.Errorf("确保 Docker 网络失败: %w", networkErr)
 	}
 
 	// 创建容器

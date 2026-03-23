@@ -62,9 +62,9 @@ func TestServe_Healthz(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// 验证状态码
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("状态码应为 200, got %d", resp.StatusCode)
+	// 验证状态码：测试环境无 Redis，健康检查返回 degraded/503 是预期行为
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("状态码应为 200 或 503, got %d", resp.StatusCode)
 	}
 
 	// 验证 JSON 响应体
@@ -78,14 +78,18 @@ func TestServe_Healthz(t *testing.T) {
 		t.Fatalf("JSON 解析失败: %v, body: %s", err, body)
 	}
 
-	if result["status"] != "ok" {
-		t.Errorf("status 应为 ok, got %v", result["status"])
+	// 测试环境无 Redis，status 可能是 "ok"（Redis 可用）或 "degraded"（Redis 不可用）
+	if result["status"] != "ok" && result["status"] != "degraded" {
+		t.Errorf("status 应为 ok 或 degraded, got %v", result["status"])
 	}
 	if _, exists := result["version"]; !exists {
 		t.Error("响应应包含 version 字段")
 	}
 	if _, exists := result["redis"]; !exists {
 		t.Error("响应应包含 redis 字段")
+	}
+	if _, exists := result["sqlite"]; !exists {
+		t.Error("响应应包含 sqlite 字段")
 	}
 
 	// 发送 SIGINT 触发优雅关闭

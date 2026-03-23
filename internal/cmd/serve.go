@@ -173,13 +173,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 
-	// 健康检查（包含 Redis 状态）
+	// storePinger 是一个可选接口，Store 实现了此接口时可用于健康检查
+	type storePinger interface {
+		Ping(ctx context.Context) error
+	}
+
+	// 健康检查（包含 Redis 和 SQLite 状态）
 	router.GET("/healthz", func(c *gin.Context) {
-		redisOK := deps.QueueClient.Ping(c.Request.Context()) == nil
+		ctx := c.Request.Context()
+		redisOK := deps.QueueClient.Ping(ctx) == nil
 		poolStats := deps.Pool.Stats()
+
+		sqliteOK := true
+		if pinger, ok := deps.Store.(storePinger); ok {
+			sqliteOK = pinger.Ping(ctx) == nil
+		}
+
 		status := "ok"
 		httpStatus := http.StatusOK
-		if !redisOK {
+		if !redisOK || !sqliteOK {
 			status = "degraded"
 			httpStatus = http.StatusServiceUnavailable
 		}
@@ -187,6 +199,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			"status":         status,
 			"version":        version,
 			"redis":          redisOK,
+			"sqlite":         sqliteOK,
 			"active_workers": poolStats.Active,
 		})
 	})
@@ -251,7 +264,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return gracefulShutdown(server, deps, recoveryCancel, gcCancel)
 }
 
-// gracefulShutdown 分层关闭所有组件
+// gracefulShutdown 分层关闭所有组件。
+// 注意：Store、QueueClient、Pool 由 defer cleanup() 统一关闭，
+// 此处只负责关闭 HTTP Server 和 asynq Server，避免与 cleanup 双重关闭。
 func gracefulShutdown(server *http.Server, deps *ServiceDeps, cancelRecovery, cancelGC context.CancelFunc) error {
 	var firstErr error
 	recordErr := func(layer string, err error) {
@@ -278,29 +293,11 @@ func gracefulShutdown(server *http.Server, deps *ServiceDeps, cancelRecovery, ca
 	cancelRecovery()
 	cancelGC()
 
-	// Layer 4: Worker Pool（30s，清理残留容器）
-	slog.Info("关闭 Layer 4: Worker Pool...")
-	poolCtx, poolCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer poolCancel()
-	if err := deps.Pool.Shutdown(poolCtx); err != nil {
-		recordErr("WorkerPool", err)
-	}
-
-	// Layer 5: Store（关闭 SQLite 连接）
-	slog.Info("关闭 Layer 5: Store...")
-	if err := deps.Store.Close(); err != nil {
-		recordErr("Store", err)
-	}
-
-	// Layer 6: asynq Client（关闭 Redis 连接）
-	slog.Info("关闭 Layer 6: asynq Client...")
-	if err := deps.QueueClient.Close(); err != nil {
-		recordErr("QueueClient", err)
-	}
+	// Layer 4-6（Pool、Store、QueueClient）由 runServe 中的 defer cleanup() 统一关闭。
 
 	if firstErr != nil {
 		return fmt.Errorf("关闭过程中出现错误: %w", firstErr)
 	}
-	slog.Info("所有组件已优雅关闭")
+	slog.Info("HTTP Server 和 asynq Processor 已优雅关闭，其余资源将由 cleanup 释放")
 	return nil
 }

@@ -9,15 +9,15 @@ import (
 	"github.com/docker/docker/api/types/filters"
 )
 
-// mockDockerClientWithList 扩展 mockDockerClient，支持 containerLister 接口
+// mockDockerClientWithList 扩展 mockDockerClient，支持容器列表查询（用于 GC 测试）
 type mockDockerClientWithList struct {
 	mockDockerClient
-	containers    []container.Summary
-	removedIDs    []string
+	containers []container.Summary
+	removedIDs []string
 }
 
-// ListManagedContainers 实现 containerLister 接口
-func (m *mockDockerClientWithList) ListManagedContainers(_ context.Context, _ filters.Args) ([]container.Summary, error) {
+// ListContainers 实现 DockerClient 接口的 ListContainers 方法
+func (m *mockDockerClientWithList) ListContainers(_ context.Context, _ filters.Args) ([]container.Summary, error) {
 	return m.containers, nil
 }
 

@@ -37,6 +37,12 @@ var taskCmd = &cobra.Command{
 		}
 		return nil
 	},
+	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+		if taskStore != nil {
+			return taskStore.Close()
+		}
+		return nil
+	},
 }
 
 var taskStatusCmd = &cobra.Command{
@@ -163,9 +169,10 @@ var taskRetryCmd = &cobra.Command{
 			return &ExitCodeError{Code: 1, Err: fmt.Errorf("更新任务失败: %w", err)}
 		}
 
-		// TODO: 实际重新入队需要 queue.Client，此处仅更新 store 状态
+		// 注意：此处仅重置 Store 中的状态为 pending，不直接入队。
+		// 任务将由 RecoveryLoop 在下一个扫描周期（默认 60s）内自动重新入队。
 		PrintResult(map[string]string{"id": id, "status": string(model.TaskStatusPending)}, func(data any) string {
-			return fmt.Sprintf("任务 %s 已重置为 pending 状态，等待调度\n", id)
+			return fmt.Sprintf("任务 %s 已重置为 pending 状态，将由 RecoveryLoop 自动重新入队\n", id)
 		})
 		return nil
 	},

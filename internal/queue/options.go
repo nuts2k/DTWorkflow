@@ -36,6 +36,8 @@ func TaskRetryDelay(retryCount int) time.Duration {
 }
 
 // PriorityToQueue 将 model.TaskPriority 映射到 asynq 队列名称
+// 注意：High 和 Normal 都映射到 QueueDefault，优先级差异通过 asynq Server 的队列权重配置体现，
+// 而非使用不同队列名称。Low 优先级单独使用低优先级队列。
 func PriorityToQueue(priority model.TaskPriority) string {
 	switch priority {
 	case model.PriorityCritical:

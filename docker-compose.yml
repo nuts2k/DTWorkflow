@@ -25,7 +25,13 @@ services:
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - dtworkflow-net
     restart: unless-stopped
 
 volumes:
   redis-data:
+
+networks:
+  dtworkflow-net:
+    driver: bridge

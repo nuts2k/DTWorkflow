@@ -91,6 +91,7 @@ func parseCPULimit(limit string) (int64, error) {
 }
 
 // parseMemoryLimit 将内存限制字符串（如 "4g", "512m", "1024k"）转换为字节数
+// 无后缀时单位为字节（如 "1024" 表示 1024 字节）
 func parseMemoryLimit(limit string) (int64, error) {
 	limit = strings.TrimSpace(limit)
 	if limit == "" {
@@ -123,20 +124,4 @@ func parseMemoryLimit(limit string) (int64, error) {
 		return 0, fmt.Errorf("内存限制必须大于 0，当前值: %g", val)
 	}
 	return int64(val) * multiplier, nil
-}
-
-// parseResourceLimit 通用资源限制解析（兼容内存和 CPU 字符串格式）
-// 内存格式：带单位后缀（g/m/k/b），CPU 格式：纯数字小数
-func parseResourceLimit(limit string) (int64, error) {
-	limit = strings.TrimSpace(limit)
-	if limit == "" {
-		return 0, nil
-	}
-	lower := strings.ToLower(limit)
-	// 如果包含单位后缀，按内存解析
-	if strings.ContainsAny(lower, "gmkb") {
-		return parseMemoryLimit(limit)
-	}
-	// 否则按 CPU NanoCPUs 解析
-	return parseCPULimit(limit)
 }

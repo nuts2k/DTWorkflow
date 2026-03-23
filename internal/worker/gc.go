@@ -104,7 +104,10 @@ func (gc *GarbageCollector) runOnce(ctx context.Context) {
 				slog.Duration("age", age),
 				slog.Duration("max_age", gc.maxAge),
 			)
-			if removeErr := gc.docker.RemoveContainer(ctx, c.ID); removeErr != nil {
+			cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			removeErr := gc.docker.RemoveContainer(cleanCtx, c.ID)
+			cleanCancel()
+			if removeErr != nil {
 				gc.logger.Error("GC 清理容器失败",
 					slog.String("container_id", shortID),
 					slog.String("error", removeErr.Error()),
@@ -127,28 +130,9 @@ func (gc *GarbageCollector) runOnce(ctx context.Context) {
 	}
 }
 
-// containerLister 扩展接口，支持按过滤条件列举容器（用于 GC 内部和 mock 测试）
-type containerLister interface {
-	ListManagedContainers(ctx context.Context, f filters.Args) ([]container.Summary, error)
-}
-
 // listContainers 获取符合过滤条件的容器列表
-// 真实实现通过类型断言访问底层 Docker client；mock 实现 containerLister 接口
 func (gc *GarbageCollector) listContainers(ctx context.Context, f filters.Args) ([]container.Summary, error) {
-	// 类型断言到真实实现，直接访问 Docker client
-	if dc, ok := gc.docker.(*dockerClient); ok {
-		return dc.cli.ContainerList(ctx, container.ListOptions{
-			All:     true, // 包含已停止的容器
-			Filters: f,
-		})
-	}
-	// 支持 mock：若实现了 containerLister 则使用
-	if lister, ok := gc.docker.(containerLister); ok {
-		return lister.ListManagedContainers(ctx, f)
-	}
-	// 无法列举容器，返回空列表（降级处理）
-	gc.logger.Warn("GC: DockerClient 不支持容器列表查询，跳过本轮扫描")
-	return nil, nil
+	return gc.docker.ListContainers(ctx, f)
 }
 
 // containerDisplayName 返回容器名称（Docker 名称带前缀 /，去掉前缀后返回）

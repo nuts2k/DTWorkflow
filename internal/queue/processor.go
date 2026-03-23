@@ -119,6 +119,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	if runErr != nil {
 		return fmt.Errorf("任务执行失败: %w", runErr)
 	}
+	if result != nil && result.ExitCode != 0 {
+		return fmt.Errorf("任务执行失败，退出码: %d", result.ExitCode)
+	}
 	return nil
 }
 

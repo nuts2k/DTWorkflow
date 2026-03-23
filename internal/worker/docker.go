@@ -1,15 +1,15 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 // DockerClient Docker SDK 操作接口（便于 mock 测试）
@@ -28,6 +28,8 @@ type DockerClient interface {
 	RemoveContainer(ctx context.Context, containerID string) error
 	// GetContainerLogs 获取容器标准输出和标准错误日志
 	GetContainerLogs(ctx context.Context, containerID string) (string, error)
+	// ListContainers 列举符合过滤条件的容器（用于 GC 扫描）
+	ListContainers(ctx context.Context, f filters.Args) ([]container.Summary, error)
 	// Close 关闭客户端连接
 	Close() error
 }
@@ -204,26 +206,20 @@ func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string)
 	}
 	defer reader.Close()
 
-	// Docker 日志流包含 8 字节 header（stream type + size），需要跳过
-	var sb strings.Builder
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := reader.Read(buf)
-		if n > 0 {
-			// 跳过 8 字节的 Docker 日志 header
-			data := buf[:n]
-			if len(data) > 8 {
-				sb.Write(data[8:])
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return sb.String(), fmt.Errorf("读取容器 %s 日志失败: %w", containerID, readErr)
-		}
+	// 使用 stdcopy.StdCopy 正确解复用 Docker 日志流（stdout + stderr）
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, reader); err != nil {
+		return "", fmt.Errorf("读取容器 %s 日志失败: %w", containerID, err)
 	}
-	return sb.String(), nil
+	return stdout.String() + stderr.String(), nil
+}
+
+// ListContainers 列举符合过滤条件的容器（用于 GC 扫描）
+func (d *dockerClient) ListContainers(ctx context.Context, f filters.Args) ([]container.Summary, error) {
+	return d.cli.ContainerList(ctx, container.ListOptions{
+		All:     true, // 包含已停止的容器
+		Filters: f,
+	})
 }
 
 // Close 关闭 Docker 客户端连接

@@ -16,6 +16,9 @@ import (
 	_ "modernc.org/sqlite" // 注册 SQLite 驱动
 )
 
+// 编译时确保 SQLiteStore 实现了 Store 接口
+var _ Store = (*SQLiteStore)(nil)
+
 // SQLiteStore 基于 SQLite 的任务持久化实现
 type SQLiteStore struct {
 	db   *sql.DB
@@ -58,6 +61,9 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		}
 	}
 
+	// 避免 SQLite 写竞争：限制最大连接数为 1
+	db.SetMaxOpenConns(1)
+
 	if err := RunMigrations(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("执行 Schema 迁移失败: %w", err)
@@ -69,6 +75,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 
 // CreateTask 创建任务记录
 func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) error {
+	if record.ID == "" {
+		return fmt.Errorf("创建任务记录失败: ID 不能为空")
+	}
+
 	payloadJSON, err := json.Marshal(record.Payload)
 	if err != nil {
 		return fmt.Errorf("序列化 payload 失败: %w", err)
@@ -133,7 +143,7 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 	const query = `UPDATE tasks SET
 		asynq_id = ?, task_type = ?, status = ?, priority = ?, payload = ?,
 		repo_full_name = ?, result = ?, error = ?, retry_count = ?, max_retry = ?,
-		worker_id = ?, delivery_id = ?, updated_at = CURRENT_TIMESTAMP,
+		worker_id = ?, delivery_id = ?, updated_at = ?,
 		started_at = ?, completed_at = ?
 	WHERE id = ?`
 
@@ -150,6 +160,7 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 		record.MaxRetry,
 		record.WorkerID,
 		record.DeliveryID,
+		time.Now().UTC().Format(time.RFC3339),
 		timeToNullString(record.StartedAt),
 		timeToNullString(record.CompletedAt),
 		record.ID,
@@ -190,6 +201,9 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, opts ListOptions) ([]*model
 	if opts.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, opts.Limit)
+	} else if opts.Offset > 0 {
+		// SQLite 要求 OFFSET 前必须有 LIMIT，使用 -1 表示无限制
+		query += " LIMIT -1"
 	}
 	if opts.Offset > 0 {
 		query += " OFFSET ?"
@@ -342,7 +356,6 @@ func timeToNullString(t *time.Time) any {
 func parseTime(s string) (time.Time, error) {
 	formats := []string{
 		time.RFC3339,
-		"2006-01-02T15:04:05Z",
 		"2006-01-02 15:04:05",
 		"2006-01-02T15:04:05",
 	}

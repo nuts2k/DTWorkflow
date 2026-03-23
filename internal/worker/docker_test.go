@@ -3,6 +3,9 @@ package worker
 import (
 	"context"
 	"testing"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 )
 
 // mockDockerClient DockerClient 的 mock 实现，用于单元测试
@@ -14,6 +17,7 @@ type mockDockerClient struct {
 	waitContainerFunc    func(ctx context.Context, containerID string) (int64, error)
 	removeContainerFunc  func(ctx context.Context, containerID string) error
 	getContainerLogsFunc func(ctx context.Context, containerID string) (string, error)
+	listContainersFunc   func(ctx context.Context, f filters.Args) ([]container.Summary, error)
 	closeFunc            func() error
 }
 
@@ -64,6 +68,13 @@ func (m *mockDockerClient) GetContainerLogs(ctx context.Context, containerID str
 		return m.getContainerLogsFunc(ctx, containerID)
 	}
 	return "mock logs", nil
+}
+
+func (m *mockDockerClient) ListContainers(ctx context.Context, f filters.Args) ([]container.Summary, error) {
+	if m.listContainersFunc != nil {
+		return m.listContainersFunc(ctx, f)
+	}
+	return nil, nil
 }
 
 func (m *mockDockerClient) Close() error {
