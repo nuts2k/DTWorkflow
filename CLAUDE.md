@@ -54,6 +54,12 @@ docs/           # 项目文档（PRD、ROADMAP 等）
 configs/        # 配置文件模板
 ```
 
+## 代码搜索规则
+
+- **宽泛语义搜索**（"X 是怎么实现的"、"找所有涉及 Y 的文件"、探索陌生模块）→ 优先用 `mcp__fast-context__fast_context_search`
+- **精确定位**（已知文件名、函数名、字符串）→ 用 Grep / Glob
+- 并行读取多个文件时无需等待，直接同时发起所有 Read 调用
+
 ## 编码规范
 
 - 遵循 Go 官方代码规范和 Effective Go
