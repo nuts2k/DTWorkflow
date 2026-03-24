@@ -15,6 +15,11 @@ func TestNewManager_DefaultSearchPaths(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(""+
 		"server:\n"+
 		"  port: 18080\n"+
+		"gitea:\n"+
+		"  url: \"http://gitea:3000\"\n"+
+		"  token: \"test-token\"\n"+
+		"claude:\n"+
+		"  api_key: \"test-api-key\"\n"+
 		"webhook:\n"+
 		"  secret: \"test-secret\"\n"+
 		"notify:\n"+
@@ -60,6 +65,9 @@ func TestManager_Load_DefaultSearchPaths_ConfigMissing_IsNotError(t *testing.T) 
 	// env-only 补齐 Validate 必需字段
 	t.Setenv("DTWORKFLOW_WEBHOOK_SECRET", "test-secret")
 	t.Setenv("DTWORKFLOW_NOTIFY_CHANNELS_GITEA_ENABLED", "true")
+	t.Setenv("DTWORKFLOW_GITEA_URL", "http://gitea:3000")
+	t.Setenv("DTWORKFLOW_GITEA_TOKEN", "test-token")
+	t.Setenv("DTWORKFLOW_CLAUDE_API_KEY", "test-api-key")
 
 	m, err := NewManager(
 		WithDefaults(),

@@ -152,6 +152,11 @@ func TestApplyTaskConfigFromManager_AppliesDatabasePathAndRedisAddr(t *testing.T
 		"  path: \"/tmp/test.db\"\n" +
 		"redis:\n" +
 		"  addr: \"redis.test:6379\"\n" +
+		"gitea:\n" +
+		"  url: \"http://gitea:3000\"\n" +
+		"  token: \"test-token\"\n" +
+		"claude:\n" +
+		"  api_key: \"test-api-key\"\n" +
 		"webhook:\n" +
 		"  secret: \"test-secret\"\n" +
 		"notify:\n" +
@@ -204,6 +209,11 @@ func TestTaskCommand_PersistentPreRun_PrefersCfgManager(t *testing.T) {
 		"  path: \":memory:\"\n" +
 		"redis:\n" +
 		"  addr: \"127.0.0.1:6380\"\n" +
+		"gitea:\n" +
+		"  url: \"http://gitea:3000\"\n" +
+		"  token: \"test-token\"\n" +
+		"claude:\n" +
+		"  api_key: \"test-api-key\"\n" +
 		"webhook:\n" +
 		"  secret: \"test-secret\"\n" +
 		"notify:\n" +
@@ -230,7 +240,7 @@ func TestTaskCommand_PersistentPreRun_PrefersCfgManager(t *testing.T) {
 	cfgManager = mgr
 
 	// 由于本测试不模拟用户显式传 flag，因此需确保对应 flag 的 Changed 为 false。
-	// 通过直接写入变量（而非 flags.Set）即可模拟“旧值/其他来源”，验证 cfgManager 可覆盖。
+	// 通过直接写入变量（而非 flags.Set）即可模拟"旧值/其他来源"，验证 cfgManager 可覆盖。
 	taskDBPath = "data/should-be-overwritten.db"
 	taskRedisAddr = "should-be-overwritten:6379"
 
@@ -275,6 +285,11 @@ func TestApplyTaskConfigFromManager_ExplicitDBPathNotOverridden(t *testing.T) {
 		"  path: \"/tmp/from-cfg.db\"\n" +
 		"redis:\n" +
 		"  addr: \"from-cfg:6379\"\n" +
+		"gitea:\n" +
+		"  url: \"http://gitea:3000\"\n" +
+		"  token: \"test-token\"\n" +
+		"claude:\n" +
+		"  api_key: \"test-api-key\"\n" +
 		"webhook:\n" +
 		"  secret: \"test-secret\"\n" +
 		"notify:\n" +
@@ -326,6 +341,11 @@ func TestApplyTaskConfigFromManager_ExplicitRedisAddrNotOverridden(t *testing.T)
 		"  path: \":memory:\"\n" +
 		"redis:\n" +
 		"  addr: \"from-cfg:6379\"\n" +
+		"gitea:\n" +
+		"  url: \"http://gitea:3000\"\n" +
+		"  token: \"test-token\"\n" +
+		"claude:\n" +
+		"  api_key: \"test-api-key\"\n" +
 		"webhook:\n" +
 		"  secret: \"test-secret\"\n" +
 		"notify:\n" +
@@ -377,6 +397,11 @@ func TestTaskCommand_PersistentPreRun_ExplicitFlagsNotOverridden(t *testing.T) {
 		"  path: \"/tmp/from-cfg.db\"\n" +
 		"redis:\n" +
 		"  addr: \"from-cfg:6379\"\n" +
+		"gitea:\n" +
+		"  url: \"http://gitea:3000\"\n" +
+		"  token: \"test-token\"\n" +
+		"claude:\n" +
+		"  api_key: \"test-api-key\"\n" +
 		"webhook:\n" +
 		"  secret: \"test-secret\"\n" +
 		"notify:\n" +
@@ -439,10 +464,12 @@ func TestTaskCommand_Execute_ConfigFileAppliedToTaskWhenFlagsNotSet(t *testing.T
 	// 证明点：task 使用配置文件中的 database.path / redis.addr（而不是 task flags 的默认值）。
 	cfgPath := writeTestConfigFile(t, "database:\n  path: \":memory:\"\n"+
 		"redis:\n  addr: \"from-cfg:6379\"\n"+
+		"gitea:\n  url: \"http://gitea:3000\"\n  token: \"test-token\"\n"+
+		"claude:\n  api_key: \"test-api-key\"\n"+
 		"webhook:\n  secret: \"test-secret\"\n"+
 		"notify:\n  default_channel: \"gitea\"\n  channels:\n    gitea:\n      enabled: true\n")
 
-	// 将 task status 的 RunE 临时替换为“只观察最终配置”，避免依赖真实任务数据。
+	// 将 task status 的 RunE 临时替换为"只观察最终配置"，避免依赖真实任务数据。
 	oldRunE := taskStatusCmd.RunE
 	defer func() { taskStatusCmd.RunE = oldRunE }()
 
@@ -481,10 +508,12 @@ func TestTaskCommand_Execute_ExplicitFlagsNotOverridden(t *testing.T) {
 	// cfgManager 通过 rootCmd.PersistentPreRunE 初始化，因此这里使用 rootCmd.Execute() 走真实链路。
 	cfgPath := writeTestConfigFile(t, "database:\n  path: \"/tmp/from-cfg.db\"\n"+
 		"redis:\n  addr: \"from-cfg:6379\"\n"+
+		"gitea:\n  url: \"http://gitea:3000\"\n  token: \"test-token\"\n"+
+		"claude:\n  api_key: \"test-api-key\"\n"+
 		"webhook:\n  secret: \"test-secret\"\n"+
 		"notify:\n  default_channel: \"gitea\"\n  channels:\n    gitea:\n      enabled: true\n")
 
-	// 将 task status 的 RunE 临时替换为“只观察最终配置”，避免依赖真实 DB/Redis 或任务数据。
+	// 将 task status 的 RunE 临时替换为"只观察最终配置"，避免依赖真实 DB/Redis 或任务数据。
 	oldRunE := taskStatusCmd.RunE
 	defer func() { taskStatusCmd.RunE = oldRunE }()
 

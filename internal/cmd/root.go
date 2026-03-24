@@ -158,12 +158,8 @@ func ensureConfigManagerForCommand(cmd *cobra.Command) error {
 		return err
 	}
 
-	// Load() 内部已执行 Validate()；此处额外校验一次，确保入口语义清晰。
 	if err := m.Load(); err != nil {
 		return err
-	}
-	if err := config.Validate(m.Get()); err != nil {
-		return fmt.Errorf("配置校验失败: %w", err)
 	}
 
 	cfgManager = m

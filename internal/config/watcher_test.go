@@ -21,6 +21,11 @@ func minimalValidConfigYAML(port int) string {
 	return fmt.Sprintf(""+
 		"server:\n"+
 		"  port: %d\n"+
+		"gitea:\n"+
+		"  url: \"http://gitea:3000\"\n"+
+		"  token: \"test-token\"\n"+
+		"claude:\n"+
+		"  api_key: \"test-api-key\"\n"+
 		"webhook:\n"+
 		"  secret: \"test-secret\"\n"+
 		"notify:\n"+
@@ -35,6 +40,11 @@ func minimalInvalidConfigYAML(port int) string {
 	return fmt.Sprintf(""+
 		"server:\n"+
 		"  port: %d\n"+
+		"gitea:\n"+
+		"  url: \"http://gitea:3000\"\n"+
+		"  token: \"test-token\"\n"+
+		"claude:\n"+
+		"  api_key: \"test-api-key\"\n"+
 		"webhook:\n"+
 		"  secret: \"\"\n"+
 		"notify:\n"+

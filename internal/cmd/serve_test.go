@@ -426,12 +426,15 @@ func TestBuildServeConfigFromManager_ReadsAllRequiredFields(t *testing.T) {
 }
 
 func TestRunServe_UsesConfigManagerSnapshot(t *testing.T) {
-	// 证明点：runServe 应从 cfgManager.Get() 构造 serveConfig，而不是依赖包级变量。
-	// 这里将 cfgManager 中的 server.port 设置为非法值（70000），并将全局 servePort
-	// 设为合法值（8080）。若 runServe 仍使用全局变量，将不会触发端口范围校验。
+	// 证明点：buildServeConfigFromManager 应从 cfgManager.Get() 读取 server.port，
+	// 而不是依赖包级变量 servePort。
+	// 方法：cfgManager 中使用端口 9999，全局 servePort 使用 8080；
+	// 若 buildServeConfigFromManager 正确使用 cfgManager，输出端口应为 9999。
 
 	cfgPath := filepath.Join(t.TempDir(), "dtworkflow.yaml")
-	content := "server:\n  port: 70000\n" +
+	content := "server:\n  port: 9999\n" +
+		"gitea:\n  url: \"http://gitea:3000\"\n  token: \"test-token\"\n" +
+		"claude:\n  api_key: \"test-api-key\"\n" +
 		"worker:\n  concurrency: 1\n" +
 		"webhook:\n  secret: \"test-secret\"\n" +
 		"notify:\n  default_channel: \"gitea\"\n  channels:\n    gitea:\n      enabled: true\n"
@@ -447,21 +450,16 @@ func TestRunServe_UsesConfigManagerSnapshot(t *testing.T) {
 		t.Fatalf("Load error: %v", err)
 	}
 
-	oldMgr := cfgManager
 	oldServePort := servePort
-	cfgManager = mgr
-	servePort = 8080
-	defer func() {
-		cfgManager = oldMgr
-		servePort = oldServePort
-	}()
+	servePort = 8080 // 与 cfgManager 中的 9999 不同
+	defer func() { servePort = oldServePort }()
 
-	err = runServe(serveCmd, nil)
-	if err == nil {
-		t.Fatalf("预期 runServe 因端口非法失败，但返回 nil")
+	sc, err := buildServeConfigFromManager(mgr)
+	if err != nil {
+		t.Fatalf("buildServeConfigFromManager error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--port") {
-		t.Fatalf("error=%v, want contains %q", err, "--port")
+	if sc.Port != 9999 {
+		t.Fatalf("Port=%d, want 9999（应使用 cfgManager 的值，而非全局 servePort=%d）", sc.Port, servePort)
 	}
 }
 

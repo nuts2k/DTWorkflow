@@ -8,6 +8,9 @@ import (
 
 func validBaseConfig() *Config {
 	return &Config{
+		Server:  ServerConfig{Port: 8080},
+		Gitea:   GiteaConfig{URL: "http://gitea:3000", Token: "test-token"},
+		Claude:  ClaudeConfig{APIKey: "test-api-key"},
 		Webhook: WebhookConfig{Secret: "test-secret"},
 		Worker:  WorkerConfig{Concurrency: 1},
 		Notify: NotifyConfig{

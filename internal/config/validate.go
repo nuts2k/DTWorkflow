@@ -13,7 +13,25 @@ func Validate(cfg *Config) error {
 
 	var errs []error
 
-	// 必填项（本轮只覆盖任务要求的最小字段）
+	// server.port 范围
+	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
+		errs = append(errs, fmt.Errorf("server.port 必须在 1-65535 范围内，当前值: %d", cfg.Server.Port))
+	}
+
+	// gitea 必填
+	if strings.TrimSpace(cfg.Gitea.URL) == "" {
+		errs = append(errs, fmt.Errorf("gitea.url 不能为空"))
+	}
+	if strings.TrimSpace(cfg.Gitea.Token) == "" {
+		errs = append(errs, fmt.Errorf("gitea.token 不能为空"))
+	}
+
+	// claude 必填
+	if strings.TrimSpace(cfg.Claude.APIKey) == "" {
+		errs = append(errs, fmt.Errorf("claude.api_key 不能为空"))
+	}
+
+	// webhook 必填
 	if strings.TrimSpace(cfg.Webhook.Secret) == "" {
 		errs = append(errs, fmt.Errorf("webhook.secret 不能为空"))
 	}
@@ -39,6 +57,15 @@ func Validate(cfg *Config) error {
 			if _, ok := cfg.Notify.Channels[chName]; !ok {
 				errs = append(errs, fmt.Errorf("notify.routes[%d] 引用了未配置的渠道: %q", i, chName))
 			}
+		}
+	}
+
+	// repos[].name 格式：必须是 owner/repo 格式
+	for i, repo := range cfg.Repos {
+		if strings.TrimSpace(repo.Name) == "" {
+			errs = append(errs, fmt.Errorf("repos[%d].name 不能为空", i))
+		} else if !strings.Contains(repo.Name, "/") {
+			errs = append(errs, fmt.Errorf("repos[%d].name 格式必须为 owner/repo，当前值: %q", i, repo.Name))
 		}
 	}
 
@@ -75,6 +102,12 @@ func (e *ValidationError) Unwrap() []error {
 		return nil
 	}
 	return e.Errors
+}
+
+// Is 支持 errors.Is(err, config.ErrInvalidConfig) 语义，
+// 便于调用方区分校验错误与 I/O 错误。
+func (e *ValidationError) Is(target error) bool {
+	return target == ErrInvalidConfig
 }
 
 func (e *ValidationError) Error() string {

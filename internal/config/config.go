@@ -110,13 +110,19 @@ type Manager struct {
 	watchOnce sync.Once
 	watchErr  error
 	reloadMu  sync.Mutex
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 type ManagerOption func(*Manager) error
 
 // NewManager 创建配置管理器。
 func NewManager(opts ...ManagerOption) (*Manager, error) {
-	m := &Manager{v: viper.New()}
+	m := &Manager{
+		v:      viper.New(),
+		stopCh: make(chan struct{}),
+	}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
@@ -197,6 +203,9 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("redis.db", 0)
 
 		// 让环境变量覆盖可被 Unmarshal 感知：这些 key 必须出现在 viper 的 AllKeys() 中。
+		m.v.SetDefault("gitea.url", "")
+		m.v.SetDefault("gitea.token", "")
+		m.v.SetDefault("claude.api_key", "")
 		m.v.SetDefault("webhook.secret", "")
 		m.v.SetDefault("notify.default_channel", "gitea")
 		m.v.SetDefault("notify.channels.gitea.enabled", false)
@@ -259,6 +268,18 @@ func (m *Manager) Get() *Config {
 func (m *Manager) SetConfigFile(path string) {
 	m.configFile = path
 	m.v.SetConfigFile(path)
+}
+
+// Stop 停止配置文件监听（关闭 watcher goroutine）。
+//
+// 多次调用是安全的（幂等）。未调用 WatchConfig() 时调用 Stop() 同样安全。
+func (m *Manager) Stop() {
+	if m == nil {
+		return
+	}
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
 }
 
 // Viper 返回底层 viper 实例，供上层进行 BindPFlag 等高级操作。

@@ -11,7 +11,9 @@ import (
 func writeTestConfigFile(t *testing.T, content string) string {
 	t.Helper()
 	if content == "" {
-		content = "webhook:\n  secret: \"test-secret\"\n" +
+		content = "gitea:\n  url: \"http://gitea:3000\"\n  token: \"test-token\"\n" +
+			"claude:\n  api_key: \"test-api-key\"\n" +
+			"webhook:\n  secret: \"test-secret\"\n" +
 			"notify:\n  default_channel: \"gitea\"\n  channels:\n    gitea:\n      enabled: true\n"
 	}
 	p := filepath.Join(t.TempDir(), "dtworkflow.yaml")
@@ -44,6 +46,8 @@ func TestRootPersistentPreRun_LoadConfigAndInitCfgManager(t *testing.T) {
 	resetRootFlagsForTest(t)
 
 	cfgPath := writeTestConfigFile(t, "server:\n  port: 9090\n"+
+		"gitea:\n  url: \"http://gitea:3000\"\n  token: \"test-token\"\n"+
+		"claude:\n  api_key: \"test-api-key\"\n"+
 		"webhook:\n  secret: \"test-secret\"\n"+
 		"notify:\n  default_channel: \"gitea\"\n  channels:\n    gitea:\n      enabled: true\n")
 
@@ -77,6 +81,8 @@ func TestRootPersistentPreRun_ServePortFlagOverridesConfigFile(t *testing.T) {
 	resetRootFlagsForTest(t)
 
 	cfgPath := writeTestConfigFile(t, "server:\n  port: 9090\n"+
+		"gitea:\n  url: \"http://gitea:3000\"\n  token: \"test-token\"\n"+
+		"claude:\n  api_key: \"test-api-key\"\n"+
 		"webhook:\n  secret: \"test-secret\"\n"+
 		"notify:\n  default_channel: \"gitea\"\n  channels:\n    gitea:\n      enabled: true\n")
 

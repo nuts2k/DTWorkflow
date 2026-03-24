@@ -72,6 +72,8 @@ func (m *Manager) startWatchConfigFile(configFile string) error {
 		}()
 		for {
 			select {
+			case <-m.stopCh:
+				return
 			case evt, ok := <-w.Events:
 				if !ok {
 					return

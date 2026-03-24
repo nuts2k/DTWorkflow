@@ -18,6 +18,11 @@ func TestManager_Load_ConfigFileAndDefaults(t *testing.T) {
 	content := []byte("" +
 		"server:\n" +
 		"  port: 9090\n" +
+		"gitea:\n" +
+		"  url: \"http://gitea:3000\"\n" +
+		"  token: \"test-token\"\n" +
+		"claude:\n" +
+		"  api_key: \"test-api-key\"\n" +
 		"redis:\n" +
 		"  addr: \"redis:6379\"\n" +
 		"worker:\n" +
@@ -88,6 +93,11 @@ func TestManager_Load_EnvOverridesConfig(t *testing.T) {
 	cfgPath := filepath.Join(tmpDir, "dtworkflow.yaml")
 
 	content := []byte("" +
+		"gitea:\n" +
+		"  url: \"http://gitea:3000\"\n" +
+		"  token: \"test-token\"\n" +
+		"claude:\n" +
+		"  api_key: \"test-api-key\"\n" +
 		"redis:\n" +
 		"  addr: \"file:6379\"\n" +
 		"webhook:\n" +
@@ -132,6 +142,9 @@ func TestManager_Load_DefaultsAndEnvWithoutConfigFile(t *testing.T) {
 	t.Setenv("DTWORKFLOW_REDIS_ADDR", "envonly:6379")
 	t.Setenv("DTWORKFLOW_WEBHOOK_SECRET", "test-secret")
 	t.Setenv("DTWORKFLOW_NOTIFY_CHANNELS_GITEA_ENABLED", "true")
+	t.Setenv("DTWORKFLOW_GITEA_URL", "http://gitea:3000")
+	t.Setenv("DTWORKFLOW_GITEA_TOKEN", "test-token")
+	t.Setenv("DTWORKFLOW_CLAUDE_API_KEY", "test-api-key")
 
 	m, err := NewManager(
 		WithDefaults(),
