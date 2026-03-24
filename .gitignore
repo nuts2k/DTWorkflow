@@ -17,6 +17,9 @@ coverage.out
 # 依赖
 vendor/
 
+# Claude 备份文件
+.claude/*.backup.*
+
 # IDE
 .idea/
 .vscode/
