@@ -1,5 +1,7 @@
 # DTWorkflow 配置文件模板
-# 复制为 dtworkflow.yaml 后修改
+# 复制为 dtworkflow.yaml 后修改。
+#
+# 注意：该示例配置应能被 internal/config 的 Manager.Load 正常读取并通过当前校验。
 
 # 服务器配置
 server:
@@ -7,11 +9,24 @@ server:
   port: 8080
 
 # Gitea 配置
+# 说明：当前版本在 serve 启动阶段会强制要求 gitea.url 与 gitea.token 均为非空。
+# 这里提供占位值，使用前请替换。
 gitea:
-  url: "https://your-gitea-instance.com"
-  token: ""
-  # 自签名证书时设为 true
+  url: "https://your-gitea-instance.example.com"
+  token: "REPLACE_ME_GITEA_TOKEN"
+  # 自签名证书时设为 true。
+  # 当前版本：该字段为预留配置，尚未接入 Gitea Client 的运行链路。
   insecure_skip_verify: false
+
+# Webhook 配置
+# 说明：webhook.secret 为必填项（用于签名校验）。
+webhook:
+  secret: "REPLACE_ME_WEBHOOK_SECRET"
+
+# Claude 配置
+# 说明：用于 Worker 容器内调用 Claude Code CLI（以环境变量注入）。
+claude:
+  api_key: "REPLACE_ME_CLAUDE_API_KEY"
 
 # Redis 配置
 redis:
@@ -31,4 +46,51 @@ log:
 # Worker 配置
 worker:
   concurrency: 3
+  # 当前版本：该字段为预留配置，尚未接入 Worker 运行链路。
   timeout: "30m"
+  image: "dtworkflow-worker:1.0"
+  cpu_limit: "2.0"
+  memory_limit: "4g"
+  network_name: "dtworkflow-net"
+
+# 通知配置（路由配置驱动）
+# 说明：
+# - default_channel 必须配置且已启用（当前版本仅支持 gitea 渠道）。
+# - routes 用于按 repo / event 将通知发送到一个或多个渠道。
+notify:
+  default_channel: "gitea"
+  channels:
+    gitea:
+      enabled: true
+      # options 预留：后续支持企微/钉钉等渠道时可在此放置 token/webhook 等参数
+      options: {}
+  routes:
+    # 全局兜底：所有仓库/事件都发送到 gitea
+    - repo: "*"
+      events: ["*"]
+      channels: ["gitea"]
+
+# 全局评审配置（结构预留；用于展示 repos 级覆盖）
+review:
+  enabled: true
+  severity: "warning"
+  ignore_patterns:
+    - "**/*.md"
+    - "docs/**"
+
+# 仓库级配置覆盖示例
+repos:
+  - name: "acme/demo"
+    notify:
+      # 覆盖语义（与当前实现保持一致）：
+      # - 写了 routes 字段：即视为“仓库级覆盖”（完全替换全局 notify.routes，不合并）
+      # - routes: []：表示“显式清空”（该仓库不走任何通知路由）
+      # - 不写 routes 字段：表示“继承全局 notify.routes”
+      routes:
+        - repo: "acme/demo"
+          events: ["pr.review.done", "fix.issue.done", "system.error"]
+          channels: ["gitea"]
+    review:
+      # 仅覆盖 enabled 与 ignore_patterns；severity 为空时继承全局
+      enabled: false
+      ignore_patterns: []

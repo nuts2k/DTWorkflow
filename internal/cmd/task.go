@@ -12,6 +12,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/spf13/cobra"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
@@ -42,6 +43,31 @@ func buildRetryTaskID(deliveryID string, taskType model.TaskType) string {
 		return fmt.Sprintf("%s:%s", deliveryID, taskType)
 	}
 	return ""
+}
+
+func applyTaskConfigFromManager(mgr *config.Manager, applyDBPath bool, applyRedisAddr bool) error {
+	if mgr == nil {
+		return nil
+	}
+	cfg := mgr.Get()
+	if cfg == nil {
+		return fmt.Errorf("读取统一配置失败: 配置尚未加载")
+	}
+
+	// 约定：当 cfgManager 已由 rootCmd 初始化时，task 命令优先使用统一配置入口。
+	// 但必须保持 task 命令原有 flag 语义：用户显式传入的 --db-path / --redis-addr 最高优先级。
+	// 本阶段只覆盖 task 命令必需的两项：database.path 与 redis.addr。
+	if applyDBPath {
+		if strings.TrimSpace(cfg.Database.Path) != "" {
+			taskDBPath = cfg.Database.Path
+		}
+	}
+	if applyRedisAddr {
+		if strings.TrimSpace(cfg.Redis.Addr) != "" {
+			taskRedisAddr = cfg.Redis.Addr
+		}
+	}
+	return nil
 }
 
 func retryTask(ctx context.Context, s store.Store, q taskEnqueuer, id string) (*model.TaskRecord, string, error) {
@@ -87,6 +113,30 @@ var taskCmd = &cobra.Command{
 	Use:   "task",
 	Short: "管理任务",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// 关键：taskCmd 自己定义了 PersistentPreRunE。
+		// Cobra 默认只执行“第一个找到的” PersistentPreRunE（EnableTraverseRunHooks=false）。
+		// 因此这里必须复用 root 的统一配置初始化逻辑，确保 `dtworkflow --config ... task ...` 真正生效。
+		if err := ensureConfigManagerForCommand(cmd); err != nil {
+			return err
+		}
+
+		// 若 cfgManager 已初始化，则优先从统一配置入口读取配置。
+		// 注意：必须保持 task 命令 flags 的原有语义：用户显式传入的 flag 具有最高优先级。
+		if cfgManager != nil {
+			// 重要：Cobra 调用父命令的 PersistentPreRunE 时，传入的 cmd 往往是叶子子命令（例如 task status）。
+			// 判断用户是否显式传入 flag 时，必须基于解析后的“叶子命令视角” flags：
+			// cmd.Flags() 会包含从父命令继承而来的 persistent flags（真实执行链路下生效）。
+			applyDBPath := true
+			applyRedisAddr := true
+			if flags := cmd.Flags(); flags != nil {
+				applyDBPath = !flags.Changed("db-path")
+				applyRedisAddr = !flags.Changed("redis-addr")
+			}
+			if err := applyTaskConfigFromManager(cfgManager, applyDBPath, applyRedisAddr); err != nil {
+				return err
+			}
+		}
+
 		var err error
 		taskStore, err = store.NewSQLiteStore(taskDBPath)
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/spf13/cobra"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
@@ -41,6 +43,7 @@ type serveConfig struct {
 	Host          string
 	Port          int
 	RedisAddr     string
+	RedisDB       int
 	DBPath        string
 	WebhookSecret string
 	ClaudeAPIKey  string
@@ -48,10 +51,14 @@ type serveConfig struct {
 	GiteaToken    string
 	MaxWorkers    int
 	WorkerImage   string
-	// TODO(M1.8): MemoryLimit 和 CPULimit 当前使用硬编码默认值（4g / 2.0），
-	// 将在 M1.8 配置管理阶段通过 CLI flags 和 YAML 配置文件暴露给用户。
-	MemoryLimit string
+
+	// 资源限制与运行网络（运行时快照）。
 	CPULimit    string
+	MemoryLimit string
+	NetworkName string
+
+	// AppCfg 用于承载统一配置入口的配置对象，供装配层按配置驱动方式构建组件。
+	AppCfg *config.Config
 }
 
 var serveCmd = &cobra.Command{
@@ -105,6 +112,31 @@ type readinessSnapshot struct {
 	ActiveWorkers      int
 }
 
+func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
+	cpuLimit := cfg.CPULimit
+	if cpuLimit == "" {
+		cpuLimit = "2.0"
+	}
+	memoryLimit := cfg.MemoryLimit
+	if memoryLimit == "" {
+		memoryLimit = "4g"
+	}
+	networkName := cfg.NetworkName
+	if networkName == "" {
+		networkName = "dtworkflow-net"
+	}
+
+	return worker.PoolConfig{
+		Image:        cfg.WorkerImage,
+		CPULimit:     cpuLimit,
+		MemoryLimit:  memoryLimit,
+		GiteaURL:     cfg.GiteaURL,
+		GiteaToken:   worker.SecretString(cfg.GiteaToken),
+		ClaudeAPIKey: worker.SecretString(cfg.ClaudeAPIKey),
+		NetworkName:  networkName,
+	}
+}
+
 func computeReadyStatus(s readinessSnapshot) (map[string]any, int) {
 	status := "ok"
 	httpStatus := http.StatusOK
@@ -124,10 +156,135 @@ func computeReadyStatus(s readinessSnapshot) (map[string]any, int) {
 	}, httpStatus
 }
 
-// BuildServiceDeps 从 serveConfig 构建所有依赖，返回 ServiceDeps 和清理函数
-func buildNotifier(giteaClient *gitea.Client) (queue.TaskNotifier, error) {
-	if giteaClient == nil {
+// buildNotifyRules / buildNotifier 属于 serve 命令的装配层逻辑，用于将统一配置入口中的 notify 配置
+// 映射为运行时可用的 Router/Notifier。
+//
+// 注意：本任务仅完成“通知路由配置驱动”，不会扩展为完整 serve 配置迁移（Task 6）。
+// buildNotifyRules 将配置中的路由规则映射为 notify.Router 可识别的规则结构。
+//
+// repoFullName 用于触发仓库级覆盖（ResolveNotifyRoutes）。
+// 返回值 fallback 直接来自 cfg.Notify.DefaultChannel。
+func buildNotifyRules(cfg *config.Config, repoFullName string) ([]notify.RoutingRule, string) {
+	if cfg == nil {
+		return nil, ""
+	}
+
+	routes := cfg.ResolveNotifyRoutes(repoFullName)
+	rules := make([]notify.RoutingRule, 0, len(routes))
+	for _, r := range routes {
+		rule := notify.RoutingRule{
+			RepoPattern: r.Repo,
+			Channels:    append([]string(nil), r.Channels...),
+		}
+		if len(r.Events) > 0 {
+			rule.EventTypes = make([]notify.EventType, 0, len(r.Events))
+			for _, e := range r.Events {
+				rule.EventTypes = append(rule.EventTypes, notify.EventType(e))
+			}
+		}
+		rules = append(rules, rule)
+	}
+
+	return rules, cfg.Notify.DefaultChannel
+}
+
+type configDrivenNotifier struct {
+	cfg           *config.Config
+	giteaNotifier notify.Notifier
+	logger        *slog.Logger
+
+	// routers 是按 repoFullName 缓存的 Router 实例。
+	// 说明：当前实现不支持配置热更新“即时生效”。即使 cfgManager 热加载更新了 cfg，
+	// 已缓存的 router 也不会自动刷新；后续如需支持，需要引入显式的更新机制。
+	mu      sync.Mutex
+	routers map[string]*notify.Router
+}
+
+func (n *configDrivenNotifier) Send(ctx context.Context, msg notify.Message) error {
+	if n == nil {
+		return nil
+	}
+	repoFullName := msg.Target.Owner + "/" + msg.Target.Repo
+	router, err := n.getRouter(repoFullName)
+	if err != nil {
+		return err
+	}
+	return router.Send(ctx, msg)
+}
+
+func (n *configDrivenNotifier) getRouter(repoFullName string) (*notify.Router, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.routers == nil {
+		n.routers = make(map[string]*notify.Router)
+	}
+	if r, ok := n.routers[repoFullName]; ok {
+		return r, nil
+	}
+
+	rules, fallback := buildNotifyRules(n.cfg, repoFullName)
+	if fallback != "gitea" {
+		return nil, fmt.Errorf("当前版本仅支持 default_channel=\"gitea\"，当前值: %q", fallback)
+	}
+	for i, rule := range rules {
+		for _, ch := range rule.Channels {
+			if ch != "gitea" {
+				return nil, fmt.Errorf("当前版本仅支持 gitea 通知渠道，规则 #%d 引用了渠道 %q", i, ch)
+			}
+		}
+	}
+
+	router, err := notify.NewRouter(
+		notify.WithNotifier(n.giteaNotifier),
+		notify.WithRules(rules),
+		notify.WithFallback(fallback),
+		notify.WithRouterLogger(n.logger),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("构造通知路由失败: %w", err)
+	}
+
+	n.routers[repoFullName] = router
+	return router, nil
+}
+
+func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNotifier, error) {
+	if cfg == nil || giteaClient == nil {
 		return nil, nil
+	}
+
+	// 当前最小实现边界：仅支持 gitea 渠道。
+	// 为了在服务启动阶段尽早暴露配置问题，这里会做前置校验：
+	// 1) notify.default_channel 必须为 "gitea"
+	// 2) notify.routes / repos[].notify.routes 只能引用 "gitea" 渠道
+	// 3) 若 notify.channels.gitea 未配置或未启用，则视为“未启用通知”，返回 nil
+	ch, ok := cfg.Notify.Channels["gitea"]
+	if !ok || !ch.Enabled {
+		return nil, nil
+	}
+	if cfg.Notify.DefaultChannel != "gitea" {
+		return nil, fmt.Errorf("notify.default_channel 当前仅支持 \"gitea\"，当前值: %q", cfg.Notify.DefaultChannel)
+	}
+
+	for i, route := range cfg.Notify.Routes {
+		for _, chName := range route.Channels {
+			if chName != "gitea" {
+				return nil, fmt.Errorf("notify.routes[%d] 当前仅支持 \"gitea\" 渠道，发现: %q", i, chName)
+			}
+		}
+	}
+	for i, repo := range cfg.Repos {
+		if repo.Notify == nil {
+			continue
+		}
+		for j, route := range repo.Notify.Routes {
+			for _, chName := range route.Channels {
+				if chName != "gitea" {
+					return nil, fmt.Errorf("repos[%d].notify.routes[%d] 当前仅支持 \"gitea\" 渠道，发现: %q", i, j, chName)
+				}
+			}
+		}
 	}
 
 	giteaNotifier, err := notify.NewGiteaNotifier(&giteaCommentAdapter{client: giteaClient}, notify.WithLogger(slog.Default()))
@@ -135,24 +292,26 @@ func buildNotifier(giteaClient *gitea.Client) (queue.TaskNotifier, error) {
 		return nil, fmt.Errorf("构造 GiteaNotifier 失败: %w", err)
 	}
 
-	router, err := notify.NewRouter(
-		notify.WithNotifier(giteaNotifier),
-		notify.WithRules([]notify.RoutingRule{{RepoPattern: "*", Channels: []string{"gitea"}}}),
-		notify.WithFallback("gitea"),
-		notify.WithRouterLogger(slog.Default()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("构造通知路由失败: %w", err)
-	}
-	return router, nil
+	return &configDrivenNotifier{
+		cfg:           cfg,
+		giteaNotifier: giteaNotifier,
+		logger:        slog.Default(),
+	}, nil
 }
 
+// BuildServiceDeps 从 serveConfig 构建所有依赖，返回 ServiceDeps 和清理函数。
 func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	var cleanups []func()
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
 			cleanups[i]()
 		}
+	}
+
+	// 说明：当前版本 Worker 执行依赖 Gitea 配置（容器内需要 GITEA_URL/GITEA_TOKEN）。
+	// 为避免出现“日志提示可降级、实际又在更深层失败”的矛盾，这里做前置硬失败。
+	if cfg.GiteaURL == "" || cfg.GiteaToken == "" {
+		return nil, nil, fmt.Errorf("gitea-url 与 gitea-token 不能为空（当前版本 Worker 执行依赖 Gitea 配置）")
 	}
 
 	// 1. 初始化 SQLite Store
@@ -174,14 +333,14 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	}
 
 	// 2.1 初始化可选通知路由
-	notifier, err := buildNotifier(giteaClient)
+	notifier, err := buildNotifier(cfg.AppCfg, giteaClient)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
 
 	// 3. 初始化 asynq Client（用于入队）
-	redisOpt := asynq.RedisClientOpt{Addr: cfg.RedisAddr}
+	redisOpt := asynq.RedisClientOpt{Addr: cfg.RedisAddr, DB: cfg.RedisDB}
 	queueClient, err := queue.NewClient(redisOpt)
 	if err != nil {
 		cleanup()
@@ -208,24 +367,8 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 		return nil, nil, fmt.Errorf("检查 Worker 镜像失败: %w", err)
 	}
 
-	cpuLimit := cfg.CPULimit
-	if cpuLimit == "" {
-		cpuLimit = "2.0"
-	}
-	memoryLimit := cfg.MemoryLimit
-	if memoryLimit == "" {
-		memoryLimit = "4g"
-	}
-
-	pool, err := worker.NewPool(worker.PoolConfig{
-		Image:        cfg.WorkerImage,
-		CPULimit:     cpuLimit,
-		MemoryLimit:  memoryLimit,
-		GiteaURL:     cfg.GiteaURL,
-		GiteaToken:   worker.SecretString(cfg.GiteaToken),
-		ClaudeAPIKey: worker.SecretString(cfg.ClaudeAPIKey),
-		NetworkName:  "dtworkflow-net",
-	}, dockerClient)
+	poolCfg := buildWorkerPoolConfigFromServeConfig(cfg)
+	pool, err := worker.NewPool(poolCfg, dockerClient)
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("初始化 Worker Pool 失败: %w", err)
@@ -277,32 +420,63 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	}, cleanup, nil
 }
 
-// runServe 是 Cobra 命令入口，将全局变量读入 serveConfig 后委托给 runServeWithConfig。
+func buildServeConfigFromManager(mgr *config.Manager) (serveConfig, error) {
+	if mgr == nil {
+		return serveConfig{}, fmt.Errorf("配置管理器不能为空")
+	}
+	cfg := mgr.Get()
+	if cfg == nil {
+		return serveConfig{}, fmt.Errorf("配置未加载")
+	}
+	return serveConfig{
+		Host:          cfg.Server.Host,
+		Port:          cfg.Server.Port,
+		RedisAddr:     cfg.Redis.Addr,
+		RedisDB:       cfg.Redis.DB,
+		DBPath:        cfg.Database.Path,
+		WebhookSecret: cfg.Webhook.Secret,
+		ClaudeAPIKey:  cfg.Claude.APIKey,
+		GiteaURL:      cfg.Gitea.URL,
+		GiteaToken:    cfg.Gitea.Token,
+		MaxWorkers:    cfg.Worker.Concurrency,
+		WorkerImage:   cfg.Worker.Image,
+		CPULimit:      cfg.Worker.CPULimit,
+		MemoryLimit:   cfg.Worker.MemoryLimit,
+		NetworkName:   cfg.Worker.NetworkName,
+		AppCfg:        cfg,
+	}, nil
+}
+
+// runServe 是 Cobra 命令入口：从统一配置入口构造运行时快照后，委托给 runServeWithConfig。
 func runServe(cmd *cobra.Command, args []string) error {
-	cfg := serveConfig{
-		Host:          serveHost,
-		Port:          servePort,
-		RedisAddr:     serveRedisAddr,
-		DBPath:        serveDBPath,
-		WebhookSecret: serveWebhookSecret,
-		ClaudeAPIKey:  serveClaudeAPIKey,
-		GiteaURL:      serveGiteaURL,
-		GiteaToken:    serveGiteaToken,
-		MaxWorkers:    serveMaxWorkers,
-		WorkerImage:   serveWorkerImage,
+	var cfg serveConfig
+	var err error
+	if cfgManager != nil {
+		cfg, err = buildServeConfigFromManager(cfgManager)
+		if err != nil {
+			return err
+		}
+	} else {
+		// 兜底：理论上 serve 命令总会在 root 的 PersistentPreRunE 中初始化 cfgManager。
+		cfg = serveConfig{
+			Host:          serveHost,
+			Port:          servePort,
+			RedisAddr:     serveRedisAddr,
+			DBPath:        serveDBPath,
+			WebhookSecret: serveWebhookSecret,
+			ClaudeAPIKey:  serveClaudeAPIKey,
+			GiteaURL:      serveGiteaURL,
+			GiteaToken:    serveGiteaToken,
+			MaxWorkers:    serveMaxWorkers,
+			WorkerImage:   serveWorkerImage,
+		}
 	}
 
 	// 使用 OS 信号作为 stopCh
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	stopCh := make(chan struct{})
-	go func() {
-		<-quit
-		signal.Stop(quit)
-		close(stopCh)
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	return runServeWithConfig(cfg, stopCh)
+	return runServeWithConfig(cfg, ctx.Done())
 }
 
 // runServeWithConfig 启动 HTTP 服务，注册路由，并支持优雅关闭。
@@ -316,34 +490,14 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		return fmt.Errorf("--port 必须在 1-65535 范围内，当前值: %d", cfg.Port)
 	}
 
-	// 敏感 flag 默认值为空，优先读取环境变量作为回退（避免 --help 泄露敏感信息）。
-	// 设计说明：非敏感配置（redis-addr, db-path）在 init() 的 flag 默认值中通过
-	// getEnvDefault 处理，因为可以安全地在 --help 中显示默认值；
-	// 敏感配置（webhook-secret, claude-api-key 等）在此处运行时处理，
-	// 避免 flag 默认值在 --help 输出中泄露真实凭据。
-	if cfg.ClaudeAPIKey == "" {
-		cfg.ClaudeAPIKey = os.Getenv("DTWORKFLOW_CLAUDE_API_KEY")
-	}
-	if cfg.GiteaToken == "" {
-		cfg.GiteaToken = os.Getenv("DTWORKFLOW_GITEA_TOKEN")
-	}
-	if cfg.WebhookSecret == "" {
-		cfg.WebhookSecret = os.Getenv("DTWORKFLOW_WEBHOOK_SECRET")
-	}
-	if cfg.GiteaURL == "" {
-		cfg.GiteaURL = os.Getenv("DTWORKFLOW_GITEA_URL")
-	}
+	// 说明：敏感配置的 env 回填已由统一配置入口（Viper AutomaticEnv）处理。
+	// serve 运行时不再手工读取 os.Getenv，避免形成“真实主来源”与“统一配置入口”并存的双入口。
 
 	if cfg.WebhookSecret == "" {
 		return fmt.Errorf("webhook-secret 不能为空")
 	}
 	if cfg.ClaudeAPIKey == "" {
 		return fmt.Errorf("claude-api-key 不能为空（通过 --claude-api-key 或 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
-	}
-	if cfg.GiteaURL == "" || cfg.GiteaToken == "" {
-		slog.Warn("Gitea 配置不完整，通知功能将不可用",
-			"gitea-url", cfg.GiteaURL != "",
-			"gitea-token", cfg.GiteaToken != "")
 	}
 
 	// 构建所有依赖

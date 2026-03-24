@@ -55,7 +55,10 @@ func TestReviewPR_MissingRepo(t *testing.T) {
 	reviewRepo = ""
 	reviewPR = 0
 
-	rootCmd.SetArgs([]string{"review-pr"})
+	resetRootFlagsForTest(t)
+	cfgPath := writeTestConfigFile(t, "")
+
+	rootCmd.SetArgs([]string{"--config", cfgPath, "review-pr"})
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Error("缺少 --repo 应返回错误")
@@ -71,7 +74,10 @@ func TestReviewPR_MissingPR(t *testing.T) {
 		reviewPR = oldPR
 	}()
 
-	rootCmd.SetArgs([]string{"review-pr", "--repo", "myrepo"})
+	resetRootFlagsForTest(t)
+	cfgPath := writeTestConfigFile(t, "")
+
+	rootCmd.SetArgs([]string{"--config", cfgPath, "review-pr", "--repo", "myrepo"})
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Error("缺少 --pr 应返回错误")
@@ -87,7 +93,10 @@ func TestReviewPR_Stub(t *testing.T) {
 		reviewPR = oldPR
 	}()
 
-	rootCmd.SetArgs([]string{"review-pr", "--repo", "myrepo", "--pr", "42"})
+	resetRootFlagsForTest(t)
+	cfgPath := writeTestConfigFile(t, "")
+
+	rootCmd.SetArgs([]string{"--config", cfgPath, "review-pr", "--repo", "myrepo", "--pr", "42"})
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Error("空壳命令应返回错误")
@@ -106,7 +115,10 @@ func TestFixIssue_MissingParams(t *testing.T) {
 		fixIssue = oldIssue
 	}()
 
-	rootCmd.SetArgs([]string{"fix-issue"})
+	resetRootFlagsForTest(t)
+	cfgPath := writeTestConfigFile(t, "")
+
+	rootCmd.SetArgs([]string{"--config", cfgPath, "fix-issue"})
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Error("缺少参数应返回错误")
@@ -118,7 +130,10 @@ func TestGenTests_MissingRepo(t *testing.T) {
 	oldRepo := genTestsRepo
 	defer func() { genTestsRepo = oldRepo }()
 
-	rootCmd.SetArgs([]string{"gen-tests"})
+	resetRootFlagsForTest(t)
+	cfgPath := writeTestConfigFile(t, "")
+
+	rootCmd.SetArgs([]string{"--config", cfgPath, "gen-tests"})
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Error("缺少 --repo 应返回错误")

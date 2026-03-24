@@ -37,6 +37,7 @@ func TestVersionCmdOutput(t *testing.T) {
 	// 测试普通文本输出
 	buf := new(bytes.Buffer)
 	rootCmd.SetOut(buf)
+	resetRootFlagsForTest(t)
 	rootCmd.SetArgs([]string{"version"})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -50,6 +51,7 @@ func TestVersionCmdJSONOutput(t *testing.T) {
 	// 测试 JSON 格式输出
 	buf := new(bytes.Buffer)
 	rootCmd.SetOut(buf)
+	resetRootFlagsForTest(t)
 	rootCmd.SetArgs([]string{"--json", "version"})
 
 	// 保存并恢复全局 jsonOutput 状态
