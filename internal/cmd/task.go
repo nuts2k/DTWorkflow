@@ -27,11 +27,13 @@ var taskQueueClient *queue.Client
 
 // task 子命令的 flags
 var (
-	taskListRepo   string
-	taskListStatus string
-	taskListLimit  int
-	taskDBPath     string
-	taskRedisAddr  string
+	taskListRepo      string
+	taskListStatus    string
+	taskListLimit     int
+	taskDBPath        string
+	taskRedisAddr     string
+	taskRedisPassword string
+	taskRedisDB       int
 )
 
 type taskEnqueuer interface {
@@ -67,6 +69,9 @@ func applyTaskConfigFromManager(mgr *config.Manager, applyDBPath bool, applyRedi
 			taskRedisAddr = cfg.Redis.Addr
 		}
 	}
+	// Redis password 和 db 始终从统一配置入口同步（task 命令未暴露对应 flag）。
+	taskRedisPassword = cfg.Redis.Password
+	taskRedisDB = cfg.Redis.DB
 	return nil
 }
 
@@ -142,7 +147,7 @@ var taskCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("初始化数据库失败: %w", err)
 		}
-		taskQueueClient, err = queue.NewClient(asynq.RedisClientOpt{Addr: taskRedisAddr})
+		taskQueueClient, err = queue.NewClient(asynq.RedisClientOpt{Addr: taskRedisAddr, Password: taskRedisPassword, DB: taskRedisDB})
 		if err != nil {
 			_ = taskStore.Close()
 			taskStore = nil
@@ -293,8 +298,8 @@ var taskRetryCmd = &cobra.Command{
 
 func init() {
 	taskCmd.PersistentFlags().StringVar(&taskDBPath, "db-path",
-		getEnvDefault("DTWORKFLOW_DB_PATH", "data/dtworkflow.db"),
-		"SQLite 数据库路径（也可通过 DTWORKFLOW_DB_PATH 环境变量设置）")
+		getEnvDefault("DTWORKFLOW_DATABASE_PATH", "data/dtworkflow.db"),
+		"SQLite 数据库路径（也可通过 DTWORKFLOW_DATABASE_PATH 环境变量设置）")
 	taskCmd.PersistentFlags().StringVar(&taskRedisAddr, "redis-addr",
 		getEnvDefault("DTWORKFLOW_REDIS_ADDR", "localhost:6379"),
 		"Redis 地址（也可通过 DTWORKFLOW_REDIS_ADDR 环境变量设置）")

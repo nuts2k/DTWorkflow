@@ -73,7 +73,7 @@ func bindFlagsToViper(m *config.Manager, cmd *cobra.Command) error {
 	v := m.Viper()
 
 	// 说明：
-	// 1) 仅绑定“当前即将执行的命令”相关的 flags，避免无关命令的 flag 默认值覆盖配置文件。
+	// 1) 仅绑定"当前即将执行的命令"相关的 flags，避免无关命令的 flag 默认值覆盖配置文件。
 	// 2) 仅在 flag 被用户显式指定时才绑定，否则 viper 会把 flag 默认值当作更高优先级来源。
 	//
 	bindIfChanged := func(flagName, key, errLabel string) error {
@@ -88,12 +88,19 @@ func bindFlagsToViper(m *config.Manager, cmd *cobra.Command) error {
 	}
 
 	// 说明：
-	// - 仅绑定“当前即将执行的命令”相关的 flags，避免无关命令的 flag 默认值覆盖配置文件。
+	// - 仅绑定"当前即将执行的命令"相关的 flags，避免无关命令的 flag 默认值覆盖配置文件。
 	// - 仅当 flag 被用户显式指定时才绑定，保持 "flag > env > file > defaults" 语义。
 	//
-	// 本任务（Task 6）范围：补齐 serve 命令关键 flags 的绑定，避免 runServe 走 cfgManager 后 flag 失效。
-	switch cmd.Name() {
-	case "serve":
+	// 注意：task 的子命令（status/list/retry）经 Cobra 解析后，cmd.Name() 返回的是叶子命令名（如 "status"），
+	// 而非 "task"。因此需要向上遍历 cmd.Parent() 检查是否属于 task 命令树。
+	cmdName := cmd.Name()
+	parentName := ""
+	if cmd.Parent() != nil {
+		parentName = cmd.Parent().Name()
+	}
+
+	switch {
+	case cmdName == "serve":
 		if err := bindIfChanged("host", "server.host", "--host"); err != nil {
 			return err
 		}
@@ -125,6 +132,14 @@ func bindFlagsToViper(m *config.Manager, cmd *cobra.Command) error {
 			return err
 		}
 		if err := bindIfChanged("gitea-token", "gitea.token", "--gitea-token"); err != nil {
+			return err
+		}
+
+	case parentName == "task" || cmdName == "task":
+		if err := bindIfChanged("db-path", "database.path", "--db-path"); err != nil {
+			return err
+		}
+		if err := bindIfChanged("redis-addr", "redis.addr", "--redis-addr"); err != nil {
 			return err
 		}
 	}

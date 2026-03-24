@@ -43,6 +43,7 @@ type serveConfig struct {
 	Host          string
 	Port          int
 	RedisAddr     string
+	RedisPassword string
 	RedisDB       int
 	DBPath        string
 	WebhookSecret string
@@ -75,7 +76,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveRedisAddr, "redis-addr",
 		getEnvDefault("DTWORKFLOW_REDIS_ADDR", "localhost:6379"), "Redis 地址（也可通过 DTWORKFLOW_REDIS_ADDR 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveDBPath, "db-path",
-		getEnvDefault("DTWORKFLOW_DB_PATH", "data/dtworkflow.db"), "SQLite 数据库路径（也可通过 DTWORKFLOW_DB_PATH 环境变量设置）")
+		getEnvDefault("DTWORKFLOW_DATABASE_PATH", "data/dtworkflow.db"), "SQLite 数据库路径（也可通过 DTWORKFLOW_DATABASE_PATH 环境变量设置）")
 	serveCmd.Flags().IntVar(&serveMaxWorkers, "max-workers", 3, "最大并发 Worker 数")
 	serveCmd.Flags().StringVar(&serveWorkerImage, "worker-image", "dtworkflow-worker:1.0", "Worker Docker 镜像")
 	serveCmd.Flags().StringVar(&serveClaudeAPIKey, "claude-api-key",
@@ -340,7 +341,7 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	}
 
 	// 3. 初始化 asynq Client（用于入队）
-	redisOpt := asynq.RedisClientOpt{Addr: cfg.RedisAddr, DB: cfg.RedisDB}
+	redisOpt := asynq.RedisClientOpt{Addr: cfg.RedisAddr, Password: cfg.RedisPassword, DB: cfg.RedisDB}
 	queueClient, err := queue.NewClient(redisOpt)
 	if err != nil {
 		cleanup()
@@ -432,6 +433,7 @@ func buildServeConfigFromManager(mgr *config.Manager) (serveConfig, error) {
 		Host:          cfg.Server.Host,
 		Port:          cfg.Server.Port,
 		RedisAddr:     cfg.Redis.Addr,
+		RedisPassword: cfg.Redis.Password,
 		RedisDB:       cfg.Redis.DB,
 		DBPath:        cfg.Database.Path,
 		WebhookSecret: cfg.Webhook.Secret,
@@ -660,6 +662,11 @@ func doGracefulShutdown(server *http.Server, deps *ServiceDeps, cancelRecovery, 
 	cancelGC()
 
 	// Layer 4-6（Pool、Store、QueueClient）由 runServe 中的 defer cleanup() 统一关闭。
+
+	// 停止配置管理器的热加载监听
+	if cfgManager != nil {
+		cfgManager.Stop()
+	}
 
 	if firstErr != nil {
 		return fmt.Errorf("关闭过程中出现错误: %w", firstErr)

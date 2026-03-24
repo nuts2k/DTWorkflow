@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -18,9 +19,20 @@ func Validate(cfg *Config) error {
 		errs = append(errs, fmt.Errorf("server.port 必须在 1-65535 范围内，当前值: %d", cfg.Server.Port))
 	}
 
+	// redis 必填
+	if strings.TrimSpace(cfg.Redis.Addr) == "" {
+		errs = append(errs, fmt.Errorf("redis.addr 不能为空"))
+	}
+
 	// gitea 必填
 	if strings.TrimSpace(cfg.Gitea.URL) == "" {
 		errs = append(errs, fmt.Errorf("gitea.url 不能为空"))
+	} else {
+		// gitea.url 格式校验：需以 http:// 或 https:// 开头且包含 host
+		u, parseErr := url.Parse(cfg.Gitea.URL)
+		if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("gitea.url 格式不合法，需以 http:// 或 https:// 开头: %q", cfg.Gitea.URL))
+		}
 	}
 	if strings.TrimSpace(cfg.Gitea.Token) == "" {
 		errs = append(errs, fmt.Errorf("gitea.token 不能为空"))
@@ -39,6 +51,21 @@ func Validate(cfg *Config) error {
 	// 范围校验
 	if cfg.Worker.Concurrency < 1 {
 		errs = append(errs, fmt.Errorf("worker.concurrency 必须 >= 1，当前值: %d", cfg.Worker.Concurrency))
+	}
+	if cfg.Worker.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("worker.timeout 必须大于 0，当前值: %s", cfg.Worker.Timeout))
+	}
+
+	// log.level 白名单
+	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+	if cfg.Log.Level != "" && !validLevels[strings.ToLower(cfg.Log.Level)] {
+		errs = append(errs, fmt.Errorf("log.level 不合法，可选值: debug/info/warn/error，当前值: %q", cfg.Log.Level))
+	}
+
+	// log.format 白名单
+	validFormats := map[string]bool{"text": true, "json": true}
+	if cfg.Log.Format != "" && !validFormats[strings.ToLower(cfg.Log.Format)] {
+		errs = append(errs, fmt.Errorf("log.format 不合法，可选值: text/json，当前值: %q", cfg.Log.Format))
 	}
 
 	// notify.default_channel 必须存在且 enabled

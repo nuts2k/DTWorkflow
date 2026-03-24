@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -26,7 +28,7 @@ func (m *Manager) OnChange(fn func(oldCfg, newCfg *Config)) {
 // WatchConfig 启动配置文件监听。
 //
 // 说明：
-//   - 本方法只实现“配置快照更新 + 回调框架”。
+//   - 本方法只实现"配置快照更新 + 回调框架"。
 //   - 不负责让 HTTP listener、Redis/SQLite 连接池、Worker Pool 等运行时组件在线重建；
 //     这些通常需要重启进程才能完整生效。
 //
@@ -35,21 +37,36 @@ func (m *Manager) OnChange(fn func(oldCfg, newCfg *Config)) {
 // - 需重启才能完整生效：server/redis/database/worker 等涉及监听端口、连接池、并发模型的配置。
 //
 // 注意：
-// - 仅支持监听“通过 WithConfigFile/SetConfigFile 显式指定的配置文件”。
+// - 仅支持监听"通过 WithConfigFile/SetConfigFile 显式指定的配置文件"。
 // - 多次调用是幂等的：只会启动一次 watcher。
 func (m *Manager) WatchConfig() error {
 	if m == nil {
 		return fmt.Errorf("配置管理器不能为空")
 	}
-	if filepath.Clean(m.configFile) == "." || m.configFile == "" {
+
+	// 检查 Manager 是否已停止
+	select {
+	case <-m.stopCh:
+		return fmt.Errorf("Manager 已停止，无法启动配置监听")
+	default:
+	}
+
+	// 读取 configFile 字段需要持有读锁
+	m.mu.RLock()
+	cfgFile := m.configFile
+	m.mu.RUnlock()
+
+	if filepath.Clean(cfgFile) == "." || cfgFile == "" {
 		return fmt.Errorf("未指定配置文件，无法启用热加载")
 	}
 
 	m.watchOnce.Do(func() {
-		m.watchErr = m.startWatchConfigFile(m.configFile)
+		m.watchErr = m.startWatchConfigFile(cfgFile)
 	})
 	return m.watchErr
 }
+
+const debounceDuration = 200 * time.Millisecond
 
 func (m *Manager) startWatchConfigFile(configFile string) error {
 	w, err := fsnotify.NewWatcher()
@@ -68,11 +85,21 @@ func (m *Manager) startWatchConfigFile(configFile string) error {
 
 	go func() {
 		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("配置 watcher goroutine panic", "error", r, "stack", string(debug.Stack()))
+			}
+		}()
+		defer func() {
 			_ = w.Close()
 		}()
+
+		var debounceTimer *time.Timer
 		for {
 			select {
 			case <-m.stopCh:
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
 				return
 			case evt, ok := <-w.Events:
 				if !ok {
@@ -82,17 +109,25 @@ func (m *Manager) startWatchConfigFile(configFile string) error {
 				if filepath.Clean(evt.Name) != cfgPath {
 					continue
 				}
-				// 常见事件：Write/Create/Rename/Chmod。这里不做过度过滤，尽量触发 reload。
-				_ = m.reloadFromDiskWithRetry(cfgPath)
-			case _, ok := <-w.Errors:
+				// debounce：合并短时间内的多次事件，避免频繁 reload。
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
+				debounceTimer = time.AfterFunc(debounceDuration, func() {
+					if err := m.reloadFromDiskWithRetry(cfgPath); err != nil {
+						slog.Warn("配置热重载失败", "error", err, "file", cfgPath)
+					}
+				})
+			case watchErr, ok := <-w.Errors:
 				if !ok {
 					return
 				}
-				// watcher 错误不向上抛：框架只保证尽最大努力更新配置快照。
+				slog.Warn("配置文件 watcher 错误", "error", watchErr)
 			}
 		}
 	}()
 
+	slog.Info("配置文件 watcher 已启动", "file", cfgPath)
 	return nil
 }
 
@@ -125,10 +160,10 @@ func (m *Manager) reloadFromDisk() error {
 }
 
 func (m *Manager) reloadFromDiskWithRetry(cfgPath string) error {
-	// 许多编辑器会采用“写临时文件 -> rename 覆盖”的策略；在 rename 瞬间，目标文件可能短暂不可读。
+	// 许多编辑器会采用"写临时文件 -> rename 覆盖"的策略；在 rename 瞬间，目标文件可能短暂不可读。
 	// 这里做极小的退避重试，避免偶发的 ReadInConfig 失败导致错过一次有效更新。
 	//
-	// 说明：仅对“文件不存在”类错误重试，避免把配置语法错误等问题吞掉并频繁重试。
+	// 说明：仅对"文件不存在"类错误重试，避免把配置语法错误等问题吞掉并频繁重试。
 	if strings.TrimSpace(cfgPath) == "" {
 		return m.reloadFromDisk()
 	}
@@ -138,7 +173,7 @@ func (m *Manager) reloadFromDiskWithRetry(cfgPath string) error {
 		if err == nil {
 			return nil
 		}
-		// 仅对“文件不存在”类错误做重试。
+		// 仅对"文件不存在"类错误做重试。
 		if !isConfigNotFoundErr(err) {
 			return err
 		}
@@ -167,7 +202,9 @@ func (m *Manager) fireOnChange(oldCfg, newCfg *Config) {
 		}
 		func() {
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					slog.Error("配置变更回调 panic", "error", r, "stack", string(debug.Stack()))
+				}
 			}()
 			cb(oldCfg, newCfg)
 		}()

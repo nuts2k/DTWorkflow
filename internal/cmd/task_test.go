@@ -125,7 +125,7 @@ func resetTaskFlagsForTest(t *testing.T) {
 
 	// 注意：pflag 的 Changed 状态会在同一进程内复用，需显式重置。
 	if f := taskCmd.PersistentFlags().Lookup("db-path"); f != nil {
-		_ = f.Value.Set(getEnvDefault("DTWORKFLOW_DB_PATH", "data/dtworkflow.db"))
+		_ = f.Value.Set(getEnvDefault("DTWORKFLOW_DATABASE_PATH", "data/dtworkflow.db"))
 		f.Changed = false
 	}
 	if f := taskCmd.PersistentFlags().Lookup("redis-addr"); f != nil {
@@ -135,6 +135,8 @@ func resetTaskFlagsForTest(t *testing.T) {
 
 	taskStore = nil
 	taskQueueClient = nil
+	taskRedisPassword = ""
+	taskRedisDB = 0
 }
 
 func TestApplyTaskConfigFromManager_AppliesDatabasePathAndRedisAddr(t *testing.T) {

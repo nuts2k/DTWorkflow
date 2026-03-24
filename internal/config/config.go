@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -224,7 +225,12 @@ func WithDefaults() ManagerOption {
 //
 // - 默认值与环境变量覆盖是否生效，取决于是否分别启用了 WithDefaults() 与 WithEnvPrefix()。
 func (m *Manager) Load() error {
-	if strings.TrimSpace(m.configFile) != "" {
+	// 读取 configFile 字段需要持有读锁，但不在持锁期间执行耗时操作。
+	m.mu.RLock()
+	cfgFile := m.configFile
+	m.mu.RUnlock()
+
+	if strings.TrimSpace(cfgFile) != "" {
 		// 显式指定了配置文件：找不到文件必须报错。
 		if err := m.v.ReadInConfig(); err != nil {
 			return fmt.Errorf("读取配置文件: %w", err)
@@ -255,17 +261,105 @@ func (m *Manager) Load() error {
 	return nil
 }
 
-// Get 获取当前配置；若未加载则返回 nil。
+// Get 获取当前配置的深拷贝；若未加载则返回 nil。
 //
-// 重要约定：返回的 *Config 指向只读数据，调用者不应修改其内容。
+// 返回的 *Config 是独立副本，调用者可安全修改而不影响 Manager 内部状态。
 func (m *Manager) Get() *Config {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.current
+	return m.current.Clone()
+}
+
+// Clone 返回 Config 的深拷贝。
+func (c *Config) Clone() *Config {
+	if c == nil {
+		return nil
+	}
+	// 值拷贝
+	clone := *c
+
+	// 深拷贝 Notify.Channels map
+	if c.Notify.Channels != nil {
+		clone.Notify.Channels = make(map[string]ChannelConfig, len(c.Notify.Channels))
+		for k, v := range c.Notify.Channels {
+			ch := v
+			if v.Options != nil {
+				ch.Options = make(map[string]string, len(v.Options))
+				for ok, ov := range v.Options {
+					ch.Options[ok] = ov
+				}
+			}
+			clone.Notify.Channels[k] = ch
+		}
+	}
+
+	// 深拷贝 Notify.Routes slice
+	if c.Notify.Routes != nil {
+		clone.Notify.Routes = make([]RouteConfig, len(c.Notify.Routes))
+		for i, r := range c.Notify.Routes {
+			clone.Notify.Routes[i] = r
+			if r.Events != nil {
+				clone.Notify.Routes[i].Events = append([]string(nil), r.Events...)
+			}
+			if r.Channels != nil {
+				clone.Notify.Routes[i].Channels = append([]string(nil), r.Channels...)
+			}
+		}
+	}
+
+	// 深拷贝 Review
+	if c.Review.IgnorePatterns != nil {
+		clone.Review.IgnorePatterns = append([]string(nil), c.Review.IgnorePatterns...)
+	}
+	if c.Review.Enabled != nil {
+		v := *c.Review.Enabled
+		clone.Review.Enabled = &v
+	}
+
+	// 深拷贝 Repos
+	if c.Repos != nil {
+		clone.Repos = make([]RepoConfig, len(c.Repos))
+		for i, repo := range c.Repos {
+			clone.Repos[i] = repo
+			// 深拷贝 repo 内的 Notify
+			if repo.Notify != nil {
+				notifyCopy := *repo.Notify
+				if repo.Notify.Routes != nil {
+					notifyCopy.Routes = make([]RouteConfig, len(repo.Notify.Routes))
+					for j, r := range repo.Notify.Routes {
+						notifyCopy.Routes[j] = r
+						if r.Events != nil {
+							notifyCopy.Routes[j].Events = append([]string(nil), r.Events...)
+						}
+						if r.Channels != nil {
+							notifyCopy.Routes[j].Channels = append([]string(nil), r.Channels...)
+						}
+					}
+				}
+				clone.Repos[i].Notify = &notifyCopy
+			}
+			// 深拷贝 repo.Review
+			if repo.Review != nil {
+				reviewCopy := *repo.Review
+				if repo.Review.IgnorePatterns != nil {
+					reviewCopy.IgnorePatterns = append([]string(nil), repo.Review.IgnorePatterns...)
+				}
+				if repo.Review.Enabled != nil {
+					v := *repo.Review.Enabled
+					reviewCopy.Enabled = &v
+				}
+				clone.Repos[i].Review = &reviewCopy
+			}
+		}
+	}
+
+	return &clone
 }
 
 // SetConfigFile 设置配置文件路径（供 CLI --config flag 使用）。
 func (m *Manager) SetConfigFile(path string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.configFile = path
 	m.v.SetConfigFile(path)
 }
@@ -279,6 +373,7 @@ func (m *Manager) Stop() {
 	}
 	m.stopOnce.Do(func() {
 		close(m.stopCh)
+		slog.Debug("配置文件 watcher 已停止")
 	})
 }
 

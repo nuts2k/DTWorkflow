@@ -20,6 +20,10 @@ func TestNewManager_DefaultSearchPaths(t *testing.T) {
 		"  token: \"test-token\"\n"+
 		"claude:\n"+
 		"  api_key: \"test-api-key\"\n"+
+		"redis:\n"+
+		"  addr: \"redis:6379\"\n"+
+		"worker:\n"+
+		"  timeout: \"30m\"\n"+
 		"webhook:\n"+
 		"  secret: \"test-secret\"\n"+
 		"notify:\n"+

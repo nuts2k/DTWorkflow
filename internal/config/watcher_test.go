@@ -88,6 +88,7 @@ func TestManager_WatchConfig_UpdateCurrent(t *testing.T) {
 	if err := m.WatchConfig(); err != nil {
 		t.Fatalf("WatchConfig: %v", err)
 	}
+	defer m.Stop()
 
 	// 写入新配置，等待 watcher 生效。
 	if err := os.WriteFile(cfgPath, []byte(minimalValidConfigYAML(9001)), 0o600); err != nil {
@@ -117,6 +118,7 @@ func TestManager_WatchConfig_InvalidConfigDoesNotPolluteCurrent(t *testing.T) {
 	if err := m.WatchConfig(); err != nil {
 		t.Fatalf("WatchConfig: %v", err)
 	}
+	defer m.Stop()
 
 	ch := make(chan struct{}, 1)
 	m.OnChange(func(oldCfg, newCfg *Config) {
@@ -174,6 +176,7 @@ func TestManager_WatchConfig_OnChangeCalledAfterUpdate(t *testing.T) {
 	if err := m.WatchConfig(); err != nil {
 		t.Fatalf("WatchConfig: %v", err)
 	}
+	defer m.Stop()
 
 	if err := os.WriteFile(cfgPath, []byte(minimalValidConfigYAML(9201)), 0o600); err != nil {
 		t.Fatalf("rewrite config file: %v", err)

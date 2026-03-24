@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func validBaseConfig() *Config {
@@ -11,8 +12,9 @@ func validBaseConfig() *Config {
 		Server:  ServerConfig{Port: 8080},
 		Gitea:   GiteaConfig{URL: "http://gitea:3000", Token: "test-token"},
 		Claude:  ClaudeConfig{APIKey: "test-api-key"},
+		Redis:   RedisConfig{Addr: "localhost:6379"},
 		Webhook: WebhookConfig{Secret: "test-secret"},
-		Worker:  WorkerConfig{Concurrency: 1},
+		Worker:  WorkerConfig{Concurrency: 1, Timeout: 30 * time.Minute},
 		Notify: NotifyConfig{
 			DefaultChannel: "gitea",
 			Channels: map[string]ChannelConfig{
