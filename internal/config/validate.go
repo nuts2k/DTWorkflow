@@ -68,7 +68,7 @@ func Validate(cfg *Config) error {
 		errs = append(errs, fmt.Errorf("log.format 不合法，可选值: text/json，当前值: %q", cfg.Log.Format))
 	}
 
-	// notify.default_channel 必须存在且 enabled
+	// notify.default_channel 必须存在、enabled，且当前版本仅支持 gitea。
 	if strings.TrimSpace(cfg.Notify.DefaultChannel) == "" {
 		errs = append(errs, fmt.Errorf("notify.default_channel 不能为空"))
 	} else {
@@ -76,13 +76,20 @@ func Validate(cfg *Config) error {
 		if !ok || !ch.Enabled {
 			errs = append(errs, fmt.Errorf("notify.default_channel %q 未配置或未启用", cfg.Notify.DefaultChannel))
 		}
+		if cfg.Notify.DefaultChannel != "gitea" {
+			errs = append(errs, fmt.Errorf("notify.default_channel 当前仅支持 %q，当前值: %q", "gitea", cfg.Notify.DefaultChannel))
+		}
 	}
 
-	// notify.routes 引用的渠道必须已配置
+	// notify.routes 引用的渠道必须已配置，且当前版本仅支持 gitea。
 	for i, route := range cfg.Notify.Routes {
 		for _, chName := range route.Channels {
 			if _, ok := cfg.Notify.Channels[chName]; !ok {
 				errs = append(errs, fmt.Errorf("notify.routes[%d] 引用了未配置的渠道: %q", i, chName))
+				continue
+			}
+			if chName != "gitea" {
+				errs = append(errs, fmt.Errorf("notify.routes[%d] 当前仅支持 %q 渠道，发现: %q", i, "gitea", chName))
 			}
 		}
 	}
@@ -96,7 +103,7 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	// repos[].notify.routes 引用的渠道必须已配置（与全局 routes 同口径：只校验存在性）。
+	// repos[].notify.routes 引用的渠道必须已配置，且当前版本仅支持 gitea。
 	for i, repo := range cfg.Repos {
 		if repo.Notify == nil {
 			continue
@@ -105,6 +112,10 @@ func Validate(cfg *Config) error {
 			for _, chName := range route.Channels {
 				if _, ok := cfg.Notify.Channels[chName]; !ok {
 					errs = append(errs, fmt.Errorf("repos[%d].notify.routes[%d] 引用了未配置的渠道: %q", i, j, chName))
+					continue
+				}
+				if chName != "gitea" {
+					errs = append(errs, fmt.Errorf("repos[%d].notify.routes[%d] 当前仅支持 %q 渠道，发现: %q", i, j, "gitea", chName))
 				}
 			}
 		}

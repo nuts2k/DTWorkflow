@@ -240,6 +240,9 @@ func (m *Manager) fireOnChange(oldCfg, newCfg *Config) {
 	cbs := append([]func(oldCfg, newCfg *Config){}, m.onChange...)
 	m.onChangeMu.RUnlock()
 
+	oldSnapshot := oldCfg.Clone()
+	newSnapshot := newCfg.Clone()
+
 	for _, cb := range cbs {
 		if cb == nil {
 			continue
@@ -250,7 +253,7 @@ func (m *Manager) fireOnChange(oldCfg, newCfg *Config) {
 					slog.Error("配置变更回调 panic", "error", r, "stack", string(debug.Stack()))
 				}
 			}()
-			cb(oldCfg, newCfg)
+			cb(oldSnapshot, newSnapshot)
 		}()
 	}
 }

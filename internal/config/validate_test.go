@@ -111,3 +111,57 @@ func TestValidate_RepoNotifyRoutesReferenceUnknownChannel(t *testing.T) {
 		t.Fatalf("error message = %q, want contains %q", err.Error(), "repos[0].notify.routes[0]")
 	}
 }
+
+func TestValidate_NotifyDefaultChannelOnlySupportsGitea(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["fallback-channel"] = ChannelConfig{Enabled: true}
+	cfg.Notify.DefaultChannel = "fallback-channel"
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("Validate returned nil error")
+	}
+	if !strings.Contains(err.Error(), "notify.default_channel") {
+		t.Fatalf("error message = %q, want contains %q", err.Error(), "notify.default_channel")
+	}
+	if !strings.Contains(err.Error(), "仅支持") {
+		t.Fatalf("error message = %q, want contains %q", err.Error(), "仅支持")
+	}
+}
+
+func TestValidate_NotifyRoutesOnlySupportGitea(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["repo"] = ChannelConfig{Enabled: true}
+	cfg.Notify.Routes = []RouteConfig{{Repo: "*", Channels: []string{"repo"}}}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("Validate returned nil error")
+	}
+	if !strings.Contains(err.Error(), "notify.routes[0]") {
+		t.Fatalf("error message = %q, want contains %q", err.Error(), "notify.routes[0]")
+	}
+	if !strings.Contains(err.Error(), "仅支持") {
+		t.Fatalf("error message = %q, want contains %q", err.Error(), "仅支持")
+	}
+}
+
+func TestValidate_RepoNotifyRoutesOnlySupportGitea(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["repo"] = ChannelConfig{Enabled: true}
+	cfg.Repos = []RepoConfig{{
+		Name:   "acme/repo",
+		Notify: &NotifyOverride{Routes: []RouteConfig{{Repo: "*", Channels: []string{"repo"}}}},
+	}}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("Validate returned nil error")
+	}
+	if !strings.Contains(err.Error(), "repos[0].notify.routes[0]") {
+		t.Fatalf("error message = %q, want contains %q", err.Error(), "repos[0].notify.routes[0]")
+	}
+	if !strings.Contains(err.Error(), "仅支持") {
+		t.Fatalf("error message = %q, want contains %q", err.Error(), "仅支持")
+	}
+}

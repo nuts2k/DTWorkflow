@@ -227,7 +227,7 @@ func WithDefaults() ManagerOption {
 // 说明：
 // - 若通过 WithConfigFile()/SetConfigFile() 指定了配置文件，则会读取该文件。
 // - 未指定配置文件时：
-//   - 若启用了 WithDefaultSearchPaths()，则按默认搜索路径查找并读取；找不到会返回错误。
+//   - 若启用了 WithDefaultSearchPaths()，则按默认搜索路径查找并读取；若未找到配置文件，视为“未提供配置文件”，不报错。
 //   - 未启用 WithDefaultSearchPaths() 时，不读取文件，也不会因此报错。
 //
 // - 默认值与环境变量覆盖是否生效，取决于是否分别启用了 WithDefaults() 与 WithEnvPrefix()。

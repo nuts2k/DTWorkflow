@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -80,6 +81,18 @@ func newTestConfig(t *testing.T) serveConfig {
 		WorkerImage:   "dtworkflow-worker:1.0",
 		NetworkName:   "dtworkflow-net",
 	}
+}
+
+type noopNotifier struct {
+	name string
+}
+
+func (n noopNotifier) Name() string {
+	return n.name
+}
+
+func (n noopNotifier) Send(ctx context.Context, msg notify.Message) error {
+	return nil
 }
 
 func TestBuildNotifyRules_MapsGlobalRoutes(t *testing.T) {
@@ -225,53 +238,79 @@ func TestBuildNotifier_WithClientAndConfig(t *testing.T) {
 	}
 }
 
-func TestBuildNotifier_UnsupportedDefaultChannelReturnsError(t *testing.T) {
-	cfg := &config.Config{
-		Notify: config.NotifyConfig{
-			DefaultChannel: "fallback-channel",
-			Channels: map[string]config.ChannelConfig{
-				"gitea":            {Enabled: true},
-				"fallback-channel": {Enabled: true},
-			},
-			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}},
-		},
-	}
-
-	client, err := gitea.NewClient("https://gitea.example.com", gitea.WithToken("test-token"))
-	if err != nil {
-		t.Fatalf("NewClient error: %v", err)
-	}
-	_, err = buildNotifier(cfg, client)
-	if err == nil {
-		t.Fatal("buildNotifier should return error when default_channel is unsupported")
-	}
-	if !strings.Contains(err.Error(), "notify.default_channel") {
-		t.Fatalf("error = %v, want message containing notify.default_channel", err)
-	}
-}
-
-func TestBuildNotifier_RoutesReferenceNonGiteaChannelReturnsError(t *testing.T) {
+func TestConfigDrivenNotifier_ReusesGlobalRouterWithoutRepoOverride(t *testing.T) {
 	cfg := &config.Config{
 		Notify: config.NotifyConfig{
 			DefaultChannel: "gitea",
 			Channels: map[string]config.ChannelConfig{
 				"gitea": {Enabled: true},
-				"repo":  {Enabled: true},
 			},
-			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"repo"}}},
+			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}},
 		},
 	}
 
-	client, err := gitea.NewClient("https://gitea.example.com", gitea.WithToken("test-token"))
+	n := &configDrivenNotifier{
+		cfg:           cfg,
+		giteaNotifier: noopNotifier{name: "gitea"},
+		logger:        slog.Default(),
+	}
+
+	r1, err := n.getRouter("acme/repo1")
 	if err != nil {
-		t.Fatalf("NewClient error: %v", err)
+		t.Fatalf("getRouter(repo1) error: %v", err)
 	}
-	_, err = buildNotifier(cfg, client)
-	if err == nil {
-		t.Fatal("buildNotifier should return error when routes reference non-gitea channel")
+	r2, err := n.getRouter("acme/repo2")
+	if err != nil {
+		t.Fatalf("getRouter(repo2) error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "notify.routes") {
-		t.Fatalf("error = %v, want message containing notify.routes", err)
+	if r1 != r2 {
+		t.Fatal("expected global router to be reused for repos without override")
+	}
+	if n.globalRouter == nil {
+		t.Fatal("expected globalRouter to be initialized")
+	}
+	if len(n.routers) != 0 {
+		t.Fatalf("override routers length = %d, want 0", len(n.routers))
+	}
+}
+
+func TestConfigDrivenNotifier_CachesOnlyRepoOverrides(t *testing.T) {
+	cfg := &config.Config{
+		Notify: config.NotifyConfig{
+			DefaultChannel: "gitea",
+			Channels: map[string]config.ChannelConfig{
+				"gitea": {Enabled: true},
+			},
+			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}},
+		},
+		Repos: []config.RepoConfig{{
+			Name:   "acme/repo1",
+			Notify: &config.NotifyOverride{Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}}},
+		}},
+	}
+
+	n := &configDrivenNotifier{
+		cfg:           cfg,
+		giteaNotifier: noopNotifier{name: "gitea"},
+		logger:        slog.Default(),
+	}
+
+	r1, err := n.getRouter("acme/repo1")
+	if err != nil {
+		t.Fatalf("getRouter(repo1) error: %v", err)
+	}
+	r2, err := n.getRouter("acme/repo1")
+	if err != nil {
+		t.Fatalf("getRouter(repo1 second call) error: %v", err)
+	}
+	if r1 != r2 {
+		t.Fatal("expected override router to be cached per repo")
+	}
+	if len(n.routers) != 1 {
+		t.Fatalf("override routers length = %d, want 1", len(n.routers))
+	}
+	if n.globalRouter != nil {
+		t.Fatal("expected globalRouter to remain nil when only override repo was requested")
 	}
 }
 
@@ -475,8 +514,8 @@ func TestBuildServiceDeps_UsesServeConfigResourceLimitsAndNetwork(t *testing.T) 
 	cfg.AppCfg = &config.Config{
 		Notify: config.NotifyConfig{
 			DefaultChannel: "gitea",
-			Channels: map[string]config.ChannelConfig{"gitea": {Enabled: true}},
-			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}},
+			Channels:       map[string]config.ChannelConfig{"gitea": {Enabled: true}},
+			Routes:         []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}},
 		},
 	}
 

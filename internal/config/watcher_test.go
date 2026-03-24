@@ -218,3 +218,51 @@ func TestManager_WatchConfig_OnChangeCalledAfterUpdate(t *testing.T) {
 		t.Fatalf("OnChange not called within timeout")
 	}
 }
+
+func TestManager_WatchConfig_OnChangeReceivesSnapshots(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := writeTempConfigFile(t, tmpDir, minimalValidConfigYAML(9400))
+
+	m, err := NewManager(
+		WithConfigFile(cfgPath),
+		WithDefaults(),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	called := make(chan struct{}, 1)
+	m.OnChange(func(oldCfg, newCfg *Config) {
+		if oldCfg == nil || newCfg == nil {
+			return
+		}
+		newCfg.Server.Port = 9999
+		cur := m.Get()
+		if cur == nil {
+			t.Fatalf("m.Get() returned nil")
+		}
+		if cur.Server.Port != 9401 {
+			t.Fatalf("current server.port = %d, want %d", cur.Server.Port, 9401)
+		}
+		called <- struct{}{}
+	})
+
+	if err := m.WatchConfig(); err != nil {
+		t.Fatalf("WatchConfig: %v", err)
+	}
+	defer m.Stop()
+
+	if err := os.WriteFile(cfgPath, []byte(minimalValidConfigYAML(9401)), 0o600); err != nil {
+		t.Fatalf("rewrite config file: %v", err)
+	}
+
+	select {
+	case <-called:
+		// ok
+	case <-time.After(2 * time.Second):
+		t.Fatalf("OnChange not called within timeout")
+	}
+}

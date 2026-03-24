@@ -114,27 +114,14 @@ type readinessSnapshot struct {
 }
 
 func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
-	cpuLimit := cfg.CPULimit
-	if cpuLimit == "" {
-		cpuLimit = "2.0"
-	}
-	memoryLimit := cfg.MemoryLimit
-	if memoryLimit == "" {
-		memoryLimit = "4g"
-	}
-	networkName := cfg.NetworkName
-	if networkName == "" {
-		networkName = "dtworkflow-net"
-	}
-
 	return worker.PoolConfig{
 		Image:        cfg.WorkerImage,
-		CPULimit:     cpuLimit,
-		MemoryLimit:  memoryLimit,
+		CPULimit:     cfg.CPULimit,
+		MemoryLimit:  cfg.MemoryLimit,
 		GiteaURL:     cfg.GiteaURL,
 		GiteaToken:   worker.SecretString(cfg.GiteaToken),
 		ClaudeAPIKey: worker.SecretString(cfg.ClaudeAPIKey),
-		NetworkName:  networkName,
+		NetworkName:  cfg.NetworkName,
 	}
 }
 
@@ -194,11 +181,13 @@ type configDrivenNotifier struct {
 	giteaNotifier notify.Notifier
 	logger        *slog.Logger
 
-	// routers 是按 repoFullName 缓存的 Router 实例。
+	// 对未声明仓库级 notify 覆盖的仓库，复用同一个全局 Router，避免按 repoFullName 无上限缓存。
+	// 对显式声明了 repo.notify.routes 的仓库，才按仓库缓存 Router。
 	// 说明：当前实现不支持配置热更新“即时生效”。即使 cfgManager 热加载更新了 cfg，
 	// 已缓存的 router 也不会自动刷新；后续如需支持，需要引入显式的更新机制。
-	mu      sync.Mutex
-	routers map[string]*notify.Router
+	mu           sync.Mutex
+	globalRouter *notify.Router
+	routers      map[string]*notify.Router
 }
 
 func (n *configDrivenNotifier) Send(ctx context.Context, msg notify.Message) error {
@@ -217,6 +206,18 @@ func (n *configDrivenNotifier) getRouter(repoFullName string) (*notify.Router, e
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	if !n.hasRepoNotifyOverride(repoFullName) {
+		if n.globalRouter != nil {
+			return n.globalRouter, nil
+		}
+		router, err := n.newRouter(repoFullName)
+		if err != nil {
+			return nil, err
+		}
+		n.globalRouter = router
+		return router, nil
+	}
+
 	if n.routers == nil {
 		n.routers = make(map[string]*notify.Router)
 	}
@@ -224,17 +225,29 @@ func (n *configDrivenNotifier) getRouter(repoFullName string) (*notify.Router, e
 		return r, nil
 	}
 
-	rules, fallback := buildNotifyRules(n.cfg, repoFullName)
-	if fallback != "gitea" {
-		return nil, fmt.Errorf("当前版本仅支持 default_channel=\"gitea\"，当前值: %q", fallback)
+	router, err := n.newRouter(repoFullName)
+	if err != nil {
+		return nil, err
 	}
-	for i, rule := range rules {
-		for _, ch := range rule.Channels {
-			if ch != "gitea" {
-				return nil, fmt.Errorf("当前版本仅支持 gitea 通知渠道，规则 #%d 引用了渠道 %q", i, ch)
-			}
+
+	n.routers[repoFullName] = router
+	return router, nil
+}
+
+func (n *configDrivenNotifier) hasRepoNotifyOverride(repoFullName string) bool {
+	if n == nil || n.cfg == nil {
+		return false
+	}
+	for _, repo := range n.cfg.Repos {
+		if repo.Name == repoFullName && repo.Notify != nil && repo.Notify.Routes != nil {
+			return true
 		}
 	}
+	return false
+}
+
+func (n *configDrivenNotifier) newRouter(repoFullName string) (*notify.Router, error) {
+	rules, fallback := buildNotifyRules(n.cfg, repoFullName)
 
 	router, err := notify.NewRouter(
 		notify.WithNotifier(n.giteaNotifier),
@@ -245,8 +258,6 @@ func (n *configDrivenNotifier) getRouter(repoFullName string) (*notify.Router, e
 	if err != nil {
 		return nil, fmt.Errorf("构造通知路由失败: %w", err)
 	}
-
-	n.routers[repoFullName] = router
 	return router, nil
 }
 
@@ -256,36 +267,10 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 	}
 
 	// 当前最小实现边界：仅支持 gitea 渠道。
-	// 为了在服务启动阶段尽早暴露配置问题，这里会做前置校验：
-	// 1) notify.default_channel 必须为 "gitea"
-	// 2) notify.routes / repos[].notify.routes 只能引用 "gitea" 渠道
-	// 3) 若 notify.channels.gitea 未配置或未启用，则视为“未启用通知”，返回 nil
+	// 该约束已在 config.Validate 中统一校验；此处仅根据 gitea 渠道是否启用决定是否构造 Notifier。
 	ch, ok := cfg.Notify.Channels["gitea"]
 	if !ok || !ch.Enabled {
 		return nil, nil
-	}
-	if cfg.Notify.DefaultChannel != "gitea" {
-		return nil, fmt.Errorf("notify.default_channel 当前仅支持 \"gitea\"，当前值: %q", cfg.Notify.DefaultChannel)
-	}
-
-	for i, route := range cfg.Notify.Routes {
-		for _, chName := range route.Channels {
-			if chName != "gitea" {
-				return nil, fmt.Errorf("notify.routes[%d] 当前仅支持 \"gitea\" 渠道，发现: %q", i, chName)
-			}
-		}
-	}
-	for i, repo := range cfg.Repos {
-		if repo.Notify == nil {
-			continue
-		}
-		for j, route := range repo.Notify.Routes {
-			for _, chName := range route.Channels {
-				if chName != "gitea" {
-					return nil, fmt.Errorf("repos[%d].notify.routes[%d] 当前仅支持 \"gitea\" 渠道，发现: %q", i, j, chName)
-				}
-			}
-		}
 	}
 
 	giteaNotifier, err := notify.NewGiteaNotifier(&giteaCommentAdapter{client: giteaClient}, notify.WithLogger(slog.Default()))
@@ -601,16 +586,11 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	return gracefulShutdown(server, deps, recoveryCancel, gcCancel)
 }
 
-// getEnvDefault 读取环境变量，若为空则返回默认值
+// getEnvDefault 读取环境变量，若为空则返回默认值。
+// 旧环境变量兼容统一由 internal/config.WithEnvPrefix 处理。
 func getEnvDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
-	}
-	// 兼容历史环境变量名，避免升级后静默回退到默认数据库路径。
-	if key == "DTWORKFLOW_DATABASE_PATH" {
-		if v := os.Getenv("DTWORKFLOW_DB_PATH"); v != "" {
-			return v
-		}
 	}
 	return defaultVal
 }
