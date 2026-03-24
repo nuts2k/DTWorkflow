@@ -112,18 +112,38 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 通知接口定义（Go interface，策略模式）
 - [x] Gitea 评论通知实现（默认通道）
 - [x] 主流程最小接线：`serve -> queue.Processor -> notify.Router`
-- [ ] 按仓库/事件类型的配置化通知路由（待 M1.8）
+- [x] 按仓库/事件类型的配置化通知路由（M1.8 配置驱动实现）
 
 #### M1.8 配置管理
-- [ ] Viper 集成，全局配置文件格式定义（YAML）
-- [ ] 仓库级配置支持
-- [ ] 配置热加载（Viper WatchConfig）
+> 说明：2026-03-24 完成全部实施，含两轮审核修复（共 11 处 Critical/High 问题）。
+- [x] Viper 集成，全局配置文件格式定义（YAML）
+  - [x] `internal/config` 包：Manager + Config 模型 + Functional Options
+  - [x] 默认值（WithDefaults）、环境变量绑定（WithEnvPrefix）、配置文件加载
+  - [x] 配置校验（Validate）：server.port 范围、gitea.url 格式、redis.addr/worker.timeout/webhook.secret/claude.api_key 必填、log.level/format 白名单、notify 路由合法性
+  - [x] 错误体系：ErrInvalidConfig 哨兵 + ValidationError（支持 errors.Is/As）
+  - [x] `root` 命令统一配置入口（PersistentPreRunE）、CLI flag > env > file > default 优先级
+  - [x] `serve` 从 cfgManager 读取全部运行参数，包括 Redis password/DB 透传
+  - [x] `task` 接入统一配置体系，Viper flag 绑定 + 环境变量命名统一
+  - [x] 通知路由配置驱动：全局默认路由 + 仓库级 notify override + configDrivenNotifier 按需构建
+  - [x] 示例配置模板 `configs/dtworkflow.example.yaml` 覆盖全部配置段
+- [x] 仓库级配置支持
+  - [x] `repos` 配置段：per-repo notify 路由覆盖
+  - [x] `repos` 配置段：per-repo review 配置预留（Enabled/Severity/IgnorePatterns）
+  - [x] ResolveNotifyRoutes / ResolveReviewConfig 合并逻辑
+- [x] 配置热加载（Viper WatchConfig）
+  - [x] fsnotify 目录级监听 + 200ms debounce 防抖
+  - [x] 校验失败不污染当前快照，编辑器 rename 重试
+  - [x] OnChange 回调框架（panic recovery + slog 结构化日志）
+  - [x] Manager.Stop() 优雅退出，serve 退出路径正确调用
+  - [x] Get() 返回深拷贝（Config.Clone），SetConfigFile 并发安全
+  - [x] 热加载生效边界：通知路由等轻量配置即时生效；server/redis/database/worker 需重启
 
 ### 交付物
 - `dtworkflow` 单二进制文件，包含 CLI 命令和 `serve` 模式
 - Gitea API 客户端库
 - M1.5-6 任务执行引擎（队列 / 持久化 / Worker / task CLI）
 - M1.7 通知框架与主流程最小接线
+- M1.8 统一配置管理（Viper YAML / 环境变量 / CLI flags / 校验 / 热加载 / 仓库级覆盖）
 - Docker Compose 一键启动脚本（Redis + dtworkflow serve + Worker 镜像构建配置）
 
 ### 验证标准
