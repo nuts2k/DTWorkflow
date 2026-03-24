@@ -143,6 +143,35 @@ func TestManager_WatchConfig_InvalidConfigDoesNotPolluteCurrent(t *testing.T) {
 	}
 }
 
+func TestManager_WatchConfig_StopPreventsFurtherReload(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := writeTempConfigFile(t, tmpDir, minimalValidConfigYAML(9300))
+
+	m, err := NewManager(
+		WithConfigFile(cfgPath),
+		WithDefaults(),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := m.WatchConfig(); err != nil {
+		t.Fatalf("WatchConfig: %v", err)
+	}
+
+	m.Stop()
+	if err := os.WriteFile(cfgPath, []byte(minimalValidConfigYAML(9301)), 0o600); err != nil {
+		t.Fatalf("rewrite config file: %v", err)
+	}
+
+	time.Sleep(400 * time.Millisecond)
+	if got := m.Get().Server.Port; got != 9300 {
+		t.Fatalf("server.port got %d, want %d", got, 9300)
+	}
+}
+
 func TestManager_WatchConfig_OnChangeCalledAfterUpdate(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := writeTempConfigFile(t, tmpDir, minimalValidConfigYAML(9200))

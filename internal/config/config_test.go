@@ -136,6 +136,52 @@ func TestManager_Load_EnvOverridesConfig(t *testing.T) {
 	}
 }
 
+func TestManager_Load_DatabasePathSupportsLegacyEnvName(t *testing.T) {
+	t.Setenv("DTWORKFLOW_WEBHOOK_SECRET", "test-secret")
+	t.Setenv("DTWORKFLOW_NOTIFY_CHANNELS_GITEA_ENABLED", "true")
+	t.Setenv("DTWORKFLOW_GITEA_URL", "http://gitea:3000")
+	t.Setenv("DTWORKFLOW_GITEA_TOKEN", "test-token")
+	t.Setenv("DTWORKFLOW_CLAUDE_API_KEY", "test-api-key")
+	t.Setenv("DTWORKFLOW_DB_PATH", "/tmp/legacy.db")
+
+	m, err := NewManager(
+		WithDefaults(),
+		WithEnvPrefix("DTWORKFLOW"),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg := m.Get()
+	if cfg == nil {
+		t.Fatalf("Get returned nil config")
+	}
+	if cfg.Database.Path != "/tmp/legacy.db" {
+		t.Fatalf("database.path got %q, want %q", cfg.Database.Path, "/tmp/legacy.db")
+	}
+
+	t.Setenv("DTWORKFLOW_DATABASE_PATH", "/tmp/new.db")
+	m2, err := NewManager(
+		WithDefaults(),
+		WithEnvPrefix("DTWORKFLOW"),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m2.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg2 := m2.Get()
+	if cfg2 == nil {
+		t.Fatalf("Get returned nil config")
+	}
+	if cfg2.Database.Path != "/tmp/new.db" {
+		t.Fatalf("database.path got %q, want %q", cfg2.Database.Path, "/tmp/new.db")
+	}
+}
+
 func TestManager_Load_DefaultsAndEnvWithoutConfigFile(t *testing.T) {
 	// 不指定配置文件时，Load() 也应能成功：默认值 + 环境变量覆盖。
 	// 注意：由于 Manager.Load 会执行 Validate，本测试需通过环境变量补齐必填项。

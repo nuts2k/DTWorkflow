@@ -95,9 +95,10 @@ type RouteConfig struct {
 // - Load() 负责从数据源加载配置并校验，然后写入 current。
 // - WatchConfig() 用于监听配置文件变更，在校验通过后更新 current，并触发回调。
 //
-// 重要约定：Get() 返回的 *Config 指向只读数据，调用者不应修改其内容。
+// 重要约定：Get() 返回配置快照的深拷贝，调用者可安全读取和修改副本，不影响 Manager 内部状态。
 type Manager struct {
-	v *viper.Viper
+	v       *viper.Viper
+	viperMu sync.Mutex
 
 	configFile            string
 	useDefaultSearchPaths bool
@@ -176,6 +177,12 @@ func WithEnvPrefix(prefix string) ManagerOption {
 		m.v.SetEnvPrefix(prefix)
 		m.v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 		m.v.AutomaticEnv()
+
+		// 兼容旧环境变量名：历史上数据库路径使用 DTWORKFLOW_DB_PATH。
+		// M1.8 统一为 DTWORKFLOW_DATABASE_PATH，但过渡期内仍需兼容旧变量，避免现有部署静默回退到默认数据库路径。
+		if err := m.v.BindEnv("database.path", prefix+"_DATABASE_PATH", prefix+"_DB_PATH"); err != nil {
+			return fmt.Errorf("绑定环境变量 database.path 失败: %w", err)
+		}
 		return nil
 	}
 }
@@ -225,23 +232,22 @@ func WithDefaults() ManagerOption {
 //
 // - 默认值与环境变量覆盖是否生效，取决于是否分别启用了 WithDefaults() 与 WithEnvPrefix()。
 func (m *Manager) Load() error {
-	// 读取 configFile 字段需要持有读锁，但不在持锁期间执行耗时操作。
-	m.mu.RLock()
+	// viper 不是显式并发安全；Load 与 SetConfigFile/reload 必须串行访问同一个实例。
+	m.viperMu.Lock()
 	cfgFile := m.configFile
-	m.mu.RUnlock()
 
 	if strings.TrimSpace(cfgFile) != "" {
 		// 显式指定了配置文件：找不到文件必须报错。
 		if err := m.v.ReadInConfig(); err != nil {
+			m.viperMu.Unlock()
 			return fmt.Errorf("读取配置文件: %w", err)
 		}
 	} else if m.useDefaultSearchPaths {
 		// 启用了默认搜索路径：若没找到配置文件，视为“未提供配置文件”，不应报错。
 		if err := m.v.ReadInConfig(); err != nil {
 			var notFound viper.ConfigFileNotFoundError
-			if errors.As(err, &notFound) {
-				// ignore: continue with flags/env/defaults
-			} else {
+			if !errors.As(err, &notFound) {
+				m.viperMu.Unlock()
 				return fmt.Errorf("读取配置文件: %w", err)
 			}
 		}
@@ -249,8 +255,11 @@ func (m *Manager) Load() error {
 
 	cfg := &Config{}
 	if err := m.v.Unmarshal(cfg); err != nil {
+		m.viperMu.Unlock()
 		return fmt.Errorf("解析配置: %w", err)
 	}
+	m.viperMu.Unlock()
+
 	if err := Validate(cfg); err != nil {
 		return fmt.Errorf("配置校验失败: %w", err)
 	}
@@ -358,8 +367,8 @@ func (c *Config) Clone() *Config {
 
 // SetConfigFile 设置配置文件路径（供 CLI --config flag 使用）。
 func (m *Manager) SetConfigFile(path string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.viperMu.Lock()
+	defer m.viperMu.Unlock()
 	m.configFile = path
 	m.v.SetConfigFile(path)
 }

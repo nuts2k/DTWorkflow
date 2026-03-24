@@ -606,6 +606,12 @@ func getEnvDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
+	// 兼容历史环境变量名，避免升级后静默回退到默认数据库路径。
+	if key == "DTWORKFLOW_DATABASE_PATH" {
+		if v := os.Getenv("DTWORKFLOW_DB_PATH"); v != "" {
+			return v
+		}
+	}
 	return defaultVal
 }
 

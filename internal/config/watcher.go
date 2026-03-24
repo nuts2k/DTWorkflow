@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -51,10 +52,10 @@ func (m *Manager) WatchConfig() error {
 	default:
 	}
 
-	// 读取 configFile 字段需要持有读锁
-	m.mu.RLock()
+	// configFile 与底层 viper 实例共用同一把锁保护，避免与 SetConfigFile 并发访问。
+	m.viperMu.Lock()
 	cfgFile := m.configFile
-	m.mu.RUnlock()
+	m.viperMu.Unlock()
 
 	if filepath.Clean(cfgFile) == "." || cfgFile == "" {
 		return fmt.Errorf("未指定配置文件，无法启用热加载")
@@ -93,33 +94,64 @@ func (m *Manager) startWatchConfigFile(configFile string) error {
 			_ = w.Close()
 		}()
 
-		var debounceTimer *time.Timer
+		var (
+			debounceTimer   *time.Timer
+			debounceTimerCh <-chan time.Time
+		)
+		stopTimer := func() {
+			if debounceTimer == nil {
+				debounceTimerCh = nil
+				return
+			}
+			if !debounceTimer.Stop() {
+				select {
+				case <-debounceTimer.C:
+				default:
+				}
+			}
+			debounceTimerCh = nil
+		}
+		resetTimer := func() {
+			if debounceTimer == nil {
+				debounceTimer = time.NewTimer(debounceDuration)
+			} else {
+				stopTimer()
+				debounceTimer.Reset(debounceDuration)
+			}
+			debounceTimerCh = debounceTimer.C
+		}
+
 		for {
 			select {
 			case <-m.stopCh:
-				if debounceTimer != nil {
-					debounceTimer.Stop()
-				}
+				stopTimer()
 				return
+			case <-debounceTimerCh:
+				debounceTimerCh = nil
+				select {
+				case <-m.stopCh:
+					return
+				default:
+				}
+				if err := m.reloadFromDiskWithRetry(cfgPath); err != nil {
+					slog.Warn("配置热重载失败", "error", err, "file", cfgPath)
+				}
 			case evt, ok := <-w.Events:
 				if !ok {
+					stopTimer()
 					return
 				}
-				// 仅处理目标文件。
+				if !isConfigRelevantEvent(evt) {
+					continue
+				}
+				// 仅处理目标文件；同时兼容部分编辑器使用 rename/replace 时先移除旧文件、再写入新文件的行为。
 				if filepath.Clean(evt.Name) != cfgPath {
 					continue
 				}
-				// debounce：合并短时间内的多次事件，避免频繁 reload。
-				if debounceTimer != nil {
-					debounceTimer.Stop()
-				}
-				debounceTimer = time.AfterFunc(debounceDuration, func() {
-					if err := m.reloadFromDiskWithRetry(cfgPath); err != nil {
-						slog.Warn("配置热重载失败", "error", err, "file", cfgPath)
-					}
-				})
+				resetTimer()
 			case watchErr, ok := <-w.Errors:
 				if !ok {
+					stopTimer()
 					return
 				}
 				slog.Warn("配置文件 watcher 错误", "error", watchErr)
@@ -136,16 +168,21 @@ func (m *Manager) reloadFromDisk() error {
 	m.reloadMu.Lock()
 	defer m.reloadMu.Unlock()
 
-	// 注意：viper 不是显式并发安全；这里串行化重载。
+	// 注意：viper 不是显式并发安全；这里与 Load/SetConfigFile 共用同一把锁串行化访问。
+	m.viperMu.Lock()
 	if err := m.v.ReadInConfig(); err != nil {
+		m.viperMu.Unlock()
 		// 读取失败直接返回，保留旧配置。
 		return err
 	}
 
 	newCfg := &Config{}
 	if err := m.v.Unmarshal(newCfg); err != nil {
+		m.viperMu.Unlock()
 		return err
 	}
+	m.viperMu.Unlock()
+
 	if err := Validate(newCfg); err != nil {
 		return err
 	}
@@ -186,9 +223,16 @@ func isConfigNotFoundErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	if os.IsNotExist(err) {
+		return true
+	}
 	// viper/fsnotify 在不同平台返回的错误类型不完全一致；这里用最小的字符串判断。
 	msg := err.Error()
 	return strings.Contains(msg, "no such file") || strings.Contains(msg, "file does not exist")
+}
+
+func isConfigRelevantEvent(evt fsnotify.Event) bool {
+	return evt.Has(fsnotify.Write) || evt.Has(fsnotify.Create) || evt.Has(fsnotify.Rename)
 }
 
 func (m *Manager) fireOnChange(oldCfg, newCfg *Config) {
