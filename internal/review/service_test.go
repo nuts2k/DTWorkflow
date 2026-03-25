@@ -29,24 +29,12 @@ func (m *mockPRClient) ListPullRequestFiles(ctx context.Context, owner, repo str
 }
 
 type mockReviewPool struct {
-	runWithCommand         func(ctx context.Context, payload model.TaskPayload, cmd []string) (*worker.ExecutionResult, error)
 	runWithCommandAndStdin func(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
-}
-
-func (m *mockReviewPool) RunWithCommand(ctx context.Context, payload model.TaskPayload, cmd []string) (*worker.ExecutionResult, error) {
-	if m.runWithCommand != nil {
-		return m.runWithCommand(ctx, payload, cmd)
-	}
-	return nil, errors.New("RunWithCommand not implemented")
 }
 
 func (m *mockReviewPool) RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error) {
 	if m.runWithCommandAndStdin != nil {
 		return m.runWithCommandAndStdin(ctx, payload, cmd, stdinData)
-	}
-	// 回退到 RunWithCommand（忽略 stdinData）
-	if m.runWithCommand != nil {
-		return m.runWithCommand(ctx, payload, cmd)
 	}
 	return nil, errors.New("RunWithCommandAndStdin not implemented")
 }
@@ -612,27 +600,48 @@ func TestResolveTechStack(t *testing.T) {
 	t.Run("配置覆盖自动检测", func(t *testing.T) {
 		files := []*gitea.ChangedFile{{Filename: "Foo.java"}}
 		cfg := ReviewConfig{TechStack: []string{"vue"}}
-		got := resolveTechStack(files, cfg)
+		got, unknown := resolveTechStack(files, cfg)
 		if got != TechVue {
 			t.Errorf("配置优先：预期 TechVue，实际 %d", got)
+		}
+		if len(unknown) != 0 {
+			t.Errorf("不应有未识别的技术栈，实际: %v", unknown)
 		}
 	})
 
 	t.Run("无配置回退自动检测", func(t *testing.T) {
 		files := []*gitea.ChangedFile{{Filename: "Foo.java"}}
 		cfg := ReviewConfig{}
-		got := resolveTechStack(files, cfg)
+		got, unknown := resolveTechStack(files, cfg)
 		if got != TechJava {
 			t.Errorf("自动检测：预期 TechJava，实际 %d", got)
+		}
+		if len(unknown) != 0 {
+			t.Errorf("不应有未识别的技术栈，实际: %v", unknown)
 		}
 	})
 
 	t.Run("配置多技术栈", func(t *testing.T) {
 		files := []*gitea.ChangedFile{}
 		cfg := ReviewConfig{TechStack: []string{"java", "vue"}}
-		got := resolveTechStack(files, cfg)
+		got, unknown := resolveTechStack(files, cfg)
 		if got != TechJava|TechVue {
 			t.Errorf("多技术栈配置：预期 TechJava|TechVue，实际 %d", got)
+		}
+		if len(unknown) != 0 {
+			t.Errorf("不应有未识别的技术栈，实际: %v", unknown)
+		}
+	})
+
+	t.Run("未识别技术栈返回 unknown", func(t *testing.T) {
+		files := []*gitea.ChangedFile{}
+		cfg := ReviewConfig{TechStack: []string{"java", "kotlin", "flutter"}}
+		got, unknown := resolveTechStack(files, cfg)
+		if got != TechJava {
+			t.Errorf("预期 TechJava，实际 %d", got)
+		}
+		if len(unknown) != 2 || unknown[0] != "kotlin" || unknown[1] != "flutter" {
+			t.Errorf("预期 unknown=[kotlin flutter]，实际: %v", unknown)
 		}
 	})
 }

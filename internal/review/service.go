@@ -19,9 +19,8 @@ type PRClient interface {
 }
 
 // ReviewPoolRunner 评审专用的容器执行接口，与 queue.PoolRunner 独立。
-// *worker.Pool 同时满足 queue.PoolRunner（Run）和 ReviewPoolRunner（RunWithCommand、RunWithCommandAndStdin）。
+// *worker.Pool 通过 RunWithCommandAndStdin 同时满足此接口。
 type ReviewPoolRunner interface {
-	RunWithCommand(ctx context.Context, payload model.TaskPayload, cmd []string) (*worker.ExecutionResult, error)
 	RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
 }
 
@@ -101,7 +100,8 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 	}
 
 	// 3. 大 PR 警告（不阻断，仅日志）
-	totalChanges := sumChanges(files)
+	adds, dels := countChanges(files)
+	totalChanges := adds + dels
 	if totalChanges > 10000 {
 		s.logger.WarnContext(ctx, "超大 PR，评审质量可能受影响",
 			"pr", prNum, "files", len(files), "changes", totalChanges)
@@ -111,7 +111,11 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 	cfg := s.resolveConfig(payload.RepoFullName)
 
 	// 4.5 检测技术栈（文件列表可能不完整时记录警告）
-	techStack := resolveTechStack(files, cfg)
+	techStack, unknownTech := resolveTechStack(files, cfg)
+	if len(unknownTech) > 0 {
+		s.logger.WarnContext(ctx, "配置中包含无法识别的技术栈，已忽略",
+			"pr", prNum, "unknown", unknownTech)
+	}
 	if len(cfg.TechStack) == 0 && len(files) >= 100 {
 		s.logger.WarnContext(ctx, "文件列表可能不完整（单页 100 限制），技术栈自动检测结果可能有遗漏",
 			"pr", prNum, "files", len(files), "detected_stack", int(techStack))

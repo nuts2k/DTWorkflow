@@ -205,31 +205,13 @@ func truncate(s string, maxLen int) string {
 	return s
 }
 
-// totalAdditions 计算所有变更文件的总新增行数
-func totalAdditions(files []*gitea.ChangedFile) int {
-	total := 0
+// countChanges 单次遍历计算变更文件的新增行数、删除行数和总变更行数
+func countChanges(files []*gitea.ChangedFile) (additions, deletions int) {
 	for _, f := range files {
-		total += f.Additions
+		additions += f.Additions
+		deletions += f.Deletions
 	}
-	return total
-}
-
-// totalDeletions 计算所有变更文件的总删除行数
-func totalDeletions(files []*gitea.ChangedFile) int {
-	total := 0
-	for _, f := range files {
-		total += f.Deletions
-	}
-	return total
-}
-
-// sumChanges 计算变更文件的总增删行数
-func sumChanges(files []*gitea.ChangedFile) int {
-	total := 0
-	for _, f := range files {
-		total += f.Additions + f.Deletions
-	}
-	return total
+	return additions, deletions
 }
 
 // formatFilesSummary 将变更文件列表格式化为 prompt 摘要。
@@ -238,8 +220,9 @@ func sumChanges(files []*gitea.ChangedFile) int {
 func formatFilesSummary(files []*gitea.ChangedFile) string {
 	const maxFiles = 50
 	var b strings.Builder
+	adds, dels := countChanges(files)
 	b.WriteString(fmt.Sprintf("\nChanged files (%d files, +%d/-%d lines):\n",
-		len(files), totalAdditions(files), totalDeletions(files)))
+		len(files), adds, dels))
 	limit := len(files)
 	if limit > maxFiles {
 		limit = maxFiles
@@ -329,21 +312,23 @@ func hasVueSignal(files []*gitea.ChangedFile) bool {
 	return false
 }
 
-// resolveTechStack 解析最终技术栈：配置优先于自动检测
-func resolveTechStack(files []*gitea.ChangedFile, cfg ReviewConfig) TechStack {
+// resolveTechStack 解析最终技术栈：配置优先于自动检测。
+// 返回值 unknown 包含配置中无法识别的技术栈名称，调用方应记录警告。
+func resolveTechStack(files []*gitea.ChangedFile, cfg ReviewConfig) (stack TechStack, unknown []string) {
 	if len(cfg.TechStack) > 0 {
-		var stack TechStack
 		for _, t := range cfg.TechStack {
 			switch strings.ToLower(t) {
 			case "java":
 				stack |= TechJava
 			case "vue":
 				stack |= TechVue
+			default:
+				unknown = append(unknown, t)
 			}
 		}
-		return stack
+		return stack, unknown
 	}
-	return detectTechStack(files)
+	return detectTechStack(files), nil
 }
 
 // buildCodeStandardsSection 构造编码规范 prompt 段
@@ -404,7 +389,8 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 	b.WriteString(jsonSchemaInstruction)
 
 	// 4. 大 PR 警示（条件性）
-	totalChanges := sumChanges(files)
+	a, d := countChanges(files)
+	totalChanges := a + d
 	if totalChanges > cfg.LargePRThreshold || len(files) > 30 {
 		b.WriteString(largePRGuidance)
 	}

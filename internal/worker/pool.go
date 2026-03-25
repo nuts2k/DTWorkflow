@@ -212,6 +212,10 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 		}, fmt.Errorf("启动容器失败: %w", err)
 	}
 
+	// 为容器等待设置独立超时，防止 Docker daemon 无响应导致 goroutine 永远阻塞
+	waitCtx, waitCancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer waitCancel()
+
 	// 可选：后台 goroutine 写入 stdin 数据，通过 channel 报告写入结果
 	var stdinErrCh chan error
 	if stdinWriter != nil {
@@ -223,12 +227,11 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 			}
 			_, werr := stdinWriter.Write(opts.stdinData)
 			stdinErrCh <- werr
+			if werr != nil {
+				waitCancel() // stdin 写入失败时提前终止容器等待，避免长时间挂起
+			}
 		}()
 	}
-
-	// 为容器等待设置独立超时，防止 Docker daemon 无响应导致 goroutine 永远阻塞
-	waitCtx, waitCancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer waitCancel()
 	exitCode, waitErr := p.docker.WaitContainer(waitCtx, containerID)
 
 	// 无论成功与否，都尝试获取日志（使用独立 context，避免原 ctx 已取消导致无法获取日志）
