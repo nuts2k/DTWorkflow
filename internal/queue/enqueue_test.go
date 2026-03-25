@@ -188,6 +188,181 @@ func TestHandlePullRequest_EnqueueFail_KeepsPending(t *testing.T) {
 	}
 }
 
+func TestNewEnqueueHandler_PanicOnNilClient(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewEnqueueHandler(nil client) 应 panic")
+		}
+	}()
+	NewEnqueueHandler(nil, newMockStore(), slog.Default())
+}
+
+func TestNewEnqueueHandler_PanicOnNilStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewEnqueueHandler(nil store) 应 panic")
+		}
+	}()
+	NewEnqueueHandler(&mockEnqueuer{}, nil, slog.Default())
+}
+
+func TestNewEnqueueHandler_NilLoggerUsesDefault(t *testing.T) {
+	h := NewEnqueueHandler(&mockEnqueuer{}, newMockStore(), nil)
+	if h == nil {
+		t.Fatal("NewEnqueueHandler 应返回非 nil")
+	}
+}
+
+func TestHandlePullRequest_IncompleteData(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-incomplete"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
+
+	// RepoFullName 为空
+	event := webhook.PullRequestEvent{
+		DeliveryID:  "delivery-incomplete-1",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "", CloneURL: "https://gitea.example.com/org/repo.git"},
+		PullRequest: webhook.PullRequestRef{Number: 1},
+	}
+	err := h.HandlePullRequest(context.Background(), event)
+	if err == nil {
+		t.Fatal("RepoFullName 为空应返回错误")
+	}
+
+	// CloneURL 为空
+	event2 := webhook.PullRequestEvent{
+		DeliveryID:  "delivery-incomplete-2",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: ""},
+		PullRequest: webhook.PullRequestRef{Number: 1},
+	}
+	err = h.HandlePullRequest(context.Background(), event2)
+	if err == nil {
+		t.Fatal("CloneURL 为空应返回错误")
+	}
+}
+
+func TestHandlePullRequest_FindByDeliveryIDError(t *testing.T) {
+	s := newMockStore()
+	s.findErr = errors.New("db error")
+	mc := &mockEnqueuer{enqueuedID: "asynq-err"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID:  "delivery-find-err",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		PullRequest: webhook.PullRequestRef{Number: 1},
+	}
+	err := h.HandlePullRequest(context.Background(), event)
+	if err == nil {
+		t.Fatal("FindByDeliveryID 错误应传播")
+	}
+}
+
+func TestHandlePullRequest_CreateTaskError(t *testing.T) {
+	s := newMockStore()
+	s.createErr = errors.New("db write error")
+	mc := &mockEnqueuer{enqueuedID: "asynq-create-err"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID:  "delivery-create-err",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		PullRequest: webhook.PullRequestRef{Number: 1},
+	}
+	err := h.HandlePullRequest(context.Background(), event)
+	if err == nil {
+		t.Fatal("CreateTask 错误应传播")
+	}
+}
+
+func TestHandlePullRequest_UpdateTaskError_StillSucceeds(t *testing.T) {
+	s := newMockStore()
+	s.updateErr = errors.New("db update error")
+	mc := &mockEnqueuer{enqueuedID: "asynq-upd-err"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID:  "delivery-upd-err",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		PullRequest: webhook.PullRequestRef{Number: 1},
+	}
+	// UpdateTask 失败不应返回错误（任务已成功入队）
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("UpdateTask 失败不应导致整体失败: %v", err)
+	}
+}
+
+func TestHandleIssueLabel_Idempotent(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-issue-dup"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
+
+	event := webhook.IssueLabelEvent{
+		DeliveryID:   "delivery-issue-dup",
+		AutoFixAdded: true,
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:        webhook.IssueRef{Number: 10},
+	}
+	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
+		t.Fatalf("第一次调用失败: %v", err)
+	}
+	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
+		t.Fatalf("第二次调用失败: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Errorf("幂等检查失败: 期望 1 条任务，得到 %d", len(s.tasks))
+	}
+}
+
+func TestHandleIssueLabel_FindByDeliveryIDError(t *testing.T) {
+	s := newMockStore()
+	s.findErr = errors.New("db error")
+	mc := &mockEnqueuer{enqueuedID: "asynq-err"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
+
+	event := webhook.IssueLabelEvent{
+		DeliveryID:   "delivery-issue-find-err",
+		AutoFixAdded: true,
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:        webhook.IssueRef{Number: 10},
+	}
+	err := h.HandleIssueLabel(context.Background(), event)
+	if err == nil {
+		t.Fatal("FindByDeliveryID 错误应传播")
+	}
+}
+
+func TestHandleIssueLabel_IncompleteData(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-incomplete"}
+	h := NewEnqueueHandler(mc, s, slog.Default())
+
+	event := webhook.IssueLabelEvent{
+		DeliveryID:   "delivery-issue-incomplete",
+		AutoFixAdded: true,
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:        webhook.IssueRef{Number: 10},
+	}
+	err := h.HandleIssueLabel(context.Background(), event)
+	if err == nil {
+		t.Fatal("RepoFullName 为空应返回错误")
+	}
+}
+
+func TestBuildAsynqTaskID(t *testing.T) {
+	// 非空 deliveryID
+	id := buildAsynqTaskID("delivery-123", model.TaskTypeReviewPR)
+	if id != "delivery-123:review_pr" {
+		t.Errorf("buildAsynqTaskID = %q, want %q", id, "delivery-123:review_pr")
+	}
+
+	// 空 deliveryID
+	id = buildAsynqTaskID("", model.TaskTypeReviewPR)
+	if id != "" {
+		t.Errorf("buildAsynqTaskID('', ...) = %q, want empty", id)
+	}
+}
+
 func TestHandleIssueLabel_OnlyWhenAutoFixAdded(t *testing.T) {
 	s := newMockStore()
 	mc := &mockEnqueuer{enqueuedID: "asynq-789"}

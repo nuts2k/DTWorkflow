@@ -52,6 +52,42 @@ func TestTaskRetryDelay(t *testing.T) {
 	}
 }
 
+func TestTaskRetryDelay_LargeRetryCount(t *testing.T) {
+	// retryCount > 20 应被钳制，不应溢出
+	d := TaskRetryDelay(100)
+	expected := 30 * time.Second << 20 // 钳制到 20
+	if d != expected {
+		t.Errorf("TaskRetryDelay(100) = %v, want %v", d, expected)
+	}
+
+	// 验证 retryCount=20 的精确值
+	d20 := TaskRetryDelay(20)
+	if d != d20 {
+		t.Errorf("TaskRetryDelay(100) = %v 应等于 TaskRetryDelay(20) = %v", d, d20)
+	}
+}
+
+func TestBuildAsynqOptions_WithTaskID(t *testing.T) {
+	opts := buildAsynqOptions(model.TaskTypeReviewPR, EnqueueOptions{
+		Priority: model.PriorityHigh,
+		TaskID:   "my-task-id",
+	})
+	// 基本 3 个选项 + TaskID = 4
+	if len(opts) != 4 {
+		t.Errorf("buildAsynqOptions 带 TaskID 应返回 4 个选项，得到 %d", len(opts))
+	}
+}
+
+func TestBuildAsynqOptions_WithoutTaskID(t *testing.T) {
+	opts := buildAsynqOptions(model.TaskTypeFixIssue, EnqueueOptions{
+		Priority: model.PriorityNormal,
+	})
+	// 无 TaskID：Queue + MaxRetry + Timeout = 3
+	if len(opts) != 3 {
+		t.Errorf("buildAsynqOptions 无 TaskID 应返回 3 个选项，得到 %d", len(opts))
+	}
+}
+
 func TestPriorityToQueue(t *testing.T) {
 	tests := []struct {
 		priority model.TaskPriority

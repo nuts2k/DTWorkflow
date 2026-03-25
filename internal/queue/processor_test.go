@@ -615,6 +615,153 @@ func TestShouldRetry(t *testing.T) {
 	}
 }
 
+func TestNewProcessor_PanicOnNilPool(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewProcessor(nil pool) 应 panic")
+		}
+	}()
+	NewProcessor(nil, newMockStore(), nil, slog.Default())
+}
+
+func TestNewProcessor_PanicOnNilStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewProcessor(nil store) 应 panic")
+		}
+	}()
+	NewProcessor(&mockPoolRunner{}, nil, nil, slog.Default())
+}
+
+func TestNewProcessor_NilLoggerUsesDefault(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, nil)
+	if p == nil {
+		t.Fatal("NewProcessor 应返回非 nil")
+	}
+}
+
+func TestProcessTask_ExitCode2_SkipRetry(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-exitcode2",
+		RepoFullName: "org/repo",
+		PRNumber:     1,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-exitcode2",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{
+			ExitCode: 2,
+			Error:    "parameter error",
+		},
+	}
+
+	p := NewProcessor(pool, s, nil, slog.Default())
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("退出码 2 应返回错误")
+	}
+	// 验证返回的错误包含 asynq.SkipRetry
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Errorf("退出码 2 应包含 SkipRetry，得到: %v", err)
+	}
+
+	got := s.tasks["proc-task-exitcode2"]
+	if got.Status != model.TaskStatusFailed {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+}
+
+func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
+
+	record := &model.TaskRecord{
+		ID:       "msg-no-owner",
+		TaskType: model.TaskTypeReviewPR,
+		Status:   model.TaskStatusSucceeded,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			RepoOwner:    "",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			PRNumber:     1,
+		},
+	}
+	_, ok := p.buildNotificationMessage(record)
+	if ok {
+		t.Error("RepoOwner 为空时不应生成通知消息")
+	}
+}
+
+func TestBuildNotificationMessage_NilRecord(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
+	_, ok := p.buildNotificationMessage(nil)
+	if ok {
+		t.Error("nil record 不应生成通知消息")
+	}
+}
+
+func TestBuildNotificationMessage_FixIssue_InvalidNumber(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
+
+	record := &model.TaskRecord{
+		ID:       "msg-fix-no-number",
+		TaskType: model.TaskTypeFixIssue,
+		Status:   model.TaskStatusSucceeded,
+		Payload: model.TaskPayload{
+			TaskType:    model.TaskTypeFixIssue,
+			RepoOwner:   "org",
+			RepoName:    "repo",
+			IssueNumber: 0,
+		},
+	}
+	_, ok := p.buildNotificationMessage(record)
+	if ok {
+		t.Error("IssueNumber=0 不应生成通知消息")
+	}
+}
+
+func TestFindRecord_EmptyDeliveryID(t *testing.T) {
+	s := newMockStore()
+	// 任务没有 deliveryID，通过 ID 直接存储
+	record := &model.TaskRecord{
+		ID:       "direct-id-task",
+		TaskType: model.TaskTypeReviewPR,
+		Status:   model.TaskStatusQueued,
+		Payload: model.TaskPayload{
+			TaskType: model.TaskTypeReviewPR,
+		},
+	}
+	s.tasks["direct-id-task"] = record
+
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "ok"}}
+	p := NewProcessor(pool, s, nil, slog.Default())
+
+	// payload 没有 DeliveryID，findRecord 应失败（无法通过空 delivery 查找）
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "",
+		RepoFullName: "org/repo",
+	}
+	task := buildAsynqTask(t, payload)
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("空 DeliveryID 且无匹配记录应返回错误")
+	}
+}
+
 func TestProcessTask_RetryingStatus(t *testing.T) {
 	// 验证非零退出码（非确定性失败）在无 asynq 重试上下文时标记为 failed
 	s := newMockStore()

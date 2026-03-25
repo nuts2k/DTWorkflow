@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -201,6 +202,139 @@ func TestRecoveryLoop_MaxRetryExceeded_MarksFailed(t *testing.T) {
 	}
 	if s.updated[0].Status != model.TaskStatusFailed {
 		t.Errorf("updated status = %q, want %q", s.updated[0].Status, model.TaskStatusFailed)
+	}
+}
+
+func TestRecoveryLoop_CancelledContext(t *testing.T) {
+	orphan := &model.TaskRecord{
+		ID:         "orphan-cancelled",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusPending,
+		Priority:   model.PriorityHigh,
+		Payload:    model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+		DeliveryID: "delivery-orphan-cancelled",
+		MaxRetry:   3,
+	}
+
+	s := &mockStoreForRecovery{orphans: []*model.TaskRecord{orphan}}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
+
+	// 已取消的 context 应跳过恢复
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.recover(ctx)
+
+	if len(s.updated) != 0 {
+		t.Errorf("已取消 context 不应有更新，得到 %d 条", len(s.updated))
+	}
+}
+
+func TestRecoveryLoop_BatchLimit(t *testing.T) {
+	// 创建超过 100 条孤儿任务，验证批次上限
+	orphans := make([]*model.TaskRecord, 105)
+	for i := range orphans {
+		orphans[i] = &model.TaskRecord{
+			ID:         fmt.Sprintf("orphan-batch-%d", i),
+			TaskType:   model.TaskTypeReviewPR,
+			Status:     model.TaskStatusPending,
+			Priority:   model.PriorityNormal,
+			Payload:    model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+			DeliveryID: fmt.Sprintf("delivery-batch-%d", i),
+			MaxRetry:   3,
+		}
+	}
+
+	s := &mockStoreForRecovery{orphans: orphans}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
+
+	r.recover(context.Background())
+
+	// 应最多处理 100 条
+	if len(s.updated) != 100 {
+		t.Errorf("期望处理 100 条，实际处理 %d 条", len(s.updated))
+	}
+}
+
+func TestRecoveryLoop_UpdateFail_AfterMaxRetry(t *testing.T) {
+	orphan := &model.TaskRecord{
+		ID:         "orphan-upd-fail",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusPending,
+		Priority:   model.PriorityHigh,
+		Payload:    model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+		DeliveryID: "delivery-orphan-upd-fail",
+		MaxRetry:   3,
+	}
+
+	s := &mockStoreForRecovery{
+		orphans:   []*model.TaskRecord{orphan},
+		updateErr: errors.New("db error"),
+	}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
+	r.recoveryAttempts[orphan.ID] = 3
+
+	r.recover(context.Background())
+
+	// UpdateTask 失败，不应有成功更新
+	if len(s.updated) != 0 {
+		t.Errorf("UpdateTask 失败时不应有成功更新，得到 %d", len(s.updated))
+	}
+}
+
+func TestRecoveryLoop_UpdateFail_AfterRequeue(t *testing.T) {
+	orphan := &model.TaskRecord{
+		ID:         "orphan-upd-fail2",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusPending,
+		Priority:   model.PriorityHigh,
+		Payload:    model.TaskPayload{TaskType: model.TaskTypeReviewPR},
+		DeliveryID: "delivery-orphan-upd-fail2",
+		MaxRetry:   3,
+	}
+
+	s := &mockStoreForRecovery{
+		orphans:   []*model.TaskRecord{orphan},
+		updateErr: errors.New("db error"),
+	}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 60*time.Second, 120*time.Second)
+
+	r.recover(context.Background())
+
+	// 入队成功但 UpdateTask 失败，不应有成功更新
+	if len(s.updated) != 0 {
+		t.Errorf("UpdateTask 失败时不应有成功更新，得到 %d", len(s.updated))
+	}
+	// recoveryAttempts 不应递增（因为 update 失败提前 return）
+	if r.recoveryAttempts[orphan.ID] != 0 {
+		t.Errorf("recoveryAttempts 应为 0，得到 %d", r.recoveryAttempts[orphan.ID])
+	}
+}
+
+func TestRecoveryLoop_Run_StopsOnCancel(t *testing.T) {
+	s := &mockStoreForRecovery{}
+	mc := &mockEnqueuerForRecovery{}
+	r := NewRecoveryLoop(s, mc, slog.Default(), 10*time.Millisecond, 120*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		r.Run(ctx)
+		close(done)
+	}()
+
+	// 等待至少一个 tick 然后取消
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Run 正常退出
+	case <-time.After(2 * time.Second):
+		t.Fatal("RecoveryLoop.Run 未在取消后及时退出")
 	}
 }
 

@@ -677,3 +677,227 @@ func TestCreateTask_InvalidStatus(t *testing.T) {
 		t.Fatal("CreateTask 使用无效状态应返回错误")
 	}
 }
+
+func TestCreateTask_EmptyID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r := newTestRecord("", "", model.TaskTypeReviewPR)
+	err := s.CreateTask(ctx, r)
+	if err == nil {
+		t.Fatal("CreateTask 空 ID 应返回错误")
+	}
+	if !errors.Is(err, ErrInvalidID) {
+		t.Errorf("期望 ErrInvalidID，得到: %v", err)
+	}
+}
+
+func TestCreateTask_InvalidTaskType(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r := newTestRecord("bad-type-001", "", model.TaskType("bogus"))
+	err := s.CreateTask(ctx, r)
+	if err == nil {
+		t.Fatal("CreateTask 使用无效任务类型应返回错误")
+	}
+}
+
+func TestUpdateTask_NilRecord(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	err := s.UpdateTask(ctx, nil)
+	if err == nil {
+		t.Fatal("UpdateTask(nil) 应返回错误")
+	}
+	if !errors.Is(err, ErrNilRecord) {
+		t.Errorf("期望 ErrNilRecord，得到: %v", err)
+	}
+}
+
+func TestUpdateTask_EmptyID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r := newTestRecord("", "", model.TaskTypeReviewPR)
+	r.ID = ""
+	err := s.UpdateTask(ctx, r)
+	if err == nil {
+		t.Fatal("UpdateTask 空 ID 应返回错误")
+	}
+	if !errors.Is(err, ErrInvalidID) {
+		t.Errorf("期望 ErrInvalidID，得到: %v", err)
+	}
+}
+
+func TestUpdateTask_InvalidTaskType(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r := newTestRecord("upd-bad-type", "", model.TaskTypeReviewPR)
+	if err := s.CreateTask(ctx, r); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+	r.TaskType = model.TaskType("bogus")
+	err := s.UpdateTask(ctx, r)
+	if err == nil {
+		t.Fatal("UpdateTask 使用无效任务类型应返回错误")
+	}
+}
+
+func TestUpdateTask_InvalidStatus(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r := newTestRecord("upd-bad-status", "", model.TaskTypeReviewPR)
+	if err := s.CreateTask(ctx, r); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+	r.Status = model.TaskStatus("bogus")
+	err := s.UpdateTask(ctx, r)
+	if err == nil {
+		t.Fatal("UpdateTask 使用无效状态应返回错误")
+	}
+}
+
+func TestUpdateTask_WithCompletedAt(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r := newTestRecord("completed-task", "", model.TaskTypeReviewPR)
+	if err := s.CreateTask(ctx, r); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	now := time.Now().UTC()
+	r.Status = model.TaskStatusSucceeded
+	r.StartedAt = &now
+	r.CompletedAt = &now
+	if err := s.UpdateTask(ctx, r); err != nil {
+		t.Fatalf("UpdateTask 失败: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, "completed-task")
+	if err != nil {
+		t.Fatalf("GetTask 失败: %v", err)
+	}
+	if got.CompletedAt == nil {
+		t.Error("CompletedAt 应不为 nil")
+	}
+	if got.StartedAt == nil {
+		t.Error("StartedAt 应不为 nil")
+	}
+}
+
+func TestListTasks_InvalidTaskType(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.ListTasks(ctx, ListOptions{TaskType: model.TaskType("bogus")})
+	if err == nil {
+		t.Fatal("ListTasks 使用无效任务类型应返回错误")
+	}
+}
+
+func TestListTasks_InvalidStatus(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.ListTasks(ctx, ListOptions{Status: model.TaskStatus("bogus")})
+	if err == nil {
+		t.Fatal("ListTasks 使用无效状态应返回错误")
+	}
+}
+
+func TestPurgeTasks_InvalidOlderThan(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.PurgeTasks(ctx, 0, model.TaskStatusSucceeded)
+	if err == nil {
+		t.Fatal("PurgeTasks olderThan=0 应返回错误")
+	}
+
+	_, err = s.PurgeTasks(ctx, -1*time.Hour, model.TaskStatusSucceeded)
+	if err == nil {
+		t.Fatal("PurgeTasks 负数 olderThan 应返回错误")
+	}
+}
+
+func TestPurgeTasks_InvalidStatus(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.PurgeTasks(ctx, 1*time.Hour, model.TaskStatus("bogus"))
+	if err == nil {
+		t.Fatal("PurgeTasks 使用无效状态应返回错误")
+	}
+}
+
+func TestRunMigrations_Idempotent(t *testing.T) {
+	s := newTestStore(t)
+	// RunMigrations 在 NewSQLiteStore 中已执行一次，再执行一次应无错（幂等）
+	if err := RunMigrations(s.db); err != nil {
+		t.Fatalf("二次执行 RunMigrations 应幂等，但返回错误: %v", err)
+	}
+}
+
+func TestNewSQLiteStore_FileDB(t *testing.T) {
+	dbPath := t.TempDir() + "/sub/nested/test.db"
+	s, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore 创建文件数据库失败: %v", err)
+	}
+	defer s.Close()
+
+	// 验证可以正常操作
+	ctx := context.Background()
+	r := newTestRecord("file-db-task", "", model.TaskTypeReviewPR)
+	if err := s.CreateTask(ctx, r); err != nil {
+		t.Fatalf("文件数据库 CreateTask 失败: %v", err)
+	}
+	got, err := s.GetTask(ctx, "file-db-task")
+	if err != nil {
+		t.Fatalf("文件数据库 GetTask 失败: %v", err)
+	}
+	if got == nil || got.ID != "file-db-task" {
+		t.Error("文件数据库读写验证失败")
+	}
+}
+
+func TestListTasks_CombinedFilters(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	r1 := newTestRecord("combo-1", "", model.TaskTypeReviewPR)
+	r1.RepoFullName = "org/repo-a"
+	r1.Status = model.TaskStatusSucceeded
+
+	r2 := newTestRecord("combo-2", "", model.TaskTypeReviewPR)
+	r2.RepoFullName = "org/repo-a"
+	r2.Status = model.TaskStatusPending
+
+	r3 := newTestRecord("combo-3", "", model.TaskTypeFixIssue)
+	r3.RepoFullName = "org/repo-a"
+	r3.Status = model.TaskStatusSucceeded
+
+	for _, r := range []*model.TaskRecord{r1, r2, r3} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask 失败: %v", err)
+		}
+	}
+
+	// 同时按 repo + status + type 过滤
+	records, err := s.ListTasks(ctx, ListOptions{
+		RepoFullName: "org/repo-a",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusSucceeded,
+	})
+	if err != nil {
+		t.Fatalf("ListTasks 失败: %v", err)
+	}
+	if len(records) != 1 || records[0].ID != "combo-1" {
+		t.Errorf("组合过滤期望 1 条 combo-1，得到 %d 条", len(records))
+	}
+}
