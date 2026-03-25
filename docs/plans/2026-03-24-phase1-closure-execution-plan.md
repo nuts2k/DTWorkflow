@@ -7,7 +7,7 @@
 
 ## 执行记录（2026-03-25）
 
-**状态：Phase 1 收口第一阶段 ✅ 完成**
+**状态：Phase 1 收口第一阶段 ✅ 完成 / 第二阶段 ✅ 完成**
 
 ### 验收结果
 
@@ -37,6 +37,36 @@
 - 根因：配置项仅为预留字段，初始化 Gitea Client 时未读取，导致自签名证书场景下通知回写 TLS 失败
 - 修复：`internal/cmd/serve.go` 在初始化 Gitea Client 时根据 `cfg.AppCfg.Gitea.InsecureSkipVerify` 注入跳过 TLS 验证的自定义 `http.Client`
 - 提交：`2f52e3d fix: 接入 Gitea Client 的 insecure_skip_verify 配置`
+
+### 第二阶段验收结果（2026-03-25）
+
+| 验收项 | 结果 |
+|--------|------|
+| 容器内 Git clone 仓库 | ✅ |
+| PR 分支 checkout（refs/pull/N/head） | ✅ |
+| Base 分支获取（用于 diff 对比） | ✅ |
+| Claude Code CLI 基于完整仓库上下文评审 | ✅ |
+| 评审质量（定位文件+行号+影响分析+修复建议） | ✅ |
+| Gitea 通知回写 | ✅ |
+| docker-compose.yml 挂载配置文件 | ✅ |
+| 冷启动基线记录 | ✅ |
+
+### 第二阶段关键改动
+
+1. **新增 `build/docker/entrypoint.sh`**：容器入口脚本，负责 clone 仓库、checkout PR 分支、迁移 HOME 到可写 tmpfs
+2. **升级 Claude Code CLI v0.2.40 → v2.1.81**：修复 v0.2.40 在非交互模式下的 Raw mode 错误和首次运行向导卡死问题
+3. **PoolConfig 新增 `GiteaInsecureSkipVerify`**：容器内通过 `GIT_SSL_NO_VERIFY` 环境变量传递自签名证书跳过配置
+4. **优化 PR 评审 prompt**：引导 Claude 使用 `git diff`、追溯调用链、探索项目结构
+5. **tmpfs 权限修复**：`mode=1777` 确保 worker 用户在只读容器中可写
+6. **收口 docker-compose.yml**：挂载 `dtworkflow.yaml` 为只读配置，环境变量仅覆盖容器内网络配置
+
+### 冷启动基线数据
+
+| 基线项 | 数据 |
+|--------|------|
+| 服务启动到 /healthz 可用 | 118ms |
+| Webhook 到入队响应 | 44ms |
+| Worker 容器完整执行（clone + Claude 评审） | 32s |
 
 ---
 
@@ -513,9 +543,9 @@ DTWORKFLOW_DATABASE_PATH=/app/data/dtworkflow.db
 5. ✅ Claude 发送手工 PR Webhook 并验证 `task list/status`
 6. ✅ 验证真实通知闭环
 
-**第二阶段待办（参见第 6 节）：**
+**第二阶段执行结果（2026-03-25）：**
 
-- [ ] **clone/worktree 实现**（最高优先级）：容器内 Git 仓库 clone + worktree，Phase 2 评审前置依赖
-- [ ] 收口 `docker-compose.yml`：挂载 `dtworkflow.yaml`，适配 M1.8 统一配置体系
-- [ ] 冷启动基线：记录启动耗时、首个 Webhook 入队延迟、首个 Worker 容器执行完成耗时
-- [ ] 并发基线：测试 `concurrency=1/2/4` 的稳定性
+- [x] **clone/worktree 实现**：entrypoint.sh 实现容器内 clone + PR 分支 checkout，Claude Code CLI 升级至 v2.1.81
+- [x] **收口 `docker-compose.yml`**：挂载 `dtworkflow.yaml`，适配 M1.8 统一配置体系
+- [x] **冷启动基线**：服务启动→healthz 118ms / Webhook→入队 44ms / Worker 容器完整执行（clone+评审）32s
+- [ ] 并发基线：待后续测试 `concurrency=1/2/4` 的稳定性

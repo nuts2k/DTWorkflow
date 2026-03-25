@@ -104,7 +104,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Claude Code CLI Docker 镜像构建（基础镜像 + Claude Code + Git + 常用工具）
 - [x] Docker SDK for Go 集成，程序化创建/销毁容器
 - [x] Worker 池管理：并发数控制、资源限制（CPU / 内存）
-- [ ] 容器内 Git 仓库 clone + worktree 实现（Phase 1 第二阶段完成，Phase 2 评审依赖完整代码上下文）
+- [x] 容器内 Git 仓库 clone + worktree 实现（entrypoint.sh 实现 clone + PR 分支 checkout，Claude Code CLI 升级至 v2.1.81）
 - [x] Claude Code CLI 非交互模式验证（`claude -p` 在容器内运行）
 - [x] API Key 安全注入（环境变量 / Docker secrets）
 
