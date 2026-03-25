@@ -104,7 +104,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Claude Code CLI Docker 镜像构建（基础镜像 + Claude Code + Git + 常用工具）
 - [x] Docker SDK for Go 集成，程序化创建/销毁容器
 - [x] Worker 池管理：并发数控制、资源限制（CPU / 内存）
-- [ ] 容器内 Git 仓库 clone + worktree 验证（待后续业务阶段接入真实仓库执行链路）
+- [ ] 容器内 Git 仓库 clone + worktree 实现（Phase 1 第二阶段完成，Phase 2 评审依赖完整代码上下文）
 - [x] Claude Code CLI 非交互模式验证（`claude -p` 在容器内运行）
 - [x] API Key 安全注入（环境变量 / Docker secrets）
 
@@ -165,16 +165,20 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 ### 里程碑
 
-#### M2.1 PR Diff 提取与预处理
-- [ ] 通过 Gitea API 获取 PR diff
-- [ ] Diff 解析：变更文件列表、变更行、上下文代码
+#### M2.1 PR 仓库环境准备与变更上下文提取
+> 说明：Phase 2 采用"完整仓库 + Claude Code CLI"评审模式，而非仅传 diff 文本。
+> Worker 容器内拥有完整代码仓库，Claude Code CLI 可自主探索调用链、关联文件和项目结构，
+> 评审质量（尤其是安全分析与架构评审）显著优于纯 diff 模式。
+- [ ] Worker 容器内 clone 目标仓库并 checkout PR 分支（依赖 M1.6 clone/worktree）
+- [ ] 通过 Gitea API 获取 PR 元数据（变更文件列表、变更行数、PR 描述）作为评审上下文
 - [ ] 大型 PR 检测与分批策略（按文件数 / 总行数阈值分组）
-- [ ] 变更文件的完整内容获取（非仅 diff 片段）
+- [ ] 将 PR 变更上下文与评审指令注入 Claude Code CLI prompt
 
 #### M2.2 评审 Prompt 工程
 - [ ] 设计评审 prompt 模板，覆盖四个维度：风格/逻辑/安全/架构
 - [ ] 严重程度分级指令（CRITICAL / ERROR / WARNING / INFO）
 - [ ] 输出格式定义（结构化 JSON，便于解析）
+- [ ] 引导 Claude Code 主动探索上下文：追溯调用链、检查相关文件、评估回归影响
 - [ ] Java 代码评审专项 prompt（Spring Boot 常见问题、MyBatis 等）
 - [ ] Vue 代码评审专项 prompt（组件设计、响应式、XSS 等）
 - [ ] 项目编码规范文件集成（如仓库中存在 .code-standards 等）

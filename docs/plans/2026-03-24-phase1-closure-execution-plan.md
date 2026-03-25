@@ -438,15 +438,19 @@ DTWORKFLOW_DATABASE_PATH=/app/data/dtworkflow.db
 
 **Owner：用户决策，Claude 执行后续实现或文档迁移**
 
-当前事实：
+**决策结果（2026-03-25）：方案 A — 留在 Phase 1 第二阶段补实现**
 
-- 路线图仍把“容器内 Git 仓库 clone + worktree 验证”标记为未完成
-- 但当前 Worker 实现尚未真正落地 clone/worktree 执行链路
+理由：
 
-本轮必须形成结论：
+- Phase 2（PR 评审）采用”完整仓库 + Claude Code CLI”评审模式，依赖容器内有完整代码仓库
+- Claude Code CLI 的核心优势在于可主动探索代码（追溯调用链、读取关联文件、理解项目结构），仅传 diff 文本无法发挥此能力
+- 安全分析、架构评审、回归影响评估等高价值评审维度均需要完整代码上下文
+- clone/worktree 是 Phase 2 的前置依赖，应在 Phase 1 第二阶段完成
 
-- **方案 A：留在 Phase 1 并补实现**
-- **方案 B：迁到 Phase 2 前置，不再阻塞当前 Phase 1 收口**
+后续动作：
+
+- ROADMAP M1.6 已更新：明确 clone/worktree 为 Phase 1 第二阶段任务
+- ROADMAP M2.1 已从”PR Diff 提取”改为”PR 仓库环境准备与变更上下文提取”
 
 ## 7. 本轮完成定义
 
@@ -511,7 +515,7 @@ DTWORKFLOW_DATABASE_PATH=/app/data/dtworkflow.db
 
 **第二阶段待办（参见第 6 节）：**
 
+- [ ] **clone/worktree 实现**（最高优先级）：容器内 Git 仓库 clone + worktree，Phase 2 评审前置依赖
 - [ ] 收口 `docker-compose.yml`：挂载 `dtworkflow.yaml`，适配 M1.8 统一配置体系
 - [ ] 冷启动基线：记录启动耗时、首个 Webhook 入队延迟、首个 Worker 容器执行完成耗时
 - [ ] 并发基线：测试 `concurrency=1/2/4` 的稳定性
-- [ ] clone/worktree 决策：确认留在 Phase 1 补实现，还是迁到 Phase 2
