@@ -21,7 +21,8 @@ type ReviewOverride struct {
 	Severity       string   `mapstructure:"severity"`
 
 	// --- M2.1 新增字段 ---
-	Instructions     string   `mapstructure:"instructions"`       // 评审指令文本
+	Instructions     string   `mapstructure:"instructions"`       // 评审指令文本（全局）
+	RepoInstructions string   `mapstructure:"-"`                  // 仓库级追加指令（由 ResolveReviewConfig 填充，不直接来自 YAML）
 	Dimensions       []string `mapstructure:"dimensions"`         // 启用的评审维度
 	LargePRThreshold int      `mapstructure:"large_pr_threshold"` // 大 PR 警告阈值（变更行数）
 }
@@ -75,8 +76,9 @@ func (c *Config) ResolveReviewConfig(repoFullName string) ReviewOverride {
 			merged.IgnorePatterns = repo.Review.IgnorePatterns
 		}
 		// M2.1 新增字段合并
+		// 仓库级指令采用追加模式：全局 Instructions 保持不变，仓库级存入 RepoInstructions
 		if repo.Review.Instructions != "" {
-			merged.Instructions = repo.Review.Instructions
+			merged.RepoInstructions = repo.Review.Instructions
 		}
 		if repo.Review.Dimensions != nil {
 			merged.Dimensions = repo.Review.Dimensions

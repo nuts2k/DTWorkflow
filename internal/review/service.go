@@ -49,8 +49,18 @@ type Service struct {
 	logger  *slog.Logger
 }
 
-// NewService 创建评审服务实例
+// NewService 创建评审服务实例。
+// gitea、pool、cfgProv 为必要依赖，传入 nil 属于编程错误。
 func NewService(gitea PRClient, pool ReviewPoolRunner, cfgProv ConfigProvider, opts ...ServiceOption) *Service {
+	if gitea == nil {
+		panic("NewService: gitea 不能为 nil")
+	}
+	if pool == nil {
+		panic("NewService: pool 不能为 nil")
+	}
+	if cfgProv == nil {
+		panic("NewService: cfgProv 不能为 nil")
+	}
 	s := &Service{
 		gitea:   gitea,
 		pool:    pool,
@@ -157,6 +167,7 @@ func (s *Service) resolveConfig(repoFullName string) ReviewConfig {
 
 	cfg := ReviewConfig{
 		Instructions:     override.Instructions,
+		RepoInstructions: override.RepoInstructions,
 		Dimensions:       override.Dimensions,
 		LargePRThreshold: override.LargePRThreshold,
 	}

@@ -169,19 +169,25 @@ func safeOutput(r *worker.ExecutionResult) string {
 }
 
 // extractJSON 从 Claude 回答文本中提取 JSON 内容。
-// 处理可能的 markdown code fence 包装（```json ... ```）。
+// 处理可能的 markdown code fence 包装（```json ... ```），
+// 包括 code fence 前有前导文本的情况（如 "Here is my review:\n```json\n..."）。
 func extractJSON(text string) string {
 	text = strings.TrimSpace(text)
-	// 尝试剥离 markdown code fence
-	if strings.HasPrefix(text, "```") {
-		lines := strings.SplitN(text, "\n", 2)
+	// 查找 code fence 起始位置（可能不在开头）
+	fenceStart := strings.Index(text, "```")
+	if fenceStart >= 0 {
+		// 从 fence 开始处理
+		fenced := text[fenceStart:]
+		// 跳过 ``` 后的语言标识行（如 ```json）
+		lines := strings.SplitN(fenced, "\n", 2)
 		if len(lines) == 2 {
-			text = lines[1]
+			fenced = lines[1]
 		}
-		if idx := strings.LastIndex(text, "```"); idx >= 0 {
-			text = text[:idx]
+		// 查找结束 fence
+		if idx := strings.LastIndex(fenced, "```"); idx >= 0 {
+			fenced = fenced[:idx]
 		}
-		text = strings.TrimSpace(text)
+		return strings.TrimSpace(fenced)
 	}
 	return text
 }

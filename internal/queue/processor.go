@@ -153,6 +153,8 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if errors.Is(runErr, review.ErrPRNotOpen) {
 			record.Status = model.TaskStatusFailed
 			record.Error = runErr.Error()
+			completedAt := time.Now()
+			record.CompletedAt = &completedAt
 			p.logger.WarnContext(ctx, "PR 不处于 open 状态，跳过评审",
 				"task_id", taskID,
 				"error", runErr,
@@ -163,6 +165,8 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 					"status", record.Status,
 					"error", err,
 				)
+			} else {
+				p.sendCompletionNotification(ctx, record)
 			}
 			return fmt.Errorf("PR 不处于 open 状态: %w", asynq.SkipRetry)
 		}
@@ -364,6 +368,10 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 			result.ExitCode = 1
 			result.Error = "Claude CLI 报告错误"
 		}
+	}
+	// 保留 ParseError 信息到任务记录，便于调试（优雅降级场景）
+	if r.ParseError != nil && result.Error == "" {
+		result.Error = r.ParseError.Error()
 	}
 	return result
 }

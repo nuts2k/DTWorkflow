@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
@@ -286,6 +287,11 @@ func TestExtractJSON(t *testing.T) {
 			input: "  \n{\"key\":\"value\"}\n  ",
 			want:  `{"key":"value"}`,
 		},
+		{
+			name:  "code fence 前有前导文本",
+			input: "Here is my review:\n```json\n{\"key\":\"value\"}\n```",
+			want:  `{"key":"value"}`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -345,7 +351,7 @@ func TestBuildPrompt(t *testing.T) {
 		"main.go",        // 文件列表
 	}
 	for _, check := range checks {
-		if !containsString(prompt, check) {
+		if !strings.Contains(prompt, check) {
 			t.Errorf("prompt 缺少预期内容: %q", check)
 		}
 	}
@@ -362,7 +368,7 @@ func TestBuildPrompt_RepoInstructions(t *testing.T) {
 
 	prompt := svc.buildPrompt(pr, noFiles(), cfg)
 
-	if !containsString(prompt, "仓库级追加指令") {
+	if !strings.Contains(prompt, "仓库级追加指令") {
 		t.Error("prompt 应包含 RepoInstructions")
 	}
 }
@@ -382,7 +388,7 @@ func TestBuildPrompt_LargePRGuidance(t *testing.T) {
 
 	prompt := svc.buildPrompt(pr, files, cfg)
 
-	if !containsString(prompt, "Large PR Notice") {
+	if !strings.Contains(prompt, "Large PR Notice") {
 		t.Error("超大 PR 应包含 Large PR Notice")
 	}
 }
@@ -427,15 +433,3 @@ func TestResolveConfig_Override(t *testing.T) {
 	}
 }
 
-// containsString 检查 s 是否包含 sub
-func containsString(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
-		func() bool {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
-			return false
-		}())
-}
