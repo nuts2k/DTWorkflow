@@ -21,6 +21,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
@@ -269,6 +270,19 @@ func (n *configDrivenNotifier) newRouter(repoFullName string) (*notify.Router, e
 		return nil, fmt.Errorf("构造通知路由失败: %w", err)
 	}
 	return router, nil
+}
+
+// configAdapter 将 config.Manager 适配为 review.ConfigProvider 接口
+type configAdapter struct {
+	mgr *config.Manager
+}
+
+func (a *configAdapter) ResolveReviewConfig(repoFullName string) config.ReviewOverride {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return config.ReviewOverride{}
+	}
+	return cfg.ResolveReviewConfig(repoFullName)
 }
 
 func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNotifier, error) {
@@ -551,7 +565,17 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	})
 
 	// 启动 asynq Processor（消费端）
-	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default())
+	var reviewOpts []queue.ProcessorOption
+	if deps.GiteaClient != nil && cfgManager != nil {
+		reviewSvc := review.NewService(
+			deps.GiteaClient,
+			deps.Pool,
+			&configAdapter{mgr: cfgManager},
+			review.WithServiceLogger(slog.Default()),
+		)
+		reviewOpts = append(reviewOpts, queue.WithReviewService(reviewSvc))
+	}
+	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), reviewOpts...)
 	mux := asynq.NewServeMux()
 	mux.Handle(queue.AsynqTypeReviewPR, processor)
 	mux.Handle(queue.AsynqTypeFixIssue, processor)

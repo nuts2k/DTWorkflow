@@ -325,6 +325,9 @@ func (c *Config) Clone() *Config {
 		v := *c.Review.Enabled
 		clone.Review.Enabled = &v
 	}
+	if c.Review.Dimensions != nil {
+		clone.Review.Dimensions = append([]string(nil), c.Review.Dimensions...)
+	}
 
 	// 深拷贝 Repos
 	if c.Repos != nil {
@@ -357,6 +360,9 @@ func (c *Config) Clone() *Config {
 				if repo.Review.Enabled != nil {
 					v := *repo.Review.Enabled
 					reviewCopy.Enabled = &v
+				}
+				if repo.Review.Dimensions != nil {
+					reviewCopy.Dimensions = append([]string(nil), repo.Review.Dimensions...)
 				}
 				clone.Repos[i].Review = &reviewCopy
 			}

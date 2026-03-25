@@ -66,6 +66,17 @@ func (p *Pool) ensureNetwork(ctx context.Context) error {
 // 注意：当容器执行失败时，同时返回 result（包含日志和退出码）和 error，
 // 调用方应同时检查两者以获取完整的调试信息。
 func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionResult, error) {
+	return p.runWithCmd(ctx, payload, buildContainerCmd(payload))
+}
+
+// RunWithCommand 与 Run 相同的容器生命周期管理，但使用调用方提供的命令替代 buildContainerCmd。
+// 用于 review.Service 等需要自定义 prompt 的场景。
+func (p *Pool) RunWithCommand(ctx context.Context, payload model.TaskPayload, cmd []string) (*ExecutionResult, error) {
+	return p.runWithCmd(ctx, payload, cmd)
+}
+
+// runWithCmd 是 Run 和 RunWithCommand 的共同实现。
+func (p *Pool) runWithCmd(ctx context.Context, payload model.TaskPayload, cmd []string) (*ExecutionResult, error) {
 	p.shutdownMu.RLock()
 	if p.closed.Load() {
 		p.shutdownMu.RUnlock()
@@ -99,7 +110,7 @@ func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionRe
 		Image:       p.config.Image,
 		Name:        containerName,
 		Env:         buildContainerEnv(p.config, payload),
-		Cmd:         buildContainerCmd(payload),
+		Cmd:         cmd,
 		Labels:      labels,
 		CPULimit:    p.config.CPULimit,
 		MemoryLimit: p.config.MemoryLimit,

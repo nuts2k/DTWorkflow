@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
@@ -28,19 +30,35 @@ type TaskNotifier interface {
 	Send(ctx context.Context, msg notify.Message) error
 }
 
+// ReviewExecutor 窄接口，解耦 review 包
+type ReviewExecutor interface {
+	Execute(ctx context.Context, payload model.TaskPayload) (*review.ReviewResult, error)
+}
+
+// ProcessorOption Processor 配置选项
+type ProcessorOption func(*Processor)
+
+// WithReviewService 注入评审服务
+func WithReviewService(svc ReviewExecutor) ProcessorOption {
+	return func(p *Processor) {
+		p.reviewService = svc
+	}
+}
+
 // Processor 处理 asynq 任务，协调 Store 状态更新与 PoolRunner 执行
 type Processor struct {
-	pool     PoolRunner
-	store    store.Store
-	notifier TaskNotifier
-	logger   *slog.Logger
+	pool          PoolRunner
+	store         store.Store
+	notifier      TaskNotifier
+	logger        *slog.Logger
+	reviewService ReviewExecutor
 }
 
 // NewProcessor 创建 Processor 实例。
 // 参数 pool 和 store 为必要依赖，传入 nil 属于编程错误（programming error），
 // 因此使用 panic 而非返回 error，与 Go 标准库的惯例一致。
 // notifier 为可选依赖，传入 nil 表示当前运行模式未启用通知。
-func NewProcessor(pool PoolRunner, store store.Store, notifier TaskNotifier, logger *slog.Logger) *Processor {
+func NewProcessor(pool PoolRunner, store store.Store, notifier TaskNotifier, logger *slog.Logger, opts ...ProcessorOption) *Processor {
 	if pool == nil {
 		panic("NewProcessor: pool 不能为 nil")
 	}
@@ -50,12 +68,16 @@ func NewProcessor(pool PoolRunner, store store.Store, notifier TaskNotifier, log
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Processor{
+	p := &Processor{
 		pool:     pool,
 		store:    store,
 		notifier: notifier,
 		logger:   logger,
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // shouldRetry 判断任务是否应标记为 retrying 状态。
@@ -109,13 +131,41 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		)
 	}
 
-	// 4. 执行任务（通过 PoolRunner）
-	result, runErr := p.pool.Run(ctx, payload)
+	// 4. 执行任务（通过 PoolRunner 或 ReviewExecutor）
+	var result *worker.ExecutionResult
+	var runErr error
+	switch {
+	case payload.TaskType == model.TaskTypeReviewPR && p.reviewService != nil:
+		var reviewResult *review.ReviewResult
+		reviewResult, runErr = p.reviewService.Execute(ctx, payload)
+		if reviewResult != nil {
+			result = adaptReviewResult(reviewResult)
+		}
+	default:
+		result, runErr = p.pool.Run(ctx, payload)
+	}
 
 	// 5. 根据执行结果更新状态
 	record.UpdatedAt = time.Now()
 
 	if runErr != nil {
+		// ErrPRNotOpen 是确定性失败，直接标记 failed 并跳过重试
+		if errors.Is(runErr, review.ErrPRNotOpen) {
+			record.Status = model.TaskStatusFailed
+			record.Error = runErr.Error()
+			p.logger.WarnContext(ctx, "PR 不处于 open 状态，跳过评审",
+				"task_id", taskID,
+				"error", runErr,
+			)
+			if err := p.store.UpdateTask(ctx, record); err != nil {
+				p.logger.ErrorContext(ctx, "更新任务最终状态失败",
+					"task_id", taskID,
+					"status", record.Status,
+					"error", err,
+				)
+			}
+			return fmt.Errorf("PR 不处于 open 状态: %w", asynq.SkipRetry)
+		}
 		// 根据 shouldRetry 判断是否还有剩余重试机会：
 		// - 有剩余重试：设为 retrying，asynq 将自动安排下次重试
 		// - 无剩余重试或无法获取重试信息：设为 failed
@@ -297,6 +347,25 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord) (notify.M
 	default:
 		return notify.Message{}, false
 	}
+}
+
+// adaptReviewResult 将 review.ReviewResult 适配为 worker.ExecutionResult
+func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
+	if r == nil {
+		return nil
+	}
+	result := &worker.ExecutionResult{
+		ExitCode: 0,
+		Output:   r.RawOutput,
+	}
+	if r.CLIMeta != nil {
+		result.Duration = r.CLIMeta.DurationMs
+		if r.CLIMeta.IsError {
+			result.ExitCode = 1
+			result.Error = "Claude CLI 报告错误"
+		}
+	}
+	return result
 }
 
 func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (*model.TaskRecord, error) {

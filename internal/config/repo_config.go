@@ -14,11 +14,16 @@ type NotifyOverride struct {
 
 // ReviewOverride 评审配置覆盖（结构预留；本轮仅实现最小合并规则）。
 //
-// 约定：使用指针字段表达“是否覆盖”。
+// 约定：使用指针字段表达"是否覆盖"。
 type ReviewOverride struct {
 	Enabled        *bool    `mapstructure:"enabled"`
 	IgnorePatterns []string `mapstructure:"ignore_patterns"`
 	Severity       string   `mapstructure:"severity"`
+
+	// --- M2.1 新增字段 ---
+	Instructions     string   `mapstructure:"instructions"`       // 评审指令文本
+	Dimensions       []string `mapstructure:"dimensions"`         // 启用的评审维度
+	LargePRThreshold int      `mapstructure:"large_pr_threshold"` // 大 PR 警告阈值（变更行数）
 }
 
 // ResolveNotifyRoutes 解析指定仓库的最终通知路由规则。
@@ -34,7 +39,7 @@ func (c *Config) ResolveNotifyRoutes(repoFullName string) []RouteConfig {
 			continue
 		}
 
-		// 语义：nil 表示“未覆盖”；空切片表示“显式清空”。
+		// 语义：nil 表示"未覆盖"；空切片表示"显式清空"。
 		if repo.Notify.Routes != nil {
 			return repo.Notify.Routes
 		}
@@ -65,9 +70,19 @@ func (c *Config) ResolveReviewConfig(repoFullName string) ReviewOverride {
 		if repo.Review.Severity != "" {
 			merged.Severity = repo.Review.Severity
 		}
-		// 语义：nil 表示“未覆盖”；空切片表示“显式清空”。
+		// 语义：nil 表示"未覆盖"；空切片表示"显式清空"。
 		if repo.Review.IgnorePatterns != nil {
 			merged.IgnorePatterns = repo.Review.IgnorePatterns
+		}
+		// M2.1 新增字段合并
+		if repo.Review.Instructions != "" {
+			merged.Instructions = repo.Review.Instructions
+		}
+		if repo.Review.Dimensions != nil {
+			merged.Dimensions = repo.Review.Dimensions
+		}
+		if repo.Review.LargePRThreshold > 0 {
+			merged.LargePRThreshold = repo.Review.LargePRThreshold
 		}
 		break
 	}
