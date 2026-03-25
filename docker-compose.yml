@@ -23,7 +23,7 @@ services:
     build:
       context: .
       dockerfile: build/Dockerfile
-    command: ["serve"]
+    command: ["serve", "--config", "/app/dtworkflow.yaml"]
     ports:
       # 仅绑定本地回环地址，如需外部访问应通过反向代理（如 Nginx/Caddy）转发
       - "127.0.0.1:8080:8080"
@@ -37,13 +37,13 @@ services:
       retries: 3
       start_period: 10s
     environment:
+      # 容器内网络：Redis 通过 compose 服务名访问（覆盖 yaml 中的 localhost:6379）
       - DTWORKFLOW_REDIS_ADDR=redis:6379
-      - DTWORKFLOW_DB_PATH=/app/data/dtworkflow.db
-      - DTWORKFLOW_WEBHOOK_SECRET=${WEBHOOK_SECRET}
-      - DTWORKFLOW_GITEA_URL=${GITEA_URL}
-      - DTWORKFLOW_GITEA_TOKEN=${GITEA_TOKEN}
-      - DTWORKFLOW_CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      # 容器内数据库路径（覆盖 yaml 中的相对路径）
+      - DTWORKFLOW_DATABASE_PATH=/app/data/dtworkflow.db
     volumes:
+      # 挂载统一配置文件（M1.8 配置体系），敏感信息通过 yaml 文件管理而非散落在 env 中
+      - ./dtworkflow.yaml:/app/dtworkflow.yaml:ro
       - app-data:/app/data
       # 警告：Docker socket 挂载赋予容器完整 Docker 控制权限。
       # 这是 Worker 管理容器的必要条件，后续考虑使用 Docker API over TCP + TLS。

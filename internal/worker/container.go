@@ -39,7 +39,7 @@ func sanitizePromptInput(s string, maxLen int) string {
 }
 
 // buildContainerEnv 构建容器环境变量列表
-// 包含 Gitea、Claude API 凭证和任务相关信息
+// 包含 Gitea、Claude API 凭证、Git 配置和任务相关信息
 func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	env := []string{
 		fmt.Sprintf("GITEA_URL=%s", sanitizeEnvValue(config.GiteaURL)),
@@ -48,6 +48,10 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	}
 	if config.ClaudeBaseURL != "" {
 		env = append(env, fmt.Sprintf("ANTHROPIC_BASE_URL=%s", sanitizeEnvValue(config.ClaudeBaseURL)))
+	}
+	// 自签名证书场景：通知 entrypoint.sh 和 git 跳过 SSL 验证
+	if config.GiteaInsecureSkipVerify {
+		env = append(env, "GIT_SSL_NO_VERIFY=true")
 	}
 	env = append(env,
 		fmt.Sprintf("REPO_CLONE_URL=%s", sanitizeEnvValue(payload.CloneURL)),
@@ -82,7 +86,8 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 
 // 注意：prompt 使用英文以获得更好的 AI 理解效果
 // buildContainerCmd 根据任务类型构建容器执行命令
-// 返回占位命令，实际 prompt 由容器内脚本动态生成
+// 容器入口脚本（entrypoint.sh）已完成仓库 clone 和分支 checkout，
+// 此处生成的命令在已就绪的仓库目录中执行。
 //
 // SECURITY: prompt injection risk
 // 以下字段来源于外部用户输入，攻击者可控：
@@ -106,14 +111,36 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 func buildContainerCmd(payload model.TaskPayload) []string {
 	switch payload.TaskType {
 	case model.TaskTypeReviewPR:
+		baseRef := payload.BaseRef
+		if baseRef == "" {
+			baseRef = "main"
+		}
 		return []string{
 			"claude", "-p",
-			fmt.Sprintf("Review the PR #%d in repository %s. Analyze the code changes, check for bugs, style issues, and security concerns. Provide constructive feedback.", payload.PRNumber, sanitizePromptInput(payload.RepoFullName, 200)),
+			fmt.Sprintf(
+				"You are reviewing PR #%d in repository %s. "+
+					"The repository has been cloned and the PR branch is checked out. "+
+					"The base branch is '%s'. "+
+					"Use 'git diff origin/%s...HEAD' to see the changes. "+
+					"Explore the codebase to understand context — trace call chains, read related files, check project structure. "+
+					"Provide a thorough code review covering: code quality, potential bugs, security concerns, and architecture impact.",
+				payload.PRNumber,
+				sanitizePromptInput(payload.RepoFullName, 200),
+				sanitizePromptInput(baseRef, 100),
+				sanitizePromptInput(baseRef, 100),
+			),
 		}
 	case model.TaskTypeFixIssue:
 		return []string{
 			"claude", "-p",
-			fmt.Sprintf("Fix the issue #%d (%s) in repository %s. Clone the repository, understand the issue, implement a fix, and create a pull request.", payload.IssueNumber, sanitizePromptInput(payload.IssueTitle, 500), sanitizePromptInput(payload.RepoFullName, 200)),
+			fmt.Sprintf(
+				"Fix issue #%d (%s) in repository %s. "+
+					"The repository has been cloned to the current directory. "+
+					"Analyze the issue, explore the codebase, implement a fix, and commit the changes.",
+				payload.IssueNumber,
+				sanitizePromptInput(payload.IssueTitle, 500),
+				sanitizePromptInput(payload.RepoFullName, 200),
+			),
 		}
 	case model.TaskTypeGenTests:
 		module := payload.Module
@@ -122,10 +149,24 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 		}
 		return []string{
 			"claude", "-p",
-			fmt.Sprintf("Generate tests for module %s in repository %s. Analyze existing code, identify untested paths, and write comprehensive unit tests.", sanitizePromptInput(module, 200), sanitizePromptInput(payload.RepoFullName, 200)),
+			fmt.Sprintf(
+				"Generate tests for module %s in repository %s. "+
+					"The repository has been cloned to the current directory. "+
+					"Analyze existing code, identify untested paths, and write comprehensive unit tests.",
+				sanitizePromptInput(module, 200),
+				sanitizePromptInput(payload.RepoFullName, 200),
+			),
 		}
 	default:
-		return []string{"claude", "-p", fmt.Sprintf("Process task of type %s for repository %s.", sanitizePromptInput(string(payload.TaskType), 50), sanitizePromptInput(payload.RepoFullName, 200))}
+		return []string{
+			"claude", "-p",
+			fmt.Sprintf(
+				"Process task of type %s for repository %s. "+
+					"The repository has been cloned to the current directory.",
+				sanitizePromptInput(string(payload.TaskType), 50),
+				sanitizePromptInput(payload.RepoFullName, 200),
+			),
+		}
 	}
 }
 

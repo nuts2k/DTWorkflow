@@ -152,8 +152,8 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 		CapDrop:        []string{"ALL"},
 		ReadonlyRootfs: true,
 		Tmpfs: map[string]string{
-			"/tmp":       "rw,noexec,nosuid,size=256m",
-			"/workspace": "rw,noexec,nosuid,size=2g",
+			"/tmp":       "rw,noexec,nosuid,size=256m,mode=1777",
+			"/workspace": "rw,nosuid,size=2g,mode=1777",
 		},
 		Resources: container.Resources{
 			NanoCPUs:  nanoCPUs,

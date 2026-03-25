@@ -43,6 +43,7 @@ type PoolConfig struct {
 	ClaudeBaseURL string       // Claude API 代理地址，留空使用官方地址
 	WorkDir       string       // 容器内工作目录
 	NetworkName  string // Docker bridge 网络名，默认 "dtworkflow-net"
+	GiteaInsecureSkipVerify bool // 跳过 Gitea TLS 证书验证（自签名证书场景）
 }
 
 // Validate 校验 PoolConfig 必填字段，在 NewPool 中调用

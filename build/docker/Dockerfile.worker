@@ -1,7 +1,7 @@
 # DTWorkflow Worker 镜像
 # 基于 Node.js + Claude Code CLI + Git
-# 注意：0.2 会解析到 0.2.x 的最新版本，生产环境建议锁定精确版本（如 0.2.40）
-ARG CLAUDE_CODE_VERSION=0.2.40
+# 生产环境建议锁定精确版本
+ARG CLAUDE_CODE_VERSION=2.1.81
 FROM node:20.18.0-bookworm-slim
 
 # FROM 之后重新声明 ARG，使其在当前构建阶段可用
@@ -23,6 +23,9 @@ RUN useradd -m worker
 # 创建工作目录并设置权限（确保 worker 用户可读写）
 RUN mkdir -p /workspace && chown worker:worker /workspace
 
+# 添加入口脚本（在切换用户前添加，确保权限正确）
+COPY --chmod=755 build/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+
 # 工作目录
 WORKDIR /workspace
 
@@ -34,5 +37,5 @@ RUN git config --global user.name "DTWorkflow Bot" && \
     git config --global user.email "dtworkflow@noreply.local" && \
     git config --global init.defaultBranch main
 
-# 默认入口点（由 Pool.Run 覆盖 Cmd）
-ENTRYPOINT ["claude"]
+# 入口点：先执行仓库 clone/checkout，再执行传入的 claude 命令
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

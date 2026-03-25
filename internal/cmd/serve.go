@@ -119,7 +119,7 @@ type readinessSnapshot struct {
 }
 
 func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
-	return worker.PoolConfig{
+	pcfg := worker.PoolConfig{
 		Image:        cfg.WorkerImage,
 		CPULimit:     cfg.CPULimit,
 		MemoryLimit:  cfg.MemoryLimit,
@@ -129,6 +129,10 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 		ClaudeBaseURL: cfg.ClaudeBaseURL,
 		NetworkName:   cfg.NetworkName,
 	}
+	if cfg.AppCfg != nil {
+		pcfg.GiteaInsecureSkipVerify = cfg.AppCfg.Gitea.InsecureSkipVerify
+	}
+	return pcfg
 }
 
 func computeReadyStatus(s readinessSnapshot) (map[string]any, int) {
