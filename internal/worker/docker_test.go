@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 
@@ -19,7 +20,7 @@ type mockDockerClient struct {
 	removeContainerFunc  func(ctx context.Context, containerID string) error
 	getContainerLogsFunc func(ctx context.Context, containerID string) (string, error)
 	listContainersFunc   func(ctx context.Context, f filters.Args) ([]container.Summary, error)
-	attachContainerFunc  func(ctx context.Context, containerID string) (net.Conn, error)
+	attachContainerFunc  func(ctx context.Context, containerID string) (io.WriteCloser, error)
 	closeFunc            func() error
 }
 
@@ -79,11 +80,11 @@ func (m *mockDockerClient) ListContainers(ctx context.Context, f filters.Args) (
 	return nil, nil
 }
 
-func (m *mockDockerClient) AttachContainer(ctx context.Context, containerID string) (net.Conn, error) {
+func (m *mockDockerClient) AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, error) {
 	if m.attachContainerFunc != nil {
 		return m.attachContainerFunc(ctx, containerID)
 	}
-	// 默认返回一个内存 pipe，允许写端正常关闭
+	// 默认返回一个内存 pipe WriteCloser
 	_, server := net.Pipe()
 	return server, nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -44,8 +45,9 @@ type DockerClient interface {
 	GetContainerLogs(ctx context.Context, containerID string) (string, error)
 	// ListContainers 列举符合过滤条件的容器（用于 GC 扫描）
 	ListContainers(ctx context.Context, f filters.Args) ([]container.Summary, error)
-	// AttachContainer attach 到容器 stdin，返回连接（用于写入 stdin 数据）
-	AttachContainer(ctx context.Context, containerID string) (net.Conn, error)
+	// AttachContainer attach 到容器 stdin，返回 WriteCloser。
+	// 调用方写入数据后必须 Close 以发送 EOF 信号。
+	AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, error)
 	// Close 关闭客户端连接
 	Close() error
 }
@@ -274,8 +276,31 @@ func (d *dockerClient) ListContainers(ctx context.Context, f filters.Args) ([]co
 	})
 }
 
-// AttachContainer attach 到容器 stdin，返回底层连接供调用方写入数据后关闭写端
-func (d *dockerClient) AttachContainer(ctx context.Context, containerID string) (net.Conn, error) {
+// stdinWriteCloser wraps Docker attach 连接，确保正确发送 EOF 并关闭
+type stdinWriteCloser struct {
+	conn net.Conn
+}
+
+func (w *stdinWriteCloser) Write(p []byte) (int, error) {
+	return w.conn.Write(p)
+}
+
+func (w *stdinWriteCloser) Close() error {
+	// 半关闭写端，发送 EOF 信号给容器内进程
+	if cw, ok := w.conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+	return w.conn.Close()
+}
+
+// SetWriteDeadline 设置写入超时，防止容器未读 stdin 导致写入永久阻塞
+func (w *stdinWriteCloser) SetWriteDeadline(t time.Time) error {
+	return w.conn.SetWriteDeadline(t)
+}
+
+// AttachContainer attach 到容器 stdin，返回 WriteCloser。
+// 内部持有 Docker HijackedResponse 的连接，Close 时会正确发送 EOF 并释放资源。
+func (d *dockerClient) AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, error) {
 	resp, err := d.cli.ContainerAttach(ctx, containerID, container.AttachOptions{
 		Stream: true,
 		Stdin:  true,
@@ -283,7 +308,7 @@ func (d *dockerClient) AttachContainer(ctx context.Context, containerID string) 
 	if err != nil {
 		return nil, fmt.Errorf("attach 容器 %s stdin 失败: %w", containerID, err)
 	}
-	return resp.Conn, nil
+	return &stdinWriteCloser{conn: resp.Conn}, nil
 }
 
 // Close 关闭 Docker 客户端连接

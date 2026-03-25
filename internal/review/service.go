@@ -110,8 +110,12 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 	// 4. 获取评审配置（全局 + 仓库级合并）
 	cfg := s.resolveConfig(payload.RepoFullName)
 
-	// 4.5 检测技术栈
+	// 4.5 检测技术栈（文件列表可能不完整时记录警告）
 	techStack := resolveTechStack(files, cfg)
+	if len(cfg.TechStack) == 0 && len(files) >= 100 {
+		s.logger.WarnContext(ctx, "文件列表可能不完整（单页 100 限制），技术栈自动检测结果可能有遗漏",
+			"pr", prNum, "files", len(files), "detected_stack", int(techStack))
+	}
 
 	// 5. 构造 prompt + 命令
 	prompt := s.buildPrompt(pr, files, cfg, techStack)

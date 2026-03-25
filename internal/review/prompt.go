@@ -288,9 +288,13 @@ func extractJSON(text string) string {
 	return text
 }
 
+// vueMarkerDirs Vue 项目特征目录（两段路径）
+var vueMarkerDirs = []string{"src/views", "src/components", "src/composables", "src/stores"}
+
 // detectTechStack 从 PR 变更文件列表中检测技术栈
 func detectTechStack(files []*gitea.ChangedFile) TechStack {
 	var stack TechStack
+	vueSignal := hasVueSignal(files) // 预计算，避免对每个 .ts/.js 文件重复遍历整个列表
 	for _, f := range files {
 		ext := filepath.Ext(f.Filename)
 		switch ext {
@@ -299,7 +303,7 @@ func detectTechStack(files []*gitea.ChangedFile) TechStack {
 		case ".vue":
 			stack |= TechVue
 		case ".ts", ".tsx", ".js", ".jsx":
-			if hasVueSignal(files) {
+			if vueSignal {
 				stack |= TechVue
 			}
 		}
@@ -313,9 +317,11 @@ func hasVueSignal(files []*gitea.ChangedFile) bool {
 		if filepath.Ext(f.Filename) == ".vue" {
 			return true
 		}
-		dir := filepath.Dir(f.Filename)
-		for _, marker := range []string{"src/views", "src/components", "src/composables", "src/stores"} {
-			if strings.Contains(dir, marker) {
+		// 按路径段精确匹配 Vue 特征目录，避免子串误判
+		// 例：匹配 "src/components/Foo.ts" 但不匹配 "src/components-legacy/Bar.ts"
+		normalized := filepath.ToSlash(f.Filename)
+		for _, marker := range vueMarkerDirs {
+			if strings.HasPrefix(normalized, marker+"/") || strings.Contains(normalized, "/"+marker+"/") {
 				return true
 			}
 		}
@@ -377,13 +383,13 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 	b.WriteString("\n")
 	b.WriteString(cfg.Instructions)
 
-	// 2c. 仓库级追加指令
+	// 2b. 仓库级追加指令
 	if cfg.RepoInstructions != "" {
 		b.WriteString("\n\nAdditional repository-specific instructions:\n")
 		b.WriteString(cfg.RepoInstructions)
 	}
 
-	// 2b. 专项评审指令（条件性）
+	// 2c. 专项评审指令（条件性）
 	if techStack&TechJava != 0 {
 		b.WriteString(javaReviewInstructions)
 	}

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"regexp"
 	"sync"
@@ -64,18 +65,23 @@ func (p *Pool) ensureNetwork(ctx context.Context) error {
 	return nil
 }
 
+// containerRunOpts 容器执行可选参数（nil 表示标准模式）
+type containerRunOpts struct {
+	stdinData []byte // 通过 stdin 传入的数据（非空时启用 stdin 模式）
+}
+
 // Run 在独立 Docker 容器中执行任务，容器用完即销毁
 // 流程：EnsureNetwork → CreateContainer → StartContainer → WaitContainer → GetLogs → RemoveContainer
 // 注意：当容器执行失败时，同时返回 result（包含日志和退出码）和 error，
 // 调用方应同时检查两者以获取完整的调试信息。
 func (p *Pool) Run(ctx context.Context, payload model.TaskPayload) (*ExecutionResult, error) {
-	return p.runWithCmd(ctx, payload, buildContainerCmd(payload))
+	return p.runContainer(ctx, payload, buildContainerCmd(payload), nil)
 }
 
 // RunWithCommand 与 Run 相同的容器生命周期管理，但使用调用方提供的命令替代 buildContainerCmd。
 // 用于 review.Service 等需要自定义 prompt 的场景。
 func (p *Pool) RunWithCommand(ctx context.Context, payload model.TaskPayload, cmd []string) (*ExecutionResult, error) {
-	return p.runWithCmd(ctx, payload, cmd)
+	return p.runContainer(ctx, payload, cmd, nil)
 }
 
 // RunWithCommandAndStdin 与 RunWithCommand 相同的容器生命周期管理，
@@ -88,13 +94,15 @@ func (p *Pool) RunWithCommandAndStdin(
 	stdinData []byte,
 ) (*ExecutionResult, error) {
 	if len(stdinData) == 0 {
-		return p.runWithCmd(ctx, payload, cmd)
+		return p.runContainer(ctx, payload, cmd, nil)
 	}
-	return p.runWithCmdAndStdin(ctx, payload, cmd, stdinData)
+	return p.runContainer(ctx, payload, cmd, &containerRunOpts{stdinData: stdinData})
 }
 
-// runWithCmd 是 Run 和 RunWithCommand 的共同实现。
-func (p *Pool) runWithCmd(ctx context.Context, payload model.TaskPayload, cmd []string) (*ExecutionResult, error) {
+// runContainer 统一的容器执行骨架，支持标准模式和 stdin 模式。
+// opts 为 nil 时使用标准模式；opts.stdinData 非空时启用 stdin 模式：
+// 容器创建后 attach stdin → 启动容器 → goroutine 写入数据 → 等待完成。
+func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd []string, opts *containerRunOpts) (*ExecutionResult, error) {
 	p.shutdownMu.RLock()
 	if p.closed.Load() {
 		p.shutdownMu.RUnlock()
@@ -123,6 +131,8 @@ func (p *Pool) runWithCmd(ctx context.Context, payload model.TaskPayload, cmd []
 		"task-id":    payload.DeliveryID,
 	}
 
+	useStdin := opts != nil && len(opts.stdinData) > 0
+
 	// 构建容器配置
 	containerCfg := &ContainerConfig{
 		Image:       p.config.Image,
@@ -134,6 +144,7 @@ func (p *Pool) runWithCmd(ctx context.Context, payload model.TaskPayload, cmd []
 		MemoryLimit: p.config.MemoryLimit,
 		NetworkName: p.config.NetworkName,
 		WorkDir:     p.config.WorkDir,
+		OpenStdin:   useStdin,
 	}
 
 	// 确保 Docker 网络存在（支持失败后重试）
@@ -161,6 +172,7 @@ func (p *Pool) runWithCmd(ctx context.Context, payload model.TaskPayload, cmd []
 		slog.String("container_name", containerName),
 		slog.String("task_type", string(payload.TaskType)),
 		slog.String("repo", payload.RepoFullName),
+		slog.Bool("stdin_mode", useStdin),
 	)
 
 	// 确保容器在函数返回时被清理
@@ -177,8 +189,20 @@ func (p *Pool) runWithCmd(ctx context.Context, payload model.TaskPayload, cmd []
 		}
 	}()
 
+	// 可选：容器创建后、启动前 attach stdin，确保数据不丢失
+	var stdinWriter io.WriteCloser
+	if useStdin {
+		stdinWriter, err = p.docker.AttachContainer(ctx, containerID)
+		if err != nil {
+			return nil, fmt.Errorf("attach 容器 stdin 失败: %w", err)
+		}
+	}
+
 	// 启动容器
 	if err := p.docker.StartContainer(ctx, containerID); err != nil {
+		if stdinWriter != nil {
+			stdinWriter.Close()
+		}
 		// 启动失败时返回部分填充的 ExecutionResult（包含 ContainerID），
 		// 便于调用方记录和排查问题（参考 waitErr 时的处理模式）
 		return &ExecutionResult{
@@ -186,6 +210,20 @@ func (p *Pool) runWithCmd(ctx context.Context, payload model.TaskPayload, cmd []
 			ContainerID: containerID,
 			Error:       err.Error(),
 		}, fmt.Errorf("启动容器失败: %w", err)
+	}
+
+	// 可选：后台 goroutine 写入 stdin 数据，通过 channel 报告写入结果
+	var stdinErrCh chan error
+	if stdinWriter != nil {
+		stdinErrCh = make(chan error, 1)
+		go func() {
+			defer stdinWriter.Close()
+			if tc, ok := stdinWriter.(interface{ SetWriteDeadline(t time.Time) error }); ok {
+				_ = tc.SetWriteDeadline(time.Now().Add(stdinWriteTimeout))
+			}
+			_, werr := stdinWriter.Write(opts.stdinData)
+			stdinErrCh <- werr
+		}()
 	}
 
 	// 为容器等待设置独立超时，防止 Docker daemon 无响应导致 goroutine 永远阻塞
@@ -212,6 +250,21 @@ func (p *Pool) runWithCmd(ctx context.Context, payload model.TaskPayload, cmd []
 		Output:      logs,
 		Duration:    duration,
 		ContainerID: containerID,
+	}
+
+	// 检查 stdin 写入错误：写入失败意味着容器收到的 prompt 为空或截断，结果不可信
+	if stdinErrCh != nil {
+		if stdinErr := <-stdinErrCh; stdinErr != nil {
+			p.logger.ErrorContext(ctx, "写入容器 stdin 失败",
+				slog.String("container_id", containerID),
+				slog.String("error", stdinErr.Error()),
+			)
+			// 容器等待也失败时，优先返回容器错误（根因更可能在容器侧）
+			if waitErr == nil {
+				result.Error = stdinErr.Error()
+				return result, fmt.Errorf("stdin 写入失败，结果不可信: %w", stdinErr)
+			}
+		}
 	}
 
 	if waitErr != nil {
@@ -279,158 +332,6 @@ func (p *Pool) Stats() PoolStats {
 		Active:    int(p.active.Load()),
 		Completed: p.total.Load(),
 	}
-}
-
-// runWithCmdAndStdin 是 RunWithCommandAndStdin 的核心实现（stdinData 非空时调用）。
-// 与 runWithCmd 相同的容器生命周期，但在容器启动前 attach stdin，
-// 启动后写入数据并关闭写端，其余逻辑与 runWithCmd 完全一致。
-func (p *Pool) runWithCmdAndStdin(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*ExecutionResult, error) {
-	p.shutdownMu.RLock()
-	if p.closed.Load() {
-		p.shutdownMu.RUnlock()
-		return nil, fmt.Errorf("Worker 池已关闭")
-	}
-	p.wg.Add(1)
-	p.shutdownMu.RUnlock()
-	defer p.wg.Done()
-	p.active.Add(1)
-	defer p.active.Add(-1)
-
-	if !payload.TaskType.IsValid() {
-		return nil, fmt.Errorf("未知的任务类型: %q", payload.TaskType)
-	}
-
-	start := time.Now()
-	containerName := buildContainerName(payload)
-	labels := map[string]string{
-		"managed-by": "dtworkflow",
-		"task-type":  string(payload.TaskType),
-		"task-id":    payload.DeliveryID,
-	}
-
-	containerCfg := &ContainerConfig{
-		Image:       p.config.Image,
-		Name:        containerName,
-		Env:         buildContainerEnv(p.config, payload),
-		Cmd:         cmd,
-		Labels:      labels,
-		CPULimit:    p.config.CPULimit,
-		MemoryLimit: p.config.MemoryLimit,
-		NetworkName: p.config.NetworkName,
-		WorkDir:     p.config.WorkDir,
-		OpenStdin:   true,
-	}
-
-	if err := p.ensureNetwork(ctx); err != nil {
-		return nil, fmt.Errorf("确保 Docker 网络失败: %w", err)
-	}
-
-	exists, err := p.docker.ImageExists(ctx, p.config.Image)
-	if err != nil {
-		return nil, fmt.Errorf("检查镜像 %s 失败: %w", p.config.Image, err)
-	}
-	if !exists {
-		return nil, fmt.Errorf("镜像 %s 不存在，请先构建或拉取", p.config.Image)
-	}
-
-	containerID, err := p.docker.CreateContainer(ctx, containerCfg)
-	if err != nil {
-		return nil, fmt.Errorf("创建容器失败: %w", err)
-	}
-
-	p.logger.InfoContext(ctx, "容器已创建（stdin 模式）",
-		slog.String("container_id", containerID),
-		slog.String("container_name", containerName),
-		slog.String("task_type", string(payload.TaskType)),
-		slog.String("repo", payload.RepoFullName),
-	)
-
-	defer func() {
-		cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if removeErr := p.docker.RemoveContainer(cleanCtx, containerID); removeErr != nil {
-			p.logger.WarnContext(ctx, "清理容器失败",
-				slog.String("container_id", containerID),
-				slog.String("error", removeErr.Error()),
-			)
-		} else {
-			p.logger.InfoContext(ctx, "容器已清理", slog.String("container_id", containerID))
-		}
-	}()
-
-	// 容器创建后、启动前 attach stdin，确保数据不丢失
-	stdinConn, err := p.docker.AttachContainer(ctx, containerID)
-	if err != nil {
-		return nil, fmt.Errorf("attach 容器 stdin 失败: %w", err)
-	}
-
-	// 启动容器
-	if err := p.docker.StartContainer(ctx, containerID); err != nil {
-		stdinConn.Close()
-		return &ExecutionResult{
-			ExitCode:    -1,
-			ContainerID: containerID,
-			Error:       err.Error(),
-		}, fmt.Errorf("启动容器失败: %w", err)
-	}
-
-	// 在后台 goroutine 中写入 stdin 数据并关闭写端，
-	// 避免写入阻塞主流程（容器缓冲区满时可能阻塞）
-	go func() {
-		defer stdinConn.Close()
-		if tc, ok := stdinConn.(interface{ SetWriteDeadline(t time.Time) error }); ok {
-			_ = tc.SetWriteDeadline(time.Now().Add(stdinWriteTimeout))
-		}
-		if _, werr := stdinConn.Write(stdinData); werr != nil {
-			p.logger.WarnContext(ctx, "写入容器 stdin 失败",
-				slog.String("container_id", containerID),
-				slog.String("error", werr.Error()),
-			)
-		}
-	}()
-
-	waitCtx, waitCancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer waitCancel()
-	exitCode, waitErr := p.docker.WaitContainer(waitCtx, containerID)
-
-	logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer logCancel()
-	logs, logErr := p.docker.GetContainerLogs(logCtx, containerID)
-	if logErr != nil {
-		p.logger.WarnContext(ctx, "获取容器日志失败",
-			slog.String("container_id", containerID),
-			slog.String("error", logErr.Error()),
-		)
-	}
-
-	duration := time.Since(start).Milliseconds()
-	p.total.Add(1)
-
-	result := &ExecutionResult{
-		ExitCode:    int(exitCode),
-		Output:      logs,
-		Duration:    duration,
-		ContainerID: containerID,
-	}
-
-	if waitErr != nil {
-		result.Error = waitErr.Error()
-		p.logger.ErrorContext(ctx, "容器执行失败",
-			slog.String("container_id", containerID),
-			slog.Int64("exit_code", exitCode),
-			slog.String("error", waitErr.Error()),
-			slog.Int64("duration_ms", duration),
-		)
-		return result, waitErr
-	}
-
-	p.logger.InfoContext(ctx, "容器执行完成",
-		slog.String("container_id", containerID),
-		slog.Int64("exit_code", exitCode),
-		slog.Int64("duration_ms", duration),
-	)
-
-	return result, nil
 }
 
 // containerSeq 包级别原子计数器，用于避免容器名称碰撞
