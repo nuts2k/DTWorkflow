@@ -233,6 +233,10 @@ func parseMemoryLimit(limit string) (int64, error) {
 		if intVal == 0 {
 			return 0, nil
 		}
+		// 乘法前检查溢出：确保 intVal * multiplier 不会超出 int64 范围
+		if multiplier > 0 && intVal > maxMemoryBytes/multiplier {
+			return 0, fmt.Errorf("内存限制超出上限，当前值: %s，最大允许: 64GB", limit)
+		}
 		result := intVal * multiplier
 		if result > maxMemoryBytes {
 			return 0, fmt.Errorf("内存限制超出上限，当前值: %s，最大允许: 64GB", limit)

@@ -38,7 +38,8 @@ AUTH_URL="${PROTO}://token:${GITEA_TOKEN}@${REST}"
 # Clone 仓库到工作目录
 REPO_DIR="/workspace/repo"
 log "正在 clone 仓库: ${REPO_CLONE_URL} -> ${REPO_DIR}"
-if ! git clone "${AUTH_URL}" "${REPO_DIR}" 2>&1; then
+# 过滤 git 输出中可能包含的 token（认证失败时 git 可能回显完整 URL）
+if ! git clone "${AUTH_URL}" "${REPO_DIR}" 2>&1 | sed "s|${GITEA_TOKEN}|***|g"; then
     log "clone 失败，退出"
     exit 1
 fi
