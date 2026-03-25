@@ -185,15 +185,19 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 #### M2.2 评审 Prompt 工程
 > 说明：M2.1 已实现基础评审 prompt（含四维度指令和严重程度定义），M2.2 聚焦模板精细化和专项 prompt。
+> 详细设计见 `docs/plans/2026-03-25-m2.2-prompt-engineering-design.md`。
 - [x] 设计评审 prompt 模板，覆盖四个维度：风格/逻辑/安全/架构（M2.1 defaultReviewInstructions 已实现基础版）
 - [x] 严重程度分级指令（CRITICAL / ERROR / WARNING / INFO）（M2.1 已实现）
 - [x] 输出格式定义（结构化 JSON，便于解析）（M2.1 jsonSchemaInstruction 已实现）
 - [x] 引导 Claude Code 主动探索上下文：追溯调用链、检查相关文件、评估回归影响（M2.1 已在评审原则中实现）
-- [ ] Dimensions 配置动态控制 prompt 评审维度（M2.1 字段已预留，prompt 模板待适配）
-- [ ] Prompt 改用 stdin 传入（避免 ps aux 暴露完整 prompt，提升安全性和可调试性）
-- [ ] Java 代码评审专项 prompt（Spring Boot 常见问题、MyBatis 等）
-- [ ] Vue 代码评审专项 prompt（组件设计、响应式、XSS 等）
-- [ ] 项目编码规范文件集成（如仓库中存在 .code-standards 等）
+- [x] Prompt 改用 stdin 传入（避免 ps aux 暴露完整 prompt，提升安全性；Pool.RunWithCommandAndStdin + Docker Attach stdin）
+- [x] 技术栈自动检测（基于 PR 变更文件扩展名，TechStack 位掩码；配置 tech_stack 可覆盖自动检测）
+- [x] Java 代码评审专项 prompt（Spring Boot 事务/MyBatis SQL 安全/循环依赖/N+1 查询等）
+- [x] Vue 代码评审专项 prompt（响应式/组件设计/XSS/性能/Pinia 等，含 Vue 信号检测避免误触发）
+- [x] 项目编码规范文件集成（指导 Claude 在容器内自行读取 CLAUDE.md / .code-standards / CONTRIBUTING.md 等；配置 code_standards_paths 可覆盖默认扫描列表）
+- [x] 配置扩展：ReviewOverride 新增 TechStack / CodeStandardsPaths 字段，仓库级覆盖合并
+- [x] 示例配置 dtworkflow.example.yaml 补充 tech_stack / code_standards_paths 示例
+- [ ] Dimensions 配置动态控制 prompt 评审维度（M2.1 字段已预留，优先级低，延后至 M2.5）
 
 #### M2.3 评审结果解析与回写
 - [ ] 解析 Claude 输出的结构化评审结果
