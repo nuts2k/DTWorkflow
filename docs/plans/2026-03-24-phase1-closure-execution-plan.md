@@ -3,6 +3,43 @@
 > 日期：2026-03-24
 > 范围：围绕 `docs/ROADMAP.md` 中 Phase 1 的交付物与验收标准，优先完成一条可重复执行、可观测、可验证的最小运行链路；同时把其中可由 Claude 连续推进的步骤与需要用户配合提供的信息明确拆开。
 
+---
+
+## 执行记录（2026-03-25）
+
+**状态：Phase 1 收口第一阶段 ✅ 完成**
+
+### 验收结果
+
+| 验收项 | 结果 |
+|--------|------|
+| 生成并校验 `dtworkflow.yaml` | ✅ |
+| 构建 `dtworkflow-worker:1.0` | ✅ |
+| 启动 Redis（本地镜像） | ✅ |
+| 本机启动 `dtworkflow serve` | ✅ |
+| `/healthz` → 200 | ✅ |
+| `/readyz` 所有关键字段为 true | ✅ |
+| 手工 PR Webhook 发送入队 | ✅ |
+| Worker 容器创建/执行(exit_code=0)/清理 | ✅ |
+| `task list/status` → `succeeded` | ✅ |
+| Gitea 评论通知回写 | ✅ |
+
+### 过程中发现并修复的 Bug
+
+**Bug 1：发送 Webhook 必须携带 `X-Gitea-Delivery` 头**
+
+- 根因：`processor.findRecord` 通过 `delivery_id` 查找 DB 任务记录；若该字段为空，两条查找路径（按 `delivery_id` + 按 `buildAsynqTaskID`）均返回空，任务在 asynq 中持续失败重试
+- 修复：发送 Webhook 时必须携带 `X-Gitea-Delivery` 头（真实 Gitea 会自动携带；手工测试时需显式添加）
+- 影响文件：无代码改动，属于测试用法规范
+
+**Bug 2：`gitea.insecure_skip_verify` 配置项未接入 Gitea Client**
+
+- 根因：配置项仅为预留字段，初始化 Gitea Client 时未读取，导致自签名证书场景下通知回写 TLS 失败
+- 修复：`internal/cmd/serve.go` 在初始化 Gitea Client 时根据 `cfg.AppCfg.Gitea.InsecureSkipVerify` 注入跳过 TLS 验证的自定义 `http.Client`
+- 提交：`2f52e3d fix: 接入 Gitea Client 的 insecure_skip_verify 配置`
+
+---
+
 ## 1. 目标
 
 本计划的目标不是继续扩展新业务能力，而是把当前已完成的 M1.0-M1.8 基础设施，收口为一套**真正可跑、可验、可交付**的 Phase 1 环境与清单。
@@ -52,24 +89,24 @@
 
 ### 3.1 最小必需信息
 
-- [ ] `CLAUDE_API_KEY`：真实可用的 Claude API Key
-- [ ] `CLAUDE_BASE_URL`：Claude API 代理地址（使用官方地址可留空）
-- [ ] `GITEA_URL`：真实 Gitea 实例地址（`http://` 或 `https://`）
-- [ ] `GITEA_TOKEN`：真实可用的 Gitea API Token
-- [ ] `WEBHOOK_SECRET`：本轮联调使用的固定签名密钥
+- [x] `CLAUDE_API_KEY`：真实可用的 Claude API Key
+- [x] `CLAUDE_BASE_URL`：`https://api.portunex.gewulabs.group`
+- [x] `GITEA_URL`：`https://otws19.zicp.vip:3000`
+- [x] `GITEA_TOKEN`：已提供
+- [x] `WEBHOOK_SECRET`：`dtadmin123`
 
-### 3.2 若要验证“真实通知回写闭环”，还需提供
+### 3.2 若要验证”真实通知回写闭环”，还需提供
 
-- [ ] `REPO_OWNER`
-- [ ] `REPO_NAME`
-- [ ] `REPO_FULL_NAME`（格式 `owner/repo`）
-- [ ] `REPO_CLONE_URL`
-- [ ] 一个真实存在的 `PR_NUMBER`（优先）或 `ISSUE_NUMBER`
-- [ ] 确认该 Token 对目标仓库具备评论权限
+- [x] `REPO_OWNER`：`changyu`
+- [x] `REPO_NAME`：`ai_workflow_test`
+- [x] `REPO_FULL_NAME`：`changyu/ai_workflow_test`
+- [x] `REPO_CLONE_URL`：`https://otws19.zicp.vip:3000/changyu/ai_workflow_test.git`
+- [x] `PR_NUMBER`：`2`
+- [x] 确认该 Token 对目标仓库具备评论权限
 
 ### 3.3 用户需要做的唯一决策
 
-- [ ] 决定本轮是否把“通知回写真实闭环”作为 Phase 1 必验项
+- [x] 决定本轮是否把”通知回写真实闭环”作为 Phase 1 必验项 → **是**
 
 建议：
 
@@ -415,18 +452,20 @@ DTWORKFLOW_DATABASE_PATH=/app/data/dtworkflow.db
 
 满足以下条件，可视为本轮 Phase 1 收口第一阶段完成：
 
-1. 用户已提供最小必需配置
-2. Claude 生成并校验 `dtworkflow.yaml`
-3. Claude 成功构建 `dtworkflow-worker:1.0`
-4. Claude 成功启动 Redis 与本机 `dtworkflow serve`
-5. `/healthz` 返回 200
-6. `/readyz` 返回 200，且关键字段均为 true
-7. Claude 成功发送至少一条手工 PR Webhook
-8. `task list/status` 能看到任务记录与最终状态
+1. ✅ 用户已提供最小必需配置
+2. ✅ Claude 生成并校验 `dtworkflow.yaml`
+3. ✅ Claude 成功构建 `dtworkflow-worker:1.0`
+4. ✅ Claude 成功启动 Redis 与本机 `dtworkflow serve`
+5. ✅ `/healthz` 返回 200
+6. ✅ `/readyz` 返回 200，且关键字段均为 true
+7. ✅ Claude 成功发送至少一条手工 PR Webhook
+8. ✅ `task list/status` 能看到任务记录与最终状态
 
 若用户同时要求真实通知闭环，则还需附加：
 
-9. 真实 PR/Issue 上出现评论通知
+9. ✅ 真实 PR/Issue 上出现评论通知
+
+> **第一阶段已于 2026-03-25 全部完成。**
 
 ## 8. 建议的实际推进方式
 
@@ -461,11 +500,18 @@ DTWORKFLOW_DATABASE_PATH=/app/data/dtworkflow.db
 
 ## 9. 下一步建议
 
-本计划文档落地后，建议立刻进入以下实际执行序列：
+~~本计划文档落地后，建议立刻进入以下实际执行序列~~（第一阶段已完成，以下为第二阶段待办）：
 
-1. 用户提供第 3 节所需最小信息
-2. Claude 生成 `dtworkflow.yaml`
-3. Claude 构建 worker image 与 Redis 环境
-4. Claude 启动本机服务并检查 `/healthz`、`/readyz`
-5. Claude 发送手工 PR Webhook 并验证 `task list/status`
-6. 视用户决策，继续验证真实通知闭环或转入 compose 收口
+1. ✅ 用户提供第 3 节所需最小信息
+2. ✅ Claude 生成 `dtworkflow.yaml`
+3. ✅ Claude 构建 worker image 与 Redis 环境
+4. ✅ Claude 启动本机服务并检查 `/healthz`、`/readyz`
+5. ✅ Claude 发送手工 PR Webhook 并验证 `task list/status`
+6. ✅ 验证真实通知闭环
+
+**第二阶段待办（参见第 6 节）：**
+
+- [ ] 收口 `docker-compose.yml`：挂载 `dtworkflow.yaml`，适配 M1.8 统一配置体系
+- [ ] 冷启动基线：记录启动耗时、首个 Webhook 入队延迟、首个 Worker 容器执行完成耗时
+- [ ] 并发基线：测试 `concurrency=1/2/4` 的稳定性
+- [ ] clone/worktree 决策：确认留在 Phase 1 补实现，还是迁到 Phase 2
