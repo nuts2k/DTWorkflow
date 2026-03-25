@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -316,7 +317,16 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	giteaConfigured := cfg.GiteaURL != "" && cfg.GiteaToken != ""
 	var giteaClient *gitea.Client
 	if giteaConfigured {
-		giteaClient, err = gitea.NewClient(cfg.GiteaURL, gitea.WithToken(cfg.GiteaToken))
+		giteaOpts := []gitea.ClientOption{gitea.WithToken(cfg.GiteaToken)}
+		if cfg.AppCfg != nil && cfg.AppCfg.Gitea.InsecureSkipVerify {
+			giteaOpts = append(giteaOpts, gitea.WithHTTPClient(&http.Client{
+				Timeout: 30 * time.Second,
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+				},
+			}))
+		}
+		giteaClient, err = gitea.NewClient(cfg.GiteaURL, giteaOpts...)
 		if err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("初始化 Gitea Client 失败: %w", err)
