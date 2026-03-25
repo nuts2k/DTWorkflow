@@ -80,6 +80,23 @@ func newTestConfig(t *testing.T) serveConfig {
 		MaxWorkers:    1,
 		WorkerImage:   "dtworkflow-worker:1.0",
 		NetworkName:   "dtworkflow-net",
+		AppCfg: &config.Config{
+			Gitea: config.GiteaConfig{
+				URL:   "https://gitea.example.com",
+				Token: "test-token",
+			},
+			Notify: config.NotifyConfig{
+				DefaultChannel: "gitea",
+				Channels: map[string]config.ChannelConfig{
+					"gitea": {Enabled: true},
+				},
+				Routes: []config.RouteConfig{{
+					Repo:     "*",
+					Events:   []string{"*"},
+					Channels: []string{"gitea"},
+				}},
+			},
+		},
 	}
 }
 
