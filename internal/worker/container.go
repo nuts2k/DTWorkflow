@@ -45,12 +45,17 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		fmt.Sprintf("GITEA_URL=%s", sanitizeEnvValue(config.GiteaURL)),
 		fmt.Sprintf("GITEA_TOKEN=%s", sanitizeEnvValue(string(config.GiteaToken))),
 		fmt.Sprintf("ANTHROPIC_API_KEY=%s", sanitizeEnvValue(string(config.ClaudeAPIKey))),
+	}
+	if config.ClaudeBaseURL != "" {
+		env = append(env, fmt.Sprintf("ANTHROPIC_BASE_URL=%s", sanitizeEnvValue(config.ClaudeBaseURL)))
+	}
+	env = append(env,
 		fmt.Sprintf("REPO_CLONE_URL=%s", sanitizeEnvValue(payload.CloneURL)),
 		fmt.Sprintf("REPO_OWNER=%s", sanitizeEnvValue(payload.RepoOwner)),
 		fmt.Sprintf("REPO_NAME=%s", sanitizeEnvValue(payload.RepoName)),
 		fmt.Sprintf("REPO_FULL_NAME=%s", sanitizeEnvValue(payload.RepoFullName)),
 		fmt.Sprintf("TASK_TYPE=%s", sanitizeEnvValue(string(payload.TaskType))),
-	}
+	)
 
 	// 按任务类型追加额外环境变量
 	switch payload.TaskType {

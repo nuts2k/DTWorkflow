@@ -29,7 +29,8 @@ type Config struct {
 }
 
 type ClaudeConfig struct {
-	APIKey string `mapstructure:"api_key"`
+	APIKey  string `mapstructure:"api_key"`
+	BaseURL string `mapstructure:"base_url"` // 代理或自定义 API 端点，留空则使用官方地址
 }
 
 type ServerConfig struct {

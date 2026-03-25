@@ -53,6 +53,7 @@
 ### 3.1 最小必需信息
 
 - [ ] `CLAUDE_API_KEY`：真实可用的 Claude API Key
+- [ ] `CLAUDE_BASE_URL`：Claude API 代理地址（使用官方地址可留空）
 - [ ] `GITEA_URL`：真实 Gitea 实例地址（`http://` 或 `https://`）
 - [ ] `GITEA_TOKEN`：真实可用的 Gitea API Token
 - [ ] `WEBHOOK_SECRET`：本轮联调使用的固定签名密钥
@@ -102,6 +103,7 @@ webhook:
 
 claude:
   api_key: "<CLAUDE_API_KEY>"
+  base_url: "<CLAUDE_BASE_URL>"  # 使用官方地址时留空
 
 redis:
   addr: "localhost:6379"

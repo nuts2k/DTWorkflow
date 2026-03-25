@@ -27,6 +27,7 @@ webhook:
 # 说明：用于 Worker 容器内调用 Claude Code CLI（以环境变量注入）。
 claude:
   api_key: "REPLACE_ME_CLAUDE_API_KEY"
+  base_url: ""  # 代理或自定义端点，留空使用官方地址（如 https://api.anthropic.com）
 
 # Redis 配置
 redis:

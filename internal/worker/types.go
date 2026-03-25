@@ -39,8 +39,9 @@ type PoolConfig struct {
 	MemoryLimit  string // 容器内存限制，如 "4g"
 	GiteaURL     string // Gitea 实例地址
 	GiteaToken   SecretString `json:"-"` // Gitea API Token
-	ClaudeAPIKey SecretString `json:"-"` // Claude API Key
-	WorkDir      string // 容器内工作目录
+	ClaudeAPIKey  SecretString `json:"-"` // Claude API Key
+	ClaudeBaseURL string       // Claude API 代理地址，留空使用官方地址
+	WorkDir       string       // 容器内工作目录
 	NetworkName  string // Docker bridge 网络名，默认 "dtworkflow-net"
 }
 

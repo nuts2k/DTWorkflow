@@ -34,6 +34,7 @@ var (
 	serveMaxWorkers    int
 	serveWorkerImage   string
 	serveClaudeAPIKey  string
+	serveClaudeBaseURL string
 	serveGiteaURL      string
 	serveGiteaToken    string
 )
@@ -48,6 +49,7 @@ type serveConfig struct {
 	DBPath        string
 	WebhookSecret string
 	ClaudeAPIKey  string
+	ClaudeBaseURL string
 	GiteaURL      string
 	GiteaToken    string
 	MaxWorkers    int
@@ -81,6 +83,8 @@ func init() {
 	serveCmd.Flags().StringVar(&serveWorkerImage, "worker-image", "dtworkflow-worker:1.0", "Worker Docker 镜像")
 	serveCmd.Flags().StringVar(&serveClaudeAPIKey, "claude-api-key",
 		"", "Claude API Key（也可通过 DTWORKFLOW_CLAUDE_API_KEY 环境变量设置）")
+	serveCmd.Flags().StringVar(&serveClaudeBaseURL, "claude-base-url",
+		"", "Claude API 代理地址（也可通过 DTWORKFLOW_CLAUDE_BASE_URL 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveGiteaURL, "gitea-url",
 		"", "Gitea 实例地址（也可通过 DTWORKFLOW_GITEA_URL 环境变量设置）")
 	serveCmd.Flags().StringVar(&serveGiteaToken, "gitea-token",
@@ -120,8 +124,9 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 		MemoryLimit:  cfg.MemoryLimit,
 		GiteaURL:     cfg.GiteaURL,
 		GiteaToken:   worker.SecretString(cfg.GiteaToken),
-		ClaudeAPIKey: worker.SecretString(cfg.ClaudeAPIKey),
-		NetworkName:  cfg.NetworkName,
+		ClaudeAPIKey:  worker.SecretString(cfg.ClaudeAPIKey),
+		ClaudeBaseURL: cfg.ClaudeBaseURL,
+		NetworkName:   cfg.NetworkName,
 	}
 }
 
@@ -423,6 +428,7 @@ func buildServeConfigFromManager(mgr *config.Manager) (serveConfig, error) {
 		DBPath:        cfg.Database.Path,
 		WebhookSecret: cfg.Webhook.Secret,
 		ClaudeAPIKey:  cfg.Claude.APIKey,
+		ClaudeBaseURL: cfg.Claude.BaseURL,
 		GiteaURL:      cfg.Gitea.URL,
 		GiteaToken:    cfg.Gitea.Token,
 		MaxWorkers:    cfg.Worker.Concurrency,
@@ -452,6 +458,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			DBPath:        serveDBPath,
 			WebhookSecret: serveWebhookSecret,
 			ClaudeAPIKey:  serveClaudeAPIKey,
+			ClaudeBaseURL: serveClaudeBaseURL,
 			GiteaURL:      serveGiteaURL,
 			GiteaToken:    serveGiteaToken,
 			MaxWorkers:    serveMaxWorkers,
