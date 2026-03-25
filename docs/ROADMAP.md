@@ -169,16 +169,28 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > 说明：Phase 2 采用"完整仓库 + Claude Code CLI"评审模式，而非仅传 diff 文本。
 > Worker 容器内拥有完整代码仓库，Claude Code CLI 可自主探索调用链、关联文件和项目结构，
 > 评审质量（尤其是安全分析与架构评审）显著优于纯 diff 模式。
-- [ ] Worker 容器内 clone 目标仓库并 checkout PR 分支（依赖 M1.6 clone/worktree）
-- [ ] 通过 Gitea API 获取 PR 元数据（变更文件列表、变更行数、PR 描述）作为评审上下文
-- [ ] 大型 PR 检测与分批策略（按文件数 / 总行数阈值分组）
-- [ ] 将 PR 变更上下文与评审指令注入 Claude Code CLI prompt
+> 详细设计见 `docs/plans/2026-03-25-m2.1-pr-review-context-design.md`。
+- [x] Worker 容器内 clone 目标仓库并 checkout PR 分支（Phase 1 entrypoint.sh 已完成）
+- [x] 通过 Gitea API 获取 PR 元数据（变更文件列表、变更行数、PR 描述）作为评审上下文
+- [x] 大型 PR 检测与警告（超 10000 行日志 warn，超阈值在 prompt 中引导聚焦关键变更；分批策略 YAGNI 暂不实现）
+- [x] 将 PR 变更上下文与评审指令注入 Claude Code CLI prompt（四段式：上下文→指令→JSON schema→大 PR 警示）
+- [x] 新建 `internal/review` 包：评审编排层（Service/Execute/parseResult/resolveConfig）
+- [x] 定义评审输出 JSON schema（ReviewOutput/VerdictType/ReviewIssue，M2.3 解析合约）
+- [x] 双层 JSON 解析：CLI 信封（CLIResponse）→ 内层评审结果（ReviewOutput），含 code fence 清理
+- [x] 评审指令可配置化（全局 YAML + 仓库级追加覆盖，ConfigProvider 接口支持热加载）
+- [x] Pool.RunWithCommand 支持自定义容器命令（不破坏现有 PoolRunner 接口）
+- [x] Processor 集成：ProcessorOption 模式注入 ReviewExecutor，review_pr 任务分发到 review.Service
+- [x] ErrPRNotOpen 确定性失败跳过重试（asynq.SkipRetry）
+- [x] 单元测试 19 个（Execute 流程、JSON 解析、prompt 构造、配置解析）
 
 #### M2.2 评审 Prompt 工程
-- [ ] 设计评审 prompt 模板，覆盖四个维度：风格/逻辑/安全/架构
-- [ ] 严重程度分级指令（CRITICAL / ERROR / WARNING / INFO）
-- [ ] 输出格式定义（结构化 JSON，便于解析）
-- [ ] 引导 Claude Code 主动探索上下文：追溯调用链、检查相关文件、评估回归影响
+> 说明：M2.1 已实现基础评审 prompt（含四维度指令和严重程度定义），M2.2 聚焦模板精细化和专项 prompt。
+- [x] 设计评审 prompt 模板，覆盖四个维度：风格/逻辑/安全/架构（M2.1 defaultReviewInstructions 已实现基础版）
+- [x] 严重程度分级指令（CRITICAL / ERROR / WARNING / INFO）（M2.1 已实现）
+- [x] 输出格式定义（结构化 JSON，便于解析）（M2.1 jsonSchemaInstruction 已实现）
+- [x] 引导 Claude Code 主动探索上下文：追溯调用链、检查相关文件、评估回归影响（M2.1 已在评审原则中实现）
+- [ ] Dimensions 配置动态控制 prompt 评审维度（M2.1 字段已预留，prompt 模板待适配）
+- [ ] Prompt 改用 stdin 传入（避免 ps aux 暴露完整 prompt，提升安全性和可调试性）
 - [ ] Java 代码评审专项 prompt（Spring Boot 常见问题、MyBatis 等）
 - [ ] Vue 代码评审专项 prompt（组件设计、响应式、XSS 等）
 - [ ] 项目编码规范文件集成（如仓库中存在 .code-standards 等）
