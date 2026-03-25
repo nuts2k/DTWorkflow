@@ -71,22 +71,24 @@ notify:
       events: ["*"]
       channels: ["gitea"]
 
-# 全局评审配置（结构预留；用于展示 repos 级覆盖）
+# 全局评审配置
 review:
   enabled: true
   severity: "warning"
   ignore_patterns:
     - "**/*.md"
     - "docs/**"
+  # tech_stack: ["java", "vue"]        # 技术栈（留空则自动检测）
+  # code_standards_paths: []            # 自定义编码规范文件路径（留空则使用默认扫描列表）
 
 # 仓库级配置覆盖示例
 repos:
   - name: "acme/demo"
     notify:
       # 覆盖语义（与当前实现保持一致）：
-      # - 写了 routes 字段：即视为“仓库级覆盖”（完全替换全局 notify.routes，不合并）
-      # - routes: []：表示“显式清空”（该仓库不走任何通知路由）
-      # - 不写 routes 字段：表示“继承全局 notify.routes”
+      # - 写了 routes 字段：即视为"仓库级覆盖"（完全替换全局 notify.routes，不合并）
+      # - routes: []：表示"显式清空"（该仓库不走任何通知路由）
+      # - 不写 routes 字段：表示"继承全局 notify.routes"
       routes:
         - repo: "acme/demo"
           events: ["pr.review.done", "fix.issue.done", "system.error"]
@@ -95,3 +97,6 @@ repos:
       # 仅覆盖 enabled 与 ignore_patterns；severity 为空时继承全局
       enabled: false
       ignore_patterns: []
+      # tech_stack: ["java"]
+      # code_standards_paths:
+      #   - "docs/java-standards.md"

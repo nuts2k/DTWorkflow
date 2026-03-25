@@ -25,6 +25,10 @@ type ReviewOverride struct {
 	RepoInstructions string   `mapstructure:"-"`                  // 仓库级追加指令（由 ResolveReviewConfig 填充，不直接来自 YAML）
 	Dimensions       []string `mapstructure:"dimensions"`         // 启用的评审维度
 	LargePRThreshold int      `mapstructure:"large_pr_threshold"` // 大 PR 警告阈值（变更行数）
+
+	// --- M2.2 新增 ---
+	TechStack          []string `mapstructure:"tech_stack"`           // 技术栈显式指定：["java", "vue"]
+	CodeStandardsPaths []string `mapstructure:"code_standards_paths"` // 自定义规范文件路径
 }
 
 // ResolveNotifyRoutes 解析指定仓库的最终通知路由规则。
@@ -85,6 +89,12 @@ func (c *Config) ResolveReviewConfig(repoFullName string) ReviewOverride {
 		}
 		if repo.Review.LargePRThreshold > 0 {
 			merged.LargePRThreshold = repo.Review.LargePRThreshold
+		}
+		if repo.Review.TechStack != nil {
+			merged.TechStack = repo.Review.TechStack
+		}
+		if repo.Review.CodeStandardsPaths != nil {
+			merged.CodeStandardsPaths = repo.Review.CodeStandardsPaths
 		}
 		break
 	}

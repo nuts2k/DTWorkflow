@@ -2,18 +2,29 @@ package review
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
+// TechStack 技术栈位掩码
+type TechStack int
+
+const (
+	TechJava TechStack = 1 << iota // .java 文件
+	TechVue                         // .vue 及关联前端文件
+)
+
 // ReviewConfig 评审编排层的内部配置（从 config.ReviewOverride 转换而来）
 type ReviewConfig struct {
-	Instructions     string   // 全局评审指令
-	RepoInstructions string   // 仓库级追加指令
-	Dimensions       []string // 启用的评审维度
-	LargePRThreshold int      // 大 PR 警告阈值（变更行数）
+	Instructions       string   // 全局评审指令
+	RepoInstructions   string   // 仓库级追加指令
+	Dimensions         []string // 启用的评审维度
+	LargePRThreshold   int      // 大 PR 警告阈值（变更行数）
+	TechStack          []string // 技术栈显式指定
+	CodeStandardsPaths []string // 自定义规范文件路径
 }
 
 // jsonSchemaInstruction 输出格式约束（硬编码，不可配置）
@@ -98,6 +109,91 @@ const defaultReviewInstructions = `
 - 命名是否清晰表达意图
 - 函数/方法是否过长（超过 80 行需关注）
 - 与项目既有风格的一致性
+`
+
+// javaReviewInstructions Java 专项评审 prompt 段
+const javaReviewInstructions = `
+
+### Java 专项评审（Spring Boot + MyBatis）
+
+在通用评审基础上，额外关注以下 Java 生态特有问题：
+
+#### 事务与数据一致性
+- @Transactional 使用是否正确：是否加在 public 方法上、传播级别是否合理、是否存在自调用导致事务失效
+- 跨表操作是否遗漏事务注解
+- 异常类型与 rollbackFor 是否匹配（默认仅回滚 RuntimeException）
+
+#### MyBatis SQL 安全与质量
+- ${} 与 #{} 使用是否正确：动态拼接 SQL 必须用 #{}，仅表名/列名等无法参数化的场景才允许 ${}
+- 动态 SQL（<if>、<foreach>）是否存在注入风险
+- 批量操作是否考虑数据量上限（避免 SQL 过长）
+- 分页查询是否使用 LIMIT，避免全表扫描
+
+#### Spring Boot 常见陷阱
+- @Autowired 循环依赖：是否通过构造器注入避免
+- Controller 层是否混入业务逻辑（应委托给 Service）
+- 接口是否遵循 RESTful 规范：HTTP 方法语义、状态码使用、URI 命名
+- 配置项是否硬编码（应使用 @Value 或 @ConfigurationProperties）
+
+#### 并发与性能
+- 共享可变状态是否有同步保护（Spring Bean 默认单例）
+- 数据库连接是否及时释放（try-with-resources 或框架管理）
+- N+1 查询问题：循环中是否存在逐条查询数据库
+- 大数据量查询是否使用流式或分页处理
+`
+
+// vueReviewInstructions Vue 专项评审 prompt 段
+const vueReviewInstructions = `
+
+### Vue 专项评审（Vue 3 + Composition API）
+
+在通用评审基础上，额外关注以下 Vue 生态特有问题：
+
+#### 响应式使用
+- ref 与 reactive 是否正确选择：原始类型用 ref，对象用 reactive
+- 解构 reactive 对象是否使用 toRefs 保持响应式
+- watchEffect / watch 是否存在不必要的依赖触发或遗漏清理
+- computed 是否用于派生状态（避免 watch + 手动赋值的反模式）
+
+#### 组件设计
+- 组件是否遵循单一职责（超过 300 行需关注拆分）
+- Props 是否定义类型和默认值（defineProps 使用是否规范）
+- 事件是否通过 defineEmits 声明，避免隐式事件
+- v-model 使用是否正确（组件双向绑定的 modelValue + update:modelValue 约定）
+
+#### 安全
+- v-html 使用是否存在 XSS 风险（是否对用户输入做过滤）
+- 动态属性绑定（:href、:src）是否校验来源，防止 javascript: 协议注入
+- 敏感信息是否泄露到前端代码或 localStorage
+
+#### 性能
+- v-for 是否提供唯一稳定的 key（避免使用 index）
+- 大列表是否考虑虚拟滚动
+- 组件是否合理使用 defineAsyncComponent 按需加载
+- 不必要的深层 watch（deep: true）是否可用更精确的监听替代
+
+#### 状态管理（Pinia）
+- Store 是否职责清晰，避免单个 Store 过于庞大
+- 异步操作是否在 actions 中处理（避免组件内直接修改 state）
+- 是否存在跨 Store 循环依赖
+`
+
+// codeStandardsInstruction 默认编码规范引导（无自定义路径时使用）
+const codeStandardsInstruction = `
+
+### 项目编码规范
+
+在评审前，请检查仓库中是否存在以下编码规范文件（按优先级顺序），如果存在请先阅读，并将其作为评审依据：
+
+1. CLAUDE.md 中的"编码规范"或"开发规范"章节
+2. .code-standards.md 或 .code-standards/
+3. CONTRIBUTING.md
+4. .editorconfig
+5. docs/coding-standards.md 或 docs/code-style.md
+6. README.md 中的"编码规范"或"开发规范"章节
+
+如果找到规范文件，评审时应检查变更代码是否符合项目自身的编码规范。
+违反项目规范的问题使用 WARNING 级别，category 标记为 style。
 `
 
 // truncate 按 rune 截断字符串，避免截断 UTF-8 多字节字符
@@ -192,12 +288,79 @@ func extractJSON(text string) string {
 	return text
 }
 
+// detectTechStack 从 PR 变更文件列表中检测技术栈
+func detectTechStack(files []*gitea.ChangedFile) TechStack {
+	var stack TechStack
+	for _, f := range files {
+		ext := filepath.Ext(f.Filename)
+		switch ext {
+		case ".java":
+			stack |= TechJava
+		case ".vue":
+			stack |= TechVue
+		case ".ts", ".tsx", ".js", ".jsx":
+			if hasVueSignal(files) {
+				stack |= TechVue
+			}
+		}
+	}
+	return stack
+}
+
+// hasVueSignal 检查文件列表中是否有 Vue 项目的特征信号
+func hasVueSignal(files []*gitea.ChangedFile) bool {
+	for _, f := range files {
+		if filepath.Ext(f.Filename) == ".vue" {
+			return true
+		}
+		dir := filepath.Dir(f.Filename)
+		for _, marker := range []string{"src/views", "src/components", "src/composables", "src/stores"} {
+			if strings.Contains(dir, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resolveTechStack 解析最终技术栈：配置优先于自动检测
+func resolveTechStack(files []*gitea.ChangedFile, cfg ReviewConfig) TechStack {
+	if len(cfg.TechStack) > 0 {
+		var stack TechStack
+		for _, t := range cfg.TechStack {
+			switch strings.ToLower(t) {
+			case "java":
+				stack |= TechJava
+			case "vue":
+				stack |= TechVue
+			}
+		}
+		return stack
+	}
+	return detectTechStack(files)
+}
+
+// buildCodeStandardsSection 构造编码规范 prompt 段
+func buildCodeStandardsSection(paths []string) string {
+	if len(paths) == 0 {
+		return codeStandardsInstruction
+	}
+	var b strings.Builder
+	b.WriteString("\n\n### 项目编码规范\n\n在评审前，请先阅读以下项目编码规范文件，并将其作为评审依据：\n\n")
+	for i, p := range paths {
+		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, p))
+	}
+	b.WriteString("\n如果找到规范文件，评审时应检查变更代码是否符合项目自身的编码规范。\n")
+	b.WriteString("违反项目规范的问题使用 WARNING 级别，category 标记为 style。\n")
+	return b.String()
+}
+
 // buildPrompt 按四段式构造评审 prompt：
 // 1. 任务上下文（PR 元数据）
-// 2. 评审指令（可配置）
+// 2. 评审指令（通用 + 仓库级 + 专项 + 规范）
 // 3. 输出格式约束（硬编码）
 // 4. 大 PR 警示（条件性）
-func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile, cfg ReviewConfig) string {
+func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile, cfg ReviewConfig, techStack TechStack) string {
 	var b strings.Builder
 
 	// 1. 任务上下文
@@ -210,13 +373,26 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 	}
 	b.WriteString(formatFilesSummary(files))
 
-	// 2. 评审指令（全局 + 仓库级追加）
+	// 2a. 通用评审指令（全局）
 	b.WriteString("\n")
 	b.WriteString(cfg.Instructions)
+
+	// 2c. 仓库级追加指令
 	if cfg.RepoInstructions != "" {
 		b.WriteString("\n\nAdditional repository-specific instructions:\n")
 		b.WriteString(cfg.RepoInstructions)
 	}
+
+	// 2b. 专项评审指令（条件性）
+	if techStack&TechJava != 0 {
+		b.WriteString(javaReviewInstructions)
+	}
+	if techStack&TechVue != 0 {
+		b.WriteString(vueReviewInstructions)
+	}
+
+	// 2d. 项目编码规范
+	b.WriteString(buildCodeStandardsSection(cfg.CodeStandardsPaths))
 
 	// 3. 输出格式（硬编码，不可配置）
 	b.WriteString(jsonSchemaInstruction)
@@ -230,7 +406,7 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 	return b.String()
 }
 
-// buildCommand 构造容器执行命令
-func (s *Service) buildCommand(prompt string) []string {
-	return []string{"claude", "-p", prompt, "--output-format", "json"}
+// buildCommand 构造容器执行命令（stdin 模式，prompt 通过 stdin 传入）
+func (s *Service) buildCommand() []string {
+	return []string{"claude", "-p", "-", "--output-format", "json"}
 }

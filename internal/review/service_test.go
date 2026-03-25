@@ -16,7 +16,7 @@ import (
 // --- mock 实现 ---
 
 type mockPRClient struct {
-	getPR   func(ctx context.Context, owner, repo string, index int64) (*gitea.PullRequest, *gitea.Response, error)
+	getPR     func(ctx context.Context, owner, repo string, index int64) (*gitea.PullRequest, *gitea.Response, error)
 	listFiles func(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error)
 }
 
@@ -29,11 +29,26 @@ func (m *mockPRClient) ListPullRequestFiles(ctx context.Context, owner, repo str
 }
 
 type mockReviewPool struct {
-	runWithCommand func(ctx context.Context, payload model.TaskPayload, cmd []string) (*worker.ExecutionResult, error)
+	runWithCommand         func(ctx context.Context, payload model.TaskPayload, cmd []string) (*worker.ExecutionResult, error)
+	runWithCommandAndStdin func(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
 }
 
 func (m *mockReviewPool) RunWithCommand(ctx context.Context, payload model.TaskPayload, cmd []string) (*worker.ExecutionResult, error) {
-	return m.runWithCommand(ctx, payload, cmd)
+	if m.runWithCommand != nil {
+		return m.runWithCommand(ctx, payload, cmd)
+	}
+	return nil, errors.New("RunWithCommand not implemented")
+}
+
+func (m *mockReviewPool) RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error) {
+	if m.runWithCommandAndStdin != nil {
+		return m.runWithCommandAndStdin(ctx, payload, cmd, stdinData)
+	}
+	// 回退到 RunWithCommand（忽略 stdinData）
+	if m.runWithCommand != nil {
+		return m.runWithCommand(ctx, payload, cmd)
+	}
+	return nil, errors.New("RunWithCommandAndStdin not implemented")
 }
 
 type mockConfigProvider struct {
@@ -100,7 +115,7 @@ func TestExecute_Success(t *testing.T) {
 			},
 		},
 		&mockReviewPool{
-			runWithCommand: func(_ context.Context, _ model.TaskPayload, _ []string) (*worker.ExecutionResult, error) {
+			runWithCommandAndStdin: func(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
 				return &worker.ExecutionResult{Output: validCLIOutput(), ExitCode: 0}, nil
 			},
 		},
@@ -119,6 +134,39 @@ func TestExecute_Success(t *testing.T) {
 	}
 	if result.Review.Verdict != VerdictApprove {
 		t.Errorf("预期 verdict=approve，实际: %s", result.Review.Verdict)
+	}
+}
+
+func TestExecute_StdinPassedCorrectly(t *testing.T) {
+	var capturedStdin []byte
+	svc := newService(
+		&mockPRClient{
+			getPR: func(_ context.Context, _, _ string, _ int64) (*gitea.PullRequest, *gitea.Response, error) {
+				return openPR(1), nil, nil
+			},
+			listFiles: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+				return noFiles(), nil, nil
+			},
+		},
+		&mockReviewPool{
+			runWithCommandAndStdin: func(_ context.Context, _ model.TaskPayload, _ []string, stdinData []byte) (*worker.ExecutionResult, error) {
+				capturedStdin = stdinData
+				return &worker.ExecutionResult{Output: validCLIOutput(), ExitCode: 0}, nil
+			},
+		},
+		config.ReviewOverride{},
+	)
+
+	_, err := svc.Execute(context.Background(), testPayload())
+	if err != nil {
+		t.Fatalf("预期无错误，实际: %v", err)
+	}
+	if len(capturedStdin) == 0 {
+		t.Error("stdin 数据不应为空")
+	}
+	// prompt 应包含 PR 上下文
+	if !strings.Contains(string(capturedStdin), "PR #1") {
+		t.Error("stdin 应包含 PR 上下文")
 	}
 }
 
@@ -191,7 +239,7 @@ func TestExecute_ContainerError(t *testing.T) {
 			},
 		},
 		&mockReviewPool{
-			runWithCommand: func(_ context.Context, _ model.TaskPayload, _ []string) (*worker.ExecutionResult, error) {
+			runWithCommandAndStdin: func(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
 				return &worker.ExecutionResult{Output: "partial output", ExitCode: 1}, errors.New("container failed")
 			},
 		},
@@ -341,14 +389,14 @@ func TestBuildPrompt(t *testing.T) {
 		LargePRThreshold: 5000,
 	}
 
-	prompt := svc.buildPrompt(pr, files, cfg)
+	prompt := svc.buildPrompt(pr, files, cfg, 0)
 
 	// 检查四段内容均存在
 	checks := []string{
-		"PR #42",         // 1. 任务上下文
-		"自定义指令",          // 2. 评审指令
-		"Output Format",  // 3. 输出格式约束
-		"main.go",        // 文件列表
+		"PR #42",        // 1. 任务上下文
+		"自定义指令",         // 2. 评审指令
+		"Output Format", // 3. 输出格式约束
+		"main.go",       // 文件列表
 	}
 	for _, check := range checks {
 		if !strings.Contains(prompt, check) {
@@ -366,7 +414,7 @@ func TestBuildPrompt_RepoInstructions(t *testing.T) {
 		LargePRThreshold: 5000,
 	}
 
-	prompt := svc.buildPrompt(pr, noFiles(), cfg)
+	prompt := svc.buildPrompt(pr, noFiles(), cfg, 0)
 
 	if !strings.Contains(prompt, "仓库级追加指令") {
 		t.Error("prompt 应包含 RepoInstructions")
@@ -386,11 +434,207 @@ func TestBuildPrompt_LargePRGuidance(t *testing.T) {
 		LargePRThreshold: 5000,
 	}
 
-	prompt := svc.buildPrompt(pr, files, cfg)
+	prompt := svc.buildPrompt(pr, files, cfg, 0)
 
 	if !strings.Contains(prompt, "Large PR Notice") {
 		t.Error("超大 PR 应包含 Large PR Notice")
 	}
+}
+
+func TestBuildPrompt_TechStack(t *testing.T) {
+	svc := &Service{}
+	pr := openPR(1)
+	cfg := ReviewConfig{
+		Instructions:     "指令",
+		LargePRThreshold: 5000,
+	}
+
+	t.Run("Java 专项段", func(t *testing.T) {
+		prompt := svc.buildPrompt(pr, noFiles(), cfg, TechJava)
+		if !strings.Contains(prompt, "Java 专项评审") {
+			t.Error("Java 技术栈应包含 Java 专项评审段")
+		}
+		if strings.Contains(prompt, "Vue 专项评审") {
+			t.Error("Java 技术栈不应包含 Vue 专项评审段")
+		}
+	})
+
+	t.Run("Vue 专项段", func(t *testing.T) {
+		prompt := svc.buildPrompt(pr, noFiles(), cfg, TechVue)
+		if !strings.Contains(prompt, "Vue 专项评审") {
+			t.Error("Vue 技术栈应包含 Vue 专项评审段")
+		}
+		if strings.Contains(prompt, "Java 专项评审") {
+			t.Error("Vue 技术栈不应包含 Java 专项评审段")
+		}
+	})
+
+	t.Run("Java+Vue 混合", func(t *testing.T) {
+		prompt := svc.buildPrompt(pr, noFiles(), cfg, TechJava|TechVue)
+		if !strings.Contains(prompt, "Java 专项评审") {
+			t.Error("混合技术栈应包含 Java 专项评审段")
+		}
+		if !strings.Contains(prompt, "Vue 专项评审") {
+			t.Error("混合技术栈应包含 Vue 专项评审段")
+		}
+	})
+
+	t.Run("无技术栈", func(t *testing.T) {
+		prompt := svc.buildPrompt(pr, noFiles(), cfg, 0)
+		if strings.Contains(prompt, "Java 专项评审") {
+			t.Error("无技术栈不应包含 Java 专项评审段")
+		}
+		if strings.Contains(prompt, "Vue 专项评审") {
+			t.Error("无技术栈不应包含 Vue 专项评审段")
+		}
+	})
+}
+
+func TestBuildCodeStandardsSection(t *testing.T) {
+	t.Run("无自定义路径使用默认", func(t *testing.T) {
+		result := buildCodeStandardsSection(nil)
+		if !strings.Contains(result, "CLAUDE.md") {
+			t.Error("默认规范段应包含 CLAUDE.md 引导")
+		}
+	})
+
+	t.Run("自定义路径列表", func(t *testing.T) {
+		paths := []string{"docs/java-standards.md", "docs/api-guide.md"}
+		result := buildCodeStandardsSection(paths)
+		if !strings.Contains(result, "docs/java-standards.md") {
+			t.Error("自定义规范段应包含指定路径")
+		}
+		if !strings.Contains(result, "docs/api-guide.md") {
+			t.Error("自定义规范段应包含指定路径")
+		}
+		// 自定义路径时不应出现默认扫描列表
+		if strings.Contains(result, "CONTRIBUTING.md") {
+			t.Error("自定义路径时不应出现默认扫描列表")
+		}
+	})
+
+	t.Run("空切片使用默认", func(t *testing.T) {
+		result := buildCodeStandardsSection([]string{})
+		if !strings.Contains(result, "CLAUDE.md") {
+			t.Error("空切片应使用默认规范段")
+		}
+	})
+}
+
+func TestDetectTechStack(t *testing.T) {
+	tests := []struct {
+		name  string
+		files []*gitea.ChangedFile
+		want  TechStack
+	}{
+		{
+			name:  ".java 文件 -> TechJava",
+			files: []*gitea.ChangedFile{{Filename: "src/main/java/Foo.java"}},
+			want:  TechJava,
+		},
+		{
+			name:  ".vue 文件 -> TechVue",
+			files: []*gitea.ChangedFile{{Filename: "src/views/Home.vue"}},
+			want:  TechVue,
+		},
+		{
+			name:  ".ts + .vue 信号 -> TechVue",
+			files: []*gitea.ChangedFile{
+				{Filename: "src/views/Home.vue"},
+				{Filename: "src/composables/useUser.ts"},
+			},
+			want: TechVue,
+		},
+		{
+			name: "混合 .java + .vue -> TechJava|TechVue",
+			files: []*gitea.ChangedFile{
+				{Filename: "src/main/java/Foo.java"},
+				{Filename: "frontend/src/views/Home.vue"},
+			},
+			want: TechJava | TechVue,
+		},
+		{
+			name:  "纯 Go 文件 -> 无技术栈",
+			files: []*gitea.ChangedFile{{Filename: "main.go"}},
+			want:  0,
+		},
+		{
+			name:  "空列表 -> 无技术栈",
+			files: []*gitea.ChangedFile{},
+			want:  0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectTechStack(tc.files)
+			if got != tc.want {
+				t.Errorf("detectTechStack() = %d, 预期 %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHasVueSignal(t *testing.T) {
+	t.Run(".vue 文件", func(t *testing.T) {
+		files := []*gitea.ChangedFile{{Filename: "src/App.vue"}}
+		if !hasVueSignal(files) {
+			t.Error("有 .vue 文件应返回 true")
+		}
+	})
+
+	t.Run("src/components 路径", func(t *testing.T) {
+		files := []*gitea.ChangedFile{{Filename: "src/components/Button.ts"}}
+		if !hasVueSignal(files) {
+			t.Error("src/components 路径应返回 true")
+		}
+	})
+
+	t.Run("src/stores 路径", func(t *testing.T) {
+		files := []*gitea.ChangedFile{{Filename: "src/stores/user.ts"}}
+		if !hasVueSignal(files) {
+			t.Error("src/stores 路径应返回 true")
+		}
+	})
+
+	t.Run("无信号", func(t *testing.T) {
+		files := []*gitea.ChangedFile{
+			{Filename: "main.go"},
+			{Filename: "internal/service/user.go"},
+		}
+		if hasVueSignal(files) {
+			t.Error("无 Vue 信号应返回 false")
+		}
+	})
+}
+
+func TestResolveTechStack(t *testing.T) {
+	t.Run("配置覆盖自动检测", func(t *testing.T) {
+		files := []*gitea.ChangedFile{{Filename: "Foo.java"}}
+		cfg := ReviewConfig{TechStack: []string{"vue"}}
+		got := resolveTechStack(files, cfg)
+		if got != TechVue {
+			t.Errorf("配置优先：预期 TechVue，实际 %d", got)
+		}
+	})
+
+	t.Run("无配置回退自动检测", func(t *testing.T) {
+		files := []*gitea.ChangedFile{{Filename: "Foo.java"}}
+		cfg := ReviewConfig{}
+		got := resolveTechStack(files, cfg)
+		if got != TechJava {
+			t.Errorf("自动检测：预期 TechJava，实际 %d", got)
+		}
+	})
+
+	t.Run("配置多技术栈", func(t *testing.T) {
+		files := []*gitea.ChangedFile{}
+		cfg := ReviewConfig{TechStack: []string{"java", "vue"}}
+		got := resolveTechStack(files, cfg)
+		if got != TechJava|TechVue {
+			t.Errorf("多技术栈配置：预期 TechJava|TechVue，实际 %d", got)
+		}
+	})
 }
 
 func TestResolveConfig_Defaults(t *testing.T) {
@@ -433,3 +677,20 @@ func TestResolveConfig_Override(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_TechStackAndCodeStandards(t *testing.T) {
+	svc := &Service{
+		cfgProv: &mockConfigProvider{override: config.ReviewOverride{
+			TechStack:          []string{"java", "vue"},
+			CodeStandardsPaths: []string{"docs/standards.md"},
+		}},
+	}
+
+	cfg := svc.resolveConfig("owner/repo")
+
+	if len(cfg.TechStack) != 2 {
+		t.Errorf("TechStack 应有 2 项，实际: %v", cfg.TechStack)
+	}
+	if len(cfg.CodeStandardsPaths) != 1 || cfg.CodeStandardsPaths[0] != "docs/standards.md" {
+		t.Errorf("CodeStandardsPaths 不正确，实际: %v", cfg.CodeStandardsPaths)
+	}
+}

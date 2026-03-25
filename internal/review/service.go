@@ -19,9 +19,10 @@ type PRClient interface {
 }
 
 // ReviewPoolRunner 评审专用的容器执行接口，与 queue.PoolRunner 独立。
-// *worker.Pool 同时满足 queue.PoolRunner（Run）和 ReviewPoolRunner（RunWithCommand）。
+// *worker.Pool 同时满足 queue.PoolRunner（Run）和 ReviewPoolRunner（RunWithCommand、RunWithCommandAndStdin）。
 type ReviewPoolRunner interface {
 	RunWithCommand(ctx context.Context, payload model.TaskPayload, cmd []string) (*worker.ExecutionResult, error)
+	RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
 }
 
 // ConfigProvider 获取评审配置的接口
@@ -109,12 +110,15 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 	// 4. 获取评审配置（全局 + 仓库级合并）
 	cfg := s.resolveConfig(payload.RepoFullName)
 
-	// 5. 构造 prompt + 命令
-	prompt := s.buildPrompt(pr, files, cfg)
-	cmd := s.buildCommand(prompt)
+	// 4.5 检测技术栈
+	techStack := resolveTechStack(files, cfg)
 
-	// 6. 执行容器
-	execResult, err := s.pool.RunWithCommand(ctx, payload, cmd)
+	// 5. 构造 prompt + 命令
+	prompt := s.buildPrompt(pr, files, cfg, techStack)
+	cmd := s.buildCommand()
+
+	// 6. 通过 stdin 传入 prompt 执行容器
+	execResult, err := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
 	if err != nil {
 		return &ReviewResult{RawOutput: safeOutput(execResult)}, fmt.Errorf("容器执行失败: %w", err)
 	}
@@ -166,10 +170,12 @@ func (s *Service) resolveConfig(repoFullName string) ReviewConfig {
 	override := s.cfgProv.ResolveReviewConfig(repoFullName)
 
 	cfg := ReviewConfig{
-		Instructions:     override.Instructions,
-		RepoInstructions: override.RepoInstructions,
-		Dimensions:       override.Dimensions,
-		LargePRThreshold: override.LargePRThreshold,
+		Instructions:       override.Instructions,
+		RepoInstructions:   override.RepoInstructions,
+		Dimensions:         override.Dimensions,
+		LargePRThreshold:   override.LargePRThreshold,
+		TechStack:          override.TechStack,
+		CodeStandardsPaths: override.CodeStandardsPaths,
 	}
 
 	// 应用默认值

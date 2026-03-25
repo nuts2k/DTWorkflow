@@ -87,3 +87,60 @@ func TestResolveNotifyRoutes_OverrideEmptyClearsGlobal(t *testing.T) {
 		t.Fatalf("routes length = %d, want %d", len(routes), 0)
 	}
 }
+
+func TestResolveReviewConfig_M22Fields(t *testing.T) {
+	t.Run("全局TechStack无仓库覆盖时返回全局值", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.TechStack = []string{"go", "vue"}
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if len(resolved.TechStack) != 2 || resolved.TechStack[0] != "go" {
+			t.Errorf("TechStack = %v, want [go vue]", resolved.TechStack)
+		}
+	})
+
+	t.Run("仓库级TechStack覆盖全局值", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.TechStack = []string{"go", "vue"}
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Review: &ReviewOverride{TechStack: []string{"java"}},
+		}}
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if len(resolved.TechStack) != 1 || resolved.TechStack[0] != "java" {
+			t.Errorf("TechStack = %v, want [java]", resolved.TechStack)
+		}
+	})
+
+	t.Run("全局CodeStandardsPaths无仓库覆盖时返回全局值", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.CodeStandardsPaths = []string{"docs/standards.md"}
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if len(resolved.CodeStandardsPaths) != 1 || resolved.CodeStandardsPaths[0] != "docs/standards.md" {
+			t.Errorf("CodeStandardsPaths = %v, want [docs/standards.md]", resolved.CodeStandardsPaths)
+		}
+	})
+
+	t.Run("仓库级CodeStandardsPaths覆盖全局值", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.CodeStandardsPaths = []string{"docs/standards.md"}
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Review: &ReviewOverride{CodeStandardsPaths: []string{"repo/rules.md"}},
+		}}
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if len(resolved.CodeStandardsPaths) != 1 || resolved.CodeStandardsPaths[0] != "repo/rules.md" {
+			t.Errorf("CodeStandardsPaths = %v, want [repo/rules.md]", resolved.CodeStandardsPaths)
+		}
+	})
+
+	t.Run("未设置时TechStack和CodeStandardsPaths均为nil", func(t *testing.T) {
+		cfg := validBaseConfig()
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if resolved.TechStack != nil {
+			t.Errorf("TechStack 未设置时应为 nil，得到: %v", resolved.TechStack)
+		}
+		if resolved.CodeStandardsPaths != nil {
+			t.Errorf("CodeStandardsPaths 未设置时应为 nil，得到: %v", resolved.CodeStandardsPaths)
+		}
+	})
+}

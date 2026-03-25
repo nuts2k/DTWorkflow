@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"net"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
@@ -18,6 +19,7 @@ type mockDockerClient struct {
 	removeContainerFunc  func(ctx context.Context, containerID string) error
 	getContainerLogsFunc func(ctx context.Context, containerID string) (string, error)
 	listContainersFunc   func(ctx context.Context, f filters.Args) ([]container.Summary, error)
+	attachContainerFunc  func(ctx context.Context, containerID string) (net.Conn, error)
 	closeFunc            func() error
 }
 
@@ -75,6 +77,15 @@ func (m *mockDockerClient) ListContainers(ctx context.Context, f filters.Args) (
 		return m.listContainersFunc(ctx, f)
 	}
 	return nil, nil
+}
+
+func (m *mockDockerClient) AttachContainer(ctx context.Context, containerID string) (net.Conn, error) {
+	if m.attachContainerFunc != nil {
+		return m.attachContainerFunc(ctx, containerID)
+	}
+	// 默认返回一个内存 pipe，允许写端正常关闭
+	_, server := net.Pipe()
+	return server, nil
 }
 
 func (m *mockDockerClient) Close() error {

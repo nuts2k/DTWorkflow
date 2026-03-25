@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -43,6 +44,8 @@ type DockerClient interface {
 	GetContainerLogs(ctx context.Context, containerID string) (string, error)
 	// ListContainers 列举符合过滤条件的容器（用于 GC 扫描）
 	ListContainers(ctx context.Context, f filters.Args) ([]container.Summary, error)
+	// AttachContainer attach 到容器 stdin，返回连接（用于写入 stdin 数据）
+	AttachContainer(ctx context.Context, containerID string) (net.Conn, error)
 	// Close 关闭客户端连接
 	Close() error
 }
@@ -58,6 +61,7 @@ type ContainerConfig struct {
 	MemoryLimit string            // 内存限制，如 "4g"
 	NetworkName string            // Docker 网络名称
 	WorkDir     string            // 容器内工作目录
+	OpenStdin   bool              // 是否开启 stdin（配合 stdin 数据传入使用）
 }
 
 // dockerClient DockerClient 的真实实现
@@ -144,6 +148,8 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 		Cmd:        cfg.Cmd,
 		Labels:     cfg.Labels,
 		WorkingDir: cfg.WorkDir,
+		OpenStdin:  cfg.OpenStdin,
+		StdinOnce:  cfg.OpenStdin,
 	}
 
 	// 构建主机资源配置
@@ -266,6 +272,18 @@ func (d *dockerClient) ListContainers(ctx context.Context, f filters.Args) ([]co
 		All:     true, // 包含已停止的容器
 		Filters: f,
 	})
+}
+
+// AttachContainer attach 到容器 stdin，返回底层连接供调用方写入数据后关闭写端
+func (d *dockerClient) AttachContainer(ctx context.Context, containerID string) (net.Conn, error) {
+	resp, err := d.cli.ContainerAttach(ctx, containerID, container.AttachOptions{
+		Stream: true,
+		Stdin:  true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("attach 容器 %s stdin 失败: %w", containerID, err)
+	}
+	return resp.Conn, nil
 }
 
 // Close 关闭 Docker 客户端连接
