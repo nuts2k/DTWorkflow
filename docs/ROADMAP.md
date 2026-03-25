@@ -46,8 +46,8 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 4. **资源与性能基线**
    - [x] 记录单次 `claude -p` 调用的内存峰值和耗时
-   - [ ] 记录容器启动到可执行任务的冷启动耗时
-   - [ ] 评估单机可并发运行的 Worker 容器数量上限
+   - [x] 记录容器启动到可执行任务的冷启动耗时（healthz 118ms / 入队 44ms / 完整执行 32s）
+   - [ ] 评估单机可并发运行的 Worker 容器数量上限（并发基线待测试）
 
 5. **跨平台验证**
    - [x] macOS（Docker Desktop）环境以上各项通过
@@ -104,7 +104,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Claude Code CLI Docker 镜像构建（基础镜像 + Claude Code + Git + 常用工具）
 - [x] Docker SDK for Go 集成，程序化创建/销毁容器
 - [x] Worker 池管理：并发数控制、资源限制（CPU / 内存）
-- [x] 容器内 Git 仓库 clone + worktree 实现（entrypoint.sh 实现 clone + PR 分支 checkout，Claude Code CLI 升级至 v2.1.81）
+- [x] 容器内 Git 仓库 clone + worktree 实现（entrypoint.sh 实现 clone + PR 分支 checkout，Claude Code CLI 固定为 v2.1.76）
 - [x] Claude Code CLI 非交互模式验证（`claude -p` 在容器内运行）
 - [x] API Key 安全注入（环境变量 / Docker secrets）
 
@@ -152,8 +152,8 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - 基础设施主链路打通即为通过；完整业务语义在后续 Phase 继续补齐
 
 ### 风险项
-- **Claude Code CLI Docker 兼容性**：需尽早验证 CLI 在容器中的行为，包括认证、文件系统访问、Git 操作
-- **网络配置**：容器内需能同时访问 Gitea（内网）和 Claude API（外网），可能需要代理配置
+- **Claude Code CLI Docker 兼容性**：✅ 已验证，v2.1.76 在 ReadonlyRootfs 容器中正常运行（需 entrypoint 迁移 HOME 到可写 tmpfs）
+- **网络配置**：✅ 已验证，容器通过 dtworkflow-net bridge 网络同时访问 Gitea（内网）和 Claude API（外网），自签名证书通过 GIT_SSL_NO_VERIFY 处理
 
 ---
 
