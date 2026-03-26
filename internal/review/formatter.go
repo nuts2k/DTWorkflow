@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -17,12 +18,12 @@ const (
 
 // formatReviewBody 生成 PR 评审正文 Markdown。
 // 正常场景输出结构化统计表格和未映射问题列表；
-// 降级场景（parseFailed=true）直接附加 Claude 原始输出。
+// 降级场景（parseFailed=true）将 Claude 原始输出包裹在代码块中附加。
+// 注意：parseErr 的日志记录由调用方负责，formatter 不引入 logger 依赖。
 func formatReviewBody(
 	output *ReviewOutput,
 	unmapped []ReviewIssue,
 	parseFailed bool,
-	parseErr error,
 	rawOutput string,
 	durationSec float64,
 	costUSD float64,
@@ -32,24 +33,21 @@ func formatReviewBody(
 	var sb strings.Builder
 
 	if parseFailed {
-		// 降级场景：附加原始输出
+		// 降级场景：附加原始输出（代码块内不解析 Markdown，防止注入）
 		sb.WriteString("## DTWorkflow 自动评审\n\n")
-		if parseErr != nil {
-			sb.WriteString(fmt.Sprintf("> 评审结果解析失败，以下为 Claude 原始输出。结构化行级评论不可用。\n> 错误详情：%v\n\n", parseErr))
-		} else {
-			sb.WriteString("> 评审结果解析失败，以下为 Claude 原始输出。结构化行级评论不可用。\n\n")
-		}
+		sb.WriteString("> 评审结果解析失败，以下为 Claude 原始输出。结构化行级评论不可用。\n\n")
 		sb.WriteString("---\n\n")
 		raw := rawOutput
-		if len(raw) > bodyMaxLen-200 {
-			raw = raw[:bodyMaxLen-200]
+		if len(raw) > bodyMaxLen-300 {
+			raw = truncateString(raw, bodyMaxLen-300)
 		}
+		sb.WriteString("```\n")
 		sb.WriteString(raw)
-		sb.WriteString("\n\n---\n")
+		sb.WriteString("\n```\n\n---\n")
 		sb.WriteString(footer)
 		result := sb.String()
 		if len(result) > bodyMaxLen {
-			result = result[:bodyMaxLen]
+			result = truncateString(result, bodyMaxLen)
 		}
 		return result
 	}
@@ -57,7 +55,7 @@ func formatReviewBody(
 	// 正常场景
 	sb.WriteString("## DTWorkflow 自动评审\n\n")
 	if output != nil && output.Summary != "" {
-		sb.WriteString(output.Summary)
+		sb.WriteString(escapeMarkdown(output.Summary))
 		sb.WriteString("\n\n")
 	}
 
@@ -100,16 +98,13 @@ func formatReviewBody(
 
 		sb.WriteString("### 其他发现（未关联到 diff 行）\n")
 		for _, issue := range sorted {
-			msg := issue.Message
-			if len(msg) > messageMaxLen {
-				msg = msg[:messageMaxLen]
-			}
+			msg := truncateString(issue.Message, messageMaxLen)
 			loc := fmt.Sprintf("%s:%d", issue.File, issue.Line)
 			sb.WriteString(fmt.Sprintf("- **%s** `%s` (%s): %s\n",
 				issue.Severity,
 				escapeTableCell(loc),
 				escapeTableCell(issue.Category),
-				msg,
+				escapeMarkdown(msg),
 			))
 		}
 		sb.WriteString("\n")
@@ -121,7 +116,7 @@ func formatReviewBody(
 	result := sb.String()
 	if len(result) > bodyMaxLen {
 		truncMsg := "\n\n_（内容过长，已截断）_"
-		result = result[:bodyMaxLen-len(truncMsg)] + truncMsg
+		result = truncateToUTF8(result, bodyMaxLen-len(truncMsg)) + truncMsg
 	}
 	return result
 }
@@ -131,14 +126,14 @@ func formatReviewBody(
 func formatCommentBody(issue ReviewIssue) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("**%s** | %s\n\n", issue.Severity, issue.Category))
-	sb.WriteString(issue.Message)
+	sb.WriteString(escapeMarkdown(issue.Message))
 	if issue.Suggestion != "" {
-		sb.WriteString(fmt.Sprintf("\n\n> 建议：%s", issue.Suggestion))
+		sb.WriteString(fmt.Sprintf("\n\n> 建议：%s", escapeMarkdown(issue.Suggestion)))
 	}
 	result := sb.String()
 	if len(result) > commentMaxLen {
 		truncMsg := "\n\n_（内容过长，已截断）_"
-		result = result[:commentMaxLen-len(truncMsg)] + truncMsg
+		result = truncateToUTF8(result, commentMaxLen-len(truncMsg)) + truncMsg
 	}
 	return result
 }
@@ -159,9 +154,46 @@ func severityOrder(sev string) int {
 	}
 }
 
-// escapeTableCell 转义 Markdown 表格单元格中的 `|` 字符。
+// escapeMarkdown 转义 Markdown 特殊字符，防止注入钓鱼链接等恶意内容。
+func escapeMarkdown(s string) string {
+	replacer := strings.NewReplacer(
+		`[`, `\[`,
+		`]`, `\]`,
+		`(`, `\(`,
+		`)`, `\)`,
+		`!`, `\!`,
+		`<`, `\<`,
+		`>`, `\>`,
+	)
+	return replacer.Replace(s)
+}
+
+// escapeTableCell 转义 Markdown 表格单元格中的 `|` 和换行字符，同时转义 Markdown 链接语法。
 func escapeTableCell(s string) string {
-	return strings.ReplaceAll(s, "|", `\|`)
+	s = escapeMarkdown(s)
+	s = strings.ReplaceAll(s, "|", `\|`)
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
+// truncateString 按字节截断字符串，回退到最近的完整 UTF-8 字符边界，避免截断多字节字符。
+// 截断时追加 "…" 后缀。
+func truncateString(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	return truncateToUTF8(s, maxBytes) + "…"
+}
+
+// truncateToUTF8 按字节截断字符串到最近的完整 UTF-8 字符边界，不追加后缀。
+func truncateToUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }
 
 // countBySeverity 统计各 severity 级别的 issue 数量。

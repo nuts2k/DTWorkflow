@@ -312,9 +312,9 @@ func (s *SQLiteStore) ListOrphanTasks(ctx context.Context, maxAge time.Duration)
 	query := `SELECT ` + taskColumns + `
 	FROM tasks WHERE status = ? AND created_at < ?
 	ORDER BY created_at ASC
-	LIMIT ` + fmt.Sprintf("%d", defaultMaxLimit)
+	LIMIT ?`
 
-	rows, err := s.db.QueryContext(ctx, query, string(model.TaskStatusPending), threshold)
+	rows, err := s.db.QueryContext(ctx, query, string(model.TaskStatusPending), threshold, defaultMaxLimit)
 	if err != nil {
 		return nil, fmt.Errorf("查询孤儿任务失败: %w", err)
 	}
@@ -402,6 +402,102 @@ func (s *SQLiteStore) SaveReviewResult(ctx context.Context, record *model.Review
 		return fmt.Errorf("插入评审结果记录失败: %w", err)
 	}
 	return nil
+}
+
+// reviewResultColumns 是 review_results 表的 SELECT 列列表
+const reviewResultColumns = `id, task_id, repo_full_name, pr_number, head_sha,
+		verdict, summary, issues_json,
+		issue_count, critical_count, error_count, warning_count, info_count,
+		cost_usd, duration_ms, gitea_review_id,
+		parse_failed, writeback_error, created_at`
+
+// GetReviewResult 按 ID 获取评审结果记录，未找到时返回错误
+func (s *SQLiteStore) GetReviewResult(ctx context.Context, id string) (*model.ReviewRecord, error) {
+	if id == "" {
+		return nil, fmt.Errorf("查询评审结果失败: %w", ErrInvalidID)
+	}
+
+	query := `SELECT ` + reviewResultColumns + `
+	FROM review_results WHERE id = ?`
+
+	row := s.db.QueryRowContext(ctx, query, id)
+	r, err := scanReviewRecord(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("评审结果不存在: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询评审结果失败: %w", err)
+	}
+	return r, nil
+}
+
+// ListReviewResults 按仓库全名列出评审结果，按创建时间倒序
+func (s *SQLiteStore) ListReviewResults(ctx context.Context, repoFullName string, limit, offset int) ([]*model.ReviewRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	query := `SELECT ` + reviewResultColumns + `
+	FROM review_results WHERE repo_full_name = ?
+	ORDER BY created_at DESC LIMIT ? OFFSET ?`
+
+	rows, err := s.db.QueryContext(ctx, query, repoFullName, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("列表查询评审结果失败: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*model.ReviewRecord
+	for rows.Next() {
+		r, err := scanReviewRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("扫描评审结果失败: %w", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历评审结果失败: %w", err)
+	}
+	return results, nil
+}
+
+// scanReviewRecord 从单行结果扫描 ReviewRecord
+func scanReviewRecord(row rowScanner) (*model.ReviewRecord, error) {
+	var (
+		r              model.ReviewRecord
+		issuesJSON     sql.NullString
+		writebackError sql.NullString
+		parseFailed    int
+		createdAt      string
+	)
+
+	err := row.Scan(
+		&r.ID, &r.TaskID, &r.RepoFullName, &r.PRNumber, &r.HeadSHA,
+		&r.Verdict, &r.Summary, &issuesJSON,
+		&r.IssueCount, &r.CriticalCount, &r.ErrorCount, &r.WarningCount, &r.InfoCount,
+		&r.CostUSD, &r.DurationMs, &r.GiteaReviewID,
+		&parseFailed, &writebackError, &createdAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	r.ParseFailed = parseFailed != 0
+	if issuesJSON.Valid {
+		r.IssuesJSON = issuesJSON.String
+	}
+	if writebackError.Valid {
+		r.WritebackError = writebackError.String
+	}
+
+	r.CreatedAt, err = parseTime(createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("解析 created_at 失败: %w", err)
+	}
+	return &r, nil
 }
 
 // Ping 检测数据库连接是否可用，用于健康检查

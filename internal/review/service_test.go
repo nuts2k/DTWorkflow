@@ -301,6 +301,51 @@ func TestExecute_WritebackDegradedPreservesReviewIDAndError(t *testing.T) {
 	}
 }
 
+func TestExecute_ListFilesError(t *testing.T) {
+	listErr := errors.New("gitea: connection refused")
+	svc := newService(
+		&mockPRClient{
+			getPR: func(_ context.Context, _, _ string, _ int64) (*gitea.PullRequest, *gitea.Response, error) {
+				return openPR(1), nil, nil
+			},
+			listFiles: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+				return nil, nil, listErr
+			},
+		},
+		&mockReviewPool{},
+		config.ReviewOverride{},
+	)
+
+	_, err := svc.Execute(context.Background(), testPayload())
+	if err == nil {
+		t.Fatal("预期 ListPullRequestFiles 错误应被返回")
+	}
+	if !strings.Contains(err.Error(), "文件列表") {
+		t.Errorf("错误信息应包含\"文件列表\"，实际: %v", err)
+	}
+	if !errors.Is(err, listErr) {
+		t.Errorf("原始错误应被包装在返回错误中，实际: %v", err)
+	}
+}
+
+func TestParseResult_InvalidInnerJSON(t *testing.T) {
+	// 外层 JSON 合法，但 result 字段不是合法 JSON 对象
+	outer := `{"type":"result","subtype":"success","is_error":false,"result":"not-a-valid-json-object"}`
+
+	svc := &Service{}
+	result := svc.parseResult(outer)
+
+	if result.ParseError == nil {
+		t.Fatal("畸形内层 JSON 应返回非 nil ParseError")
+	}
+	if !strings.Contains(result.ParseError.Error(), "评审 JSON 解析失败") {
+		t.Errorf("ParseError 应包含\"评审 JSON 解析失败\"，实际: %v", result.ParseError)
+	}
+	if result.Review != nil {
+		t.Error("内层 JSON 解析失败时 Review 应为 nil")
+	}
+}
+
 func TestParseResult_ValidJSON(t *testing.T) {
 	svc := &Service{}
 	result := svc.parseResult(validCLIOutput())

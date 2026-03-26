@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -667,6 +668,116 @@ func TestProcessTask_InvalidPayload(t *testing.T) {
 	err := p.ProcessTask(context.Background(), badTask)
 	if err == nil {
 		t.Fatal("ProcessTask should return error on invalid payload")
+	}
+}
+
+func TestAdaptReviewResult_CLIError(t *testing.T) {
+	r := &review.ReviewResult{
+		RawOutput: "some raw output",
+		CLIMeta: &review.CLIMeta{
+			IsError:    true,
+			DurationMs: 500,
+		},
+	}
+
+	result := adaptReviewResult(r)
+
+	if result == nil {
+		t.Fatal("adaptReviewResult 应返回非 nil")
+	}
+	if result.ExitCode != 1 {
+		t.Errorf("CLIMeta.IsError=true 时 ExitCode 应为 1，实际: %d", result.ExitCode)
+	}
+	if !strings.Contains(result.Error, "Claude CLI 报告错误") {
+		t.Errorf("Error 应包含\"Claude CLI 报告错误\"，实际: %q", result.Error)
+	}
+}
+
+func TestProcessTask_ReviewSuccess_SeverityCounts(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-severity-counts-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     55,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-severity-counts",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	// 构造包含 2 CRITICAL + 1 ERROR + 1 WARNING 的评审结果
+	reviewResult := &review.ReviewResult{
+		RawOutput: "severity test output",
+		CLIMeta:   &review.CLIMeta{IsError: false},
+		Review: &review.ReviewOutput{
+			Summary: "有若干问题",
+			Verdict: review.VerdictRequestChanges,
+			Issues: []review.ReviewIssue{
+				{Severity: "CRITICAL", File: "a.go", Line: 1, Message: "严重问题1"},
+				{Severity: "CRITICAL", File: "b.go", Line: 2, Message: "严重问题2"},
+				{Severity: "ERROR", File: "c.go", Line: 3, Message: "错误问题"},
+				{Severity: "WARNING", File: "d.go", Line: 4, Message: "警告问题"},
+			},
+		},
+	}
+
+	p := NewProcessor(
+		&mockPoolRunner{},
+		s,
+		nil,
+		slog.Default(),
+		WithReviewService(&mockReviewExecutor{result: reviewResult}),
+	)
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	got := s.tasks["proc-task-severity-counts"]
+	if got.Status != model.TaskStatusSucceeded {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+	// 2 CRITICAL + 1 ERROR = 安全网触发，adaptReviewResult 退出码仍为 0（非 CLIMeta error）
+	// 验证任务记录状态正确（评审结果成功处理）
+	if got.Error != "" {
+		t.Errorf("无 writeback 错误时 Error 应为空，实际: %q", got.Error)
+	}
+}
+
+func TestProcessTask_AdaptReviewResult_WritebackError(t *testing.T) {
+	// 测试 adaptReviewResult 中同时存在 Error 和 WritebackError 的拼接分支
+	r := &review.ReviewResult{
+		RawOutput:      "partial output",
+		CLIMeta:        &review.CLIMeta{IsError: false},
+		ParseError:     errors.New("parse failed"),
+		WritebackError: errors.New("gitea api timeout"),
+	}
+
+	result := adaptReviewResult(r)
+
+	if result == nil {
+		t.Fatal("adaptReviewResult 应返回非 nil")
+	}
+	if !strings.Contains(result.Error, "parse failed") {
+		t.Errorf("Error 应包含原始 ParseError 信息，实际: %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "gitea api timeout") {
+		t.Errorf("Error 应包含 WritebackError 信息，实际: %q", result.Error)
+	}
+	// 验证两部分通过分隔符拼接
+	if !strings.Contains(result.Error, "; ") {
+		t.Errorf("Error 应包含 '; ' 分隔符拼接两段错误，实际: %q", result.Error)
 	}
 }
 

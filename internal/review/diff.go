@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// maxDiffSize 是 ParseDiff 接受的最大输入大小（10MB）。
+// 超大 diff 经 strings.Split 后内存放大数倍，限制输入以防 OOM。
+const maxDiffSize = 10 * 1024 * 1024
+
 // DiffMap 存储 PR diff 中每个文件的行号映射信息
 type DiffMap struct {
 	files map[string]*FileDiff
@@ -21,11 +25,12 @@ type FileDiff struct {
 type HunkRange struct {
 	NewStart   int        // 新文件起始行号（@@ 中的 +c）
 	NewCount   int        // 新文件行数（@@ 中的 d）
-	DiffOffset int        // 该 hunk 在文件 diff 块中的起始行偏移
-	Lines      []DiffLine // hunk 内逐行解析结果
+	DiffOffset int        // Reserved for Semantic B：该 hunk 在文件 diff 块中的起始行偏移
+	Lines      []DiffLine // Reserved for Semantic B：hunk 内逐行解析结果
 }
 
-// DiffLine hunk 内单行的解析结果
+// DiffLine hunk 内单行的解析结果。
+// Reserved for Semantic B：当前语义 A 不填充此结构，仅保留类型定义供未来使用。
 type DiffLine struct {
 	NewLineNum int  // 新文件中的行号（- 行为 0）
 	DiffPos    int  // 该行在文件 diff 块中的位置（从 1 开始）
@@ -37,6 +42,9 @@ type DiffLine struct {
 // 二进制文件 diff 跳过处理，不影响其他文件。
 func ParseDiff(diffText string) *DiffMap {
 	dm := &DiffMap{files: make(map[string]*FileDiff)}
+	if len(diffText) == 0 || len(diffText) > maxDiffSize {
+		return dm
+	}
 	if strings.TrimSpace(diffText) == "" {
 		return dm
 	}
@@ -137,13 +145,9 @@ func parseHunk(lines []string, start int, hunkIndex int) (*HunkRange, int) {
 		NewCount: newCount,
 	}
 
-	// DiffOffset 以文件内已有 hunk 的总行数偏移为基准
-	// 此处简化实现：记录当前 hunk 的起始偏移（按 DiffLine.DiffPos 从 1 开始计数）
-	// 由于语义 A 直接返回行号作为 position，DiffOffset 仅记录备用
-	hunk.DiffOffset = hunkIndex // 暂存 hunk 序号，MapLine 中不直接使用
+	// DiffOffset 仅记录 hunk 序号备用，语义 A 的 MapLine 不直接使用
+	hunk.DiffOffset = hunkIndex
 
-	newLineNum := newStart
-	diffPos := 1 // hunk 内位置从 1 开始
 	consumed := 1
 
 	for idx := start + 1; idx < len(lines); idx++ {
@@ -153,51 +157,8 @@ func parseHunk(lines []string, start int, hunkIndex int) (*HunkRange, int) {
 			break
 		}
 		consumed++
-
-		if len(line) == 0 {
-			// 空行视为 context 行
-			dl := DiffLine{
-				NewLineNum: newLineNum,
-				DiffPos:    diffPos,
-				Op:         ' ',
-			}
-			hunk.Lines = append(hunk.Lines, dl)
-			newLineNum++
-			diffPos++
-			continue
-		}
-
-		op := line[0]
-		switch op {
-		case '+':
-			dl := DiffLine{
-				NewLineNum: newLineNum,
-				DiffPos:    diffPos,
-				Op:         '+',
-			}
-			hunk.Lines = append(hunk.Lines, dl)
-			newLineNum++
-			diffPos++
-		case '-':
-			dl := DiffLine{
-				NewLineNum: 0, // 删除行在新文件中无行号
-				DiffPos:    diffPos,
-				Op:         '-',
-			}
-			hunk.Lines = append(hunk.Lines, dl)
-			diffPos++
-		case ' ':
-			dl := DiffLine{
-				NewLineNum: newLineNum,
-				DiffPos:    diffPos,
-				Op:         ' ',
-			}
-			hunk.Lines = append(hunk.Lines, dl)
-			newLineNum++
-			diffPos++
-		case '\\':
-			// "\ No newline at end of file" — 跳过，不计入行号
-		}
+		// 语义 A 仅需 NewStart + NewCount 进行范围判断，
+		// 不填充 Lines 切片以节省内存（Reserved for Semantic B）
 	}
 
 	return hunk, consumed

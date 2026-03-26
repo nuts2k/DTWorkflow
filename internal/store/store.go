@@ -43,6 +43,12 @@ type Store interface {
 	// SaveReviewResult 持久化评审结果记录
 	SaveReviewResult(ctx context.Context, record *model.ReviewRecord) error
 
+	// GetReviewResult 按 ID 获取评审结果记录，未找到时返回错误
+	GetReviewResult(ctx context.Context, id string) (*model.ReviewRecord, error)
+
+	// ListReviewResults 按仓库全名列出评审结果，按创建时间倒序
+	ListReviewResults(ctx context.Context, repoFullName string, limit, offset int) ([]*model.ReviewRecord, error)
+
 	// Ping 检测数据库连接是否可用，用于健康检查
 	Ping(ctx context.Context) error
 

@@ -70,12 +70,14 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 		return 0, fmt.Errorf("writeback: result 不能为 nil")
 	}
 
+	// parseFailed 表示进入全降级模式：使用原始输出作为 body，不生成行级评论。
+	// 即使部分 Review 数据存在但有 ParseError，也触发全降级，确保不回写可能不完整的结构化数据。
 	parseFailed := result.Review == nil || result.ParseError != nil
 	var writebackErr error
 
 	// 8a: 获取 PR diff（失败则降级：所有 issues 归入 body）
 	var diffText string
-	diffErr := error(nil)
+	var diffErr error
 	if !parseFailed {
 		diffText, _, diffErr = w.gitea.GetPullRequestDiff(ctx, input.Owner, input.Repo, input.PRNumber)
 		if diffErr != nil {
@@ -114,22 +116,23 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 	var (
 		durationSec float64
 		costUSD     float64
-		parseErr    error
 		rawOutput   string
 	)
 	rawOutput = result.RawOutput
-	parseErr = result.ParseError
 	if result.CLIMeta != nil {
 		durationSec = float64(result.CLIMeta.DurationMs) / 1000.0
 		costUSD = result.CLIMeta.CostUSD
 	}
 
-	var reviewOutput *ReviewOutput
-	if result.Review != nil {
-		reviewOutput = result.Review
+	// 解析错误在此记录日志，formatReviewBody 不暴露内部错误详情到评论
+	if result.ParseError != nil {
+		w.logger.WarnContext(ctx, "评审结果解析失败，降级为原始输出",
+			"pr", input.PRNumber, "error", result.ParseError)
 	}
 
-	body := formatReviewBody(reviewOutput, unmapped, parseFailed, parseErr, rawOutput, durationSec, costUSD)
+	reviewOutput := result.Review
+
+	body := formatReviewBody(reviewOutput, unmapped, parseFailed, rawOutput, durationSec, costUSD)
 
 	// 8e: 映射 verdict
 	var issues []ReviewIssue
@@ -139,15 +142,10 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 	state := mapVerdict(verdictFromResult(result), issues, parseFailed)
 
 	// 8f: 一次原子调用 CreatePullReview
-	var commitID string
-	if input.HeadSHA != "" {
-		commitID = input.HeadSHA
-	}
-
 	reviewOpts := gitea.CreatePullReviewOptions{
 		State:    state,
 		Body:     body,
-		CommitID: commitID,
+		CommitID: input.HeadSHA,
 		Comments: mappedComments,
 	}
 
@@ -267,9 +265,11 @@ func buildReviewRecord(input WritebackInput, result *ReviewResult, giteaReviewID
 			}
 		}
 
-		// 序列化 issues 为 JSON
+		// 序列化 issues 为 JSON（失败时使用空数组作为安全默认值）
 		if data, err := json.Marshal(result.Review.Issues); err == nil {
 			record.IssuesJSON = string(data)
+		} else {
+			record.IssuesJSON = "[]"
 		}
 	}
 

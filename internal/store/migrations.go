@@ -62,7 +62,7 @@ var migrations = []migration{
 		Version: 7,
 		SQL: `CREATE TABLE IF NOT EXISTS review_results (
 			id              TEXT PRIMARY KEY,
-			task_id         TEXT NOT NULL,
+			task_id         TEXT REFERENCES tasks(id) ON DELETE SET NULL,
 			repo_full_name  TEXT NOT NULL,
 			pr_number       INTEGER NOT NULL,
 			head_sha        TEXT NOT NULL DEFAULT '',
@@ -93,6 +93,14 @@ var migrations = []migration{
 	{
 		Version: 10,
 		SQL:     `CREATE INDEX IF NOT EXISTS idx_review_results_created ON review_results(created_at)`,
+	},
+	{
+		Version: 11,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_review_results_task_id ON review_results(task_id)`,
+	},
+	{
+		Version: 12,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_review_results_repo_pr ON review_results(repo_full_name, pr_number)`,
 	},
 }
 

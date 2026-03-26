@@ -55,6 +55,12 @@ func (m *mockStoreForRecovery) Ping(_ context.Context) error { return nil }
 
 func (m *mockStoreForRecovery) Close() error { return nil }
 
+func (m *mockStoreForRecovery) GetReviewResult(_ context.Context, _ string) (*model.ReviewRecord, error) {
+	return nil, nil
+}
+func (m *mockStoreForRecovery) ListReviewResults(_ context.Context, _ string, _ int, _ int) ([]*model.ReviewRecord, error) {
+	return nil, nil
+}
 func (m *mockStoreForRecovery) SaveReviewResult(_ context.Context, _ *model.ReviewRecord) error {
 	return nil
 }

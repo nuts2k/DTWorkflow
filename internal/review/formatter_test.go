@@ -1,7 +1,6 @@
 package review
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -17,7 +16,7 @@ func TestFormatReviewBody_Normal(t *testing.T) {
 		},
 	}
 
-	body := formatReviewBody(output, nil, false, nil, "", 32.0, 0.0012)
+	body := formatReviewBody(output, nil, false, "", 32.0, 0.0012)
 
 	if !strings.Contains(body, "## DTWorkflow 自动评审") {
 		t.Error("缺少标题")
@@ -58,7 +57,7 @@ func TestFormatReviewBody_UnmappedIssues(t *testing.T) {
 		{File: "c.go", Line: 3, Severity: "WARNING", Category: "logic", Message: "警告级别"},
 	}
 
-	body := formatReviewBody(output, unmapped, false, nil, "", 10, 0.001)
+	body := formatReviewBody(output, unmapped, false, "", 10, 0.001)
 
 	if !strings.Contains(body, "### 其他发现（未关联到 diff 行）") {
 		t.Error("缺少 unmapped issues 标题")
@@ -89,7 +88,7 @@ func TestFormatReviewBody_UnmappedNotDoubleCount(t *testing.T) {
 		Issues:  []ReviewIssue{issue},
 	}
 
-	body := formatReviewBody(output, []ReviewIssue{issue}, false, nil, "", 3, 0.001)
+	body := formatReviewBody(output, []ReviewIssue{issue}, false, "", 3, 0.001)
 
 	if !strings.Contains(body, "| ERROR | 1 |") {
 		t.Fatalf("ERROR 统计应为 1，body=%s", body)
@@ -106,7 +105,7 @@ func TestFormatReviewBody_NoIssues(t *testing.T) {
 		Verdict: VerdictApprove,
 	}
 
-	body := formatReviewBody(output, nil, false, nil, "", 5, 0.0005)
+	body := formatReviewBody(output, nil, false, "", 5, 0.0005)
 
 	if strings.Contains(body, "### 评审统计") {
 		t.Error("无 issues 时不应显示统计表格")
@@ -124,7 +123,7 @@ func TestFormatReviewBody_BodyTruncated(t *testing.T) {
 		Verdict: VerdictComment,
 	}
 
-	body := formatReviewBody(output, nil, false, nil, "", 1, 0)
+	body := formatReviewBody(output, nil, false, "", 1, 0)
 
 	if len(body) > bodyMaxLen {
 		t.Errorf("body 超过 %d 字符上限，实际长度=%d", bodyMaxLen, len(body))
@@ -150,6 +149,7 @@ func TestFormatCommentBody_Format(t *testing.T) {
 	if !strings.HasPrefix(body, "**ERROR** | security") {
 		t.Errorf("格式错误，body 开头=%q", body[:min(30, len(body))])
 	}
+	// escapeMarkdown 不影响无特殊字符的中文文本
 	if !strings.Contains(body, "SQL 注入风险") {
 		t.Error("缺少 message")
 	}
@@ -187,28 +187,25 @@ func TestEscapeTableCell(t *testing.T) {
 	}
 }
 
-// TestFormatReviewBody_TableEscape message 含 | 不破坏表格
+// TestFormatReviewBody_TableEscape message 含 | 经 escapeMarkdown 后保持可读
 func TestFormatReviewBody_TableEscape(t *testing.T) {
 	unmapped := []ReviewIssue{
 		{File: "a.go", Line: 1, Severity: "ERROR", Category: "logic", Message: "err|nil 未处理"},
 	}
 
-	body := formatReviewBody(nil, unmapped, false, nil, "", 1, 0)
+	body := formatReviewBody(nil, unmapped, false, "", 1, 0)
 
-	// 验证 | 被转义，不会破坏 Markdown 表格结构
-	// unmapped 列表是 bullet 格式，但 file:line 和 category 在反引号中不需转义
-	// message 直接显示，不在表格中，所以原始 | 出现在 bullet 里是合法的
-	if !strings.Contains(body, "err|nil 未处理") {
-		t.Error("message 应原样显示在 bullet 列表中")
+	// escapeMarkdown 不转义 |，所以 | 保持原样
+	if !strings.Contains(body, "err|nil") {
+		t.Error("message 中的 | 应保持原样")
 	}
 }
 
 // TestFormatReviewBody_ParseFailed 降级场景
 func TestFormatReviewBody_ParseFailed(t *testing.T) {
-	parseErr := errors.New("invalid JSON: unexpected token")
 	rawOutput := "这是 Claude 的原始文本输出，无法解析为 JSON。"
 
-	body := formatReviewBody(nil, nil, true, parseErr, rawOutput, 15, 0.002)
+	body := formatReviewBody(nil, nil, true, rawOutput, 15, 0.002)
 
 	if !strings.Contains(body, "## DTWorkflow 自动评审") {
 		t.Error("缺少标题")
@@ -216,11 +213,13 @@ func TestFormatReviewBody_ParseFailed(t *testing.T) {
 	if !strings.Contains(body, "评审结果解析失败") {
 		t.Error("缺少降级提示")
 	}
-	if !strings.Contains(body, "invalid JSON") {
-		t.Error("缺少错误详情")
+	// 降级场景不应暴露内部错误详情
+	if strings.Contains(body, "invalid JSON") {
+		t.Error("不应暴露内部解析错误详情")
 	}
-	if !strings.Contains(body, rawOutput) {
-		t.Error("缺少原始输出内容")
+	// rawOutput 应被代码块包裹
+	if !strings.Contains(body, "```\n"+rawOutput+"\n```") {
+		t.Error("原始输出应被代码块包裹")
 	}
 	if !strings.Contains(body, "耗时 15s") {
 		t.Errorf("缺少耗时信息，body=%s", body)
@@ -266,6 +265,107 @@ func TestCountBySeverity(t *testing.T) {
 	}
 	if counts["CRITICAL"] != 2 {
 		t.Errorf("CRITICAL 应为 2，got %d", counts["CRITICAL"])
+	}
+}
+
+// TestEscapeMarkdown escapeMarkdown 转义 Markdown 特殊字符
+func TestEscapeMarkdown(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "链接语法",
+			input: "[点击这里](https://evil.com)",
+			want:  `\[点击这里\]\(https://evil.com\)`,
+		},
+		{
+			name:  "图片语法",
+			input: "![alt](img.png)",
+			want:  `\!\[alt\]\(img.png\)`,
+		},
+		{
+			name:  "HTML 标签",
+			input: "<script>alert(1)</script>",
+			want:  `\<script\>alert\(1\)\</script\>`,
+		},
+		{
+			name:  "无特殊字符",
+			input: "普通中文文本 abc 123",
+			want:  "普通中文文本 abc 123",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := escapeMarkdown(tc.input)
+			if got != tc.want {
+				t.Errorf("escapeMarkdown(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTruncateString truncateString 截断测试（含中文多字节字符）
+func TestTruncateString(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxBytes int
+		wantSafe bool // 结果应为合法 UTF-8
+	}{
+		{
+			name:     "不需要截断",
+			input:    "hello",
+			maxBytes: 10,
+		},
+		{
+			name:     "ASCII 截断",
+			input:    "hello world",
+			maxBytes: 5,
+		},
+		{
+			name:     "中文截断不破坏字符",
+			input:    "你好世界",       // 每个中文 3 字节，总共 12 字节
+			maxBytes: 7,             // 截断在第 3 个字符中间
+			wantSafe: true,
+		},
+		{
+			name:     "中文截断在字符边界",
+			input:    "你好世界",
+			maxBytes: 6, // 恰好是 2 个完整中文字符
+			wantSafe: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateString(tc.input, tc.maxBytes)
+			if len(tc.input) <= tc.maxBytes {
+				// 不需要截断时应返回原字符串
+				if got != tc.input {
+					t.Errorf("不需要截断时应返回原字符串，got=%q", got)
+				}
+				return
+			}
+			// 截断后长度不应超过 maxBytes + len("…")
+			if len(got) > tc.maxBytes+len("…") {
+				t.Errorf("截断后长度超出预期，got len=%d, maxBytes=%d", len(got), tc.maxBytes)
+			}
+			// 应包含省略号
+			if !strings.HasSuffix(got, "…") {
+				t.Errorf("截断后应以省略号结尾，got=%q", got)
+			}
+		})
+	}
+
+	// 特别测试：中文截断不产生乱码
+	result := truncateString("你好世界", 7)
+	// 7 字节 → 回退到 6 字节（2 个完整中文） + "…"
+	if !strings.Contains(result, "你好") {
+		t.Errorf("中文截断应保留完整字符，got=%q", result)
+	}
+	if strings.Contains(result, "世") {
+		t.Errorf("中文截断应去掉不完整的字符，got=%q", result)
 	}
 }
 

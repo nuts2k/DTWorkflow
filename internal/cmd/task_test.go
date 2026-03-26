@@ -67,6 +67,12 @@ func (m *mockTaskStore) Close() error                 { return nil }
 func (m *mockTaskStore) SaveReviewResult(_ context.Context, _ *model.ReviewRecord) error {
 	return nil
 }
+func (m *mockTaskStore) GetReviewResult(_ context.Context, _ string) (*model.ReviewRecord, error) {
+	return nil, nil
+}
+func (m *mockTaskStore) ListReviewResults(_ context.Context, _ string, _ int, _ int) ([]*model.ReviewRecord, error) {
+	return nil, nil
+}
 
 type stubTaskEnqueuer struct {
 	asynqID     string

@@ -90,6 +90,12 @@ func (m *mockStore) Ping(_ context.Context) error { return nil }
 
 func (m *mockStore) Close() error { return nil }
 
+func (m *mockStore) GetReviewResult(_ context.Context, _ string) (*model.ReviewRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) ListReviewResults(_ context.Context, _ string, _ int, _ int) ([]*model.ReviewRecord, error) {
+	return nil, nil
+}
 func (m *mockStore) SaveReviewResult(_ context.Context, _ *model.ReviewRecord) error {
 	return nil
 }

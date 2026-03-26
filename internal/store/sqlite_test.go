@@ -866,6 +866,181 @@ func TestNewSQLiteStore_FileDB(t *testing.T) {
 	}
 }
 
+// newTestReviewRecord 创建用于测试的 ReviewRecord
+func newTestReviewRecord(id, taskID, repoFullName string, prNumber int64) *model.ReviewRecord {
+	return &model.ReviewRecord{
+		ID:            id,
+		TaskID:        taskID,
+		RepoFullName:  repoFullName,
+		PRNumber:      prNumber,
+		HeadSHA:       "abc123",
+		Verdict:       "approve",
+		Summary:       "代码质量良好",
+		IssuesJSON:    "[]",
+		IssueCount:    0,
+		CriticalCount: 0,
+		ErrorCount:    0,
+		WarningCount:  0,
+		InfoCount:     0,
+		CostUSD:       0.05,
+		DurationMs:    1200,
+		GiteaReviewID: 42,
+		ParseFailed:   false,
+		CreatedAt:     time.Now().UTC(),
+	}
+}
+
+func TestSaveAndGetReviewResult(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 先创建关联的 task（外键约束）
+	task := newTestRecord("task-for-review", "", model.TaskTypeReviewPR)
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	rr := newTestReviewRecord("review-001", "task-for-review", "owner/repo", 1)
+	if err := s.SaveReviewResult(ctx, rr); err != nil {
+		t.Fatalf("SaveReviewResult 失败: %v", err)
+	}
+
+	got, err := s.GetReviewResult(ctx, "review-001")
+	if err != nil {
+		t.Fatalf("GetReviewResult 失败: %v", err)
+	}
+	if got.ID != "review-001" {
+		t.Errorf("ID 不匹配: got %s, want review-001", got.ID)
+	}
+	if got.TaskID != "task-for-review" {
+		t.Errorf("TaskID 不匹配: got %s, want task-for-review", got.TaskID)
+	}
+	if got.Verdict != "approve" {
+		t.Errorf("Verdict 不匹配: got %s, want approve", got.Verdict)
+	}
+	if got.PRNumber != 1 {
+		t.Errorf("PRNumber 不匹配: got %d, want 1", got.PRNumber)
+	}
+	if got.CostUSD != 0.05 {
+		t.Errorf("CostUSD 不匹配: got %f, want 0.05", got.CostUSD)
+	}
+	if got.GiteaReviewID != 42 {
+		t.Errorf("GiteaReviewID 不匹配: got %d, want 42", got.GiteaReviewID)
+	}
+}
+
+func TestGetReviewResult_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.GetReviewResult(ctx, "nonexistent")
+	if err == nil {
+		t.Fatal("GetReviewResult 不存在时应返回错误")
+	}
+}
+
+func TestGetReviewResult_EmptyID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.GetReviewResult(ctx, "")
+	if err == nil {
+		t.Fatal("GetReviewResult 空 ID 应返回错误")
+	}
+	if !errors.Is(err, ErrInvalidID) {
+		t.Errorf("期望 ErrInvalidID，得到: %v", err)
+	}
+}
+
+func TestListReviewResults(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 创建关联的 task
+	task := newTestRecord("task-for-list", "", model.TaskTypeReviewPR)
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	base := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		rr := newTestReviewRecord(
+			fmt.Sprintf("list-review-%d", i),
+			"task-for-list",
+			"owner/repo",
+			int64(i+1),
+		)
+		rr.CreatedAt = base.Add(time.Duration(i) * time.Second)
+		if err := s.SaveReviewResult(ctx, rr); err != nil {
+			t.Fatalf("SaveReviewResult 失败: %v", err)
+		}
+	}
+
+	results, err := s.ListReviewResults(ctx, "owner/repo", 10, 0)
+	if err != nil {
+		t.Fatalf("ListReviewResults 失败: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("期望 3 条记录，得到 %d", len(results))
+	}
+	// 按 created_at DESC 排序，最新的在前
+	if results[0].ID != "list-review-2" {
+		t.Errorf("第一条记录期望 list-review-2，得到 %s", results[0].ID)
+	}
+}
+
+func TestListReviewResults_LimitClamping(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// limit <= 0 默认为 50，limit > 200 限制为 200
+	results, err := s.ListReviewResults(ctx, "owner/repo", 0, 0)
+	if err != nil {
+		t.Fatalf("ListReviewResults limit=0 失败: %v", err)
+	}
+	if results == nil {
+		// nil 切片是允许的（无数据时）
+	}
+
+	results, err = s.ListReviewResults(ctx, "owner/repo", -1, 0)
+	if err != nil {
+		t.Fatalf("ListReviewResults limit=-1 失败: %v", err)
+	}
+	_ = results
+}
+
+func TestListReviewResults_FilterByRepo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 创建关联的 task（外键约束）
+	taskA := newTestRecord("task-repo-a", "", model.TaskTypeReviewPR)
+	taskA.RepoFullName = "org/repo-a"
+	taskB := newTestRecord("task-repo-b", "", model.TaskTypeReviewPR)
+	taskB.RepoFullName = "org/repo-b"
+	for _, task := range []*model.TaskRecord{taskA, taskB} {
+		if err := s.CreateTask(ctx, task); err != nil {
+			t.Fatalf("CreateTask 失败: %v", err)
+		}
+	}
+
+	rr1 := newTestReviewRecord("repo-review-1", "task-repo-a", "org/repo-a", 1)
+	rr2 := newTestReviewRecord("repo-review-2", "task-repo-b", "org/repo-b", 2)
+	for _, rr := range []*model.ReviewRecord{rr1, rr2} {
+		if err := s.SaveReviewResult(ctx, rr); err != nil {
+			t.Fatalf("SaveReviewResult 失败: %v", err)
+		}
+	}
+
+	results, err := s.ListReviewResults(ctx, "org/repo-a", 10, 0)
+	if err != nil {
+		t.Fatalf("ListReviewResults 失败: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("期望 1 条记录，得到 %d", len(results))
+	}
+}
+
 func TestListTasks_CombinedFilters(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

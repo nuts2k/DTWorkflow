@@ -1,6 +1,7 @@
 package review
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -118,9 +119,9 @@ func TestParseDiff_SingleFileOneHunk(t *testing.T) {
 	if hunk.NewCount != 4 {
 		t.Errorf("hunk.NewCount 期望 4，得到 %d", hunk.NewCount)
 	}
-	// 验证行数正确
-	if len(hunk.Lines) == 0 {
-		t.Error("hunk.Lines 不应为空")
+	// 语义 A 不填充 Lines 切片（Reserved for Semantic B）
+	if len(hunk.Lines) != 0 {
+		t.Errorf("语义 A 下 hunk.Lines 应为空，得到 %d 条", len(hunk.Lines))
 	}
 }
 
@@ -353,4 +354,28 @@ func TestParseDiff_UnknownFile(t *testing.T) {
 	if ok {
 		t.Error("不存在的文件 MapLine 应返回 false")
 	}
+}
+
+// TestParseDiff_OversizedInput 超过 maxDiffSize 的输入返回空 DiffMap，不 OOM
+func TestParseDiff_OversizedInput(t *testing.T) {
+	// 构造一个略超过 maxDiffSize 的输入
+	oversized := strings.Repeat("x", maxDiffSize+1)
+	dm := ParseDiff(oversized)
+	if dm == nil {
+		t.Fatal("ParseDiff 对超大输入返回 nil")
+	}
+	if len(dm.files) != 0 {
+		t.Errorf("超大输入应返回空 DiffMap，得到 %d 个文件", len(dm.files))
+	}
+}
+
+// TestParseDiff_ExactMaxSize 刚好等于 maxDiffSize 的输入应正常解析
+func TestParseDiff_ExactMaxSize(t *testing.T) {
+	// 构造一个刚好等于 maxDiffSize 的输入（内容无效 diff，但不应被大小限制拦截）
+	exact := strings.Repeat("x", maxDiffSize)
+	dm := ParseDiff(exact)
+	if dm == nil {
+		t.Fatal("ParseDiff 对恰好 maxDiffSize 大小输入返回 nil")
+	}
+	// 内容不是合法 diff，所以文件数为 0，但不应被大小检查拦截
 }
