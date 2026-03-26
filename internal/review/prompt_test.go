@@ -80,6 +80,24 @@ func TestBuildDynamicInstructions(t *testing.T) {
 		}
 		// 不崩溃即为通过
 	})
+
+	t.Run("维度名称大小写不敏感", func(t *testing.T) {
+		dims := []string{"Security", "LOGIC", " Architecture "}
+		result := buildDynamicInstructions(dims)
+
+		if !strings.Contains(result, "安全 (security)") {
+			t.Error("缺少 security 维度指令")
+		}
+		if !strings.Contains(result, "逻辑 (logic)") {
+			t.Error("缺少 logic 维度指令")
+		}
+		if !strings.Contains(result, "架构 (architecture)") {
+			t.Error("缺少 architecture 维度指令")
+		}
+		if strings.Contains(result, "风格 (style)") {
+			t.Error("未配置 style，不应包含 style 维度指令")
+		}
+	})
 }
 
 func TestBuildPrompt_FileFiltering(t *testing.T) {
@@ -114,14 +132,6 @@ func TestBuildPrompt_FileFiltering(t *testing.T) {
 
 		result := svc.buildPrompt(pr, files, cfg, 0)
 
-		// 被忽略的文件不应出现在文件列表中
-		if strings.Contains(result, "docs/README.md") {
-			t.Error("docs/README.md 应被忽略，不应出现在 prompt 中")
-		}
-		if strings.Contains(result, "docs/guide.md") {
-			t.Error("docs/guide.md 应被忽略，不应出现在 prompt 中")
-		}
-
 		// 未被忽略的文件应存在
 		if !strings.Contains(result, "src/main.go") {
 			t.Error("src/main.go 未被忽略，应出现在 prompt 中")
@@ -130,9 +140,18 @@ func TestBuildPrompt_FileFiltering(t *testing.T) {
 			t.Error("internal/util.go 未被忽略，应出现在 prompt 中")
 		}
 
-		// 忽略提示文案应出现
-		if !strings.Contains(result, "另有") || !strings.Contains(result, "个文件被配置忽略") {
-			t.Error("应出现忽略提示文案")
+		// 忽略范围应明确传达给模型
+		if !strings.Contains(result, "Ignored paths (configured via ignore_patterns):") {
+			t.Error("应出现 ignore_patterns 提示段")
+		}
+		if !strings.Contains(result, "**/*.md") || !strings.Contains(result, "docs/**") {
+			t.Error("应列出 ignore_patterns")
+		}
+		if !strings.Contains(result, "docs/README.md") || !strings.Contains(result, "docs/guide.md") {
+			t.Error("应列出当前 PR 中被忽略的文件")
+		}
+		if !strings.Contains(result, "do not mention them in summary, verdict reasoning, or issues") {
+			t.Error("应明确要求模型不要在 summary/verdict/issues 中提及被忽略文件")
 		}
 	})
 
@@ -169,13 +188,16 @@ func TestBuildPrompt_FileFiltering(t *testing.T) {
 
 		result := svc.buildPrompt(pr, files, cfg, 0)
 
-		// 所有文件被忽略，文件列表应为空
-		if strings.Contains(result, "src/main.go") {
-			t.Error("src/main.go 应被忽略")
+		// 所有文件被忽略，变更文件摘要应为空
+		if !strings.Contains(result, "Changed files (0 files, +0/-0 lines):") {
+			t.Error("所有文件被忽略时，摘要应显示 0 个文件")
 		}
 		// 忽略提示中应包含正确数量
-		if !strings.Contains(result, "4 个文件被配置忽略") {
-			t.Errorf("应提示 4 个文件被忽略，实际 prompt: %s", result[:min(200, len(result))])
+		if !strings.Contains(result, "Ignored files in this PR (4 files):") {
+			t.Errorf("应提示 4 个文件被忽略，实际 prompt: %s", result[:min(300, len(result))])
+		}
+		if !strings.Contains(result, "src/main.go") {
+			t.Error("应在忽略清单中列出被过滤的文件")
 		}
 	})
 }
@@ -250,6 +272,26 @@ func TestBuildPrompt_DynamicDimensions(t *testing.T) {
 		}
 	})
 
+	t.Run("默认 Instructions + 大小写混合维度", func(t *testing.T) {
+		cfg := ReviewConfig{
+			Instructions:     defaultReviewInstructions,
+			Dimensions:       []string{"Security", "LOGIC"},
+			LargePRThreshold: 500,
+		}
+
+		result := svc.buildPrompt(pr, files, cfg, 0)
+
+		if !strings.Contains(result, "安全 (security)") {
+			t.Error("缺少 security 维度指令")
+		}
+		if !strings.Contains(result, "逻辑 (logic)") {
+			t.Error("缺少 logic 维度指令")
+		}
+		if strings.Contains(result, "架构 (architecture)") {
+			t.Error("不应包含 architecture 维度指令")
+		}
+	})
+
 	t.Run("自定义 Instructions 不做维度裁剪", func(t *testing.T) {
 		customInstr := "## Custom Review\nDo custom review."
 		cfg := ReviewConfig{
@@ -270,4 +312,3 @@ func TestBuildPrompt_DynamicDimensions(t *testing.T) {
 		}
 	})
 }
-

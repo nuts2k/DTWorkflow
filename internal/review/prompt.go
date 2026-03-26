@@ -14,7 +14,7 @@ type TechStack int
 
 const (
 	TechJava TechStack = 1 << iota // .java 文件
-	TechVue                         // .vue 及关联前端文件
+	TechVue                        // .vue 及关联前端文件
 )
 
 // ReviewConfig 评审编排层的内部配置（从 config.ReviewOverride 转换而来）
@@ -362,11 +362,16 @@ func buildDynamicInstructions(dimensions []string) string {
 	var b strings.Builder
 	b.WriteString(reviewPreamble)
 	for _, dim := range dimensions {
-		if instr, ok := dimensionInstructions[dim]; ok {
+		if instr, ok := dimensionInstructions[normalizeDimensionName(dim)]; ok {
 			b.WriteString(instr)
 		}
 	}
 	return b.String()
+}
+
+// normalizeDimensionName 规范化维度名称，与配置校验保持一致。
+func normalizeDimensionName(dim string) string {
+	return strings.ToLower(strings.TrimSpace(dim))
 }
 
 // buildCodeStandardsSection 构造编码规范 prompt 段
@@ -384,6 +389,37 @@ func buildCodeStandardsSection(paths []string) string {
 	return b.String()
 }
 
+// formatIgnoredFilesSection 构造 ignore_patterns 提示段，明确告知模型忽略范围。
+func formatIgnoredFilesSection(patterns []string, ignoredFiles []*gitea.ChangedFile) string {
+	if len(patterns) == 0 || len(ignoredFiles) == 0 {
+		return ""
+	}
+
+	const maxFiles = 20
+
+	var b strings.Builder
+	b.WriteString("\nIgnored paths (configured via ignore_patterns):\n")
+	for _, pattern := range patterns {
+		b.WriteString(fmt.Sprintf("  - %s\n", pattern))
+	}
+	b.WriteString("These files are out of scope for this review. Even if they appear in `git diff`, do not review them and do not mention them in summary, verdict reasoning, or issues.\n")
+	b.WriteString(fmt.Sprintf("Ignored files in this PR (%d files):\n", len(ignoredFiles)))
+
+	limit := len(ignoredFiles)
+	if limit > maxFiles {
+		limit = maxFiles
+	}
+	for _, f := range ignoredFiles[:limit] {
+		b.WriteString(fmt.Sprintf("  - %s (+%d/-%d) [%s]\n",
+			f.Filename, f.Additions, f.Deletions, f.Status))
+	}
+	if len(ignoredFiles) > maxFiles {
+		b.WriteString(fmt.Sprintf("  ... and %d more ignored files\n", len(ignoredFiles)-maxFiles))
+	}
+
+	return b.String()
+}
+
 // buildPrompt 按四段式构造评审 prompt：
 // 1. 任务上下文（PR 元数据）
 // 2. 评审指令（通用 + 仓库级 + 专项 + 规范）
@@ -394,11 +430,11 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 
 	// M2.5: 文件过滤 — 在构造 prompt 前剔除被忽略的文件
 	var filteredFiles []*gitea.ChangedFile
-	var ignoredCount int
+	var ignoredFiles []*gitea.ChangedFile
 	if len(cfg.IgnorePatterns) > 0 {
 		for _, f := range files {
 			if MatchesIgnorePattern(f.Filename, cfg.IgnorePatterns) {
-				ignoredCount++
+				ignoredFiles = append(ignoredFiles, f)
 			} else {
 				filteredFiles = append(filteredFiles, f)
 			}
@@ -416,8 +452,8 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 		b.WriteString(fmt.Sprintf("PR description:\n%s\n", truncate(pr.Body, 2000)))
 	}
 	b.WriteString(formatFilesSummary(filteredFiles))
-	if ignoredCount > 0 {
-		b.WriteString(fmt.Sprintf("（另有 %d 个文件被配置忽略，不纳入评审范围）\n", ignoredCount))
+	if len(ignoredFiles) > 0 {
+		b.WriteString(formatIgnoredFilesSection(cfg.IgnorePatterns, ignoredFiles))
 	}
 
 	// 2a. 通用评审指令（全局）
