@@ -197,7 +197,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 项目编码规范文件集成（指导 Claude 在容器内自行读取 CLAUDE.md / .code-standards / CONTRIBUTING.md 等；配置 code_standards_paths 可覆盖默认扫描列表）
 - [x] 配置扩展：ReviewOverride 新增 TechStack / CodeStandardsPaths 字段，仓库级覆盖合并
 - [x] 示例配置 dtworkflow.example.yaml 补充 tech_stack / code_standards_paths 示例
-- [ ] Dimensions 配置动态控制 prompt 评审维度（M2.1 字段已预留，优先级低，延后至 M2.5）
+- [x] Dimensions 配置动态控制 prompt 评审维度（M2.5 实现：拆分 reviewPreamble + dimensionInstructions，按配置动态组装）
 
 #### M2.3 评审结果解析与回写
 > 说明：2026-03-26 完成全部实施与审核修复（14 个审核问题已修复）。
@@ -245,12 +245,20 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] FormatOptions 重构：formatReviewBody 参数结构体化
 - [x] SQL 参数化：FindActivePRTasks / HasNewerReviewTask 引用 model 常量，消除硬编码
 - [x] cancelTasks 可观测性：统计并记录取消失败数量
-- [ ] 增量评审策略：仅评审新变更的文件（延后至 M2.5，当前为全量评审）
+- [ ] 增量评审策略：仅评审新变更的文件（延后至后续迭代，当前仍为全量评审）
 
 #### M2.5 评审配置
-- [ ] 仓库级评审规则配置：可自定义哪些维度开启、严重程度阈值
-- [ ] 文件过滤：可配置忽略特定文件/目录（如生成代码、配置文件）
-- [ ] 评审者身份配置：Gitea bot 账户的显示名和头像
+> 说明：2026-03-26 完成全部实施与代码审核修复（1 个 Important 问题已修复）。
+> 详细设计见 `docs/plans/2026-03-26-m2.5-review-config-design.md`。
+- [x] 仓库级评审开关：Processor 层 ReviewEnabledChecker 接口，Enabled=false 时跳过评审任务（标记 succeeded）
+- [x] 按维度裁剪评审范围：拆分 defaultReviewInstructions 为 reviewPreamble + 4 个维度常量，buildDynamicInstructions 按 cfg.Dimensions 动态组装
+- [x] 按严重程度过滤噪音：新建 filter.go（SeverityLevel 有序类型、FilterIssues 双重过滤），回写层 recalcVerdict 基于 visible issues 重算 verdict
+- [x] 按文件模式忽略评审：doublestar glob 匹配（MatchesIgnorePattern），Prompt 层 + 回写层双重过滤
+- [x] 配置校验增强：维度白名单、severity 白名单、ignore_patterns 语法校验（全局 + 仓库级）
+- [x] 数据流完整性：ReviewConfig 新增 Severity/IgnorePatterns 字段，resolveConfig 传递到 WritebackInput，formatter 展示过滤提示文案
+- [x] 新增 doublestar/v4 依赖（纯 Go，零传递依赖）
+- [x] 评审者身份配置：Bot 账户配置以文档指南形式提供（示例配置注释说明，非代码实现）
+- [x] 示例配置 dtworkflow.example.yaml 补充 M2.5 配置示例与注释
 
 ### 交付物
 - 完整可用的 PR 自动评审功能
