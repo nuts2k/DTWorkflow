@@ -21,9 +21,11 @@ import (
 type mockPoolRunner struct {
 	result *worker.ExecutionResult
 	err    error
+	calls  int
 }
 
 func (m *mockPoolRunner) Run(_ context.Context, _ model.TaskPayload) (*worker.ExecutionResult, error) {
+	m.calls++
 	return m.result, m.err
 }
 
@@ -40,9 +42,11 @@ func (s *stubNotifier) Send(_ context.Context, msg notify.Message) error {
 type mockReviewExecutor struct {
 	result *review.ReviewResult
 	err    error
+	calls  int
 }
 
 func (m *mockReviewExecutor) Execute(_ context.Context, _ model.TaskPayload) (*review.ReviewResult, error) {
+	m.calls++
 	return m.result, m.err
 }
 
@@ -235,6 +239,68 @@ func TestProcessTask_ReviewSuccess_PreservesWritebackError(t *testing.T) {
 	}
 	if got.Error != "回写失败: inline mapping degraded" {
 		t.Fatalf("error = %q, want %q", got.Error, "回写失败: inline mapping degraded")
+	}
+}
+
+func TestProcessTask_StaleReview_IsCancelledWithoutNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-stale-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     24,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-stale",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	reviewSvc := &mockReviewExecutor{
+		result: &review.ReviewResult{RawOutput: "stale raw output"},
+		err:    review.ErrStaleReview,
+	}
+	p := NewProcessor(
+		&mockPoolRunner{},
+		s,
+		notifier,
+		slog.Default(),
+		WithReviewService(reviewSvc),
+	)
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("stale review 应返回非 nil 错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("stale review 应包含 asynq.SkipRetry，实际: %v", err)
+	}
+
+	got := s.tasks["proc-task-review-stale"]
+	if got.Status != model.TaskStatusCancelled {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusCancelled)
+	}
+	if got.CompletedAt == nil {
+		t.Fatal("stale review 应设置 CompletedAt")
+	}
+	if !strings.Contains(got.Error, "评审已过时") {
+		t.Fatalf("error = %q, want contains %q", got.Error, "评审已过时")
+	}
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	}
+	if reviewSvc.calls != 1 {
+		t.Fatalf("review service calls = %d, want 1", reviewSvc.calls)
 	}
 }
 
@@ -1052,5 +1118,48 @@ func TestProcessTask_ContextCanceled(t *testing.T) {
 	// 4. record.CompletedAt 应已设置
 	if got.CompletedAt == nil {
 		t.Error("record.CompletedAt 应在取消时设置，实际为 nil")
+	}
+}
+
+func TestProcessTask_PreCancelledRecord_SkipsExecution(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-pre-cancelled-1",
+		RepoFullName: "org/repo",
+		PRNumber:     100,
+	}
+
+	now := time.Now()
+	completedAt := now.Add(-time.Minute)
+	record := &model.TaskRecord{
+		ID:          "proc-task-pre-cancelled",
+		TaskType:    model.TaskTypeReviewPR,
+		Status:      model.TaskStatusCancelled,
+		Payload:     payload,
+		DeliveryID:  payload.DeliveryID,
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now,
+		CompletedAt: &completedAt,
+		Error:       "被同一 PR 的新评审任务取代",
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "should not run"}}
+	p := NewProcessor(pool, s, nil, slog.Default())
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("已取消任务应返回 SkipRetry 错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 SkipRetry，实际: %v", err)
+	}
+	if pool.calls != 0 {
+		t.Fatalf("pool.Run calls = %d, want 0", pool.calls)
+	}
+	got := s.tasks["proc-task-pre-cancelled"]
+	if got.Status != model.TaskStatusCancelled {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusCancelled)
 	}
 }

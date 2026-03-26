@@ -66,8 +66,9 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		return nil
 	}
 
-	// M2.4: 取消同一 PR 的活跃旧任务
-	superseded := h.cancelActivePRTasks(ctx, event.Repository.FullName, event.PullRequest.Number)
+	// M2.4: 先识别被替代的旧任务，等新任务持久化成功后再取消旧任务，
+	// 避免 replacement 创建失败时把当前唯一可运行任务也一起取消掉。
+	activeTasks, superseded := h.listActivePRTasks(ctx, event.Repository.FullName, event.PullRequest.Number)
 
 	payload := model.TaskPayload{
 		TaskType:        model.TaskTypeReviewPR,
@@ -99,6 +100,8 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
 		return err
 	}
+
+	h.cancelTasks(ctx, activeTasks)
 
 	if record.Status == model.TaskStatusQueued {
 		h.logger.InfoContext(ctx, "PR 评审任务已入队",
@@ -202,45 +205,57 @@ type SupersededInfo struct {
 	LastHeadSHA string // 最近一个旧任务的 HeadSHA
 }
 
-// cancelActivePRTasks 查找并取消同一 PR 的活跃旧评审任务
-func (h *EnqueueHandler) cancelActivePRTasks(ctx context.Context, repoFullName string, prNumber int64) SupersededInfo {
+// listActivePRTasks 查找同一 PR 的活跃旧评审任务，并汇总 superseded 信息。
+func (h *EnqueueHandler) listActivePRTasks(ctx context.Context, repoFullName string, prNumber int64) ([]*model.TaskRecord, SupersededInfo) {
 	tasks, err := h.store.FindActivePRTasks(ctx, repoFullName, prNumber, model.TaskTypeReviewPR)
 	if err != nil {
 		h.logger.WarnContext(ctx, "查找活跃旧任务失败，跳过取消",
 			"repo", repoFullName, "pr", prNumber, "error", err)
-		return SupersededInfo{}
+		return nil, SupersededInfo{}
 	}
 	if len(tasks) == 0 {
-		return SupersededInfo{}
+		return nil, SupersededInfo{}
 	}
 
-	info := SupersededInfo{}
+	info := SupersededInfo{Count: len(tasks)}
 	for _, task := range tasks {
-		h.cancelTask(ctx, task)
-		info.Count++
 		if task.Payload.HeadSHA != "" {
 			info.LastHeadSHA = task.Payload.HeadSHA
 		}
 	}
-	return info
+	return tasks, info
+}
+
+// cancelTasks 在 replacement 已持久化后，逐个取消旧任务。
+func (h *EnqueueHandler) cancelTasks(ctx context.Context, tasks []*model.TaskRecord) {
+	for _, task := range tasks {
+		h.cancelTask(ctx, task)
+	}
 }
 
 // cancelTask 取消单个旧评审任务（best-effort）
-func (h *EnqueueHandler) cancelTask(ctx context.Context, task *model.TaskRecord) {
+func (h *EnqueueHandler) cancelTask(ctx context.Context, task *model.TaskRecord) bool {
 	prevStatus := task.Status
 
-	if h.canceller != nil && task.AsynqID != "" {
+	if task.AsynqID != "" {
+		if h.canceller == nil {
+			h.logger.WarnContext(ctx, "缺少任务取消器，保留旧任务为可运行状态",
+				"task_id", task.ID, "asynq_id", task.AsynqID, "status", task.Status)
+			return false
+		}
 		switch task.Status {
 		case model.TaskStatusPending, model.TaskStatusQueued:
 			queueName := PriorityToQueue(task.Priority)
 			if err := h.canceller.Delete(ctx, queueName, task.AsynqID); err != nil {
 				h.logger.WarnContext(ctx, "从 asynq 删除任务失败",
 					"task_id", task.ID, "asynq_id", task.AsynqID, "error", err)
+				return false
 			}
 		case model.TaskStatusRunning:
 			if err := h.canceller.CancelProcessing(ctx, task.AsynqID); err != nil {
 				h.logger.WarnContext(ctx, "取消运行中任务失败",
 					"task_id", task.ID, "asynq_id", task.AsynqID, "error", err)
+				return false
 			}
 		}
 	}
@@ -257,6 +272,7 @@ func (h *EnqueueHandler) cancelTask(ctx context.Context, task *model.TaskRecord)
 		h.logger.InfoContext(ctx, "已取消旧评审任务",
 			"task_id", task.ID, "prev_status", prevStatus, "pr", task.PRNumber)
 	}
+	return true
 }
 
 // enqueueTask 持久化任务记录并将其入队，record 字段 TaskType/Priority/RepoFullName/DeliveryID 需预先填充

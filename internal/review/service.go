@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -166,6 +167,11 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 			result.GiteaReviewID = reviewID
 		}
 		if wbErr != nil {
+			if errors.Is(wbErr, ErrStaleReview) {
+				s.logger.InfoContext(ctx, "评审结果已过时，跳过成功回写",
+					"pr", prNum, "task_id", payload.DeliveryID)
+				return result, wbErr
+			}
 			s.logger.ErrorContext(ctx, "回写评审结果失败",
 				"pr", prNum, "error", wbErr)
 			result.WritebackError = wbErr

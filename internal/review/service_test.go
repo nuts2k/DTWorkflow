@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
@@ -298,6 +299,45 @@ func TestExecute_WritebackDegradedPreservesReviewIDAndError(t *testing.T) {
 	}
 	if !strings.Contains(result.WritebackError.Error(), "获取 PR diff 失败") {
 		t.Fatalf("WritebackError 应包含 diff 获取失败信息，实际: %v", result.WritebackError)
+	}
+}
+
+func TestExecute_StaleWriteback_ReturnsErrStaleReview(t *testing.T) {
+	svc := NewService(
+		&mockPRClient{
+			getPR: func(_ context.Context, _, _ string, _ int64) (*gitea.PullRequest, *gitea.Response, error) {
+				pr := openPR(1)
+				pr.Head = &gitea.PRBranch{SHA: "head-sha"}
+				return pr, nil, nil
+			},
+			listFiles: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+				return noFiles(), nil, nil
+			},
+		},
+		&mockReviewPool{
+			runWithCommandAndStdin: func(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
+				return &worker.ExecutionResult{Output: validCLIOutput(), ExitCode: 0}, nil
+			},
+		},
+		&mockConfigProvider{override: config.ReviewOverride{}},
+		WithWriter(NewWriter(&stubWritebackClient{reviewID: 42}, nil, &mockStaleChecker{hasNewer: true}, nil)),
+	)
+
+	payload := testPayload()
+	payload.CreatedAt = time.Now().Add(-time.Minute)
+
+	result, err := svc.Execute(context.Background(), payload)
+	if !errors.Is(err, ErrStaleReview) {
+		t.Fatalf("stale writeback 应返回 ErrStaleReview，实际: %v", err)
+	}
+	if result == nil {
+		t.Fatal("stale writeback 时 result 不应为 nil")
+	}
+	if result.GiteaReviewID != 0 {
+		t.Fatalf("stale writeback 不应生成 GiteaReviewID，实际: %d", result.GiteaReviewID)
+	}
+	if result.WritebackError != nil {
+		t.Fatalf("stale writeback 不应被记录为普通 WritebackError，实际: %v", result.WritebackError)
 	}
 }
 

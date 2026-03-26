@@ -14,15 +14,15 @@ import (
 
 // mockStore 实现 store.Store 接口的内存 mock
 type mockStore struct {
-	tasks               map[string]*model.TaskRecord
-	byDeliveryID        map[string]*model.TaskRecord
-	createErr           error
-	updateErr           error
-	failUpdateAt        int
-	updateCalls         int
-	findErr             error
-	activePRTasks       []*model.TaskRecord // FindActivePRTasks 返回的任务列表
-	findActivePRTasksErr error              // FindActivePRTasks 返回的错误
+	tasks                map[string]*model.TaskRecord
+	byDeliveryID         map[string]*model.TaskRecord
+	createErr            error
+	updateErr            error
+	failUpdateAt         int
+	updateCalls          int
+	findErr              error
+	activePRTasks        []*model.TaskRecord // FindActivePRTasks 返回的任务列表
+	findActivePRTasksErr error               // FindActivePRTasks 返回的错误
 }
 
 func newMockStore() *mockStore {
@@ -460,7 +460,8 @@ func TestCancelActivePRTasks_HasOldTasks(t *testing.T) {
 	s.tasks[oldTask.ID] = oldTask
 	s.activePRTasks = []*model.TaskRecord{oldTask}
 
-	info := h.cancelActivePRTasks(context.Background(), "org/repo", 42)
+	tasks, info := h.listActivePRTasks(context.Background(), "org/repo", 42)
+	h.cancelTasks(context.Background(), tasks)
 
 	// 应取消了 1 个旧任务
 	if info.Count != 1 {
@@ -487,13 +488,16 @@ func TestCancelActivePRTasks_NoOldTasks(t *testing.T) {
 	mc := &mockEnqueuer{enqueuedID: "asynq-new"}
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
-	info := h.cancelActivePRTasks(context.Background(), "org/repo", 1)
+	tasks, info := h.listActivePRTasks(context.Background(), "org/repo", 1)
 
 	if info.Count != 0 {
 		t.Errorf("SupersededInfo.Count = %d, want 0", info.Count)
 	}
 	if info.LastHeadSHA != "" {
 		t.Errorf("SupersededInfo.LastHeadSHA = %q, want empty", info.LastHeadSHA)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("tasks len = %d, want 0", len(tasks))
 	}
 }
 
@@ -504,11 +508,14 @@ func TestCancelActivePRTasks_QueryFailed(t *testing.T) {
 	mc := &mockEnqueuer{enqueuedID: "asynq-new"}
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
-	info := h.cancelActivePRTasks(context.Background(), "org/repo", 1)
+	tasks, info := h.listActivePRTasks(context.Background(), "org/repo", 1)
 
 	// 查询失败时不应 panic，应静默返回空 info
 	if info.Count != 0 {
 		t.Errorf("SupersededInfo.Count = %d, want 0", info.Count)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("tasks len = %d, want 0", len(tasks))
 	}
 }
 
@@ -540,6 +547,33 @@ func TestCancelTask_PendingDelete(t *testing.T) {
 	}
 }
 
+func TestCancelTask_DeleteFailure_LeavesTaskRunnable(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{deleteErr: errors.New("redis delete failed")}
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	task := &model.TaskRecord{
+		ID:       "task-delete-fail",
+		AsynqID:  "asynq-delete-fail",
+		Status:   model.TaskStatusQueued,
+		Priority: model.PriorityHigh,
+	}
+	s.tasks[task.ID] = task
+
+	cancelled := h.cancelTask(context.Background(), task)
+
+	if cancelled {
+		t.Fatal("Delete 失败时不应返回 cancelled=true")
+	}
+	if task.Status != model.TaskStatusQueued {
+		t.Errorf("task.Status = %q, want %q", task.Status, model.TaskStatusQueued)
+	}
+	if task.CompletedAt != nil {
+		t.Fatal("Delete 失败时不应设置 CompletedAt")
+	}
+}
+
 // TestCancelTask_RunningCancel running 状态任务应调用 CancelProcessing，而不调用 Delete
 func TestCancelTask_RunningCancel(t *testing.T) {
 	s := newMockStore()
@@ -565,6 +599,33 @@ func TestCancelTask_RunningCancel(t *testing.T) {
 	}
 	if task.Status != model.TaskStatusCancelled {
 		t.Errorf("task.Status = %q, want %q", task.Status, model.TaskStatusCancelled)
+	}
+}
+
+func TestCancelTask_CancelProcessingFailure_LeavesTaskRunnable(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{cancelErr: errors.New("cancel failed")}
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	task := &model.TaskRecord{
+		ID:       "task-cancel-fail",
+		AsynqID:  "asynq-cancel-fail",
+		Status:   model.TaskStatusRunning,
+		Priority: model.PriorityHigh,
+	}
+	s.tasks[task.ID] = task
+
+	cancelled := h.cancelTask(context.Background(), task)
+
+	if cancelled {
+		t.Fatal("CancelProcessing 失败时不应返回 cancelled=true")
+	}
+	if task.Status != model.TaskStatusRunning {
+		t.Errorf("task.Status = %q, want %q", task.Status, model.TaskStatusRunning)
+	}
+	if task.CompletedAt != nil {
+		t.Fatal("CancelProcessing 失败时不应设置 CompletedAt")
 	}
 }
 
@@ -662,5 +723,80 @@ func TestHandlePullRequest_WithSuperseded(t *testing.T) {
 	// canceller.Delete 应被调用（旧任务为 queued 状态）
 	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-old-pr" {
 		t.Errorf("deleteCalls = %v, want [asynq-old-pr]", canceller.deleteCalls)
+	}
+}
+
+func TestHandlePullRequest_InvalidPayload_DoesNotCancelOldTask(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-new-pr"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	oldTask := &model.TaskRecord{
+		ID:           "old-pr-task-invalid-payload",
+		AsynqID:      "asynq-old-pr-invalid-payload",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     7,
+		Payload:      model.TaskPayload{HeadSHA: "deadbeef"},
+	}
+	s.tasks[oldTask.ID] = oldTask
+	s.activePRTasks = []*model.TaskRecord{oldTask}
+
+	event := webhook.PullRequestEvent{
+		DeliveryID:  "delivery-invalid-payload",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo"},
+		PullRequest: webhook.PullRequestRef{Number: 7, HeadSHA: "cafebabe"},
+	}
+
+	err := h.HandlePullRequest(context.Background(), event)
+	if err == nil {
+		t.Fatal("webhook 数据不完整时应返回错误")
+	}
+	if s.tasks[oldTask.ID].Status != model.TaskStatusQueued {
+		t.Errorf("旧任务状态 = %q, want %q", s.tasks[oldTask.ID].Status, model.TaskStatusQueued)
+	}
+	if len(canceller.deleteCalls) != 0 {
+		t.Errorf("deleteCalls = %v, want empty", canceller.deleteCalls)
+	}
+}
+
+func TestHandlePullRequest_CreateTaskFailed_DoesNotCancelOldTask(t *testing.T) {
+	s := newMockStore()
+	s.createErr = errors.New("sqlite down")
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-new-pr"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	oldTask := &model.TaskRecord{
+		ID:           "old-pr-task-create-fail",
+		AsynqID:      "asynq-old-pr-create-fail",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     7,
+		Payload:      model.TaskPayload{HeadSHA: "deadbeef"},
+	}
+	s.tasks[oldTask.ID] = oldTask
+	s.activePRTasks = []*model.TaskRecord{oldTask}
+
+	event := webhook.PullRequestEvent{
+		DeliveryID:  "delivery-create-failed",
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		PullRequest: webhook.PullRequestRef{Number: 7, HeadSHA: "cafebabe"},
+	}
+
+	err := h.HandlePullRequest(context.Background(), event)
+	if err == nil {
+		t.Fatal("CreateTask 失败时应返回错误")
+	}
+	if s.tasks[oldTask.ID].Status != model.TaskStatusQueued {
+		t.Errorf("旧任务状态 = %q, want %q", s.tasks[oldTask.ID].Status, model.TaskStatusQueued)
+	}
+	if len(canceller.deleteCalls) != 0 {
+		t.Errorf("deleteCalls = %v, want empty", canceller.deleteCalls)
 	}
 }

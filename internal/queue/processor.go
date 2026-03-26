@@ -111,6 +111,14 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	// M2.4: 从 SQLite record 覆盖 payload.CreatedAt，确保与数据库一致
 	payload.CreatedAt = record.CreatedAt
 
+	if record.Status == model.TaskStatusCancelled {
+		p.logger.InfoContext(ctx, "任务已标记为 cancelled，跳过执行",
+			"task_id", taskID,
+			"task_type", payload.TaskType,
+		)
+		return fmt.Errorf("任务已取消，跳过执行: %w", asynq.SkipRetry)
+	}
+
 	// 从 asynq context 中获取当前重试次数并更新记录
 	if retryCount, ok := asynq.GetRetryCount(ctx); ok {
 		record.RetryCount = retryCount
@@ -155,22 +163,10 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	if runErr != nil {
 		// M2.4: context.Canceled 表示任务被取消（新评审取代旧评审）
 		if errors.Is(runErr, context.Canceled) {
-			record.Status = model.TaskStatusCancelled
-			record.Error = "任务被取消"
-			completedAt := time.Now()
-			record.CompletedAt = &completedAt
-			p.logger.InfoContext(ctx, "任务被取消",
-				"task_id", taskID,
-			)
-			// ctx 可能已取消，使用 context.Background() 进行状态更新
-			bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer bgCancel()
-			if err := p.store.UpdateTask(bgCtx, record); err != nil {
-				p.logger.ErrorContext(ctx, "更新取消任务状态失败",
-					"task_id", taskID, "error", err,
-				)
-			}
-			return fmt.Errorf("任务被取消: %w", asynq.SkipRetry)
+			return p.markTaskCancelled(ctx, record, "任务被取消")
+		}
+		if errors.Is(runErr, review.ErrStaleReview) {
+			return p.markTaskCancelled(ctx, record, "评审已过时，被更新的任务取代")
 		}
 
 		// ErrPRNotOpen 是确定性失败，直接标记 failed 并跳过重试
@@ -408,6 +404,29 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 		}
 	}
 	return result
+}
+
+func (p *Processor) markTaskCancelled(ctx context.Context, record *model.TaskRecord, reason string) error {
+	record.Status = model.TaskStatusCancelled
+	record.Error = reason
+	completedAt := time.Now()
+	record.CompletedAt = &completedAt
+	record.UpdatedAt = completedAt
+
+	p.logger.InfoContext(ctx, reason,
+		"task_id", record.ID,
+	)
+
+	// 原始 ctx 可能已取消；使用后台 context 落库，确保最终状态尽量持久化。
+	bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer bgCancel()
+	if err := p.store.UpdateTask(bgCtx, record); err != nil {
+		p.logger.ErrorContext(ctx, "更新取消任务状态失败",
+			"task_id", record.ID, "error", err,
+		)
+	}
+
+	return fmt.Errorf("%s: %w", reason, asynq.SkipRetry)
 }
 
 func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (*model.TaskRecord, error) {
