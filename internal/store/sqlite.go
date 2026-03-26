@@ -603,10 +603,11 @@ func (s *SQLiteStore) FindActivePRTasks(ctx context.Context, repoFullName string
 	WHERE repo_full_name = ?
 	  AND pr_number = ?
 	  AND task_type = ?
-	  AND status IN ('pending', 'queued', 'running')
+	  AND status IN (?, ?, ?)
 	ORDER BY created_at ASC`
 
-	rows, err := s.db.QueryContext(ctx, query, repoFullName, prNumber, string(taskType))
+	rows, err := s.db.QueryContext(ctx, query, repoFullName, prNumber, string(taskType),
+		string(model.TaskStatusPending), string(model.TaskStatusQueued), string(model.TaskStatusRunning))
 	if err != nil {
 		return nil, fmt.Errorf("查找活跃 PR 任务失败: %w", err)
 	}
@@ -626,18 +627,22 @@ func (s *SQLiteStore) FindActivePRTasks(ctx context.Context, repoFullName string
 	return records, nil
 }
 
-// HasNewerReviewTask 检查是否存在比指定时间更新的同 PR 评审任务
+// HasNewerReviewTask 检查是否存在比指定时间更新的同 PR 非终态评审任务
 func (s *SQLiteStore) HasNewerReviewTask(ctx context.Context, repoFullName string, prNumber int64, afterCreatedAt time.Time) (bool, error) {
-	const query = `SELECT EXISTS(
+	query := `SELECT EXISTS(
 		SELECT 1 FROM tasks
 		WHERE repo_full_name = ?
 		  AND pr_number = ?
-		  AND task_type = 'review_pr'
+		  AND task_type = ?
+		  AND status NOT IN (?, ?)
 		  AND created_at > ?
 	)`
 
 	var exists bool
-	err := s.db.QueryRowContext(ctx, query, repoFullName, prNumber, afterCreatedAt.UTC().Format(time.RFC3339Nano)).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, query, repoFullName, prNumber,
+		string(model.TaskTypeReviewPR),
+		string(model.TaskStatusCancelled), string(model.TaskStatusFailed),
+		afterCreatedAt.UTC().Format(time.RFC3339Nano)).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("检查更新评审任务失败: %w", err)
 	}

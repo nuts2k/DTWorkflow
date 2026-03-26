@@ -226,10 +226,17 @@ func (h *EnqueueHandler) listActivePRTasks(ctx context.Context, repoFullName str
 	return tasks, info
 }
 
-// cancelTasks 在 replacement 已持久化后，逐个取消旧任务。
+// cancelTasks 在 replacement 已持久化后，逐个取消旧任务（best-effort）。
 func (h *EnqueueHandler) cancelTasks(ctx context.Context, tasks []*model.TaskRecord) {
+	var failCount int
 	for _, task := range tasks {
-		h.cancelTask(ctx, task)
+		if !h.cancelTask(ctx, task) {
+			failCount++
+		}
+	}
+	if failCount > 0 {
+		h.logger.WarnContext(ctx, "部分旧任务取消失败，可能存在并行评审",
+			"total", len(tasks), "failed", failCount)
 	}
 }
 
@@ -266,12 +273,12 @@ func (h *EnqueueHandler) cancelTask(ctx context.Context, task *model.TaskRecord)
 	task.UpdatedAt = now
 	task.CompletedAt = &now
 	if err := h.store.UpdateTask(ctx, task); err != nil {
-		h.logger.WarnContext(ctx, "更新旧任务状态为 cancelled 失败",
+		h.logger.WarnContext(ctx, "更新旧任务状态为 cancelled 失败（asynq 已操作但 SQLite 更新失败）",
 			"task_id", task.ID, "error", err)
-	} else {
-		h.logger.InfoContext(ctx, "已取消旧评审任务",
-			"task_id", task.ID, "prev_status", prevStatus, "pr", task.PRNumber)
+		return false
 	}
+	h.logger.InfoContext(ctx, "已取消旧评审任务",
+		"task_id", task.ID, "prev_status", prevStatus, "pr", task.PRNumber)
 	return true
 }
 

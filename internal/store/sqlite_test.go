@@ -1274,6 +1274,49 @@ func TestHasNewerReviewTask_SameTime(t *testing.T) {
 	}
 }
 
+// TestHasNewerReviewTask_IgnoresCancelledAndFailed 验证 cancelled/failed 状态的任务不触发 staleness 判定
+func TestHasNewerReviewTask_IgnoresCancelledAndFailed(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+
+	// 创建比基准时间更新但已取消的任务
+	cancelled := newTestPRRecord("cancelled-task", 20, model.TaskStatusCancelled, base.Add(time.Second))
+	if err := s.CreateTask(ctx, cancelled); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 创建比基准时间更新但已失败的任务
+	failed := newTestPRRecord("failed-task", 20, model.TaskStatusFailed, base.Add(2*time.Second))
+	if err := s.CreateTask(ctx, failed); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 虽然存在更新的任务，但都是终态（cancelled/failed），不应触发 staleness
+	exists, err := s.HasNewerReviewTask(ctx, "owner/repo", 20, base)
+	if err != nil {
+		t.Fatalf("HasNewerReviewTask 失败: %v", err)
+	}
+	if exists {
+		t.Error("cancelled/failed 的任务不应触发 staleness，期望 false，但得到 true")
+	}
+
+	// 再插入一个活跃的更新任务，此时应返回 true
+	active := newTestPRRecord("active-task", 20, model.TaskStatusQueued, base.Add(3*time.Second))
+	if err := s.CreateTask(ctx, active); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	exists, err = s.HasNewerReviewTask(ctx, "owner/repo", 20, base)
+	if err != nil {
+		t.Fatalf("HasNewerReviewTask 失败: %v", err)
+	}
+	if !exists {
+		t.Error("存在活跃的更新任务，期望 true，但得到 false")
+	}
+}
+
 // TestMigration_PRNumber 验证迁移 13/14/15 成功执行，pr_number 列存在且可写入读取
 func TestMigration_PRNumber(t *testing.T) {
 	s := newTestStore(t)

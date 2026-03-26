@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -31,7 +32,7 @@ type StaleChecker interface {
 }
 
 // ErrStaleReview 表示评审已过时，被更新的任务取代
-var ErrStaleReview = fmt.Errorf("评审已过时，存在更新的评审任务")
+var ErrStaleReview = errors.New("评审已过时，存在更新的评审任务")
 
 // Writer 负责将评审结果回写到 Gitea PR 评审
 type Writer struct {
