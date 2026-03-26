@@ -80,6 +80,25 @@ func TestFormatReviewBody_UnmappedIssues(t *testing.T) {
 	}
 }
 
+// TestFormatReviewBody_UnmappedNotDoubleCount 未映射问题不应在摘要统计中重复计算
+func TestFormatReviewBody_UnmappedNotDoubleCount(t *testing.T) {
+	issue := ReviewIssue{File: "foo.go", Line: 10, Severity: "ERROR", Category: "logic", Message: "未处理错误"}
+	output := &ReviewOutput{
+		Summary: "发现 1 个问题。",
+		Verdict: VerdictRequestChanges,
+		Issues:  []ReviewIssue{issue},
+	}
+
+	body := formatReviewBody(output, []ReviewIssue{issue}, false, nil, "", 3, 0.001)
+
+	if !strings.Contains(body, "| ERROR | 1 |") {
+		t.Fatalf("ERROR 统计应为 1，body=%s", body)
+	}
+	if strings.Contains(body, "| ERROR | 2 |") {
+		t.Fatalf("未映射问题被重复统计，body=%s", body)
+	}
+}
+
 // TestFormatReviewBody_NoIssues 无 issues 时不显示统计表格
 func TestFormatReviewBody_NoIssues(t *testing.T) {
 	output := &ReviewOutput{

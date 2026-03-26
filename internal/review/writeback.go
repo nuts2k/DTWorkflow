@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
@@ -26,7 +28,7 @@ type ReviewStore interface {
 // Writer 负责将评审结果回写到 Gitea PR 评审
 type Writer struct {
 	gitea  WritebackClient
-	store  ReviewStore  // 可选，nil 时跳过持久化
+	store  ReviewStore // 可选，nil 时跳过持久化
 	logger *slog.Logger
 }
 
@@ -60,7 +62,8 @@ type MapResult struct {
 }
 
 // Write 将评审结果回写到 Gitea PR 评审，并持久化到 store。
-// 返回 Gitea 评审 ID 和错误。store 持久化失败不影响 Gitea 回写结果。
+// 返回 Gitea 评审 ID 和错误。降级回写会返回非 nil error，但若评审已成功创建，仍会返回有效 review ID。
+// store 持久化失败不影响 Gitea 回写结果。
 func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID int64, err error) {
 	result := input.Result
 	if result == nil {
@@ -68,6 +71,7 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 	}
 
 	parseFailed := result.Review == nil || result.ParseError != nil
+	var writebackErr error
 
 	// 8a: 获取 PR diff（失败则降级：所有 issues 归入 body）
 	var diffText string
@@ -77,6 +81,7 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 		if diffErr != nil {
 			w.logger.WarnContext(ctx, "获取 PR diff 失败，降级为全量 body 模式",
 				"pr", input.PRNumber, "error", diffErr)
+			writebackErr = fmt.Errorf("writeback: 获取 PR diff 失败，已降级为正文评论: %w", diffErr)
 		}
 	}
 
@@ -156,14 +161,18 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 
 	// 8g: 持久化评审结果（失败仅记录日志，不影响回写结果）
 	if w.store != nil {
-		record := buildReviewRecord(input, result, giteaReviewID, parseFailed, "")
+		writebackErrMsg := ""
+		if writebackErr != nil {
+			writebackErrMsg = writebackErr.Error()
+		}
+		record := buildReviewRecord(input, result, giteaReviewID, parseFailed, writebackErrMsg)
 		if storeErr := w.store.SaveReviewResult(ctx, record); storeErr != nil {
 			w.logger.ErrorContext(ctx, "持久化评审结果失败",
 				"task_id", input.TaskID, "pr", input.PRNumber, "error", storeErr)
 		}
 	}
 
-	return giteaReviewID, nil
+	return giteaReviewID, writebackErr
 }
 
 // mapIssuesToComments 使用 DiffMap 将 issues 映射到 diff 行。
@@ -223,13 +232,15 @@ func verdictFromResult(result *ReviewResult) VerdictType {
 // buildReviewRecord 构建持久化记录
 func buildReviewRecord(input WritebackInput, result *ReviewResult, giteaReviewID int64, parseFailed bool, writebackError string) *model.ReviewRecord {
 	record := &model.ReviewRecord{
-		TaskID:        input.TaskID,
-		RepoFullName:  input.Owner + "/" + input.Repo,
-		PRNumber:      input.PRNumber,
-		HeadSHA:       input.HeadSHA,
-		GiteaReviewID: giteaReviewID,
-		ParseFailed:   parseFailed,
+		ID:             uuid.NewString(),
+		TaskID:         input.TaskID,
+		RepoFullName:   input.Owner + "/" + input.Repo,
+		PRNumber:       input.PRNumber,
+		HeadSHA:        input.HeadSHA,
+		GiteaReviewID:  giteaReviewID,
+		ParseFailed:    parseFailed,
 		WritebackError: writebackError,
+		CreatedAt:      time.Now().UTC(),
 	}
 
 	if result.CLIMeta != nil {

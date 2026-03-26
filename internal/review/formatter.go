@@ -61,12 +61,11 @@ func formatReviewBody(
 		sb.WriteString("\n\n")
 	}
 
-	// 统计表格：收集所有 issues（含 unmapped）
+	// 统计表格：output.Issues 已经是完整 findings，unmapped 只是其子集，不能重复计数。
 	var allIssues []ReviewIssue
 	if output != nil {
 		allIssues = append(allIssues, output.Issues...)
 	}
-	allIssues = append(allIssues, unmapped...)
 
 	counts := countBySeverity(allIssues)
 	severities := []string{"CRITICAL", "ERROR", "WARNING", "INFO"}

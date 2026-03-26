@@ -90,6 +90,22 @@ func validCLIOutput() string {
 	return fmt.Sprintf(`{"type":"result","subtype":"success","cost_usd":0.01,"duration_ms":1000,"duration_api_ms":900,"is_error":false,"num_turns":1,"result":%q,"session_id":"sess-1"}`, inner)
 }
 
+type stubWritebackClient struct {
+	reviewID int64
+	err      error
+}
+
+func (s *stubWritebackClient) CreatePullReview(_ context.Context, _, _ string, _ int64, _ gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+	return &gitea.PullReview{ID: s.reviewID}, nil, nil
+}
+
+func (s *stubWritebackClient) GetPullRequestDiff(_ context.Context, _, _ string, _ int64) (string, *gitea.Response, error) {
+	if s.err != nil {
+		return "", nil, s.err
+	}
+	return simpleDiff, nil, nil
+}
+
 // --- 测试用例 ---
 
 func TestExecute_Success(t *testing.T) {
@@ -240,6 +256,48 @@ func TestExecute_ContainerError(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("容器失败时 result 不应为 nil")
+	}
+}
+
+func TestExecute_WritebackDegradedPreservesReviewIDAndError(t *testing.T) {
+	svc := NewService(
+		&mockPRClient{
+			getPR: func(_ context.Context, _, _ string, _ int64) (*gitea.PullRequest, *gitea.Response, error) {
+				pr := openPR(1)
+				pr.Head = &gitea.PRBranch{SHA: "head-sha"}
+				return pr, nil, nil
+			},
+			listFiles: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+				return noFiles(), nil, nil
+			},
+		},
+		&mockReviewPool{
+			runWithCommandAndStdin: func(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
+				return &worker.ExecutionResult{Output: validCLIOutput(), ExitCode: 0}, nil
+			},
+		},
+		&mockConfigProvider{override: config.ReviewOverride{}},
+		WithWriter(NewWriter(&stubWritebackClient{
+			reviewID: 42,
+			err:      errors.New("diff unavailable"),
+		}, nil, nil)),
+	)
+
+	result, err := svc.Execute(context.Background(), testPayload())
+	if err != nil {
+		t.Fatalf("回写降级不应让 Execute 返回错误，实际: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+	if result.GiteaReviewID != 42 {
+		t.Fatalf("应保留已创建的 Gitea review ID，实际: %d", result.GiteaReviewID)
+	}
+	if result.WritebackError == nil {
+		t.Fatal("降级回写应保留 WritebackError")
+	}
+	if !strings.Contains(result.WritebackError.Error(), "获取 PR diff 失败") {
+		t.Fatalf("WritebackError 应包含 diff 获取失败信息，实际: %v", result.WritebackError)
 	}
 }
 
@@ -526,7 +584,7 @@ func TestDetectTechStack(t *testing.T) {
 			want:  TechVue,
 		},
 		{
-			name:  ".ts + .vue 信号 -> TechVue",
+			name: ".ts + .vue 信号 -> TechVue",
 			files: []*gitea.ChangedFile{
 				{Filename: "src/views/Home.vue"},
 				{Filename: "src/composables/useUser.ts"},

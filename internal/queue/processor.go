@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -209,6 +210,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if result != nil {
 			record.Result = result.Output
 			record.WorkerID = result.ContainerID
+			record.Error = result.Error
 		}
 		p.logger.InfoContext(ctx, "任务执行成功",
 			"task_id", taskID,
@@ -373,9 +375,14 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 	if r.ParseError != nil && result.Error == "" {
 		result.Error = r.ParseError.Error()
 	}
-	// WritebackError 不影响任务退出码，仅附加到 Error 字段供调试
-	if r.WritebackError != nil && result.Error == "" {
-		result.Error = fmt.Sprintf("回写失败: %v", r.WritebackError)
+	// WritebackError 不影响任务退出码，但需要保留到任务记录供调试。
+	if r.WritebackError != nil {
+		msg := fmt.Sprintf("回写失败: %v", r.WritebackError)
+		if result.Error == "" {
+			result.Error = msg
+		} else if !strings.Contains(result.Error, msg) {
+			result.Error = result.Error + "; " + msg
+		}
 	}
 	return result
 }

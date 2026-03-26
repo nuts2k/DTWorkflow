@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
@@ -128,6 +129,12 @@ func TestWrite_NormalPath(t *testing.T) {
 	}
 	if store.saved == nil {
 		t.Error("store.SaveReviewResult 应被调用")
+	}
+	if store.saved.ID == "" {
+		t.Error("store 记录 ID 不应为空")
+	}
+	if store.saved.CreatedAt.IsZero() {
+		t.Error("store 记录 CreatedAt 不应为零值")
 	}
 	if store.saved.GiteaReviewID != 99 {
 		t.Errorf("store 记录 GiteaReviewID 期望 99，实际: %d", store.saved.GiteaReviewID)
@@ -325,9 +332,10 @@ func TestMapVerdict_SafetyNet_WarningNotForced(t *testing.T) {
 	}
 }
 
-// TestWrite_DiffFetchFailed diff 获取失败时降级（所有 issues 归入 body）
+// TestWrite_DiffFetchFailed diff 获取失败时降级，但需把降级错误返回给调用方
 func TestWrite_DiffFetchFailed(t *testing.T) {
 	var capturedOpts gitea.CreatePullReviewOptions
+	store := &mockReviewStore{}
 	client := &mockWritebackClient{
 		getPullRequestDiff: func(_ context.Context, _, _ string, _ int64) (string, *gitea.Response, error) {
 			return "", nil, errors.New("network error")
@@ -342,15 +350,27 @@ func TestWrite_DiffFetchFailed(t *testing.T) {
 		{File: "foo.go", Line: 1, Severity: "WARNING", Category: "style", Message: "some warning"},
 	}
 	result := requestChangesResult(issues)
-	w := NewWriter(client, nil, nil)
-	_, err := w.Write(context.Background(), defaultInput(result))
-	if err != nil {
-		t.Fatalf("diff 获取失败时应降级而非报错，实际: %v", err)
+	w := NewWriter(client, store, nil)
+	id, err := w.Write(context.Background(), defaultInput(result))
+	if err == nil {
+		t.Fatal("diff 获取失败时应返回降级错误")
+	}
+	if id != 1 {
+		t.Fatalf("降级回写仍应返回 review ID，实际: %d", id)
+	}
+	if !strings.Contains(err.Error(), "获取 PR diff 失败") {
+		t.Fatalf("错误信息应包含 diff 获取失败，实际: %v", err)
 	}
 
 	// diff 失败 → 无行级评论
 	if len(capturedOpts.Comments) != 0 {
 		t.Errorf("diff 获取失败时期望 0 个行级评论，实际: %d", len(capturedOpts.Comments))
+	}
+	if store.saved == nil {
+		t.Fatal("降级场景也应持久化 review 结果")
+	}
+	if store.saved.WritebackError == "" {
+		t.Fatal("降级场景应持久化 writeback_error")
 	}
 }
 

@@ -55,7 +55,7 @@ type Service struct {
 	pool    ReviewPoolRunner
 	cfgProv ConfigProvider // 访问评审配置（支持热加载）
 	logger  *slog.Logger
-	writer  *Writer        // 可选，非 nil 时在 Execute 末尾执行回写
+	writer  *Writer // 可选，非 nil 时在 Execute 末尾执行回写
 }
 
 // NewService 创建评审服务实例。
@@ -159,12 +159,13 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 			Result:   result,
 		}
 		reviewID, wbErr := s.writer.Write(ctx, input)
+		if reviewID != 0 {
+			result.GiteaReviewID = reviewID
+		}
 		if wbErr != nil {
 			s.logger.ErrorContext(ctx, "回写评审结果失败",
 				"pr", prNum, "error", wbErr)
 			result.WritebackError = wbErr
-		} else {
-			result.GiteaReviewID = reviewID
 		}
 	}
 

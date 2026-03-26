@@ -12,6 +12,7 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
@@ -33,6 +34,15 @@ type stubNotifier struct {
 func (s *stubNotifier) Send(_ context.Context, msg notify.Message) error {
 	s.messages = append(s.messages, msg)
 	return s.err
+}
+
+type mockReviewExecutor struct {
+	result *review.ReviewResult
+	err    error
+}
+
+func (m *mockReviewExecutor) Execute(_ context.Context, _ model.TaskPayload) (*review.ReviewResult, error) {
+	return m.result, m.err
 }
 
 // buildAsynqTask 构建测试用的 asynq.Task（仅序列化 payload，不依赖 ResultWriter）
@@ -167,8 +177,63 @@ func TestProcessTask_Success(t *testing.T) {
 	if got.WorkerID != "container-abc" {
 		t.Errorf("worker_id = %q, want %q", got.WorkerID, "container-abc")
 	}
+	if got.Error != "" {
+		t.Errorf("success task error = %q, want empty", got.Error)
+	}
 	if got.CompletedAt == nil {
 		t.Error("completed_at should be set")
+	}
+}
+
+func TestProcessTask_ReviewSuccess_PreservesWritebackError(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-writeback-warn-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     23,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-writeback-warn",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	p := NewProcessor(
+		&mockPoolRunner{},
+		s,
+		nil,
+		slog.Default(),
+		WithReviewService(&mockReviewExecutor{
+			result: &review.ReviewResult{
+				RawOutput:      "review output",
+				WritebackError: errors.New("inline mapping degraded"),
+			},
+		}),
+	)
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	got := s.tasks["proc-task-review-writeback-warn"]
+	if got.Status != model.TaskStatusSucceeded {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+	if got.Error == "" {
+		t.Fatal("成功任务也应保留 writeback 调试错误")
+	}
+	if got.Error != "回写失败: inline mapping degraded" {
+		t.Fatalf("error = %q, want %q", got.Error, "回写失败: inline mapping degraded")
 	}
 }
 
