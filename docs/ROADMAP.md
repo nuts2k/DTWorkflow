@@ -227,10 +227,25 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
   - [x] diff 解析 10MB 大小上限防 OOM
 - [x] 单元测试覆盖率：review 92.7% / queue 85.2% / store 84.1%
 
-#### M2.4 重新评审机制
-- [ ] PR 更新（新 push）时自动触发重新评审
-- [ ] 增量评审策略：仅评审新变更的文件（可选）
-- [ ] 避免重复评审（防抖机制：短时间内多次 push 只触发最后一次）
+#### M2.4 重新评审机制（Cancel-and-Replace）
+> 说明：2026-03-26 完成全部实施与两轮审核修复（4 个 CRITICAL + 5 个 MEDIUM 问题已修复）。
+> 详细设计见 `docs/plans/2026-03-26-m2.4-re-review-design.md`。
+- [x] PR 更新（新 push / synchronized 事件）时自动触发重新评审
+- [x] Cancel-and-Replace 策略：新任务入队成功后取消同一 PR 的旧评审任务
+  - [x] Schema 迁移 V13/V14/V15：pr_number 列 + 复合索引 + 历史数据回填
+  - [x] Store 新增 FindActivePRTasks / HasNewerReviewTask 查询
+  - [x] TaskCanceller 接口（ISP）：Delete（pending/queued）+ CancelProcessing（running）
+  - [x] 原子性保证：先创建新任务再取消旧任务，避免"两空"状态
+  - [x] 取消失败 best-effort：asynq 操作失败时保留旧任务原始状态，不更新 SQLite
+- [x] Processor 层 context.Canceled 响应：使用 context.Background() 确保状态更新
+  - [x] Pre-cancelled 检查：record.Status == cancelled 时跳过执行
+  - [x] ErrStaleReview 处理：过时评审标记为 cancelled 而非 succeeded
+- [x] 回写 Staleness Check：回写前查询是否存在更新的非终态评审任务（fail-open）
+- [x] Summary 替代标注：新评审标注"替代了之前基于 `xxx` 的评审"
+- [x] FormatOptions 重构：formatReviewBody 参数结构体化
+- [x] SQL 参数化：FindActivePRTasks / HasNewerReviewTask 引用 model 常量，消除硬编码
+- [x] cancelTasks 可观测性：统计并记录取消失败数量
+- [ ] 增量评审策略：仅评审新变更的文件（延后至 M2.5，当前为全量评审）
 
 #### M2.5 评审配置
 - [ ] 仓库级评审规则配置：可自定义哪些维度开启、严重程度阈值
