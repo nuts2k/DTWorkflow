@@ -200,11 +200,32 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [ ] Dimensions 配置动态控制 prompt 评审维度（M2.1 字段已预留，优先级低，延后至 M2.5）
 
 #### M2.3 评审结果解析与回写
-- [ ] 解析 Claude 输出的结构化评审结果
-- [ ] 逐行 comment：通过 Gitea PR Review API 添加行级评论
-- [ ] 整体 summary：生成总结评论并发布
-- [ ] 自动 Request Changes：当存在 CRITICAL 或 ERROR 时触发
-- [ ] 评审结果持久化到数据库（便于后续统计分析）
+> 说明：2026-03-26 完成全部实施与审核修复（14 个审核问题已修复）。
+> 详细设计见 `docs/plans/2026-03-26-m2.3-review-writeback-design.md`。
+- [x] 解析 Claude 输出的结构化评审结果（双层 JSON 解析，M2.1 已实现基础，M2.3 集成到回写链路）
+- [x] 逐行 comment：通过 Gitea PR Review API 添加行级评论
+  - [x] unified diff 解析器（`diff.go`：按文件/hunk 分割，提取行号范围，10MB 大小上限防 OOM）
+  - [x] 行号映射（Semantic A：`new_position` = 新文件绝对行号，范围检查 `[NewStart, NewStart+NewCount)`）
+  - [x] issues 映射分流：映射成功→行级评论，映射失败→降级到 summary body
+- [x] 整体 summary：生成格式化的总结评论并发布
+  - [x] 正常场景：统计表格 + unmapped issues 列表 + 元信息
+  - [x] 降级场景：Claude 原始输出包裹在代码块中（Markdown 注入防护）
+  - [x] Markdown 转义（`escapeMarkdown`）+ UTF-8 安全截断（`truncateString`）
+- [x] 自动 Request Changes：当存在 CRITICAL 或 ERROR 时触发
+  - [x] Verdict 安全网：即使 Claude 返回 approve，issues 含 CRITICAL/ERROR 也强制 REQUEST_CHANGES
+  - [x] 降级场景固定为 COMMENT（不对解析失败的结果做 approve/reject 判断）
+- [x] 评审结果持久化到数据库（`review_results` 表，含 severity 分计数、费用、耗时等）
+  - [x] Store 接口：SaveReviewResult / GetReviewResult / ListReviewResults
+  - [x] 外键约束（task_id REFERENCES tasks ON DELETE SET NULL）+ task_id 索引 + (repo, pr) 复合索引
+- [x] 错误处理与降级链
+  - [x] 三级降级：正常→diff 失败→parse 失败，每级都向用户交付有价值的信息
+  - [x] 回写失败不导致任务失败（WritebackError 独立记录）
+  - [x] Store 持久化失败仅日志告警，不影响回写
+- [x] 安全加固（审核修复）
+  - [x] Markdown 注入防护：escapeMarkdown 转义外部内容，降级 rawOutput 包裹代码块
+  - [x] 内部错误详情不泄露到 Gitea 评论（parseErr 仅写服务端日志）
+  - [x] diff 解析 10MB 大小上限防 OOM
+- [x] 单元测试覆盖率：review 92.7% / queue 85.2% / store 84.1%
 
 #### M2.4 重新评审机制
 - [ ] PR 更新（新 push）时自动触发重新评审
