@@ -26,6 +26,12 @@ type FormatOptions struct {
 	CostUSD         float64
 	SupersededCount int    // M2.4: 替代的旧任务数量
 	PreviousHeadSHA string // M2.4: 上一次评审的 head SHA
+
+	// M2.5: 过滤信息
+	VisibleIssues      []ReviewIssue // 过滤后的可见 issue 列表（nil 时回退到 Review.Issues）
+	FilteredBySeverity int           // 因 severity 过滤的数量
+	FilteredByFile     int           // 因文件 glob 过滤的数量
+	SeverityThreshold  string        // severity 阈值（用于提示文案）
 }
 
 // formatReviewBody 生成 PR 评审正文 Markdown。
@@ -83,9 +89,11 @@ func formatReviewBody(opts FormatOptions) string {
 		sb.WriteString("\n\n")
 	}
 
-	// 统计表格：output.Issues 已经是完整 findings，unmapped 只是其子集，不能重复计数。
+	// 统计表格：当 VisibleIssues 非 nil 时使用过滤后的 issue 列表，否则回退到全部 issues。
 	var allIssues []ReviewIssue
-	if output != nil {
+	if opts.VisibleIssues != nil {
+		allIssues = opts.VisibleIssues
+	} else if output != nil {
 		allIssues = append(allIssues, output.Issues...)
 	}
 
@@ -109,6 +117,23 @@ func formatReviewBody(opts FormatOptions) string {
 			}
 		}
 		sb.WriteString("\n")
+	}
+
+	// M2.5: 过滤提示（有过滤时显示）
+	totalFiltered := opts.FilteredBySeverity + opts.FilteredByFile
+	if totalFiltered > 0 {
+		var parts []string
+		if opts.FilteredBySeverity > 0 {
+			threshold := opts.SeverityThreshold
+			if threshold == "" {
+				threshold = "info"
+			}
+			parts = append(parts, fmt.Sprintf("%d 个低于阈值(%s)的问题", opts.FilteredBySeverity, threshold))
+		}
+		if opts.FilteredByFile > 0 {
+			parts = append(parts, fmt.Sprintf("%d 个被忽略文件的问题", opts.FilteredByFile))
+		}
+		sb.WriteString(fmt.Sprintf("> 另有 %s 已按配置过滤\n\n", strings.Join(parts, "和 ")))
 	}
 
 	// 未关联到 diff 行的问题列表

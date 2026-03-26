@@ -439,6 +439,165 @@ func TestFormatReviewBody_NoSuperseded(t *testing.T) {
 	}
 }
 
+// --- M2.5 过滤测试 ---
+
+// TestFormatReviewBody_FilterHint_SeverityOnly 仅 severity 过滤时显示对应提示
+func TestFormatReviewBody_FilterHint_SeverityOnly(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "代码评审完成。",
+		Verdict: VerdictComment,
+	}
+
+	body := formatReviewBody(FormatOptions{
+		Review:             output,
+		ParseFailed:        false,
+		DurationSec:        5,
+		CostUSD:            0.001,
+		FilteredBySeverity: 3,
+		SeverityThreshold:  "warning",
+	})
+
+	if !strings.Contains(body, "3 个低于阈值(warning)的问题") {
+		t.Errorf("body 应包含 severity 过滤提示，实际: %s", body)
+	}
+	if !strings.Contains(body, "已按配置过滤") {
+		t.Errorf("body 应包含'已按配置过滤'，实际: %s", body)
+	}
+	// 不应有文件过滤提示
+	if strings.Contains(body, "被忽略文件") {
+		t.Errorf("无文件过滤时不应包含文件过滤提示，实际: %s", body)
+	}
+}
+
+// TestFormatReviewBody_FilterHint_FileOnly 仅文件过滤时显示对应提示
+func TestFormatReviewBody_FilterHint_FileOnly(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "代码评审完成。",
+		Verdict: VerdictComment,
+	}
+
+	body := formatReviewBody(FormatOptions{
+		Review:         output,
+		ParseFailed:    false,
+		DurationSec:    5,
+		CostUSD:        0.001,
+		FilteredByFile: 2,
+	})
+
+	if !strings.Contains(body, "2 个被忽略文件的问题") {
+		t.Errorf("body 应包含文件过滤提示，实际: %s", body)
+	}
+	if !strings.Contains(body, "已按配置过滤") {
+		t.Errorf("body 应包含'已按配置过滤'，实际: %s", body)
+	}
+	// 不应有 severity 过滤提示
+	if strings.Contains(body, "低于阈值") {
+		t.Errorf("无 severity 过滤时不应包含阈值提示，实际: %s", body)
+	}
+}
+
+// TestFormatReviewBody_FilterHint_Both 同时有 severity 和文件过滤时都显示
+func TestFormatReviewBody_FilterHint_Both(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "代码评审完成。",
+		Verdict: VerdictComment,
+	}
+
+	body := formatReviewBody(FormatOptions{
+		Review:             output,
+		ParseFailed:        false,
+		DurationSec:        5,
+		CostUSD:            0.001,
+		FilteredBySeverity: 2,
+		FilteredByFile:     1,
+		SeverityThreshold:  "error",
+	})
+
+	if !strings.Contains(body, "2 个低于阈值(error)的问题") {
+		t.Errorf("body 应包含 severity 过滤提示，实际: %s", body)
+	}
+	if !strings.Contains(body, "1 个被忽略文件的问题") {
+		t.Errorf("body 应包含文件过滤提示，实际: %s", body)
+	}
+	if !strings.Contains(body, "已按配置过滤") {
+		t.Errorf("body 应包含'已按配置过滤'，实际: %s", body)
+	}
+}
+
+// TestFormatReviewBody_FilterHint_None 零过滤时不显示提示
+func TestFormatReviewBody_FilterHint_None(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "代码评审完成。",
+		Verdict: VerdictApprove,
+	}
+
+	body := formatReviewBody(FormatOptions{
+		Review:      output,
+		ParseFailed: false,
+		DurationSec: 5,
+		CostUSD:     0.001,
+		// FilteredBySeverity=0, FilteredByFile=0
+	})
+
+	if strings.Contains(body, "已按配置过滤") {
+		t.Errorf("零过滤时不应包含过滤提示，实际: %s", body)
+	}
+}
+
+// TestFormatReviewBody_VisibleIssues_UsedForStats VisibleIssues 非 nil 时统计表格基于它
+func TestFormatReviewBody_VisibleIssues_UsedForStats(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "发现问题。",
+		Verdict: VerdictRequestChanges,
+		Issues: []ReviewIssue{
+			{Severity: "ERROR", Message: "错误"},
+			{Severity: "INFO", Message: "信息"}, // 被过滤掉
+		},
+	}
+	// VisibleIssues 只包含 ERROR（INFO 已被过滤）
+	visible := []ReviewIssue{{Severity: "ERROR", Message: "错误"}}
+
+	body := formatReviewBody(FormatOptions{
+		Review:             output,
+		ParseFailed:        false,
+		DurationSec:        3,
+		CostUSD:            0.001,
+		VisibleIssues:      visible,
+		FilteredBySeverity: 1,
+		SeverityThreshold:  "error",
+	})
+
+	// 统计表格应只显示 ERROR:1
+	if !strings.Contains(body, "| ERROR | 1 |") {
+		t.Errorf("统计应基于 visible issues（ERROR=1），实际: %s", body)
+	}
+	// 不应显示 INFO（已被过滤）
+	if strings.Contains(body, "| INFO |") {
+		t.Errorf("INFO 被过滤，统计表格不应显示，实际: %s", body)
+	}
+}
+
+// TestFormatReviewBody_FilterHint_EmptySeverityThresholdDefaultsToInfo 空 severity 阈值时提示显示 info
+func TestFormatReviewBody_FilterHint_EmptySeverityThresholdDefaultsToInfo(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "评审完成。",
+		Verdict: VerdictComment,
+	}
+
+	body := formatReviewBody(FormatOptions{
+		Review:             output,
+		ParseFailed:        false,
+		DurationSec:        5,
+		CostUSD:            0.001,
+		FilteredBySeverity: 1,
+		SeverityThreshold:  "", // 空时应默认显示 info
+	})
+
+	if !strings.Contains(body, "低于阈值(info)") {
+		t.Errorf("空 severity 阈值时应默认显示 info，实际: %s", body)
+	}
+}
+
 // min 辅助函数（Go 1.21 之前无内置 min for int）
 func min(a, b int) int {
 	if a < b {

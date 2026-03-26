@@ -285,6 +285,16 @@ func (a *configAdapter) ResolveReviewConfig(repoFullName string) config.ReviewOv
 	return cfg.ResolveReviewConfig(repoFullName)
 }
 
+// IsReviewEnabled 实现 queue.ReviewEnabledChecker 接口
+func (a *configAdapter) IsReviewEnabled(repoFullName string) bool {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return true // 配置未加载时默认启用
+	}
+	override := cfg.ResolveReviewConfig(repoFullName)
+	return override.Enabled == nil || *override.Enabled
+}
+
 func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNotifier, error) {
 	if cfg == nil || giteaClient == nil {
 		return nil, nil
@@ -567,15 +577,17 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	// 启动 asynq Processor（消费端）
 	var reviewOpts []queue.ProcessorOption
 	if deps.GiteaClient != nil && cfgManager != nil {
+		cfgAdapter := &configAdapter{mgr: cfgManager}
 		writer := review.NewWriter(deps.GiteaClient, deps.Store, deps.Store, slog.Default())
 		reviewSvc := review.NewService(
 			deps.GiteaClient,
 			deps.Pool,
-			&configAdapter{mgr: cfgManager},
+			cfgAdapter,
 			review.WithServiceLogger(slog.Default()),
 			review.WithWriter(writer),
 		)
 		reviewOpts = append(reviewOpts, queue.WithReviewService(reviewSvc))
+		reviewOpts = append(reviewOpts, queue.WithReviewEnabledChecker(cfgAdapter))
 	}
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), reviewOpts...)
 	mux := asynq.NewServeMux()

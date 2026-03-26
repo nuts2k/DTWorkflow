@@ -57,15 +57,17 @@ func NewWriter(giteaClient WritebackClient, store ReviewStore, staleChecker Stal
 
 // WritebackInput 回写操作的输入参数
 type WritebackInput struct {
-	TaskID          string
-	Owner           string
-	Repo            string
-	PRNumber        int64
-	HeadSHA         string
-	Result          *ReviewResult
-	TaskCreatedAt   time.Time // M2.4: staleness 比较基准
-	SupersededCount int       // M2.4: 替代标注
-	PreviousHeadSHA string    // M2.4: 替代标注
+	TaskID            string
+	Owner             string
+	Repo              string
+	PRNumber          int64
+	HeadSHA           string
+	Result            *ReviewResult
+	TaskCreatedAt     time.Time // M2.4: staleness 比较基准
+	SupersededCount   int       // M2.4: 替代标注
+	PreviousHeadSHA   string    // M2.4: 替代标注
+	SeverityThreshold string    // M2.5: severity 过滤阈值
+	IgnorePatterns    []string  // M2.5: 文件忽略 glob 模式列表
 }
 
 // MapResult 单个 issue 的行号映射结果
@@ -108,11 +110,12 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 	}
 
 	// 8c: 将 issues 映射到 diff 行
+	var mapResults []MapResult
 	var mappedComments []gitea.ReviewComment
 	var unmapped []ReviewIssue
 
 	if !parseFailed && result.Review != nil {
-		mapResults := mapIssuesToComments(diffMap, result.Review.Issues)
+		mapResults = mapIssuesToComments(diffMap, result.Review.Issues)
 		for _, mr := range mapResults {
 			if mr.Mapped {
 				mappedComments = append(mappedComments, gitea.ReviewComment{
@@ -124,6 +127,42 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 				unmapped = append(unmapped, mr.Issue)
 			}
 		}
+	}
+
+	// M2.5: 过滤 issues（在 mapping 之后、格式化之前）
+	var filterResult FilterResult
+	if !parseFailed && result.Review != nil &&
+		(input.SeverityThreshold != "" || len(input.IgnorePatterns) > 0) {
+
+		filterResult = FilterIssues(result.Review.Issues, input.SeverityThreshold, input.IgnorePatterns)
+
+		// 构建 visible 集合（用于快速查找）
+		visibleSet := make(map[string]bool, len(filterResult.Visible))
+		for _, vi := range filterResult.Visible {
+			visibleSet[issueKey(vi)] = true
+		}
+
+		// 重建 mappedComments：只保留 visible 的
+		var filteredMapped []gitea.ReviewComment
+		for _, mr := range mapResults {
+			if mr.Mapped && visibleSet[issueKey(mr.Issue)] {
+				filteredMapped = append(filteredMapped, gitea.ReviewComment{
+					Path:       mr.Issue.File,
+					Body:       formatCommentBody(mr.Issue),
+					NewLineNum: int64(mr.Position),
+				})
+			}
+		}
+		mappedComments = filteredMapped
+
+		// 重建 unmapped：只保留 visible 的
+		var filteredUnmapped []ReviewIssue
+		for _, issue := range unmapped {
+			if visibleSet[issueKey(issue)] {
+				filteredUnmapped = append(filteredUnmapped, issue)
+			}
+		}
+		unmapped = filteredUnmapped
 	}
 
 	// 8d: 生成评审正文
@@ -147,22 +186,36 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 	reviewOutput := result.Review
 
 	body := formatReviewBody(FormatOptions{
-		Review:          reviewOutput,
-		Unmapped:        unmapped,
-		ParseFailed:     parseFailed,
-		RawOutput:       rawOutput,
-		DurationSec:     durationSec,
-		CostUSD:         costUSD,
-		SupersededCount: input.SupersededCount,
-		PreviousHeadSHA: input.PreviousHeadSHA,
+		Review:             reviewOutput,
+		Unmapped:           unmapped,
+		ParseFailed:        parseFailed,
+		RawOutput:          rawOutput,
+		DurationSec:        durationSec,
+		CostUSD:            costUSD,
+		SupersededCount:    input.SupersededCount,
+		PreviousHeadSHA:    input.PreviousHeadSHA,
+		VisibleIssues:      filterResult.Visible,        // M2.5
+		FilteredBySeverity: filterResult.BySeverity,      // M2.5
+		FilteredByFile:     filterResult.ByFile,          // M2.5
+		SeverityThreshold:  input.SeverityThreshold,      // M2.5
 	})
 
 	// 8e: 映射 verdict
-	var issues []ReviewIssue
-	if result.Review != nil {
-		issues = result.Review.Issues
+	var state gitea.ReviewStateType
+	if parseFailed {
+		state = gitea.ReviewStateComment
+	} else if filterResult.Filtered > 0 {
+		// M2.5: 有过滤时，基于 visible issues 重算 verdict
+		recalced := recalcVerdict(filterResult.Visible, verdictFromResult(result))
+		state = verdictToState(recalced)
+	} else {
+		// 无过滤，保持原有逻辑
+		var issues []ReviewIssue
+		if result.Review != nil {
+			issues = result.Review.Issues
+		}
+		state = mapVerdict(verdictFromResult(result), issues, parseFailed)
 	}
-	state := mapVerdict(verdictFromResult(result), issues, parseFailed)
 
 	// M2.4: 回写前 staleness check
 	if w.staleChecker != nil && !input.TaskCreatedAt.IsZero() {
@@ -209,6 +262,48 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 	}
 
 	return giteaReviewID, writebackErr
+}
+
+// issueKey 生成 issue 的唯一标识（用于过滤后重建）
+func issueKey(issue ReviewIssue) string {
+	return fmt.Sprintf("%s:%d:%s", issue.File, issue.Line, issue.Message)
+}
+
+// recalcVerdict 基于过滤后的 visible issues 重算 verdict。
+// 安全网：visible 中有 CRITICAL 或 ERROR 时强制 REQUEST_CHANGES。
+// 若 visible 中无高危 issue，且原始 verdict 为 REQUEST_CHANGES，则降级为 COMMENT。
+func recalcVerdict(visible []ReviewIssue, originalVerdict VerdictType) VerdictType {
+	if len(visible) == 0 {
+		return VerdictComment
+	}
+
+	for _, issue := range visible {
+		sev := strings.ToUpper(issue.Severity)
+		if sev == "CRITICAL" || sev == "ERROR" {
+			return VerdictRequestChanges
+		}
+	}
+
+	// visible 中无高危 issue，若原始 verdict 为 REQUEST_CHANGES 则降级
+	if originalVerdict == VerdictRequestChanges {
+		return VerdictComment
+	}
+
+	return originalVerdict
+}
+
+// verdictToState 将 VerdictType 转换为 Gitea ReviewStateType（不含安全网逻辑）。
+func verdictToState(v VerdictType) gitea.ReviewStateType {
+	switch v {
+	case VerdictApprove:
+		return gitea.ReviewStateApproved
+	case VerdictRequestChanges:
+		return gitea.ReviewStateRequestChanges
+	case VerdictComment:
+		return gitea.ReviewStateComment
+	default:
+		return gitea.ReviewStateComment
+	}
 }
 
 // mapIssuesToComments 使用 DiffMap 将 issues 映射到 diff 行。

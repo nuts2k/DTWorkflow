@@ -25,6 +25,8 @@ type ReviewConfig struct {
 	LargePRThreshold   int      // 大 PR 警告阈值（变更行数）
 	TechStack          []string // 技术栈显式指定
 	CodeStandardsPaths []string // 自定义规范文件路径
+	Severity           string   // M2.5: severity 过滤阈值
+	IgnorePatterns     []string // M2.5: 文件忽略 glob 模式列表
 }
 
 // jsonSchemaInstruction 输出格式约束（硬编码，不可配置）
@@ -69,8 +71,8 @@ This is a large PR. Focus your review on:
 Do not try to comment on every file. Prioritize high-impact issues.
 `
 
-// defaultReviewInstructions 默认评审指令（中文）
-const defaultReviewInstructions = `
+// reviewPreamble 评审指令前言：标题 + 评审原则 + 严重程度定义（始终包含）
+const reviewPreamble = `
 ## Review Instructions
 
 你是一位资深代码评审专家，正在对一个团队项目的 Pull Request 进行评审。
@@ -88,28 +90,51 @@ const defaultReviewInstructions = `
 - ERROR: 逻辑错误、边界条件遗漏、异常处理缺失、资源泄漏、并发安全问题。强烈建议修复。
 - WARNING: 代码异味、潜在性能问题、错误传播不当、过度耦合、缺少必要校验。建议改进。
 - INFO: 命名优化、注释补充、可读性提升、更优的设计模式建议。仅供参考。
+`
 
+// securityInstructions 安全维度评审指令
+const securityInstructions = `
 ### 安全 (security)
 - SQL 注入、XSS、CSRF、路径遍历、不安全的反序列化
 - 硬编码密钥/凭证、敏感信息写入日志
 - 认证/授权绕过、权限校验遗漏
+`
 
+// logicInstructions 逻辑维度评审指令
+const logicInstructions = `
 ### 逻辑 (logic)
 - 空指针/nil 引用、数组越界、类型转换失败
 - 边界条件（空集合、零值、最大值、并发场景）
 - 错误处理：吞没错误、错误类型不匹配、缺少回滚
 - 资源泄漏（数据库连接、文件句柄、goroutine）
+`
 
+// architectureInstructions 架构维度评审指令
+const architectureInstructions = `
 ### 架构 (architecture)
 - 职责划分是否清晰，是否违反分层约定
 - API 设计的一致性和向后兼容性
 - 变更是否影响其他模块（评估回归半径）
+`
 
+// styleInstructions 风格维度评审指令
+const styleInstructions = `
 ### 风格 (style)
 - 命名是否清晰表达意图
 - 函数/方法是否过长（超过 80 行需关注）
 - 与项目既有风格的一致性
 `
+
+// dimensionInstructions 维度名称到指令段的映射
+var dimensionInstructions = map[string]string{
+	"security":     securityInstructions,
+	"logic":        logicInstructions,
+	"architecture": architectureInstructions,
+	"style":        styleInstructions,
+}
+
+// defaultReviewInstructions 默认评审指令（中文），保留用于向后兼容
+const defaultReviewInstructions = reviewPreamble + securityInstructions + logicInstructions + architectureInstructions + styleInstructions
 
 // javaReviewInstructions Java 专项评审 prompt 段
 const javaReviewInstructions = `
@@ -331,6 +356,19 @@ func resolveTechStack(files []*gitea.ChangedFile, cfg ReviewConfig) (stack TechS
 	return detectTechStack(files), nil
 }
 
+// buildDynamicInstructions 根据启用的维度动态组装评审指令。
+// 始终包含 reviewPreamble，只拼接启用维度的指令段。
+func buildDynamicInstructions(dimensions []string) string {
+	var b strings.Builder
+	b.WriteString(reviewPreamble)
+	for _, dim := range dimensions {
+		if instr, ok := dimensionInstructions[dim]; ok {
+			b.WriteString(instr)
+		}
+	}
+	return b.String()
+}
+
 // buildCodeStandardsSection 构造编码规范 prompt 段
 func buildCodeStandardsSection(paths []string) string {
 	if len(paths) == 0 {
@@ -354,6 +392,21 @@ func buildCodeStandardsSection(paths []string) string {
 func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile, cfg ReviewConfig, techStack TechStack) string {
 	var b strings.Builder
 
+	// M2.5: 文件过滤 — 在构造 prompt 前剔除被忽略的文件
+	var filteredFiles []*gitea.ChangedFile
+	var ignoredCount int
+	if len(cfg.IgnorePatterns) > 0 {
+		for _, f := range files {
+			if MatchesIgnorePattern(f.Filename, cfg.IgnorePatterns) {
+				ignoredCount++
+			} else {
+				filteredFiles = append(filteredFiles, f)
+			}
+		}
+	} else {
+		filteredFiles = files
+	}
+
 	// 1. 任务上下文
 	b.WriteString(fmt.Sprintf("You are reviewing PR #%d in repository %s.\n", pr.Number, pr.Base.Repo.FullName))
 	b.WriteString(fmt.Sprintf("Author: %s\n", pr.User.Login))
@@ -362,11 +415,20 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 	if pr.Body != "" {
 		b.WriteString(fmt.Sprintf("PR description:\n%s\n", truncate(pr.Body, 2000)))
 	}
-	b.WriteString(formatFilesSummary(files))
+	b.WriteString(formatFilesSummary(filteredFiles))
+	if ignoredCount > 0 {
+		b.WriteString(fmt.Sprintf("（另有 %d 个文件被配置忽略，不纳入评审范围）\n", ignoredCount))
+	}
 
 	// 2a. 通用评审指令（全局）
 	b.WriteString("\n")
-	b.WriteString(cfg.Instructions)
+	if cfg.Instructions == defaultReviewInstructions || cfg.Instructions == "" {
+		// 使用动态组装（按维度裁剪）
+		b.WriteString(buildDynamicInstructions(cfg.Dimensions))
+	} else {
+		// 用户自定义 instructions，不做维度裁剪
+		b.WriteString(cfg.Instructions)
+	}
 
 	// 2b. 仓库级追加指令
 	if cfg.RepoInstructions != "" {
@@ -388,10 +450,10 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 	// 3. 输出格式（硬编码，不可配置）
 	b.WriteString(jsonSchemaInstruction)
 
-	// 4. 大 PR 警示（条件性）
-	a, d := countChanges(files)
+	// 4. 大 PR 警示（条件性，基于过滤后的文件列表）
+	a, d := countChanges(filteredFiles)
 	totalChanges := a + d
-	if totalChanges > cfg.LargePRThreshold || len(files) > 30 {
+	if totalChanges > cfg.LargePRThreshold || len(filteredFiles) > 30 {
 		b.WriteString(largePRGuidance)
 	}
 

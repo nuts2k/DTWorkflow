@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // Validate 校验配置的完整性与合法性。
@@ -117,6 +119,51 @@ func Validate(cfg *Config) error {
 				if chName != "gitea" {
 					errs = append(errs, fmt.Errorf("repos[%d].notify.routes[%d] 当前仅支持 %q 渠道，发现: %q", i, j, "gitea", chName))
 				}
+			}
+		}
+	}
+
+	// review.dimensions 白名单校验
+	validDimensions := map[string]bool{
+		"security": true, "logic": true, "architecture": true, "style": true,
+	}
+	for _, dim := range cfg.Review.Dimensions {
+		if !validDimensions[strings.ToLower(dim)] {
+			errs = append(errs, fmt.Errorf("review.dimensions 包含无效维度 %q，有效值: security, logic, architecture, style", dim))
+		}
+	}
+
+	// review.severity 白名单校验
+	validSeverities := map[string]bool{
+		"critical": true, "error": true, "warning": true, "info": true,
+	}
+	if cfg.Review.Severity != "" && !validSeverities[strings.ToLower(cfg.Review.Severity)] {
+		errs = append(errs, fmt.Errorf("review.severity 值无效 %q，有效值: critical, error, warning, info", cfg.Review.Severity))
+	}
+
+	// review.ignore_patterns 语法校验
+	for i, pattern := range cfg.Review.IgnorePatterns {
+		if !doublestar.ValidatePattern(pattern) {
+			errs = append(errs, fmt.Errorf("review.ignore_patterns[%d] 语法不合法: %q", i, pattern))
+		}
+	}
+
+	// repos[].review 校验
+	for i, repo := range cfg.Repos {
+		if repo.Review == nil {
+			continue
+		}
+		for _, dim := range repo.Review.Dimensions {
+			if !validDimensions[strings.ToLower(dim)] {
+				errs = append(errs, fmt.Errorf("repos[%d].review.dimensions 包含无效维度 %q，有效值: security, logic, architecture, style", i, dim))
+			}
+		}
+		if repo.Review.Severity != "" && !validSeverities[strings.ToLower(repo.Review.Severity)] {
+			errs = append(errs, fmt.Errorf("repos[%d].review.severity 值无效 %q，有效值: critical, error, warning, info", i, repo.Review.Severity))
+		}
+		for j, pattern := range repo.Review.IgnorePatterns {
+			if !doublestar.ValidatePattern(pattern) {
+				errs = append(errs, fmt.Errorf("repos[%d].review.ignore_patterns[%d] 语法不合法: %q", i, j, pattern))
 			}
 		}
 	}

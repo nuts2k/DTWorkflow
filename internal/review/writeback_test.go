@@ -610,6 +610,184 @@ func TestWrite_StalenessCheck_NilChecker(t *testing.T) {
 	}
 }
 
+// --- M2.5 过滤测试 ---
+
+// TestRecalcVerdict_AllFiltered 所有 issues 被过滤后，verdict 应降级为 COMMENT
+func TestRecalcVerdict_AllFiltered(t *testing.T) {
+	got := recalcVerdict([]ReviewIssue{}, VerdictRequestChanges)
+	if got != VerdictComment {
+		t.Errorf("全部被过滤后应返回 VerdictComment，实际: %s", got)
+	}
+}
+
+// TestRecalcVerdict_CriticalRemains CRITICAL issue 未被过滤，应保持 REQUEST_CHANGES
+func TestRecalcVerdict_CriticalRemains(t *testing.T) {
+	visible := []ReviewIssue{{Severity: "CRITICAL", Message: "严重漏洞"}}
+	got := recalcVerdict(visible, VerdictApprove)
+	if got != VerdictRequestChanges {
+		t.Errorf("visible 中有 CRITICAL 时应返回 VerdictRequestChanges，实际: %s", got)
+	}
+}
+
+// TestRecalcVerdict_ErrorRemains ERROR issue 未被过滤，应强制 REQUEST_CHANGES
+func TestRecalcVerdict_ErrorRemains(t *testing.T) {
+	visible := []ReviewIssue{{Severity: "ERROR", Message: "逻辑错误"}}
+	got := recalcVerdict(visible, VerdictComment)
+	if got != VerdictRequestChanges {
+		t.Errorf("visible 中有 ERROR 时应返回 VerdictRequestChanges，实际: %s", got)
+	}
+}
+
+// TestRecalcVerdict_HighDangerFilteredRequestChangesDowngrade 高危 issues 被过滤后 REQUEST_CHANGES 应降级为 COMMENT
+func TestRecalcVerdict_HighDangerFilteredRequestChangesDowngrade(t *testing.T) {
+	// 只剩下 WARNING，原始 verdict 为 REQUEST_CHANGES（因高危 issue）
+	visible := []ReviewIssue{{Severity: "WARNING", Message: "代码异味"}}
+	got := recalcVerdict(visible, VerdictRequestChanges)
+	if got != VerdictComment {
+		t.Errorf("高危被过滤后 REQUEST_CHANGES 应降级为 VerdictComment，实际: %s", got)
+	}
+}
+
+// TestRecalcVerdict_ApprovePreserved 无高危 issue 且原始 verdict 为 APPROVE 时保持
+func TestRecalcVerdict_ApprovePreserved(t *testing.T) {
+	visible := []ReviewIssue{{Severity: "INFO", Message: "轻微建议"}}
+	got := recalcVerdict(visible, VerdictApprove)
+	if got != VerdictApprove {
+		t.Errorf("无高危 issue 且原始 APPROVE 应保持 VerdictApprove，实际: %s", got)
+	}
+}
+
+// TestWrite_FilterApplied_SeverityThreshold severity 过滤后行级评论和 body 只包含 visible issues
+func TestWrite_FilterApplied_SeverityThreshold(t *testing.T) {
+	var capturedOpts gitea.CreatePullReviewOptions
+	client := &mockWritebackClient{
+		getPullRequestDiff: func(_ context.Context, _, _ string, _ int64) (string, *gitea.Response, error) {
+			return simpleDiff, nil, nil
+		},
+		createPullReview: func(_ context.Context, _, _ string, _ int64, opts gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			capturedOpts = opts
+			return &gitea.PullReview{ID: 1}, nil, nil
+		},
+	}
+
+	issues := []ReviewIssue{
+		// 行 2 在 simpleDiff hunk 范围内，可映射；severity=WARNING 高于阈值 warning，visible
+		{File: "foo.go", Line: 2, Severity: "WARNING", Category: "style", Message: "mapped warning"},
+		// INFO 低于阈值 warning，应被过滤
+		{File: "foo.go", Line: 999, Severity: "INFO", Category: "style", Message: "info issue filtered"},
+	}
+
+	result := requestChangesResult(issues)
+	input := defaultInput(result)
+	input.SeverityThreshold = "warning"
+
+	w := NewWriter(client, nil, nil, nil)
+	_, err := w.Write(context.Background(), input)
+	if err != nil {
+		t.Fatalf("预期无错误，实际: %v", err)
+	}
+
+	// 只有 WARNING issue 可映射，应有 1 个行级评论
+	if len(capturedOpts.Comments) != 1 {
+		t.Errorf("期望 1 个行级评论（INFO 被过滤），实际: %d", len(capturedOpts.Comments))
+	}
+	// body 应包含过滤提示
+	if !strings.Contains(capturedOpts.Body, "已按配置过滤") {
+		t.Errorf("body 应包含过滤提示，实际 body=%s", capturedOpts.Body)
+	}
+}
+
+// TestWrite_FilterApplied_VerdictDowngrade 高危 issues 被过滤后 verdict 从 REQUEST_CHANGES 降级为 COMMENT
+func TestWrite_FilterApplied_VerdictDowngrade(t *testing.T) {
+	var capturedOpts gitea.CreatePullReviewOptions
+	client := &mockWritebackClient{
+		createPullReview: func(_ context.Context, _, _ string, _ int64, opts gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			capturedOpts = opts
+			return &gitea.PullReview{ID: 1}, nil, nil
+		},
+	}
+
+	// CRITICAL issue，原本应 REQUEST_CHANGES，但被文件过滤忽略
+	issues := []ReviewIssue{
+		{File: "docs/api.md", Line: 10, Severity: "CRITICAL", Category: "security", Message: "critical in docs"},
+	}
+	result := requestChangesResult(issues)
+	input := defaultInput(result)
+	input.IgnorePatterns = []string{"docs/**"}
+
+	w := NewWriter(client, nil, nil, nil)
+	_, err := w.Write(context.Background(), input)
+	if err != nil {
+		t.Fatalf("预期无错误，实际: %v", err)
+	}
+
+	// CRITICAL issue 被文件过滤，verdict 应降级为 COMMENT
+	if capturedOpts.State != gitea.ReviewStateComment {
+		t.Errorf("CRITICAL 被文件过滤后 verdict 应降级为 COMMENT，实际: %s", capturedOpts.State)
+	}
+}
+
+// TestWrite_NoFilter_VerdictUnchanged 无过滤时 verdict 逻辑不变
+func TestWrite_NoFilter_VerdictUnchanged(t *testing.T) {
+	var capturedOpts gitea.CreatePullReviewOptions
+	client := &mockWritebackClient{
+		createPullReview: func(_ context.Context, _, _ string, _ int64, opts gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			capturedOpts = opts
+			return &gitea.PullReview{ID: 1}, nil, nil
+		},
+	}
+
+	issues := []ReviewIssue{
+		{File: "main.go", Line: 5, Severity: "CRITICAL", Category: "security", Message: "critical issue"},
+	}
+	result := requestChangesResult(issues)
+	input := defaultInput(result)
+	// 不设置 SeverityThreshold 和 IgnorePatterns
+
+	w := NewWriter(client, nil, nil, nil)
+	_, err := w.Write(context.Background(), input)
+	if err != nil {
+		t.Fatalf("预期无错误，实际: %v", err)
+	}
+
+	// 无过滤，安全网应触发 REQUEST_CHANGES
+	if capturedOpts.State != gitea.ReviewStateRequestChanges {
+		t.Errorf("无过滤时 CRITICAL issue 应触发 REQUEST_CHANGES，实际: %s", capturedOpts.State)
+	}
+}
+
+// TestWrite_FilterApplied_PersistenceUsesOriginalIssues 过滤不影响持久化（仍保存全量 issues）
+func TestWrite_FilterApplied_PersistenceUsesOriginalIssues(t *testing.T) {
+	store := &mockReviewStore{}
+	client := &mockWritebackClient{
+		createPullReview: func(_ context.Context, _, _ string, _ int64, _ gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			return &gitea.PullReview{ID: 1}, nil, nil
+		},
+	}
+
+	issues := []ReviewIssue{
+		{File: "foo.go", Line: 1, Severity: "ERROR", Category: "logic", Message: "error issue"},
+		{File: "foo.go", Line: 2, Severity: "INFO", Category: "style", Message: "info issue filtered"},
+	}
+	result := requestChangesResult(issues)
+	input := defaultInput(result)
+	input.SeverityThreshold = "error" // 过滤掉 INFO
+
+	w := NewWriter(client, store, nil, nil)
+	_, err := w.Write(context.Background(), input)
+	if err != nil {
+		t.Fatalf("预期无错误，实际: %v", err)
+	}
+
+	// 持久化层应保存全量 issues（2 个），而非过滤后的 1 个
+	if store.saved == nil {
+		t.Fatal("store 应被调用")
+	}
+	if store.saved.IssueCount != 2 {
+		t.Errorf("持久化层应保存全量 issues（2），实际: %d", store.saved.IssueCount)
+	}
+}
+
 // TestWrite_SupersededAnnotation SupersededCount > 0 时 body 应包含替代标注
 func TestWrite_SupersededAnnotation(t *testing.T) {
 	var capturedBody string

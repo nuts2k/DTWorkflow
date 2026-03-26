@@ -1121,6 +1121,186 @@ func TestProcessTask_ContextCanceled(t *testing.T) {
 	}
 }
 
+// mockReviewEnabledChecker 模拟 ReviewEnabledChecker 接口
+type mockReviewEnabledChecker struct {
+	enabled map[string]bool
+}
+
+func (m *mockReviewEnabledChecker) IsReviewEnabled(repoFullName string) bool {
+	if m.enabled == nil {
+		return true
+	}
+	v, ok := m.enabled[repoFullName]
+	if !ok {
+		return true
+	}
+	return v
+}
+
+func TestProcessTask_ReviewDisabled(t *testing.T) {
+	t.Run("Enabled=false 时 review_pr 任务跳过并标记成功", func(t *testing.T) {
+		s := newMockStore()
+		payload := model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			DeliveryID:   "dlv-disabled-1",
+			RepoFullName: "org/repo",
+			PRNumber:     10,
+		}
+		now := time.Now()
+		record := &model.TaskRecord{
+			ID:         "proc-task-disabled-1",
+			TaskType:   model.TaskTypeReviewPR,
+			Status:     model.TaskStatusQueued,
+			Payload:    payload,
+			DeliveryID: payload.DeliveryID,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		seedRecord(s, record)
+
+		pool := &mockPoolRunner{}
+		reviewSvc := &mockReviewExecutor{}
+		checker := &mockReviewEnabledChecker{enabled: map[string]bool{"org/repo": false}}
+
+		p := NewProcessor(pool, s, nil, slog.Default(),
+			WithReviewService(reviewSvc),
+			WithReviewEnabledChecker(checker),
+		)
+
+		if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+			t.Fatalf("Enabled=false 时 ProcessTask 应返回 nil，实际: %v", err)
+		}
+		if pool.calls != 0 {
+			t.Errorf("pool.calls = %d, want 0", pool.calls)
+		}
+		if reviewSvc.calls != 0 {
+			t.Errorf("reviewSvc.calls = %d, want 0", reviewSvc.calls)
+		}
+		got := s.tasks["proc-task-disabled-1"]
+		if got.Status != model.TaskStatusSucceeded {
+			t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+		}
+		if got.CompletedAt == nil {
+			t.Error("CompletedAt 应在跳过时设置")
+		}
+	})
+
+	t.Run("Enabled=true 时 review_pr 任务正常执行", func(t *testing.T) {
+		s := newMockStore()
+		payload := model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			DeliveryID:   "dlv-enabled-1",
+			RepoFullName: "org/repo",
+			PRNumber:     11,
+		}
+		now := time.Now()
+		record := &model.TaskRecord{
+			ID:         "proc-task-enabled-1",
+			TaskType:   model.TaskTypeReviewPR,
+			Status:     model.TaskStatusQueued,
+			Payload:    payload,
+			DeliveryID: payload.DeliveryID,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		seedRecord(s, record)
+
+		reviewSvc := &mockReviewExecutor{result: &review.ReviewResult{RawOutput: "ok"}}
+		checker := &mockReviewEnabledChecker{enabled: map[string]bool{"org/repo": true}}
+
+		p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(),
+			WithReviewService(reviewSvc),
+			WithReviewEnabledChecker(checker),
+		)
+
+		if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+			t.Fatalf("Enabled=true 时 ProcessTask 应返回 nil，实际: %v", err)
+		}
+		if reviewSvc.calls != 1 {
+			t.Errorf("reviewSvc.calls = %d, want 1", reviewSvc.calls)
+		}
+		got := s.tasks["proc-task-enabled-1"]
+		if got.Status != model.TaskStatusSucceeded {
+			t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+		}
+	})
+
+	t.Run("reviewEnabledChecker=nil 时默认启用（向后兼容）", func(t *testing.T) {
+		s := newMockStore()
+		payload := model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			DeliveryID:   "dlv-nocheck-1",
+			RepoFullName: "org/repo",
+			PRNumber:     12,
+		}
+		now := time.Now()
+		record := &model.TaskRecord{
+			ID:         "proc-task-nocheck-1",
+			TaskType:   model.TaskTypeReviewPR,
+			Status:     model.TaskStatusQueued,
+			Payload:    payload,
+			DeliveryID: payload.DeliveryID,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		seedRecord(s, record)
+
+		reviewSvc := &mockReviewExecutor{result: &review.ReviewResult{RawOutput: "ok"}}
+
+		// 不注入 reviewEnabledChecker
+		p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(),
+			WithReviewService(reviewSvc),
+		)
+
+		if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+			t.Fatalf("checker=nil 时 ProcessTask 应返回 nil，实际: %v", err)
+		}
+		if reviewSvc.calls != 1 {
+			t.Errorf("reviewSvc.calls = %d, want 1（checker=nil 不应跳过执行）", reviewSvc.calls)
+		}
+	})
+
+	t.Run("非 review_pr 任务不受 Enabled 影响", func(t *testing.T) {
+		s := newMockStore()
+		payload := model.TaskPayload{
+			TaskType:     model.TaskTypeFixIssue,
+			DeliveryID:   "dlv-fixissue-nocheck-1",
+			RepoFullName: "org/repo",
+			IssueNumber:  5,
+		}
+		now := time.Now()
+		record := &model.TaskRecord{
+			ID:         "proc-task-fixissue-nocheck-1",
+			TaskType:   model.TaskTypeFixIssue,
+			Status:     model.TaskStatusQueued,
+			Payload:    payload,
+			DeliveryID: payload.DeliveryID,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		seedRecord(s, record)
+
+		pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "fixed"}}
+		// checker 对 org/repo 返回 false，但 fix_issue 不应受影响
+		checker := &mockReviewEnabledChecker{enabled: map[string]bool{"org/repo": false}}
+
+		p := NewProcessor(pool, s, nil, slog.Default(),
+			WithReviewEnabledChecker(checker),
+		)
+
+		if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+			t.Fatalf("fix_issue 任务不受 Enabled 影响，应返回 nil，实际: %v", err)
+		}
+		if pool.calls != 1 {
+			t.Errorf("pool.calls = %d, want 1", pool.calls)
+		}
+		got := s.tasks["proc-task-fixissue-nocheck-1"]
+		if got.Status != model.TaskStatusSucceeded {
+			t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+		}
+	})
+}
+
 func TestProcessTask_PreCancelledRecord_SkipsExecution(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{

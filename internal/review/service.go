@@ -152,15 +152,17 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 			headSHA = pr.Head.SHA
 		}
 		input := WritebackInput{
-			TaskID:          payload.DeliveryID,
-			Owner:           owner,
-			Repo:            repo,
-			PRNumber:        prNum,
-			HeadSHA:         headSHA,
-			Result:          result,
-			TaskCreatedAt:   payload.CreatedAt,
-			SupersededCount: payload.SupersededCount,
-			PreviousHeadSHA: payload.PreviousHeadSHA,
+			TaskID:            payload.DeliveryID,
+			Owner:             owner,
+			Repo:              repo,
+			PRNumber:          prNum,
+			HeadSHA:           headSHA,
+			Result:            result,
+			TaskCreatedAt:     payload.CreatedAt,
+			SupersededCount:   payload.SupersededCount,
+			PreviousHeadSHA:   payload.PreviousHeadSHA,
+			SeverityThreshold: cfg.Severity,       // M2.5 新增
+			IgnorePatterns:    cfg.IgnorePatterns,  // M2.5 新增
 		}
 		reviewID, wbErr := s.writer.Write(ctx, input)
 		if reviewID != 0 {
@@ -228,6 +230,8 @@ func (s *Service) resolveConfig(repoFullName string) ReviewConfig {
 		LargePRThreshold:   override.LargePRThreshold,
 		TechStack:          override.TechStack,
 		CodeStandardsPaths: override.CodeStandardsPaths,
+		Severity:           override.Severity,       // M2.5 新增
+		IgnorePatterns:     override.IgnorePatterns,  // M2.5 新增
 	}
 
 	// 应用默认值

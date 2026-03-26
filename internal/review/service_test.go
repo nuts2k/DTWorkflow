@@ -846,3 +846,41 @@ func TestResolveConfig_TechStackAndCodeStandards(t *testing.T) {
 		t.Errorf("CodeStandardsPaths 不正确，实际: %v", cfg.CodeStandardsPaths)
 	}
 }
+
+// TestResolveConfig_SeverityAndIgnorePatterns M2.5: resolveConfig 应正确传递 Severity 和 IgnorePatterns
+func TestResolveConfig_SeverityAndIgnorePatterns(t *testing.T) {
+	svc := &Service{
+		cfgProv: &mockConfigProvider{override: config.ReviewOverride{
+			Severity:       "error",
+			IgnorePatterns: []string{"**/*.md", "docs/**"},
+		}},
+	}
+
+	cfg := svc.resolveConfig("owner/repo")
+
+	if cfg.Severity != "error" {
+		t.Errorf("Severity 应为 'error'，实际: %s", cfg.Severity)
+	}
+	if len(cfg.IgnorePatterns) != 2 {
+		t.Errorf("IgnorePatterns 应有 2 项，实际: %v", cfg.IgnorePatterns)
+	}
+	if cfg.IgnorePatterns[0] != "**/*.md" {
+		t.Errorf("IgnorePatterns[0] 应为 '**/*.md'，实际: %s", cfg.IgnorePatterns[0])
+	}
+}
+
+// TestResolveConfig_EmptySeverityAndPatterns M2.5: Severity 和 IgnorePatterns 为空时不影响默认值
+func TestResolveConfig_EmptySeverityAndPatterns(t *testing.T) {
+	svc := &Service{
+		cfgProv: &mockConfigProvider{override: config.ReviewOverride{}},
+	}
+
+	cfg := svc.resolveConfig("owner/repo")
+
+	if cfg.Severity != "" {
+		t.Errorf("空配置时 Severity 应为空字符串，实际: %s", cfg.Severity)
+	}
+	if len(cfg.IgnorePatterns) != 0 {
+		t.Errorf("空配置时 IgnorePatterns 应为空，实际: %v", cfg.IgnorePatterns)
+	}
+}

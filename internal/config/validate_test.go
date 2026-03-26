@@ -348,3 +348,157 @@ func TestValidate_RepoNotifyRoutesOnlySupportGitea(t *testing.T) {
 		t.Fatalf("error message = %q, want contains %q", err.Error(), "仅支持")
 	}
 }
+
+func TestValidate_ReviewDimensions(t *testing.T) {
+	t.Run("有效维度通过", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Dimensions = []string{"security", "logic", "architecture", "style"}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("有效维度应通过校验，但返回: %v", err)
+		}
+	})
+
+	t.Run("无效维度报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Dimensions = []string{"security", "perf"}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("包含无效维度 perf 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "review.dimensions") {
+			t.Errorf("错误应包含 review.dimensions，得到: %v", err)
+		}
+		if !strings.Contains(err.Error(), "perf") {
+			t.Errorf("错误应包含无效维度名 perf，得到: %v", err)
+		}
+	})
+
+	t.Run("空列表通过", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Dimensions = []string{}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("空维度列表应通过校验，但返回: %v", err)
+		}
+	})
+
+	t.Run("仓库级无效维度报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "owner/repo",
+			Review: &ReviewOverride{Dimensions: []string{"perf"}},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仓库级无效维度应返回错误")
+		}
+		if !strings.Contains(err.Error(), "repos[0].review.dimensions") {
+			t.Errorf("错误应包含 repos[0].review.dimensions，得到: %v", err)
+		}
+	})
+}
+
+func TestValidate_ReviewSeverity(t *testing.T) {
+	t.Run("有效值通过 warning", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Severity = "warning"
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("有效 severity=warning 应通过，但返回: %v", err)
+		}
+	})
+
+	t.Run("有效值通过 critical", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Severity = "critical"
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("有效 severity=critical 应通过，但返回: %v", err)
+		}
+	})
+
+	t.Run("无效值报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Severity = "high"
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("无效 severity=high 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "review.severity") {
+			t.Errorf("错误应包含 review.severity，得到: %v", err)
+		}
+	})
+
+	t.Run("空字符串通过", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Severity = ""
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("空 severity 应通过校验，但返回: %v", err)
+		}
+	})
+
+	t.Run("大小写不敏感", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Severity = "WARNING"
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("severity=WARNING 大小写不敏感应通过，但返回: %v", err)
+		}
+	})
+
+	t.Run("仓库级无效值报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "owner/repo",
+			Review: &ReviewOverride{Severity: "high"},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仓库级无效 severity 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "repos[0].review.severity") {
+			t.Errorf("错误应包含 repos[0].review.severity，得到: %v", err)
+		}
+	})
+}
+
+func TestValidate_ReviewIgnorePatterns(t *testing.T) {
+	t.Run("合法 pattern 通过", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.IgnorePatterns = []string{"**/*.md", "docs/**"}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("合法 ignore_patterns 应通过校验，但返回: %v", err)
+		}
+	})
+
+	t.Run("非法 pattern 报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.IgnorePatterns = []string{"[invalid"}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("非法 pattern [invalid 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "review.ignore_patterns[0]") {
+			t.Errorf("错误应包含 review.ignore_patterns[0]，得到: %v", err)
+		}
+	})
+
+	t.Run("空列表通过", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.IgnorePatterns = []string{}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("空 ignore_patterns 应通过校验，但返回: %v", err)
+		}
+	})
+
+	t.Run("仓库级非法 pattern 报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "owner/repo",
+			Review: &ReviewOverride{IgnorePatterns: []string{"[invalid"}},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仓库级非法 pattern 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "repos[0].review.ignore_patterns[0]") {
+			t.Errorf("错误应包含 repos[0].review.ignore_patterns[0]，得到: %v", err)
+		}
+	})
+}

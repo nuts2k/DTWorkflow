@@ -36,6 +36,12 @@ type ReviewExecutor interface {
 	Execute(ctx context.Context, payload model.TaskPayload) (*review.ReviewResult, error)
 }
 
+// ReviewEnabledChecker 是 Processor 层的窄接口（ISP）
+// 仅暴露 Enabled 检查所需的最小能力
+type ReviewEnabledChecker interface {
+	IsReviewEnabled(repoFullName string) bool
+}
+
 // ProcessorOption Processor 配置选项
 type ProcessorOption func(*Processor)
 
@@ -46,13 +52,19 @@ func WithReviewService(svc ReviewExecutor) ProcessorOption {
 	}
 }
 
+// WithReviewEnabledChecker 注入评审开关检查器
+func WithReviewEnabledChecker(c ReviewEnabledChecker) ProcessorOption {
+	return func(p *Processor) { p.reviewEnabledChecker = c }
+}
+
 // Processor 处理 asynq 任务，协调 Store 状态更新与 PoolRunner 执行
 type Processor struct {
-	pool          PoolRunner
-	store         store.Store
-	notifier      TaskNotifier
-	logger        *slog.Logger
-	reviewService ReviewExecutor
+	pool                 PoolRunner
+	store                store.Store
+	notifier             TaskNotifier
+	logger               *slog.Logger
+	reviewService        ReviewExecutor
+	reviewEnabledChecker ReviewEnabledChecker // 可选，nil 时默认启用
 }
 
 // NewProcessor 创建 Processor 实例。
@@ -144,6 +156,27 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	// 4. 执行任务（通过 PoolRunner 或 ReviewExecutor）
+
+	// M2.5: 评审开关检查
+	if payload.TaskType == model.TaskTypeReviewPR && p.reviewEnabledChecker != nil {
+		if !p.reviewEnabledChecker.IsReviewEnabled(payload.RepoFullName) {
+			p.logger.InfoContext(ctx, "评审已禁用，跳过任务",
+				"task_id", taskID,
+				"repo", payload.RepoFullName,
+			)
+			// 跳过的任务标记为成功
+			record.Status = model.TaskStatusSucceeded
+			record.UpdatedAt = time.Now()
+			completedAt := time.Now()
+			record.CompletedAt = &completedAt
+			if err := p.store.UpdateTask(ctx, record); err != nil {
+				p.logger.WarnContext(ctx, "更新跳过任务状态失败",
+					"task_id", taskID, "error", err)
+			}
+			return nil
+		}
+	}
+
 	var result *worker.ExecutionResult
 	var runErr error
 	switch {
