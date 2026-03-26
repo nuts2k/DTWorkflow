@@ -266,7 +266,7 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 
 // issueKey 生成 issue 的唯一标识（用于过滤后重建）
 func issueKey(issue ReviewIssue) string {
-	return fmt.Sprintf("%s:%d:%s", issue.File, issue.Line, issue.Message)
+	return fmt.Sprintf("%s:%d:%s:%s:%s", issue.File, issue.Line, issue.Severity, issue.Category, issue.Message)
 }
 
 // recalcVerdict 基于过滤后的 visible issues 重算 verdict。
