@@ -64,6 +64,9 @@ func (m *mockTaskStore) PurgeTasks(_ context.Context, _ time.Duration, _ model.T
 }
 func (m *mockTaskStore) Ping(_ context.Context) error { return nil }
 func (m *mockTaskStore) Close() error                 { return nil }
+func (m *mockTaskStore) SaveReviewResult(_ context.Context, _ *model.ReviewRecord) error {
+	return nil
+}
 
 type stubTaskEnqueuer struct {
 	asynqID     string

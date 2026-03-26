@@ -567,11 +567,13 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	// 启动 asynq Processor（消费端）
 	var reviewOpts []queue.ProcessorOption
 	if deps.GiteaClient != nil && cfgManager != nil {
+		writer := review.NewWriter(deps.GiteaClient, deps.Store, slog.Default())
 		reviewSvc := review.NewService(
 			deps.GiteaClient,
 			deps.Pool,
 			&configAdapter{mgr: cfgManager},
 			review.WithServiceLogger(slog.Default()),
+			review.WithWriter(writer),
 		)
 		reviewOpts = append(reviewOpts, queue.WithReviewService(reviewSvc))
 	}

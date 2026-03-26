@@ -25,10 +25,12 @@ type CLIMeta struct {
 
 // ReviewResult 是 Service.Execute 的返回值
 type ReviewResult struct {
-	RawOutput  string        // Claude CLI 原始 stdout
-	CLIMeta    *CLIMeta      // 外层 JSON 信封摘要
-	Review     *ReviewOutput // 解析成功的内层评审结果（可能为 nil）
-	ParseError error         // JSON 解析失败时非 nil（外层或内层）
+	RawOutput      string        // Claude CLI 原始 stdout
+	CLIMeta        *CLIMeta      // 外层 JSON 信封摘要
+	Review         *ReviewOutput // 解析成功的内层评审结果（可能为 nil）
+	ParseError     error         // JSON 解析失败时非 nil（外层或内层）
+	WritebackError error         // 回写 Gitea 失败时非 nil（不影响任务整体状态）
+	GiteaReviewID  int64         // 回写成功时的 Gitea Review ID
 }
 
 // ReviewOutput 评审输出 JSON schema（M2.3 的解析合约）

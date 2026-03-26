@@ -55,6 +55,10 @@ func (m *mockStoreForRecovery) Ping(_ context.Context) error { return nil }
 
 func (m *mockStoreForRecovery) Close() error { return nil }
 
+func (m *mockStoreForRecovery) SaveReviewResult(_ context.Context, _ *model.ReviewRecord) error {
+	return nil
+}
+
 // mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
 type mockEnqueuerForRecovery struct {
 	enqueueErr error

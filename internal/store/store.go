@@ -40,6 +40,9 @@ type Store interface {
 	// PurgeTasks 清理指定状态且早于指定时间的历史任务记录，返回清理数量
 	PurgeTasks(ctx context.Context, olderThan time.Duration, status model.TaskStatus) (int64, error)
 
+	// SaveReviewResult 持久化评审结果记录
+	SaveReviewResult(ctx context.Context, record *model.ReviewRecord) error
+
 	// Ping 检测数据库连接是否可用，用于健康检查
 	Ping(ctx context.Context) error
 

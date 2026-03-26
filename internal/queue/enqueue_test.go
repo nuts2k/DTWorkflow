@@ -90,6 +90,10 @@ func (m *mockStore) Ping(_ context.Context) error { return nil }
 
 func (m *mockStore) Close() error { return nil }
 
+func (m *mockStore) SaveReviewResult(_ context.Context, _ *model.ReviewRecord) error {
+	return nil
+}
+
 // mockEnqueuer 实现 Enqueuer 接口的 mock
 type mockEnqueuer struct {
 	enqueueErr error

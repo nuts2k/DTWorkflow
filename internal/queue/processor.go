@@ -373,6 +373,10 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 	if r.ParseError != nil && result.Error == "" {
 		result.Error = r.ParseError.Error()
 	}
+	// WritebackError 不影响任务退出码，仅附加到 Error 字段供调试
+	if r.WritebackError != nil && result.Error == "" {
+		result.Error = fmt.Sprintf("回写失败: %v", r.WritebackError)
+	}
 	return result
 }
 

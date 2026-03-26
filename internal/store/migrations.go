@@ -58,6 +58,42 @@ var migrations = []migration{
 		SQL: `CREATE INDEX IF NOT EXISTS idx_tasks_pending_created ON tasks(status, created_at)
 			WHERE status = 'pending'`,
 	},
+	{
+		Version: 7,
+		SQL: `CREATE TABLE IF NOT EXISTS review_results (
+			id              TEXT PRIMARY KEY,
+			task_id         TEXT NOT NULL,
+			repo_full_name  TEXT NOT NULL,
+			pr_number       INTEGER NOT NULL,
+			head_sha        TEXT NOT NULL DEFAULT '',
+			verdict         TEXT NOT NULL,
+			summary         TEXT NOT NULL DEFAULT '',
+			issues_json     TEXT NOT NULL DEFAULT '[]',
+			issue_count     INTEGER NOT NULL DEFAULT 0,
+			critical_count  INTEGER NOT NULL DEFAULT 0,
+			error_count     INTEGER NOT NULL DEFAULT 0,
+			warning_count   INTEGER NOT NULL DEFAULT 0,
+			info_count      INTEGER NOT NULL DEFAULT 0,
+			cost_usd        REAL NOT NULL DEFAULT 0,
+			duration_ms     INTEGER NOT NULL DEFAULT 0,
+			gitea_review_id INTEGER NOT NULL DEFAULT 0,
+			parse_failed    INTEGER NOT NULL DEFAULT 0,
+			writeback_error TEXT NOT NULL DEFAULT '',
+			created_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`,
+	},
+	{
+		Version: 8,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_review_results_repo ON review_results(repo_full_name)`,
+	},
+	{
+		Version: 9,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_review_results_verdict ON review_results(verdict)`,
+	},
+	{
+		Version: 10,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_review_results_created ON review_results(created_at)`,
+	},
 }
 
 // RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本

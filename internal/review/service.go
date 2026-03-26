@@ -41,12 +41,21 @@ func WithServiceLogger(logger *slog.Logger) ServiceOption {
 	}
 }
 
+// WithWriter 注入回写器，Execute 成功后自动将评审结果回写到 Gitea PR。
+// writer 为 nil 时跳过回写（向后兼容 M2.2）。
+func WithWriter(w *Writer) ServiceOption {
+	return func(s *Service) {
+		s.writer = w
+	}
+}
+
 // Service 评审编排服务，负责 PR 元数据获取、prompt 构造和结果解析
 type Service struct {
 	gitea   PRClient
 	pool    ReviewPoolRunner
 	cfgProv ConfigProvider // 访问评审配置（支持热加载）
 	logger  *slog.Logger
+	writer  *Writer        // 可选，非 nil 时在 Execute 末尾执行回写
 }
 
 // NewService 创建评审服务实例。
@@ -134,6 +143,31 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 	// 7. 解析结果
 	result := s.parseResult(execResult.Output)
 	result.RawOutput = execResult.Output
+
+	// 8. 回写评审结果到 Gitea（writer 非 nil 时执行）
+	if s.writer != nil {
+		headSHA := ""
+		if pr.Head != nil {
+			headSHA = pr.Head.SHA
+		}
+		input := WritebackInput{
+			TaskID:   payload.DeliveryID,
+			Owner:    owner,
+			Repo:     repo,
+			PRNumber: prNum,
+			HeadSHA:  headSHA,
+			Result:   result,
+		}
+		reviewID, wbErr := s.writer.Write(ctx, input)
+		if wbErr != nil {
+			s.logger.ErrorContext(ctx, "回写评审结果失败",
+				"pr", prNum, "error", wbErr)
+			result.WritebackError = wbErr
+		} else {
+			result.GiteaReviewID = reviewID
+		}
+	}
+
 	return result, nil
 }
 

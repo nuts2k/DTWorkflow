@@ -354,6 +354,56 @@ func (s *SQLiteStore) PurgeTasks(ctx context.Context, olderThan time.Duration, s
 	return affected, nil
 }
 
+// SaveReviewResult 持久化评审结果记录到 review_results 表
+func (s *SQLiteStore) SaveReviewResult(ctx context.Context, record *model.ReviewRecord) error {
+	if record == nil {
+		return fmt.Errorf("保存评审结果失败: %w", ErrNilRecord)
+	}
+	if record.ID == "" {
+		return fmt.Errorf("保存评审结果失败: %w", ErrInvalidID)
+	}
+
+	// SQLite 无 boolean 类型，使用 int 存储
+	parseFailed := 0
+	if record.ParseFailed {
+		parseFailed = 1
+	}
+
+	const query = `INSERT INTO review_results (
+		id, task_id, repo_full_name, pr_number, head_sha,
+		verdict, summary, issues_json,
+		issue_count, critical_count, error_count, warning_count, info_count,
+		cost_usd, duration_ms, gitea_review_id,
+		parse_failed, writeback_error, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	_, err := s.db.ExecContext(ctx, query,
+		record.ID,
+		record.TaskID,
+		record.RepoFullName,
+		record.PRNumber,
+		record.HeadSHA,
+		record.Verdict,
+		record.Summary,
+		record.IssuesJSON,
+		record.IssueCount,
+		record.CriticalCount,
+		record.ErrorCount,
+		record.WarningCount,
+		record.InfoCount,
+		record.CostUSD,
+		record.DurationMs,
+		record.GiteaReviewID,
+		parseFailed,
+		record.WritebackError,
+		record.CreatedAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("插入评审结果记录失败: %w", err)
+	}
+	return nil
+}
+
 // Ping 检测数据库连接是否可用，用于健康检查
 func (s *SQLiteStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
