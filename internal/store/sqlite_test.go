@@ -1076,3 +1076,245 @@ func TestListTasks_CombinedFilters(t *testing.T) {
 		t.Errorf("组合过滤期望 1 条 combo-1，得到 %d 条", len(records))
 	}
 }
+
+// newTestPRRecord 创建带 pr_number 的评审任务，便于 M2.4 测试使用
+func newTestPRRecord(id string, prNumber int64, status model.TaskStatus, createdAt time.Time) *model.TaskRecord {
+	r := newTestRecord(id, "", model.TaskTypeReviewPR)
+	r.PRNumber = prNumber
+	r.Payload.PRNumber = prNumber
+	r.Status = status
+	r.CreatedAt = createdAt
+	r.UpdatedAt = createdAt
+	return r
+}
+
+// TestFindActivePRTasks_Normal 验证只返回 pending/queued/running 状态的记录，且按 created_at ASC 排序
+func TestFindActivePRTasks_Normal(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+
+	// 创建不同状态的任务，同属 PR #10
+	active1 := newTestPRRecord("active-pending", 10, model.TaskStatusPending, base.Add(0))
+	active2 := newTestPRRecord("active-queued", 10, model.TaskStatusQueued, base.Add(1*time.Second))
+	active3 := newTestPRRecord("active-running", 10, model.TaskStatusRunning, base.Add(2*time.Second))
+	done1 := newTestPRRecord("done-succeeded", 10, model.TaskStatusSucceeded, base.Add(3*time.Second))
+	done2 := newTestPRRecord("done-failed", 10, model.TaskStatusFailed, base.Add(4*time.Second))
+
+	for _, r := range []*model.TaskRecord{active1, active2, active3, done1, done2} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask 失败: %v", err)
+		}
+	}
+
+	records, err := s.FindActivePRTasks(ctx, "owner/repo", 10, model.TaskTypeReviewPR)
+	if err != nil {
+		t.Fatalf("FindActivePRTasks 失败: %v", err)
+	}
+
+	// 只应返回 pending/queued/running 三条
+	if len(records) != 3 {
+		t.Fatalf("期望 3 条活跃任务，得到 %d", len(records))
+	}
+
+	// 验证按 created_at ASC 排序
+	if records[0].ID != "active-pending" {
+		t.Errorf("第一条期望 active-pending，得到 %s", records[0].ID)
+	}
+	if records[1].ID != "active-queued" {
+		t.Errorf("第二条期望 active-queued，得到 %s", records[1].ID)
+	}
+	if records[2].ID != "active-running" {
+		t.Errorf("第三条期望 active-running，得到 %s", records[2].ID)
+	}
+
+	// 验证 succeeded/failed 未出现
+	for _, r := range records {
+		if r.Status == model.TaskStatusSucceeded || r.Status == model.TaskStatusFailed {
+			t.Errorf("不应返回终态任务，但得到 ID=%s status=%s", r.ID, r.Status)
+		}
+	}
+}
+
+// TestFindActivePRTasks_Empty 验证无匹配任务时返回空 slice
+func TestFindActivePRTasks_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 只插入已完成的任务
+	r := newTestPRRecord("empty-succeeded", 99, model.TaskStatusSucceeded, time.Now().UTC())
+	if err := s.CreateTask(ctx, r); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	records, err := s.FindActivePRTasks(ctx, "owner/repo", 99, model.TaskTypeReviewPR)
+	if err != nil {
+		t.Fatalf("FindActivePRTasks 失败: %v", err)
+	}
+
+	// 无匹配时应返回空 slice（不是 nil 报错，只是 len==0）
+	if len(records) != 0 {
+		t.Errorf("期望 0 条记录，得到 %d", len(records))
+	}
+}
+
+// TestFindActivePRTasks_FilterByPR 验证只返回指定 pr_number 的任务，不同 PR 互不干扰
+func TestFindActivePRTasks_FilterByPR(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+
+	// PR #1 有 2 个活跃任务
+	r1a := newTestPRRecord("pr1-task-a", 1, model.TaskStatusPending, base)
+	r1b := newTestPRRecord("pr1-task-b", 1, model.TaskStatusRunning, base.Add(time.Second))
+
+	// PR #2 有 1 个活跃任务
+	r2a := newTestPRRecord("pr2-task-a", 2, model.TaskStatusQueued, base)
+
+	for _, r := range []*model.TaskRecord{r1a, r1b, r2a} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask 失败: %v", err)
+		}
+	}
+
+	// 查询 PR #1
+	pr1Records, err := s.FindActivePRTasks(ctx, "owner/repo", 1, model.TaskTypeReviewPR)
+	if err != nil {
+		t.Fatalf("FindActivePRTasks(pr=1) 失败: %v", err)
+	}
+	if len(pr1Records) != 2 {
+		t.Errorf("PR #1 期望 2 条，得到 %d", len(pr1Records))
+	}
+	for _, r := range pr1Records {
+		if r.PRNumber != 1 {
+			t.Errorf("PR #1 结果中出现了 pr_number=%d", r.PRNumber)
+		}
+	}
+
+	// 查询 PR #2
+	pr2Records, err := s.FindActivePRTasks(ctx, "owner/repo", 2, model.TaskTypeReviewPR)
+	if err != nil {
+		t.Fatalf("FindActivePRTasks(pr=2) 失败: %v", err)
+	}
+	if len(pr2Records) != 1 {
+		t.Errorf("PR #2 期望 1 条，得到 %d", len(pr2Records))
+	}
+	if len(pr2Records) > 0 && pr2Records[0].ID != "pr2-task-a" {
+		t.Errorf("PR #2 期望 pr2-task-a，得到 %s", pr2Records[0].ID)
+	}
+}
+
+// TestHasNewerReviewTask_Exists 验证存在比指定时间更新的任务时返回 true
+func TestHasNewerReviewTask_Exists(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 基准时间
+	base := time.Now().UTC()
+
+	// 创建一个比基准时间更新（晚 1 秒）的任务
+	newer := newTestPRRecord("newer-task", 5, model.TaskStatusPending, base.Add(time.Second))
+	if err := s.CreateTask(ctx, newer); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 以基准时间查询，应找到更新的任务
+	exists, err := s.HasNewerReviewTask(ctx, "owner/repo", 5, base)
+	if err != nil {
+		t.Fatalf("HasNewerReviewTask 失败: %v", err)
+	}
+	if !exists {
+		t.Error("存在更新的任务，期望返回 true，但得到 false")
+	}
+}
+
+// TestHasNewerReviewTask_NotExists 验证不存在更新任务时返回 false
+func TestHasNewerReviewTask_NotExists(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 创建一个比基准时间旧的任务
+	base := time.Now().UTC()
+	older := newTestPRRecord("older-task", 7, model.TaskStatusPending, base.Add(-time.Second))
+	if err := s.CreateTask(ctx, older); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 以基准时间查询，任务比基准时间旧，应返回 false
+	exists, err := s.HasNewerReviewTask(ctx, "owner/repo", 7, base)
+	if err != nil {
+		t.Fatalf("HasNewerReviewTask 失败: %v", err)
+	}
+	if exists {
+		t.Error("不存在更新的任务，期望返回 false，但得到 true")
+	}
+}
+
+// TestHasNewerReviewTask_SameTime 验证与基准时间相同的任务不算"更新"，返回 false
+func TestHasNewerReviewTask_SameTime(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 任务创建时间与查询基准时间完全相同
+	exactTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := newTestPRRecord("same-time-task", 8, model.TaskStatusPending, exactTime)
+	if err := s.CreateTask(ctx, r); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// SQL 使用严格 created_at > ?，同一时间不算更新
+	exists, err := s.HasNewerReviewTask(ctx, "owner/repo", 8, exactTime)
+	if err != nil {
+		t.Fatalf("HasNewerReviewTask 失败: %v", err)
+	}
+	if exists {
+		t.Error("同一时间的任务不应算作更新，期望 false，但得到 true")
+	}
+}
+
+// TestMigration_PRNumber 验证迁移 13/14/15 成功执行，pr_number 列存在且可写入读取
+func TestMigration_PRNumber(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 验证迁移 13/14/15 已成功执行（schema_migrations 中存在这些版本）
+	for _, ver := range []int{13, 14, 15} {
+		var exists int
+		err := s.db.QueryRowContext(ctx, "SELECT 1 FROM schema_migrations WHERE version = ?", ver).Scan(&exists)
+		if err != nil {
+			t.Errorf("迁移版本 %d 未找到: %v", ver, err)
+		}
+	}
+
+	// 验证 pr_number 列存在：插入带 pr_number 的任务并回读
+	r := newTestPRRecord("migration-pr-task", 42, model.TaskStatusPending, time.Now().UTC())
+	if err := s.CreateTask(ctx, r); err != nil {
+		t.Fatalf("带 pr_number 的 CreateTask 失败: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, "migration-pr-task")
+	if err != nil {
+		t.Fatalf("GetTask 失败: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetTask 返回 nil")
+	}
+	if got.PRNumber != 42 {
+		t.Errorf("pr_number 不匹配: got %d, want 42", got.PRNumber)
+	}
+
+	// 验证 pr_number=0 时存储为 NULL（int64ToNull 的行为）
+	r0 := newTestPRRecord("migration-pr-zero", 0, model.TaskStatusPending, time.Now().UTC())
+	if err := s.CreateTask(ctx, r0); err != nil {
+		t.Fatalf("pr_number=0 的 CreateTask 失败: %v", err)
+	}
+	got0, err := s.GetTask(ctx, "migration-pr-zero")
+	if err != nil {
+		t.Fatalf("GetTask(pr_number=0) 失败: %v", err)
+	}
+	if got0.PRNumber != 0 {
+		t.Errorf("pr_number=0 回读期望 0，得到 %d", got0.PRNumber)
+	}
+}

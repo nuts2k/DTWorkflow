@@ -65,6 +65,14 @@ func (m *mockStoreForRecovery) SaveReviewResult(_ context.Context, _ *model.Revi
 	return nil
 }
 
+func (m *mockStoreForRecovery) FindActivePRTasks(_ context.Context, _ string, _ int64, _ model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
+func (m *mockStoreForRecovery) HasNewerReviewTask(_ context.Context, _ string, _ int64, _ time.Time) (bool, error) {
+	return false, nil
+}
+
 // mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
 type mockEnqueuerForRecovery struct {
 	enqueueErr error

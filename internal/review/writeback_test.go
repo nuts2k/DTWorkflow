@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -119,7 +120,7 @@ func TestWrite_NormalPath(t *testing.T) {
 		},
 	}
 
-	w := NewWriter(client, store, nil)
+	w := NewWriter(client, store, nil, nil)
 	id, err := w.Write(context.Background(), defaultInput(approveResult()))
 	if err != nil {
 		t.Fatalf("预期无错误，实际: %v", err)
@@ -162,7 +163,7 @@ func TestWrite_PartialMapping(t *testing.T) {
 	}
 
 	result := requestChangesResult(issues)
-	w := NewWriter(client, nil, nil)
+	w := NewWriter(client, nil, nil, nil)
 	_, err := w.Write(context.Background(), defaultInput(result))
 	if err != nil {
 		t.Fatalf("预期无错误，实际: %v", err)
@@ -197,7 +198,7 @@ func TestWrite_AllUnmapped(t *testing.T) {
 	}
 
 	result := requestChangesResult(issues)
-	w := NewWriter(client, nil, nil)
+	w := NewWriter(client, nil, nil, nil)
 	_, err := w.Write(context.Background(), defaultInput(result))
 	if err != nil {
 		t.Fatalf("预期无错误，实际: %v", err)
@@ -219,7 +220,7 @@ func TestWrite_ParseErrorFallback(t *testing.T) {
 		},
 	}
 
-	w := NewWriter(client, nil, nil)
+	w := NewWriter(client, nil, nil, nil)
 	_, err := w.Write(context.Background(), defaultInput(parseFailedResult()))
 	if err != nil {
 		t.Fatalf("预期无错误，实际: %v", err)
@@ -350,7 +351,7 @@ func TestWrite_DiffFetchFailed(t *testing.T) {
 		{File: "foo.go", Line: 1, Severity: "WARNING", Category: "style", Message: "some warning"},
 	}
 	result := requestChangesResult(issues)
-	w := NewWriter(client, store, nil)
+	w := NewWriter(client, store, nil, nil)
 	id, err := w.Write(context.Background(), defaultInput(result))
 	if err == nil {
 		t.Fatal("diff 获取失败时应返回降级错误")
@@ -382,7 +383,7 @@ func TestWrite_APIFailed(t *testing.T) {
 		},
 	}
 
-	w := NewWriter(client, nil, nil)
+	w := NewWriter(client, nil, nil, nil)
 	_, err := w.Write(context.Background(), defaultInput(approveResult()))
 	if err == nil {
 		t.Fatal("API 失败时应返回错误")
@@ -402,7 +403,7 @@ func TestWrite_StoreFailed(t *testing.T) {
 		},
 	}
 
-	w := NewWriter(client, store, nil)
+	w := NewWriter(client, store, nil, nil)
 	id, err := w.Write(context.Background(), defaultInput(approveResult()))
 	// store 失败不应影响主流程
 	if err != nil {
@@ -416,7 +417,7 @@ func TestWrite_StoreFailed(t *testing.T) {
 // TestWrite_NilResult result 为 nil 时返回错误
 func TestWrite_NilResult(t *testing.T) {
 	client := &mockWritebackClient{}
-	w := NewWriter(client, nil, nil)
+	w := NewWriter(client, nil, nil, nil)
 	input := defaultInput(nil)
 	_, err := w.Write(context.Background(), input)
 	if err == nil {
@@ -432,7 +433,7 @@ func TestWrite_NilStore(t *testing.T) {
 		},
 	}
 
-	w := NewWriter(client, nil, nil)
+	w := NewWriter(client, nil, nil, nil)
 	_, err := w.Write(context.Background(), defaultInput(approveResult()))
 	if err != nil {
 		t.Fatalf("store 为 nil 时应正常完成，实际: %v", err)
@@ -491,12 +492,145 @@ func TestWrite_HeadSHAPassedToGitea(t *testing.T) {
 	input := defaultInput(approveResult())
 	input.HeadSHA = "sha-xyz-123"
 
-	w := NewWriter(client, nil, nil)
+	w := NewWriter(client, nil, nil, nil)
 	_, err := w.Write(context.Background(), input)
 	if err != nil {
 		t.Fatalf("预期无错误，实际: %v", err)
 	}
 	if capturedCommitID != "sha-xyz-123" {
 		t.Errorf("期望 commit_id=sha-xyz-123，实际: %s", capturedCommitID)
+	}
+}
+
+// --- M2.4 staleness check mock ---
+
+type mockStaleChecker struct {
+	hasNewer    bool
+	hasNewerErr error
+}
+
+func (m *mockStaleChecker) HasNewerReviewTask(_ context.Context, _ string, _ int64, _ time.Time) (bool, error) {
+	return m.hasNewer, m.hasNewerErr
+}
+
+// --- M2.4 staleness check 测试 ---
+
+// TestWrite_StalenessCheck_NotStale StaleChecker 返回 false，正常回写
+func TestWrite_StalenessCheck_NotStale(t *testing.T) {
+	client := &mockWritebackClient{
+		createPullReview: func(_ context.Context, _, _ string, _ int64, _ gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			return &gitea.PullReview{ID: 10}, nil, nil
+		},
+	}
+	checker := &mockStaleChecker{hasNewer: false}
+
+	input := defaultInput(approveResult())
+	input.TaskCreatedAt = time.Now().Add(-time.Minute)
+
+	w := NewWriter(client, nil, checker, nil)
+	id, err := w.Write(context.Background(), input)
+	if err != nil {
+		t.Fatalf("非过时任务不应返回错误，实际: %v", err)
+	}
+	if id != 10 {
+		t.Errorf("期望 giteaReviewID=10，实际: %d", id)
+	}
+}
+
+// TestWrite_StalenessCheck_Stale StaleChecker 返回 true，跳过回写，返回 ErrStaleReview
+func TestWrite_StalenessCheck_Stale(t *testing.T) {
+	// createPullReview 不应被调用
+	called := false
+	client := &mockWritebackClient{
+		createPullReview: func(_ context.Context, _, _ string, _ int64, _ gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			called = true
+			return &gitea.PullReview{ID: 1}, nil, nil
+		},
+	}
+	checker := &mockStaleChecker{hasNewer: true}
+
+	input := defaultInput(approveResult())
+	input.TaskCreatedAt = time.Now().Add(-time.Minute)
+
+	w := NewWriter(client, nil, checker, nil)
+	id, err := w.Write(context.Background(), input)
+	if !errors.Is(err, ErrStaleReview) {
+		t.Fatalf("过时任务应返回 ErrStaleReview，实际: %v", err)
+	}
+	if id != 0 {
+		t.Errorf("过时任务应返回 id=0，实际: %d", id)
+	}
+	if called {
+		t.Error("过时任务不应调用 CreatePullReview")
+	}
+}
+
+// TestWrite_StalenessCheck_Error StaleChecker 返回 error，fail-open 继续回写
+func TestWrite_StalenessCheck_Error(t *testing.T) {
+	client := &mockWritebackClient{
+		createPullReview: func(_ context.Context, _, _ string, _ int64, _ gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			return &gitea.PullReview{ID: 20}, nil, nil
+		},
+	}
+	checker := &mockStaleChecker{hasNewerErr: errors.New("数据库连接失败")}
+
+	input := defaultInput(approveResult())
+	input.TaskCreatedAt = time.Now().Add(-time.Minute)
+
+	w := NewWriter(client, nil, checker, nil)
+	id, err := w.Write(context.Background(), input)
+	// fail-open：检查失败时继续回写，不返回 stale 错误
+	if errors.Is(err, ErrStaleReview) {
+		t.Fatal("staleness check 失败时不应返回 ErrStaleReview")
+	}
+	if id != 20 {
+		t.Errorf("fail-open 后应正常回写，期望 id=20，实际: %d", id)
+	}
+}
+
+// TestWrite_StalenessCheck_NilChecker StaleChecker 为 nil 时跳过检查，正常回写
+func TestWrite_StalenessCheck_NilChecker(t *testing.T) {
+	client := &mockWritebackClient{
+		createPullReview: func(_ context.Context, _, _ string, _ int64, _ gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			return &gitea.PullReview{ID: 30}, nil, nil
+		},
+	}
+
+	input := defaultInput(approveResult())
+	input.TaskCreatedAt = time.Now().Add(-time.Minute)
+
+	// staleChecker 传 nil
+	w := NewWriter(client, nil, nil, nil)
+	id, err := w.Write(context.Background(), input)
+	if err != nil {
+		t.Fatalf("nil StaleChecker 时应正常完成，实际: %v", err)
+	}
+	if id != 30 {
+		t.Errorf("期望 giteaReviewID=30，实际: %d", id)
+	}
+}
+
+// TestWrite_SupersededAnnotation SupersededCount > 0 时 body 应包含替代标注
+func TestWrite_SupersededAnnotation(t *testing.T) {
+	var capturedBody string
+	client := &mockWritebackClient{
+		createPullReview: func(_ context.Context, _, _ string, _ int64, opts gitea.CreatePullReviewOptions) (*gitea.PullReview, *gitea.Response, error) {
+			capturedBody = opts.Body
+			return &gitea.PullReview{ID: 1}, nil, nil
+		},
+	}
+
+	input := defaultInput(approveResult())
+	input.SupersededCount = 1
+	input.PreviousHeadSHA = "deadbeef9999"
+
+	w := NewWriter(client, nil, nil, nil)
+	_, err := w.Write(context.Background(), input)
+	if err != nil {
+		t.Fatalf("预期无错误，实际: %v", err)
+	}
+	// body 应包含短 SHA（前 7 位）的替代标注
+	if !strings.Contains(capturedBody, "替代了之前基于 `deadbee` 的评审") {
+		t.Errorf("body 应包含替代标注，实际 body=%s", capturedBody)
 	}
 }

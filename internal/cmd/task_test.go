@@ -74,6 +74,14 @@ func (m *mockTaskStore) ListReviewResults(_ context.Context, _ string, _ int, _ 
 	return nil, nil
 }
 
+func (m *mockTaskStore) FindActivePRTasks(_ context.Context, _ string, _ int64, _ model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
+func (m *mockTaskStore) HasNewerReviewTask(_ context.Context, _ string, _ int64, _ time.Time) (bool, error) {
+	return false, nil
+}
+
 type stubTaskEnqueuer struct {
 	asynqID     string
 	enqueueErr  error

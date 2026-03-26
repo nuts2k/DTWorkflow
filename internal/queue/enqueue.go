@@ -18,15 +18,17 @@ var _ webhook.Handler = (*EnqueueHandler)(nil)
 
 // EnqueueHandler 实现 webhook.Handler 接口，将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
-	client Enqueuer
-	store  store.Store
-	logger *slog.Logger
+	client    Enqueuer
+	canceller TaskCanceller // M2.4: 任务取消能力
+	store     store.Store
+	logger    *slog.Logger
 }
 
 // NewEnqueueHandler 创建 EnqueueHandler 实例。
 // 参数 client 和 store 为必要依赖，传入 nil 属于编程错误（programming error），
 // 因此使用 panic 而非返回 error，与 Go 标准库（如 http.NewServeMux）的惯例一致。
-func NewEnqueueHandler(client Enqueuer, store store.Store, logger *slog.Logger) *EnqueueHandler {
+// canceller 为可选依赖，nil 时跳过取消逻辑。
+func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Store, logger *slog.Logger) *EnqueueHandler {
 	if client == nil {
 		panic("NewEnqueueHandler: client 不能为 nil")
 	}
@@ -37,9 +39,10 @@ func NewEnqueueHandler(client Enqueuer, store store.Store, logger *slog.Logger) 
 		logger = slog.Default()
 	}
 	return &EnqueueHandler{
-		client: client,
-		store:  store,
-		logger: logger,
+		client:    client,
+		canceller: canceller,
+		store:     store,
+		logger:    logger,
 	}
 }
 
@@ -63,17 +66,22 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		return nil
 	}
 
+	// M2.4: 取消同一 PR 的活跃旧任务
+	superseded := h.cancelActivePRTasks(ctx, event.Repository.FullName, event.PullRequest.Number)
+
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeReviewPR,
-		DeliveryID:   event.DeliveryID,
-		RepoOwner:    event.Repository.Owner,
-		RepoName:     event.Repository.Name,
-		RepoFullName: event.Repository.FullName,
-		CloneURL:     event.Repository.CloneURL,
-		PRNumber:     event.PullRequest.Number,
-		BaseRef:      event.PullRequest.BaseRef,
-		HeadRef:      event.PullRequest.HeadRef,
-		HeadSHA:      event.PullRequest.HeadSHA,
+		TaskType:        model.TaskTypeReviewPR,
+		DeliveryID:      event.DeliveryID,
+		RepoOwner:       event.Repository.Owner,
+		RepoName:        event.Repository.Name,
+		RepoFullName:    event.Repository.FullName,
+		CloneURL:        event.Repository.CloneURL,
+		PRNumber:        event.PullRequest.Number,
+		BaseRef:         event.PullRequest.BaseRef,
+		HeadRef:         event.PullRequest.HeadRef,
+		HeadSHA:         event.PullRequest.HeadSHA,
+		SupersededCount: superseded.Count,
+		PreviousHeadSHA: superseded.LastHeadSHA,
 	}
 
 	if payload.RepoFullName == "" || payload.CloneURL == "" {
@@ -84,6 +92,7 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		TaskType:     model.TaskTypeReviewPR,
 		Priority:     model.PriorityHigh,
 		RepoFullName: event.Repository.FullName,
+		PRNumber:     event.PullRequest.Number,
 		DeliveryID:   event.DeliveryID,
 	}
 
@@ -97,6 +106,7 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 			"asynq_id", record.AsynqID,
 			"repo", event.Repository.FullName,
 			"pr", event.PullRequest.Number,
+			"superseded", superseded.Count,
 		)
 	} else {
 		h.logger.InfoContext(ctx, "PR 评审任务已创建（pending），等待 RecoveryLoop 入队",
@@ -186,15 +196,81 @@ func buildAsynqTaskID(deliveryID string, taskType model.TaskType) string {
 	return "" // 让 asynq 自动生成
 }
 
+// SupersededInfo 取消旧任务后的汇总信息
+type SupersededInfo struct {
+	Count       int    // 取消的旧任务数量
+	LastHeadSHA string // 最近一个旧任务的 HeadSHA
+}
+
+// cancelActivePRTasks 查找并取消同一 PR 的活跃旧评审任务
+func (h *EnqueueHandler) cancelActivePRTasks(ctx context.Context, repoFullName string, prNumber int64) SupersededInfo {
+	tasks, err := h.store.FindActivePRTasks(ctx, repoFullName, prNumber, model.TaskTypeReviewPR)
+	if err != nil {
+		h.logger.WarnContext(ctx, "查找活跃旧任务失败，跳过取消",
+			"repo", repoFullName, "pr", prNumber, "error", err)
+		return SupersededInfo{}
+	}
+	if len(tasks) == 0 {
+		return SupersededInfo{}
+	}
+
+	info := SupersededInfo{}
+	for _, task := range tasks {
+		h.cancelTask(ctx, task)
+		info.Count++
+		if task.Payload.HeadSHA != "" {
+			info.LastHeadSHA = task.Payload.HeadSHA
+		}
+	}
+	return info
+}
+
+// cancelTask 取消单个旧评审任务（best-effort）
+func (h *EnqueueHandler) cancelTask(ctx context.Context, task *model.TaskRecord) {
+	prevStatus := task.Status
+
+	if h.canceller != nil && task.AsynqID != "" {
+		switch task.Status {
+		case model.TaskStatusPending, model.TaskStatusQueued:
+			queueName := PriorityToQueue(task.Priority)
+			if err := h.canceller.Delete(ctx, queueName, task.AsynqID); err != nil {
+				h.logger.WarnContext(ctx, "从 asynq 删除任务失败",
+					"task_id", task.ID, "asynq_id", task.AsynqID, "error", err)
+			}
+		case model.TaskStatusRunning:
+			if err := h.canceller.CancelProcessing(ctx, task.AsynqID); err != nil {
+				h.logger.WarnContext(ctx, "取消运行中任务失败",
+					"task_id", task.ID, "asynq_id", task.AsynqID, "error", err)
+			}
+		}
+	}
+
+	now := time.Now()
+	task.Status = model.TaskStatusCancelled
+	task.Error = "被同一 PR 的新评审任务取代"
+	task.UpdatedAt = now
+	task.CompletedAt = &now
+	if err := h.store.UpdateTask(ctx, task); err != nil {
+		h.logger.WarnContext(ctx, "更新旧任务状态为 cancelled 失败",
+			"task_id", task.ID, "error", err)
+	} else {
+		h.logger.InfoContext(ctx, "已取消旧评审任务",
+			"task_id", task.ID, "prev_status", prevStatus, "pr", task.PRNumber)
+	}
+}
+
 // enqueueTask 持久化任务记录并将其入队，record 字段 TaskType/Priority/RepoFullName/DeliveryID 需预先填充
 func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayload, record *model.TaskRecord) error {
 	now := time.Now()
 	record.ID = uuid.New().String()
 	record.Status = model.TaskStatusPending
-	record.Payload = payload
 	record.MaxRetry = TaskMaxRetry()
 	record.CreatedAt = now
 	record.UpdatedAt = now
+
+	// M2.4: 设置 payload.CreatedAt 用于 staleness check
+	payload.CreatedAt = record.CreatedAt
+	record.Payload = payload
 
 	// 1. 先持久化到 SQLite（status=pending）
 	if err := h.store.CreateTask(ctx, record); err != nil {

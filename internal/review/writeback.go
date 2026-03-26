@@ -25,33 +25,46 @@ type ReviewStore interface {
 	SaveReviewResult(ctx context.Context, result *model.ReviewRecord) error
 }
 
-// Writer 负责将评审结果回写到 Gitea PR 评审
-type Writer struct {
-	gitea  WritebackClient
-	store  ReviewStore // 可选，nil 时跳过持久化
-	logger *slog.Logger
+// StaleChecker 检查评审任务是否已过时
+type StaleChecker interface {
+	HasNewerReviewTask(ctx context.Context, repoFullName string, prNumber int64, afterCreatedAt time.Time) (bool, error)
 }
 
-// NewWriter 创建 Writer 实例。store 为可选参数，nil 时跳过持久化。
-func NewWriter(giteaClient WritebackClient, store ReviewStore, logger *slog.Logger) *Writer {
+// ErrStaleReview 表示评审已过时，被更新的任务取代
+var ErrStaleReview = fmt.Errorf("评审已过时，存在更新的评审任务")
+
+// Writer 负责将评审结果回写到 Gitea PR 评审
+type Writer struct {
+	gitea        WritebackClient
+	store        ReviewStore  // 可选，nil 时跳过持久化
+	staleChecker StaleChecker // 可选，nil 时跳过 staleness check
+	logger       *slog.Logger
+}
+
+// NewWriter 创建 Writer 实例。store 和 staleChecker 为可选参数，nil 时跳过对应功能。
+func NewWriter(giteaClient WritebackClient, store ReviewStore, staleChecker StaleChecker, logger *slog.Logger) *Writer {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Writer{
-		gitea:  giteaClient,
-		store:  store,
-		logger: logger,
+		gitea:        giteaClient,
+		store:        store,
+		staleChecker: staleChecker,
+		logger:       logger,
 	}
 }
 
 // WritebackInput 回写操作的输入参数
 type WritebackInput struct {
-	TaskID   string
-	Owner    string
-	Repo     string
-	PRNumber int64
-	HeadSHA  string
-	Result   *ReviewResult
+	TaskID          string
+	Owner           string
+	Repo            string
+	PRNumber        int64
+	HeadSHA         string
+	Result          *ReviewResult
+	TaskCreatedAt   time.Time // M2.4: staleness 比较基准
+	SupersededCount int       // M2.4: 替代标注
+	PreviousHeadSHA string    // M2.4: 替代标注
 }
 
 // MapResult 单个 issue 的行号映射结果
@@ -132,7 +145,16 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 
 	reviewOutput := result.Review
 
-	body := formatReviewBody(reviewOutput, unmapped, parseFailed, rawOutput, durationSec, costUSD)
+	body := formatReviewBody(FormatOptions{
+		Review:          reviewOutput,
+		Unmapped:        unmapped,
+		ParseFailed:     parseFailed,
+		RawOutput:       rawOutput,
+		DurationSec:     durationSec,
+		CostUSD:         costUSD,
+		SupersededCount: input.SupersededCount,
+		PreviousHeadSHA: input.PreviousHeadSHA,
+	})
 
 	// 8e: 映射 verdict
 	var issues []ReviewIssue
@@ -140,6 +162,21 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 		issues = result.Review.Issues
 	}
 	state := mapVerdict(verdictFromResult(result), issues, parseFailed)
+
+	// M2.4: 回写前 staleness check
+	if w.staleChecker != nil && !input.TaskCreatedAt.IsZero() {
+		repoFullName := input.Owner + "/" + input.Repo
+		isStale, staleErr := w.staleChecker.HasNewerReviewTask(ctx, repoFullName, input.PRNumber, input.TaskCreatedAt)
+		if staleErr != nil {
+			// fail-open：检查失败时继续回写
+			w.logger.WarnContext(ctx, "staleness check 失败，继续回写",
+				"pr", input.PRNumber, "error", staleErr)
+		} else if isStale {
+			w.logger.InfoContext(ctx, "评审已过时，跳过回写",
+				"pr", input.PRNumber, "task_id", input.TaskID)
+			return 0, ErrStaleReview
+		}
+	}
 
 	// 8f: 一次原子调用 CreatePullReview
 	reviewOpts := gitea.CreatePullReviewOptions{

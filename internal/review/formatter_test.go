@@ -16,7 +16,7 @@ func TestFormatReviewBody_Normal(t *testing.T) {
 		},
 	}
 
-	body := formatReviewBody(output, nil, false, "", 32.0, 0.0012)
+	body := formatReviewBody(FormatOptions{Review: output, ParseFailed: false, DurationSec: 32.0, CostUSD: 0.0012})
 
 	if !strings.Contains(body, "## DTWorkflow 自动评审") {
 		t.Error("缺少标题")
@@ -57,7 +57,7 @@ func TestFormatReviewBody_UnmappedIssues(t *testing.T) {
 		{File: "c.go", Line: 3, Severity: "WARNING", Category: "logic", Message: "警告级别"},
 	}
 
-	body := formatReviewBody(output, unmapped, false, "", 10, 0.001)
+	body := formatReviewBody(FormatOptions{Review: output, Unmapped: unmapped, ParseFailed: false, DurationSec: 10, CostUSD: 0.001})
 
 	if !strings.Contains(body, "### 其他发现（未关联到 diff 行）") {
 		t.Error("缺少 unmapped issues 标题")
@@ -88,7 +88,7 @@ func TestFormatReviewBody_UnmappedNotDoubleCount(t *testing.T) {
 		Issues:  []ReviewIssue{issue},
 	}
 
-	body := formatReviewBody(output, []ReviewIssue{issue}, false, "", 3, 0.001)
+	body := formatReviewBody(FormatOptions{Review: output, Unmapped: []ReviewIssue{issue}, ParseFailed: false, DurationSec: 3, CostUSD: 0.001})
 
 	if !strings.Contains(body, "| ERROR | 1 |") {
 		t.Fatalf("ERROR 统计应为 1，body=%s", body)
@@ -105,7 +105,7 @@ func TestFormatReviewBody_NoIssues(t *testing.T) {
 		Verdict: VerdictApprove,
 	}
 
-	body := formatReviewBody(output, nil, false, "", 5, 0.0005)
+	body := formatReviewBody(FormatOptions{Review: output, ParseFailed: false, DurationSec: 5, CostUSD: 0.0005})
 
 	if strings.Contains(body, "### 评审统计") {
 		t.Error("无 issues 时不应显示统计表格")
@@ -123,7 +123,7 @@ func TestFormatReviewBody_BodyTruncated(t *testing.T) {
 		Verdict: VerdictComment,
 	}
 
-	body := formatReviewBody(output, nil, false, "", 1, 0)
+	body := formatReviewBody(FormatOptions{Review: output, ParseFailed: false, DurationSec: 1, CostUSD: 0})
 
 	if len(body) > bodyMaxLen {
 		t.Errorf("body 超过 %d 字符上限，实际长度=%d", bodyMaxLen, len(body))
@@ -193,7 +193,7 @@ func TestFormatReviewBody_TableEscape(t *testing.T) {
 		{File: "a.go", Line: 1, Severity: "ERROR", Category: "logic", Message: "err|nil 未处理"},
 	}
 
-	body := formatReviewBody(nil, unmapped, false, "", 1, 0)
+	body := formatReviewBody(FormatOptions{Unmapped: unmapped, ParseFailed: false, DurationSec: 1, CostUSD: 0})
 
 	// escapeMarkdown 不转义 |，所以 | 保持原样
 	if !strings.Contains(body, "err|nil") {
@@ -205,7 +205,7 @@ func TestFormatReviewBody_TableEscape(t *testing.T) {
 func TestFormatReviewBody_ParseFailed(t *testing.T) {
 	rawOutput := "这是 Claude 的原始文本输出，无法解析为 JSON。"
 
-	body := formatReviewBody(nil, nil, true, rawOutput, 15, 0.002)
+	body := formatReviewBody(FormatOptions{ParseFailed: true, RawOutput: rawOutput, DurationSec: 15, CostUSD: 0.002})
 
 	if !strings.Contains(body, "## DTWorkflow 自动评审") {
 		t.Error("缺少标题")
@@ -366,6 +366,76 @@ func TestTruncateString(t *testing.T) {
 	}
 	if strings.Contains(result, "世") {
 		t.Errorf("中文截断应去掉不完整的字符，got=%q", result)
+	}
+}
+
+// TestFormatReviewBody_SupersededWithSHA M2.4: SupersededCount > 0 且有 PreviousHeadSHA 时，body 应包含替代标注（含短 SHA）
+func TestFormatReviewBody_SupersededWithSHA(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "代码无问题。",
+		Verdict: VerdictApprove,
+	}
+
+	body := formatReviewBody(FormatOptions{
+		Review:          output,
+		ParseFailed:     false,
+		DurationSec:     5,
+		CostUSD:         0.001,
+		SupersededCount: 1,
+		PreviousHeadSHA: "abcdef1234567",
+	})
+
+	// 应包含短 SHA（前 7 位）的替代标注
+	if !strings.Contains(body, "本评审基于最新提交，替代了之前基于 `abcdef1` 的评审。") {
+		t.Errorf("body 应包含带短 SHA 的替代标注，实际 body=%s", body)
+	}
+}
+
+// TestFormatReviewBody_SupersededNoSHA M2.4: SupersededCount > 0 但无 PreviousHeadSHA 时，body 应包含通用替代标注
+func TestFormatReviewBody_SupersededNoSHA(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "代码无问题。",
+		Verdict: VerdictApprove,
+	}
+
+	body := formatReviewBody(FormatOptions{
+		Review:          output,
+		ParseFailed:     false,
+		DurationSec:     5,
+		CostUSD:         0.001,
+		SupersededCount: 2,
+		PreviousHeadSHA: "",
+	})
+
+	// 应包含通用替代标注（无 SHA）
+	if !strings.Contains(body, "本评审基于最新提交，替代了之前的评审。") {
+		t.Errorf("body 应包含通用替代标注，实际 body=%s", body)
+	}
+	// 不应包含反引号括起来的 SHA
+	if strings.Contains(body, "基于 `") {
+		t.Errorf("无 PreviousHeadSHA 时不应出现 SHA，实际 body=%s", body)
+	}
+}
+
+// TestFormatReviewBody_NoSuperseded M2.4: SupersededCount == 0 时，body 不应包含替代标注
+func TestFormatReviewBody_NoSuperseded(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "代码无问题。",
+		Verdict: VerdictApprove,
+	}
+
+	body := formatReviewBody(FormatOptions{
+		Review:          output,
+		ParseFailed:     false,
+		DurationSec:     5,
+		CostUSD:         0.001,
+		SupersededCount: 0,
+		PreviousHeadSHA: "abcdef1",
+	})
+
+	// 不应包含任何替代标注文本
+	if strings.Contains(body, "替代") {
+		t.Errorf("SupersededCount==0 时 body 不应包含替代标注，实际 body=%s", body)
 	}
 }
 

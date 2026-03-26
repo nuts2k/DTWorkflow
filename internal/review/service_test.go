@@ -280,7 +280,7 @@ func TestExecute_WritebackDegradedPreservesReviewIDAndError(t *testing.T) {
 		WithWriter(NewWriter(&stubWritebackClient{
 			reviewID: 42,
 			err:      errors.New("diff unavailable"),
-		}, nil, nil)),
+		}, nil, nil, nil)),
 	)
 
 	result, err := svc.Execute(context.Background(), testPayload())

@@ -108,6 +108,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 	taskID := record.ID
 
+	// M2.4: 从 SQLite record 覆盖 payload.CreatedAt，确保与数据库一致
+	payload.CreatedAt = record.CreatedAt
+
 	// 从 asynq context 中获取当前重试次数并更新记录
 	if retryCount, ok := asynq.GetRetryCount(ctx); ok {
 		record.RetryCount = retryCount
@@ -150,6 +153,26 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	record.UpdatedAt = time.Now()
 
 	if runErr != nil {
+		// M2.4: context.Canceled 表示任务被取消（新评审取代旧评审）
+		if errors.Is(runErr, context.Canceled) {
+			record.Status = model.TaskStatusCancelled
+			record.Error = "任务被取消"
+			completedAt := time.Now()
+			record.CompletedAt = &completedAt
+			p.logger.InfoContext(ctx, "任务被取消",
+				"task_id", taskID,
+			)
+			// ctx 可能已取消，使用 context.Background() 进行状态更新
+			bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer bgCancel()
+			if err := p.store.UpdateTask(bgCtx, record); err != nil {
+				p.logger.ErrorContext(ctx, "更新取消任务状态失败",
+					"task_id", taskID, "error", err,
+				)
+			}
+			return fmt.Errorf("任务被取消: %w", asynq.SkipRetry)
+		}
+
 		// ErrPRNotOpen 是确定性失败，直接标记 failed 并跳过重试
 		if errors.Is(runErr, review.ErrPRNotOpen) {
 			record.Status = model.TaskStatusFailed

@@ -68,7 +68,7 @@ type TaskPayload struct {
 	// TaskType 与 TaskRecord.TaskType 存在设计上的冗余：
 	// TaskRecord.TaskType 用于 SQLite 列查询和索引过滤；
 	// TaskPayload.TaskType 随 JSON 序列化传递给 asynq Worker，使 Processor 无需反查数据库即可路由任务。
-	TaskType TaskType `json:"task_type"`
+	TaskType   TaskType `json:"task_type"`
 	DeliveryID string   `json:"delivery_id,omitempty"` // Webhook delivery ID，用于幂等
 
 	// 仓库定位（所有任务类型共享）
@@ -89,6 +89,11 @@ type TaskPayload struct {
 
 	// 测试生成定位
 	Module string `json:"module,omitempty"`
+
+	// M2.4 重新评审
+	CreatedAt       time.Time `json:"created_at,omitempty"`        // 任务创建时间（staleness check 基准）
+	SupersededCount int       `json:"superseded_count,omitempty"`  // 替代的旧任务数量
+	PreviousHeadSHA string    `json:"previous_head_sha,omitempty"` // 上一次评审的 head SHA
 }
 
 // TaskRecord 持久化到 SQLite 的任务记录
@@ -100,6 +105,7 @@ type TaskRecord struct {
 	Priority     TaskPriority `json:"priority"`
 	Payload      TaskPayload  `json:"payload"`
 	RepoFullName string       `json:"repo_full_name"` // 冗余列，便于过滤查询
+	PRNumber     int64        `json:"pr_number,omitempty"` // 冗余列，便于按 PR 查询
 	Result       string       `json:"result,omitempty"`
 	Error        string       `json:"error,omitempty"`
 	RetryCount   int          `json:"retry_count"`

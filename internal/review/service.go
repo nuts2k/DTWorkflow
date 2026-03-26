@@ -151,12 +151,15 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 			headSHA = pr.Head.SHA
 		}
 		input := WritebackInput{
-			TaskID:   payload.DeliveryID,
-			Owner:    owner,
-			Repo:     repo,
-			PRNumber: prNum,
-			HeadSHA:  headSHA,
-			Result:   result,
+			TaskID:          payload.DeliveryID,
+			Owner:           owner,
+			Repo:            repo,
+			PRNumber:        prNum,
+			HeadSHA:         headSHA,
+			Result:          result,
+			TaskCreatedAt:   payload.CreatedAt,
+			SupersededCount: payload.SupersededCount,
+			PreviousHeadSHA: payload.PreviousHeadSHA,
 		}
 		reviewID, wbErr := s.writer.Write(ctx, input)
 		if reviewID != 0 {

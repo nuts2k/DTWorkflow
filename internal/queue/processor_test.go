@@ -996,3 +996,61 @@ func TestProcessTask_RecordNotFound(t *testing.T) {
 		t.Fatal("ProcessTask should return error when record not found")
 	}
 }
+
+// cancelPoolRunner 是 pool runner 的 mock，其 Run 方法固定返回 context.Canceled
+type cancelPoolRunner struct{}
+
+func (c *cancelPoolRunner) Run(_ context.Context, _ model.TaskPayload) (*worker.ExecutionResult, error) {
+	return nil, context.Canceled
+}
+
+func TestProcessTask_ContextCanceled(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-canceled-1",
+		RepoFullName: "org/repo",
+		PRNumber:     99,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-canceled",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	// cancelPoolRunner 模拟任务被取消（新评审取代旧评审场景）
+	p := NewProcessor(&cancelPoolRunner{}, s, nil, slog.Default())
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+
+	// 1. ProcessTask 应返回包含 asynq.SkipRetry 的错误
+	if err == nil {
+		t.Fatal("context.Canceled 应使 ProcessTask 返回非 nil 错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Errorf("返回错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+
+	got := s.tasks["proc-task-canceled"]
+
+	// 2. record.Status 应变为 "cancelled"
+	if got.Status != model.TaskStatusCancelled {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusCancelled)
+	}
+
+	// 3. record.Error 应包含 "任务被取消"
+	if !strings.Contains(got.Error, "任务被取消") {
+		t.Errorf("record.Error = %q，应包含 \"任务被取消\"", got.Error)
+	}
+
+	// 4. record.CompletedAt 应已设置
+	if got.CompletedAt == nil {
+		t.Error("record.CompletedAt 应在取消时设置，实际为 nil")
+	}
+}

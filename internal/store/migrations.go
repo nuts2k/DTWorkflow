@@ -102,6 +102,21 @@ var migrations = []migration{
 		Version: 12,
 		SQL:     `CREATE INDEX IF NOT EXISTS idx_review_results_repo_pr ON review_results(repo_full_name, pr_number)`,
 	},
+	// M2.4: tasks 表新增 pr_number 列
+	{
+		Version: 13,
+		SQL:     `ALTER TABLE tasks ADD COLUMN pr_number INTEGER`,
+	},
+	// M2.4: 复合索引，支持"查找同一 PR 活跃任务"查询
+	{
+		Version: 14,
+		SQL:     `CREATE INDEX IF NOT EXISTS idx_tasks_repo_pr ON tasks(repo_full_name, pr_number, task_type, status)`,
+	},
+	// M2.4: 历史数据回填，从 payload JSON 中提取 pr_number
+	{
+		Version: 15,
+		SQL:     `UPDATE tasks SET pr_number = json_extract(payload, '$.pr_number') WHERE task_type = 'review_pr' AND pr_number IS NULL`,
+	},
 }
 
 // RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本

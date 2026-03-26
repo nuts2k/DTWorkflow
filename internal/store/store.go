@@ -40,6 +40,14 @@ type Store interface {
 	// PurgeTasks 清理指定状态且早于指定时间的历史任务记录，返回清理数量
 	PurgeTasks(ctx context.Context, olderThan time.Duration, status model.TaskStatus) (int64, error)
 
+	// FindActivePRTasks 查找同一 PR 的活跃评审任务（pending/queued/running）
+	// 返回按 created_at 升序排列的任务列表（最旧的在前）
+	FindActivePRTasks(ctx context.Context, repoFullName string, prNumber int64, taskType model.TaskType) ([]*model.TaskRecord, error)
+
+	// HasNewerReviewTask 检查是否存在比指定时间更新的同 PR 评审任务
+	// 用于回写前的 staleness 检查
+	HasNewerReviewTask(ctx context.Context, repoFullName string, prNumber int64, afterCreatedAt time.Time) (bool, error)
+
 	// SaveReviewResult 持久化评审结果记录
 	SaveReviewResult(ctx context.Context, record *model.ReviewRecord) error
 

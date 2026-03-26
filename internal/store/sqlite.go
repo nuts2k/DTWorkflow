@@ -21,7 +21,7 @@ import (
 var _ Store = (*SQLiteStore)(nil)
 
 // taskColumns 是 tasks 表的 SELECT 列列表，统一在各查询中使用
-const taskColumns = `id, asynq_id, task_type, status, priority, payload, repo_full_name,
+const taskColumns = `id, asynq_id, task_type, status, priority, payload, repo_full_name, pr_number,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
 		created_at, updated_at, started_at, completed_at`
 
@@ -108,10 +108,10 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) 
 	}
 
 	const query = `INSERT INTO tasks (
-		id, asynq_id, task_type, status, priority, payload, repo_full_name,
+		id, asynq_id, task_type, status, priority, payload, repo_full_name, pr_number,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
 		created_at, updated_at, started_at, completed_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.ExecContext(ctx, query,
 		record.ID,
@@ -121,6 +121,7 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) 
 		record.Priority,
 		string(payloadJSON),
 		record.RepoFullName,
+		int64ToNull(record.PRNumber),
 		record.Result,
 		record.Error,
 		record.RetryCount,
@@ -182,7 +183,7 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 
 	const query = `UPDATE tasks SET
 		asynq_id = ?, task_type = ?, status = ?, priority = ?, payload = ?,
-		repo_full_name = ?, result = ?, error = ?, retry_count = ?, max_retry = ?,
+		repo_full_name = ?, pr_number = ?, result = ?, error = ?, retry_count = ?, max_retry = ?,
 		worker_id = ?, delivery_id = ?, updated_at = ?,
 		started_at = ?, completed_at = ?
 	WHERE id = ?`
@@ -194,6 +195,7 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 		record.Priority,
 		string(payloadJSON),
 		record.RepoFullName,
+		int64ToNull(record.PRNumber),
 		record.Result,
 		record.Error,
 		record.RetryCount,
@@ -530,15 +532,21 @@ func scanTaskRecord(row rowScanner) (*model.TaskRecord, error) {
 		completedAt sql.NullString
 	)
 
+	var prNumber sql.NullInt64
+
 	err := row.Scan(
 		&r.ID, &r.AsynqID, &r.TaskType, &r.Status, &r.Priority,
-		&payloadJSON, &r.RepoFullName,
+		&payloadJSON, &r.RepoFullName, &prNumber,
 		&r.Result, &r.Error, &r.RetryCount, &r.MaxRetry,
 		&r.WorkerID, &r.DeliveryID,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	if prNumber.Valid {
+		r.PRNumber = prNumber.Int64
 	}
 
 	if err := json.Unmarshal([]byte(payloadJSON), &r.Payload); err != nil {
@@ -578,6 +586,62 @@ func timeToNullString(t *time.Time) any {
 		return nil
 	}
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// int64ToNull 将 int64 转换为可 NULL 的值（0 值存储为 NULL）
+func int64ToNull(v int64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+// FindActivePRTasks 查找同一 PR 的活跃评审任务（pending/queued/running）
+func (s *SQLiteStore) FindActivePRTasks(ctx context.Context, repoFullName string, prNumber int64, taskType model.TaskType) ([]*model.TaskRecord, error) {
+	query := `SELECT ` + taskColumns + `
+	FROM tasks
+	WHERE repo_full_name = ?
+	  AND pr_number = ?
+	  AND task_type = ?
+	  AND status IN ('pending', 'queued', 'running')
+	ORDER BY created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, query, repoFullName, prNumber, string(taskType))
+	if err != nil {
+		return nil, fmt.Errorf("查找活跃 PR 任务失败: %w", err)
+	}
+	defer rows.Close()
+
+	var records []*model.TaskRecord
+	for rows.Next() {
+		record, err := scanTaskRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("扫描活跃 PR 任务失败: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历活跃 PR 任务失败: %w", err)
+	}
+	return records, nil
+}
+
+// HasNewerReviewTask 检查是否存在比指定时间更新的同 PR 评审任务
+func (s *SQLiteStore) HasNewerReviewTask(ctx context.Context, repoFullName string, prNumber int64, afterCreatedAt time.Time) (bool, error) {
+	const query = `SELECT EXISTS(
+		SELECT 1 FROM tasks
+		WHERE repo_full_name = ?
+		  AND pr_number = ?
+		  AND task_type = 'review_pr'
+		  AND created_at > ?
+	)`
+
+	var exists bool
+	err := s.db.QueryRowContext(ctx, query, repoFullName, prNumber, afterCreatedAt.UTC().Format(time.RFC3339Nano)).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("检查更新评审任务失败: %w", err)
+	}
+	return exists, nil
 }
 
 // parseTime 尝试多种格式解析时间字符串，优先使用高精度格式

@@ -33,14 +33,25 @@ type Enqueuer interface {
 	Enqueue(ctx context.Context, payload model.TaskPayload, opts EnqueueOptions) (string, error)
 }
 
-// Client 封装 asynq.Client，提供任务入队能力
+// TaskCanceller 任务取消能力接口（与 Enqueuer 分离）
+type TaskCanceller interface {
+	// Delete 从队列中删除 pending/queued 任务。
+	// queueName 通过 PriorityToQueue(record.Priority) 推导。
+	Delete(ctx context.Context, queueName, taskID string) error
+	// CancelProcessing 向正在执行的任务 handler 发送取消信号
+	CancelProcessing(ctx context.Context, taskID string) error
+}
+
+// Client 封装 asynq.Client，提供任务入队和取消能力
 type Client struct {
 	inner      *asynq.Client
+	inspector  *asynq.Inspector
 	pingClient redis.UniversalClient // 缓存的 Redis 客户端，用于 Ping 健康检查
 }
 
-// 编译时检查 *Client 实现 Enqueuer 接口
+// 编译时检查 *Client 实现 Enqueuer 和 TaskCanceller 接口
 var _ Enqueuer = (*Client)(nil)
+var _ TaskCanceller = (*Client)(nil)
 
 // EnqueueOptions 入队选项
 type EnqueueOptions struct {
@@ -54,6 +65,7 @@ type EnqueueOptions struct {
 // 注意：创建时不验证 Redis 连通性，调用方可通过 Ping() 方法按需检查。
 func NewClient(redisOpt asynq.RedisConnOpt) (*Client, error) {
 	inner := asynq.NewClient(redisOpt)
+	inspector := asynq.NewInspector(redisOpt)
 	rawClient := redisOpt.MakeRedisClient()
 	pingClient, ok := rawClient.(redis.UniversalClient)
 	if !ok {
@@ -63,7 +75,7 @@ func NewClient(redisOpt asynq.RedisConnOpt) (*Client, error) {
 		}
 		return nil, fmt.Errorf("NewClient: 不支持的 Redis 客户端类型")
 	}
-	return &Client{inner: inner, pingClient: pingClient}, nil
+	return &Client{inner: inner, inspector: inspector, pingClient: pingClient}, nil
 }
 
 // Enqueue 将任务 payload 序列化后入队，返回 asynq 任务 ID
@@ -84,6 +96,22 @@ func (c *Client) Enqueue(ctx context.Context, payload model.TaskPayload, opts En
 	return info.ID, nil
 }
 
+// Delete 从队列中删除 pending/queued 任务
+func (c *Client) Delete(_ context.Context, queueName, taskID string) error {
+	if err := c.inspector.DeleteTask(queueName, taskID); err != nil {
+		return fmt.Errorf("从 asynq 删除任务失败: %w", err)
+	}
+	return nil
+}
+
+// CancelProcessing 向正在执行的任务 handler 发送取消信号
+func (c *Client) CancelProcessing(_ context.Context, taskID string) error {
+	if err := c.inspector.CancelProcessing(taskID); err != nil {
+		return fmt.Errorf("取消 asynq 任务处理失败: %w", err)
+	}
+	return nil
+}
+
 // Ping 检测 Redis 连接是否可用，复用缓存的 pingClient 而非每次创建新连接
 func (c *Client) Ping(ctx context.Context) error {
 	if err := c.pingClient.Ping(ctx).Err(); err != nil {
@@ -92,7 +120,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
-// Close 关闭底层 asynq 客户端和缓存的 Redis 连接
+// Close 关闭底层 asynq 客户端、Inspector 和缓存的 Redis 连接
 func (c *Client) Close() error {
 	var pingErr error
 	if c.pingClient != nil {
@@ -102,7 +130,11 @@ func (c *Client) Close() error {
 	if c.inner != nil {
 		innerErr = c.inner.Close()
 	}
-	return errors.Join(pingErr, innerErr)
+	var inspErr error
+	if c.inspector != nil {
+		inspErr = c.inspector.Close()
+	}
+	return errors.Join(pingErr, innerErr, inspErr)
 }
 
 // taskTypeToAsynq 将 model.TaskType 转换为 asynq 任务类型字符串

@@ -16,19 +16,29 @@ const (
 	messageMaxLen = 200
 )
 
+// FormatOptions formatReviewBody 的输入参数
+type FormatOptions struct {
+	Review          *ReviewOutput
+	Unmapped        []ReviewIssue
+	ParseFailed     bool
+	RawOutput       string
+	DurationSec     float64
+	CostUSD         float64
+	SupersededCount int    // M2.4: 替代的旧任务数量
+	PreviousHeadSHA string // M2.4: 上一次评审的 head SHA
+}
+
 // formatReviewBody 生成 PR 评审正文 Markdown。
 // 正常场景输出结构化统计表格和未映射问题列表；
 // 降级场景（parseFailed=true）将 Claude 原始输出包裹在代码块中附加。
 // 注意：parseErr 的日志记录由调用方负责，formatter 不引入 logger 依赖。
-func formatReviewBody(
-	output *ReviewOutput,
-	unmapped []ReviewIssue,
-	parseFailed bool,
-	rawOutput string,
-	durationSec float64,
-	costUSD float64,
-) string {
-	footer := fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD)
+func formatReviewBody(opts FormatOptions) string {
+	output := opts.Review
+	unmapped := opts.Unmapped
+	parseFailed := opts.ParseFailed
+	rawOutput := opts.RawOutput
+
+	footer := fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", opts.DurationSec, opts.CostUSD)
 
 	var sb strings.Builder
 
@@ -54,6 +64,20 @@ func formatReviewBody(
 
 	// 正常场景
 	sb.WriteString("## DTWorkflow 自动评审\n\n")
+
+	// M2.4: 替代标注
+	if opts.SupersededCount > 0 {
+		if opts.PreviousHeadSHA != "" {
+			shortSHA := opts.PreviousHeadSHA
+			if len(shortSHA) > 7 {
+				shortSHA = shortSHA[:7]
+			}
+			sb.WriteString(fmt.Sprintf("> 本评审基于最新提交，替代了之前基于 `%s` 的评审。\n\n", shortSHA))
+		} else {
+			sb.WriteString("> 本评审基于最新提交，替代了之前的评审。\n\n")
+		}
+	}
+
 	if output != nil && output.Summary != "" {
 		sb.WriteString(escapeMarkdown(output.Summary))
 		sb.WriteString("\n\n")
