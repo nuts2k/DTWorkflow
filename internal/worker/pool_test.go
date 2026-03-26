@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -257,6 +258,479 @@ func TestBuildContainerName(t *testing.T) {
 	if len(name) < 4 {
 		t.Errorf("容器名称太短: %s", name)
 	}
+}
+
+// TestPool_RunImageNotExists 验证镜像不存在时返回错误
+func TestPool_RunImageNotExists(t *testing.T) {
+	mock := &mockDockerClient{
+		imageExistsFunc: func(ctx context.Context, imageRef string) (bool, error) {
+			return false, nil
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	_, err := pool.Run(context.Background(), defaultPayload())
+	if err == nil {
+		t.Error("镜像不存在时 Run 应返回错误")
+	}
+}
+
+// TestPool_RunImageCheckError 验证镜像检查失败时返回错误
+func TestPool_RunImageCheckError(t *testing.T) {
+	mock := &mockDockerClient{
+		imageExistsFunc: func(ctx context.Context, imageRef string) (bool, error) {
+			return false, errors.New("docker daemon 不可用")
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	_, err := pool.Run(context.Background(), defaultPayload())
+	if err == nil {
+		t.Error("镜像检查失败时 Run 应返回错误")
+	}
+}
+
+// TestPool_RunNetworkError 验证网络创建失败时返回错误
+func TestPool_RunNetworkError(t *testing.T) {
+	mock := &mockDockerClient{
+		ensureNetworkFunc: func(ctx context.Context, networkName string) error {
+			return errors.New("网络创建失败")
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	_, err := pool.Run(context.Background(), defaultPayload())
+	if err == nil {
+		t.Error("网络创建失败时 Run 应返回错误")
+	}
+}
+
+// TestPool_RunCreateContainerError 验证容器创建失败时返回错误
+func TestPool_RunCreateContainerError(t *testing.T) {
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "", errors.New("容器创建失败")
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	_, err := pool.Run(context.Background(), defaultPayload())
+	if err == nil {
+		t.Error("容器创建失败时 Run 应返回错误")
+	}
+}
+
+// TestPool_RunStartContainerError 验证容器启动失败时返回 result 和 error
+func TestPool_RunStartContainerError(t *testing.T) {
+	removed := false
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-start-fail", nil
+		},
+		startContainerFunc: func(ctx context.Context, containerID string) error {
+			return errors.New("端口冲突")
+		},
+		removeContainerFunc: func(ctx context.Context, containerID string) error {
+			removed = true
+			return nil
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	result, err := pool.Run(context.Background(), defaultPayload())
+	if err == nil {
+		t.Error("启动失败时 Run 应返回错误")
+	}
+	// 启动失败时应返回部分填充的 result
+	if result == nil {
+		t.Fatal("启动失败时应返回 result")
+	}
+	if result.ExitCode != -1 {
+		t.Errorf("ExitCode = %d, 期望 -1", result.ExitCode)
+	}
+	if result.ContainerID != "container-start-fail" {
+		t.Errorf("ContainerID = %q, 期望 container-start-fail", result.ContainerID)
+	}
+	if !removed {
+		t.Error("启动失败后容器应被清理")
+	}
+}
+
+// TestPool_RunInvalidTaskType 验证无效任务类型快速失败
+func TestPool_RunInvalidTaskType(t *testing.T) {
+	mock := &mockDockerClient{}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	payload := defaultPayload()
+	payload.TaskType = "invalid_type"
+	_, err := pool.Run(context.Background(), payload)
+	if err == nil {
+		t.Error("无效任务类型应返回错误")
+	}
+}
+
+// TestPool_RunWithCommand 验证自定义命令执行
+func TestPool_RunWithCommand(t *testing.T) {
+	var capturedCmd []string
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			capturedCmd = config.Cmd
+			return "container-custom", nil
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	customCmd := []string{"claude", "-p", "custom prompt"}
+	result, err := pool.RunWithCommand(context.Background(), defaultPayload(), customCmd)
+	if err != nil {
+		t.Fatalf("RunWithCommand 返回错误: %v", err)
+	}
+	if result.ContainerID != "container-custom" {
+		t.Errorf("ContainerID = %q, 期望 container-custom", result.ContainerID)
+	}
+	if len(capturedCmd) != 3 || capturedCmd[2] != "custom prompt" {
+		t.Errorf("容器命令 = %v, 期望自定义命令", capturedCmd)
+	}
+}
+
+// TestPool_RunWithCommandAndStdin_EmptyStdin 空 stdin 应退化为 RunWithCommand
+func TestPool_RunWithCommandAndStdin_EmptyStdin(t *testing.T) {
+	var capturedOpenStdin bool
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			capturedOpenStdin = config.OpenStdin
+			return "container-no-stdin", nil
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	result, err := pool.RunWithCommandAndStdin(context.Background(), defaultPayload(), []string{"claude"}, nil)
+	if err != nil {
+		t.Fatalf("RunWithCommandAndStdin(nil) 返回错误: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+	if capturedOpenStdin {
+		t.Error("空 stdin 时 OpenStdin 应为 false")
+	}
+}
+
+// TestPool_RunWithCommandAndStdin_WithData 测试 stdin 数据传入
+func TestPool_RunWithCommandAndStdin_WithData(t *testing.T) {
+	var capturedOpenStdin bool
+	attachCalled := false
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			capturedOpenStdin = config.OpenStdin
+			return "container-stdin", nil
+		},
+		attachContainerFunc: func(ctx context.Context, containerID string) (io.WriteCloser, error) {
+			attachCalled = true
+			// 使用 drainWriteCloser 模拟容器 stdin：接受写入并丢弃
+			return &drainWriteCloser{}, nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			return 0, nil
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	result, err := pool.RunWithCommandAndStdin(
+		context.Background(), defaultPayload(),
+		[]string{"claude", "--stdin"}, []byte("stdin data"),
+	)
+	if err != nil {
+		t.Fatalf("RunWithCommandAndStdin 返回错误: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+	if !capturedOpenStdin {
+		t.Error("有 stdin 数据时 OpenStdin 应为 true")
+	}
+	if !attachCalled {
+		t.Error("有 stdin 数据时应调用 AttachContainer")
+	}
+}
+
+// drainWriteCloser 接受写入数据并丢弃，模拟容器 stdin
+type drainWriteCloser struct {
+	closed bool
+}
+
+func (d *drainWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (d *drainWriteCloser) Close() error                { d.closed = true; return nil }
+
+// TestPool_RunWithStdin_AttachError 测试 attach 失败时返回错误
+func TestPool_RunWithStdin_AttachError(t *testing.T) {
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-attach-fail", nil
+		},
+		attachContainerFunc: func(ctx context.Context, containerID string) (io.WriteCloser, error) {
+			return nil, errors.New("attach 失败")
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	_, err := pool.RunWithCommandAndStdin(
+		context.Background(), defaultPayload(),
+		[]string{"claude"}, []byte("data"),
+	)
+	if err == nil {
+		t.Error("attach 失败时应返回错误")
+	}
+}
+
+// TestPool_RunWithStdin_StartError_ClosesStdin 启动失败时应关闭 stdin writer
+func TestPool_RunWithStdin_StartError_ClosesStdin(t *testing.T) {
+	stdinClosed := false
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-stdin-close", nil
+		},
+		attachContainerFunc: func(ctx context.Context, containerID string) (io.WriteCloser, error) {
+			return &trackingWriteCloser{
+				onClose: func() { stdinClosed = true },
+			}, nil
+		},
+		startContainerFunc: func(ctx context.Context, containerID string) error {
+			return errors.New("启动失败")
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	_, _ = pool.RunWithCommandAndStdin(
+		context.Background(), defaultPayload(),
+		[]string{"claude"}, []byte("data"),
+	)
+	if !stdinClosed {
+		t.Error("启动失败时应关闭 stdin writer")
+	}
+}
+
+// TestPool_RunWithStdin_WriteErrorAndWaitError 两者都失败时优先返回容器错误
+func TestPool_RunWithStdin_WriteErrorAndWaitError(t *testing.T) {
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-both-fail", nil
+		},
+		attachContainerFunc: func(ctx context.Context, containerID string) (io.WriteCloser, error) {
+			return &failWriteCloser{}, nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			return 1, errors.New("容器异常退出")
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	result, err := pool.RunWithCommandAndStdin(
+		context.Background(), defaultPayload(),
+		[]string{"claude"}, []byte("data"),
+	)
+	// waitErr 不为 nil 时应返回 waitErr
+	if err == nil {
+		t.Error("两者都失败时应返回错误")
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+	if result.ExitCode != 1 {
+		t.Errorf("ExitCode = %d, 期望 1", result.ExitCode)
+	}
+}
+
+// TestPool_RunWithStdin_WriteErrorOnly stdin 写入失败但容器执行成功
+func TestPool_RunWithStdin_WriteErrorOnly(t *testing.T) {
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-stdin-err", nil
+		},
+		attachContainerFunc: func(ctx context.Context, containerID string) (io.WriteCloser, error) {
+			return &failWriteCloser{}, nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			return 0, nil // 容器正常退出
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	result, err := pool.RunWithCommandAndStdin(
+		context.Background(), defaultPayload(),
+		[]string{"claude"}, []byte("data"),
+	)
+	// waitErr 为 nil 但 stdin 写入失败
+	if err == nil {
+		t.Error("stdin 写入失败时应返回错误")
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+}
+
+// failWriteCloser 写入时总是返回错误
+type failWriteCloser struct{}
+
+func (f *failWriteCloser) Write(p []byte) (int, error) { return 0, errors.New("write failed") }
+func (f *failWriteCloser) Close() error                { return nil }
+
+// TestPool_EnsureNetworkCalledOnce 验证网络只创建一次
+func TestPool_EnsureNetworkCalledOnce(t *testing.T) {
+	callCount := 0
+	mock := &mockDockerClient{
+		ensureNetworkFunc: func(ctx context.Context, networkName string) error {
+			callCount++
+			return nil
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	// 运行两次
+	pool.Run(context.Background(), defaultPayload())
+	pool.Run(context.Background(), defaultPayload())
+
+	if callCount != 1 {
+		t.Errorf("EnsureNetwork 应只调用 1 次，实际 %d 次", callCount)
+	}
+}
+
+// TestPool_BuildContainerName_EmptyDeliveryID 验证空 DeliveryID 时生成唯一名称
+func TestPool_BuildContainerName_EmptyDeliveryID(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:   model.TaskTypeReviewPR,
+		DeliveryID: "",
+	}
+	name1 := buildContainerName(payload)
+	name2 := buildContainerName(payload)
+	if name1 == "" || name2 == "" {
+		t.Error("容器名称不应为空")
+	}
+	if name1 == name2 {
+		t.Error("两次生成的名称应不同")
+	}
+}
+
+// TestPool_SanitizeName 验证名称清理逻辑
+func TestPool_SanitizeName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"abc123", "abc123"},
+		{"a.b.c", "a-b-c"},
+		{"a--b", "a-b"},     // 连续连字符压缩
+		{"a!!!b", "a-b"},    // 多个特殊字符压缩
+		{"hello world", "hello-world"},
+	}
+	for _, tc := range tests {
+		got := sanitizeName(tc.input)
+		if got != tc.expected {
+			t.Errorf("sanitizeName(%q) = %q, 期望 %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+// TestPool_ShutdownTimeout 验证 Shutdown 超时路径
+func TestPool_ShutdownTimeout(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	mock := &mockDockerClient{
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			close(started)
+			// 阻塞直到 unblock 或 ctx 取消
+			select {
+			case <-unblock:
+				return 0, nil
+			case <-ctx.Done():
+				return -1, ctx.Err()
+			}
+		},
+	}
+
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+
+	// 在 goroutine 中运行任务
+	go func() {
+		pool.Run(context.Background(), defaultPayload())
+	}()
+	<-started
+
+	// 用极短超时触发 Shutdown 超时路径
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- pool.Shutdown(ctx)
+	}()
+
+	// 等 Shutdown 超时后解除容器阻塞，让 defer cleanup 完成
+	time.Sleep(100 * time.Millisecond)
+	close(unblock)
+
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Errorf("Shutdown 返回错误: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Shutdown 超时未完成")
+	}
+}
+
+// TestPool_ShutdownIdempotent 验证多次调用 Shutdown 是幂等的
+func TestPool_ShutdownIdempotent(t *testing.T) {
+	closeCount := 0
+	mock := &mockDockerClient{
+		closeFunc: func() error {
+			closeCount++
+			return nil
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+
+	_ = pool.Shutdown(context.Background())
+	_ = pool.Shutdown(context.Background())
+
+	// 第二次 Shutdown 应直接返回 nil，不调用 docker.Close()
+	if closeCount != 1 {
+		t.Errorf("docker.Close 被调用 %d 次, 期望 1 次", closeCount)
+	}
+}
+
+// TestPool_RunLogError 验证获取日志失败时不影响整体执行
+func TestPool_RunLogError(t *testing.T) {
+	mock := &mockDockerClient{
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (string, error) {
+			return "", errors.New("日志获取失败")
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	result, err := pool.Run(context.Background(), defaultPayload())
+	if err != nil {
+		t.Fatalf("日志失败不应导致 Run 失败: %v", err)
+	}
+	if result.Output != "" {
+		t.Errorf("日志获取失败时 Output 应为空，实际: %q", result.Output)
+	}
+}
+
+// TestPool_RunRemoveContainerError 验证清理容器失败时不阻塞
+func TestPool_RunRemoveContainerError(t *testing.T) {
+	mock := &mockDockerClient{
+		removeContainerFunc: func(ctx context.Context, containerID string) error {
+			return errors.New("清理失败")
+		},
+	}
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	// 不应 panic 或阻塞
+	result, err := pool.Run(context.Background(), defaultPayload())
+	if err != nil {
+		t.Fatalf("Run 不应因清理失败而报错: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+}
+
+// trackingWriteCloser 用于追踪 Close 调用的 WriteCloser
+type trackingWriteCloser struct {
+	onClose func()
+}
+
+func (t *trackingWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (t *trackingWriteCloser) Close() error {
+	if t.onClose != nil {
+		t.onClose()
+	}
+	return nil
 }
 
 // TestPool_RunAfterShutdown 验证 Shutdown 后并发调用 Run 返回错误且不会泄漏 goroutine

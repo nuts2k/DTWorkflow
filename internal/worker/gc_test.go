@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -130,6 +132,222 @@ func TestGarbageCollector_Run_StopsOnContextCancel(t *testing.T) {
 		// 正常退出
 	case <-time.After(2 * time.Second):
 		t.Error("GC Run 在 ctx 取消后未及时退出")
+	}
+}
+
+// TestGarbageCollector_WithGCLogger 验证 Logger 选项
+func TestGarbageCollector_WithGCLogger(t *testing.T) {
+	mock := &mockDockerClient{}
+	logger := slog.Default()
+	gc := NewGarbageCollector(mock, WithGCLogger(logger))
+	if gc.logger != logger {
+		t.Error("WithGCLogger 未生效")
+	}
+}
+
+// TestGarbageCollector_WithGCForceKillAge 验证 ForceKillAge 选项
+func TestGarbageCollector_WithGCForceKillAge(t *testing.T) {
+	mock := &mockDockerClient{}
+	gc := NewGarbageCollector(mock, WithGCForceKillAge(2*time.Hour))
+	if gc.forceKillAge != 2*time.Hour {
+		t.Errorf("forceKillAge = %v, 期望 2h", gc.forceKillAge)
+	}
+}
+
+// TestGarbageCollector_DefaultForceKillAge 验证 forceKillAge 默认为 maxAge*3
+func TestGarbageCollector_DefaultForceKillAge(t *testing.T) {
+	mock := &mockDockerClient{}
+	gc := NewGarbageCollector(mock, WithGCMaxAge(10*time.Minute))
+	if gc.forceKillAge != 30*time.Minute {
+		t.Errorf("forceKillAge = %v, 期望 30min (maxAge*3)", gc.forceKillAge)
+	}
+}
+
+// TestGarbageCollector_RunOnce_ForceKillStuckRunningContainer 验证强制清理卡死容器
+func TestGarbageCollector_RunOnce_ForceKillStuckRunningContainer(t *testing.T) {
+	now := time.Now()
+	mock := &mockDockerClientWithList{
+		containers: []container.Summary{}, // 无已退出容器
+		runningContainers: []container.Summary{
+			{
+				ID:      "stuck-container",
+				Names:   []string{"/dtw-stuck"},
+				Created: now.Add(-4 * time.Hour).Unix(), // 4 小时前创建
+			},
+		},
+	}
+
+	gc := NewGarbageCollector(mock,
+		WithGCMaxAge(35*time.Minute),
+		WithGCForceKillAge(1*time.Hour), // 1 小时即强制清理
+	)
+	gc.runOnce(context.Background())
+
+	if len(mock.removedIDs) != 1 || mock.removedIDs[0] != "stuck-container" {
+		t.Errorf("应强制清理卡死容器, 实际清理: %v", mock.removedIDs)
+	}
+}
+
+// TestGarbageCollector_RunOnce_WarnStuckButNotForceKill 验证 stuck 但未到 forceKillAge 只记日志
+func TestGarbageCollector_RunOnce_WarnStuckButNotForceKill(t *testing.T) {
+	now := time.Now()
+	mock := &mockDockerClientWithList{
+		containers: []container.Summary{},
+		runningContainers: []container.Summary{
+			{
+				ID:      "slow-container",
+				Names:   []string{"/dtw-slow"},
+				Created: now.Add(-80 * time.Minute).Unix(), // 80 分钟前（超 maxAge*2=70min，但未超 forceKillAge=105min）
+			},
+		},
+	}
+
+	gc := NewGarbageCollector(mock, WithGCMaxAge(35*time.Minute))
+	gc.runOnce(context.Background())
+
+	// 未到 forceKillAge，不应删除
+	if len(mock.removedIDs) != 0 {
+		t.Errorf("未超 forceKillAge 时不应清理容器, 实际清理: %v", mock.removedIDs)
+	}
+}
+
+// TestGarbageCollector_RunOnce_ContextCancelled 验证 ctx 取消时跳过第二次扫描
+func TestGarbageCollector_RunOnce_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	mock := &mockDockerClientWithList{}
+	gc := NewGarbageCollector(mock)
+	// 不应 panic
+	gc.runOnce(ctx)
+}
+
+// TestGarbageCollector_RunOnce_ListError 验证列表查询失败时不 panic
+func TestGarbageCollector_RunOnce_ListError(t *testing.T) {
+	mock := &mockDockerClient{
+		listContainersFunc: func(ctx context.Context, f filters.Args) ([]container.Summary, error) {
+			return nil, errors.New("docker 不可用")
+		},
+	}
+	gc := NewGarbageCollector(mock)
+	// 不应 panic
+	gc.runOnce(context.Background())
+}
+
+// TestGarbageCollector_RunOnce_RemoveError 验证删除失败时继续处理其他容器
+func TestGarbageCollector_RunOnce_RemoveError(t *testing.T) {
+	now := time.Now()
+	removeAttempts := 0
+	mock := &mockDockerClient{
+		listContainersFunc: func(ctx context.Context, f filters.Args) ([]container.Summary, error) {
+			if f.ExactMatch("status", "running") {
+				return nil, nil
+			}
+			return []container.Summary{
+				{
+					ID:      "fail-container",
+					Names:   []string{"/dtw-fail"},
+					Created: now.Add(-40 * time.Minute).Unix(),
+				},
+				{
+					ID:      "ok-container",
+					Names:   []string{"/dtw-ok"},
+					Created: now.Add(-40 * time.Minute).Unix(),
+				},
+			}, nil
+		},
+		removeContainerFunc: func(ctx context.Context, containerID string) error {
+			removeAttempts++
+			if containerID == "fail-container" {
+				return errors.New("删除失败")
+			}
+			return nil
+		},
+	}
+	gc := NewGarbageCollector(mock, WithGCMaxAge(35*time.Minute))
+	gc.runOnce(context.Background())
+
+	if removeAttempts != 2 {
+		t.Errorf("应尝试删除 2 个容器，实际尝试 %d 次", removeAttempts)
+	}
+}
+
+// TestGarbageCollector_RunOnce_RunningListError 验证 running 容器列表查询失败不影响 exited 处理
+func TestGarbageCollector_RunOnce_RunningListError(t *testing.T) {
+	now := time.Now()
+	callCount := 0
+	mock := &mockDockerClient{
+		listContainersFunc: func(ctx context.Context, f filters.Args) ([]container.Summary, error) {
+			callCount++
+			if f.ExactMatch("status", "running") {
+				return nil, errors.New("查询 running 失败")
+			}
+			return []container.Summary{
+				{
+					ID:      "old-exited",
+					Names:   []string{"/dtw-old"},
+					Created: now.Add(-40 * time.Minute).Unix(),
+				},
+			}, nil
+		},
+		removeContainerFunc: func(ctx context.Context, containerID string) error {
+			return nil
+		},
+	}
+	gc := NewGarbageCollector(mock, WithGCMaxAge(35*time.Minute))
+	gc.runOnce(context.Background())
+
+	// 应进行两次 ListContainers 调用（exited + running）
+	if callCount != 2 {
+		t.Errorf("ListContainers 调用次数 = %d, 期望 2", callCount)
+	}
+}
+
+// TestGarbageCollector_RunOnce_ForceKillRemoveError 验证强制清理失败时不 panic
+func TestGarbageCollector_RunOnce_ForceKillRemoveError(t *testing.T) {
+	now := time.Now()
+	mock := &mockDockerClient{
+		listContainersFunc: func(ctx context.Context, f filters.Args) ([]container.Summary, error) {
+			if f.ExactMatch("status", "running") {
+				return []container.Summary{
+					{
+						ID:      "stuck-rm-fail",
+						Names:   []string{"/dtw-stuck"},
+						Created: now.Add(-4 * time.Hour).Unix(),
+					},
+				}, nil
+			}
+			return nil, nil
+		},
+		removeContainerFunc: func(ctx context.Context, containerID string) error {
+			return errors.New("强制删除失败")
+		},
+	}
+	gc := NewGarbageCollector(mock,
+		WithGCMaxAge(35*time.Minute),
+		WithGCForceKillAge(1*time.Hour),
+	)
+	// 不应 panic
+	gc.runOnce(context.Background())
+}
+
+// TestGarbageCollector_RunOnce_ShortContainerID 验证短 ID（<=12 位）不被截断
+func TestGarbageCollector_RunOnce_ShortContainerID(t *testing.T) {
+	now := time.Now()
+	mock := &mockDockerClientWithList{
+		containers: []container.Summary{
+			{
+				ID:      "short-id", // 少于 12 字符
+				Names:   []string{"/dtw-short"},
+				Created: now.Add(-40 * time.Minute).Unix(),
+			},
+		},
+	}
+	gc := NewGarbageCollector(mock, WithGCMaxAge(35*time.Minute))
+	gc.runOnce(context.Background())
+
+	if len(mock.removedIDs) != 1 {
+		t.Errorf("应清理 1 个容器, 实际: %d", len(mock.removedIDs))
 	}
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -123,3 +125,130 @@ func TestContainerConfigFields(t *testing.T) {
 		t.Errorf("Labels 字段不匹配: got %v", cfg.Labels)
 	}
 }
+
+// TestContainerExitError 测试 ContainerExitError 的错误信息格式
+func TestContainerExitError(t *testing.T) {
+	err := &ContainerExitError{
+		ContainerID: "abc123",
+		ExitCode:    1,
+		Message:     "process failed",
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "abc123") {
+		t.Errorf("错误信息应包含容器 ID，实际: %s", msg)
+	}
+	if !strings.Contains(msg, "code=1") {
+		t.Errorf("错误信息应包含退出码，实际: %s", msg)
+	}
+	if !strings.Contains(msg, "process failed") {
+		t.Errorf("错误信息应包含消息内容，实际: %s", msg)
+	}
+
+	// 验证实现了 error 接口
+	var _ error = err
+}
+
+// TestInt64Ptr 测试 int64Ptr 辅助函数
+func TestInt64Ptr(t *testing.T) {
+	ptr := int64Ptr(512)
+	if ptr == nil {
+		t.Fatal("int64Ptr 返回 nil")
+	}
+	if *ptr != 512 {
+		t.Errorf("*int64Ptr(512) = %d, 期望 512", *ptr)
+	}
+
+	zeroPtr := int64Ptr(0)
+	if *zeroPtr != 0 {
+		t.Errorf("*int64Ptr(0) = %d, 期望 0", *zeroPtr)
+	}
+}
+
+// TestStdinWriteCloser 测试 stdinWriteCloser 的 Write/Close/SetWriteDeadline 方法
+func TestStdinWriteCloser(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+
+	wc := &stdinWriteCloser{conn: server}
+
+	// 测试 Write
+	go func() {
+		buf := make([]byte, 5)
+		_, _ = client.Read(buf)
+	}()
+	n, err := wc.Write([]byte("hello"))
+	if err != nil {
+		t.Errorf("Write 返回错误: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("Write 返回 %d 字节, 期望 5", n)
+	}
+
+	// 测试 SetWriteDeadline
+	err = wc.SetWriteDeadline(time.Now().Add(time.Second))
+	if err != nil {
+		t.Errorf("SetWriteDeadline 返回错误: %v", err)
+	}
+
+	// 测试 Close
+	err = wc.Close()
+	if err != nil {
+		t.Errorf("Close 返回错误: %v", err)
+	}
+}
+
+// TestStdinWriteCloser_CloseWithHalfClose 测试 Close 对支持 CloseWrite 的连接正确执行半关闭
+func TestStdinWriteCloser_CloseWithHalfClose(t *testing.T) {
+	// net.Pipe 连接支持 CloseWrite（通过 net.TCPConn 等），
+	// 但 net.Pipe 本身不支持 CloseWrite，所以这里用 mock 验证
+	closed := false
+	closeWriteCalled := false
+
+	mock := &mockConn{
+		closeFunc: func() error {
+			closed = true
+			return nil
+		},
+		closeWriteFunc: func() error {
+			closeWriteCalled = true
+			return nil
+		},
+	}
+
+	wc := &stdinWriteCloser{conn: mock}
+	_ = wc.Close()
+
+	if !closeWriteCalled {
+		t.Error("Close 应先调用 CloseWrite")
+	}
+	if !closed {
+		t.Error("Close 应调用 conn.Close")
+	}
+}
+
+// mockConn 实现 net.Conn 接口，用于测试 stdinWriteCloser
+type mockConn struct {
+	net.Conn // 嵌入 net.Conn 提供默认实现
+	closeFunc      func() error
+	closeWriteFunc func() error
+}
+
+func (m *mockConn) Write(p []byte) (int, error)         { return len(p), nil }
+func (m *mockConn) Read(p []byte) (int, error)           { return 0, io.EOF }
+func (m *mockConn) Close() error {
+	if m.closeFunc != nil {
+		return m.closeFunc()
+	}
+	return nil
+}
+func (m *mockConn) CloseWrite() error {
+	if m.closeWriteFunc != nil {
+		return m.closeWriteFunc()
+	}
+	return nil
+}
+func (m *mockConn) LocalAddr() net.Addr                  { return &net.TCPAddr{} }
+func (m *mockConn) RemoteAddr() net.Addr                 { return &net.TCPAddr{} }
+func (m *mockConn) SetDeadline(t time.Time) error        { return nil }
+func (m *mockConn) SetReadDeadline(t time.Time) error    { return nil }
+func (m *mockConn) SetWriteDeadline(t time.Time) error   { return nil }

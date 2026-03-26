@@ -163,8 +163,11 @@ func TestParseCPULimit(t *testing.T) {
 		{"1.5", 1_500_000_000, false},
 		{"0.5", 500_000_000, false},
 		{"", 0, false},
+		{"0", 0, false},
+		{"  2.0  ", 2_000_000_000, false}, // 前后空格
 		{"-1", 0, true},
 		{"abc", 0, true},
+		{"64", 0, true}, // 超出上限 (maxCPUCores=32)
 	}
 
 	for _, tc := range tests {
@@ -195,8 +198,21 @@ func TestParseMemoryLimit(t *testing.T) {
 		{"1024k", 1024 * 1024, false},
 		{"1024", 1024, false},
 		{"", 0, false},
+		{"0g", 0, false},              // 零值
+		{"4gb", 4 * 1024 * 1024 * 1024, false}, // gb 后缀
+		{"512mb", 512 * 1024 * 1024, false},     // mb 后缀
+		{"1024kb", 1024 * 1024, false},           // kb 后缀
+		{"1024b", 1024, false},                   // b 后缀
+		{"1.5g", 1610612736, false},              // 浮点数（走 float 分支）
+		{"0.0g", 0, false},                       // 浮点零
 		{"-1g", 0, true},
+		{"-1", 0, true},                // 整数负数无后缀
 		{"abc", 0, true},
+		{"128g", 0, true},              // 超出 64GB 上限
+		{"999999999999g", 0, true},     // 溢出检测
+		{"-1.5g", 0, true},            // 浮点负数
+		{"100g", 0, true},             // 超 64GB 上限（整数路径）
+		{"100.0g", 0, true},           // 超 64GB 上限（浮点路径）
 	}
 
 	for _, tc := range tests {
@@ -235,6 +251,28 @@ func TestSanitizeInput(t *testing.T) {
 				t.Errorf("sanitizeInput(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestSanitizePromptInput(t *testing.T) {
+	// 正常输入不截断
+	result := sanitizePromptInput("hello", 100)
+	if result != "hello" {
+		t.Errorf("sanitizePromptInput 正常输入 = %q, 期望 hello", result)
+	}
+
+	// 超长输入截断
+	long := strings.Repeat("中文", 200) // 200 个中文字符
+	result = sanitizePromptInput(long, 50)
+	runes := []rune(result)
+	if len(runes) != 50 {
+		t.Errorf("截断后 rune 数 = %d, 期望 50", len(runes))
+	}
+
+	// 包含换行的输入清理后再截断
+	result = sanitizePromptInput("a\nb\nc", 3)
+	if result != "a b" {
+		t.Errorf("sanitizePromptInput 换行+截断 = %q, 期望 'a b'", result)
 	}
 }
 
@@ -346,6 +384,55 @@ func TestBuildContainerCmd_ReviewPR_DefaultBaseRef(t *testing.T) {
 
 	if !strings.Contains(cmd[2], "main") {
 		t.Error("BaseRef 为空时 prompt 应默认使用 main")
+	}
+}
+
+func TestBuildContainerCmd_GenTests_EmptyModule(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		RepoFullName: "owner/repo",
+		Module:       "", // 空模块应回退到 "."
+	}
+	cmd := buildContainerCmd(payload)
+	if !strings.Contains(cmd[2], ".") {
+		t.Error("Module 为空时 prompt 应使用 '.'")
+	}
+}
+
+func TestBuildContainerCmd_UnknownTaskType(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     "unknown_task",
+		RepoFullName: "owner/repo",
+	}
+	cmd := buildContainerCmd(payload)
+	if cmd[0] != "claude" || cmd[1] != "-p" {
+		t.Errorf("未知任务类型命令格式错误: %v", cmd)
+	}
+	if !strings.Contains(cmd[2], "unknown_task") {
+		t.Error("未知任务类型 prompt 应包含任务类型名")
+	}
+}
+
+func TestBuildContainerEnv_GenTests_EmptyModule(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		Module:       "", // 空模块时不应添加 MODULE 环境变量
+	}
+
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	if _, ok := envMap["MODULE"]; ok {
+		t.Error("Module 为空时不应包含 MODULE 环境变量")
 	}
 }
 
