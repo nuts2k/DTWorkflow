@@ -42,7 +42,7 @@ type DockerClient interface {
 	// RemoveContainer 强制删除容器（包括运行中的）
 	RemoveContainer(ctx context.Context, containerID string) error
 	// GetContainerLogs 获取容器标准输出和标准错误日志
-	GetContainerLogs(ctx context.Context, containerID string) (string, error)
+	GetContainerLogs(ctx context.Context, containerID string) (ContainerLogs, error)
 	// ListContainers 列举符合过滤条件的容器（用于 GC 扫描）
 	ListContainers(ctx context.Context, f filters.Args) ([]container.Summary, error)
 	// AttachContainer attach 到容器 stdin，返回 WriteCloser。
@@ -64,6 +64,12 @@ type ContainerConfig struct {
 	NetworkName string            // Docker 网络名称
 	WorkDir     string            // 容器内工作目录
 	OpenStdin   bool              // 是否开启 stdin（配合 stdin 数据传入使用）
+}
+
+// ContainerLogs 保存解复用后的容器 stdout/stderr。
+type ContainerLogs struct {
+	Stdout string
+	Stderr string
 }
 
 // dockerClient DockerClient 的真实实现
@@ -245,7 +251,7 @@ func (d *dockerClient) RemoveContainer(ctx context.Context, containerID string) 
 }
 
 // GetContainerLogs 获取容器的标准输出和标准错误日志
-func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string) (string, error) {
+func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string) (ContainerLogs, error) {
 	reader, err := d.cli.ContainerLogs(ctx, containerID, container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -253,7 +259,7 @@ func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string)
 		Tail:       "5000", // 限制最后 5000 行，防止 OOM
 	})
 	if err != nil {
-		return "", fmt.Errorf("获取容器 %s 日志失败: %w", containerID, err)
+		return ContainerLogs{}, fmt.Errorf("获取容器 %s 日志失败: %w", containerID, err)
 	}
 	defer reader.Close()
 
@@ -263,10 +269,12 @@ func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string)
 	// 使用 stdcopy.StdCopy 正确解复用 Docker 日志流（stdout + stderr）
 	var stdout, stderr bytes.Buffer
 	if _, err := stdcopy.StdCopy(&stdout, &stderr, limitedReader); err != nil {
-		return "", fmt.Errorf("读取容器 %s 日志失败: %w", containerID, err)
+		return ContainerLogs{}, fmt.Errorf("读取容器 %s 日志失败: %w", containerID, err)
 	}
-	// 只返回 stdout：Claude CLI JSON 输出在 stdout，entrypoint 日志在 stderr
-	return stdout.String(), nil
+	return ContainerLogs{
+		Stdout: stdout.String(),
+		Stderr: stderr.String(),
+	}, nil
 }
 
 // ListContainers 列举符合过滤条件的容器（用于 GC 扫描）

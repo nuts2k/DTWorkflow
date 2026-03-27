@@ -78,8 +78,8 @@ func TestPool_RunSuccess(t *testing.T) {
 		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
 			return 0, nil
 		},
-		getContainerLogsFunc: func(ctx context.Context, containerID string) (string, error) {
-			return "PR review complete", nil
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			return ContainerLogs{Stdout: "PR review complete", Stderr: "entrypoint info"}, nil
 		},
 	}
 
@@ -99,6 +99,30 @@ func TestPool_RunSuccess(t *testing.T) {
 	}
 	if result.Duration < 0 {
 		t.Errorf("Duration 不应为负数: %d", result.Duration)
+	}
+}
+
+// TestPool_RunFailureIncludesStderr 验证失败场景会保留 stderr 诊断日志。
+func TestPool_RunFailureIncludesStderr(t *testing.T) {
+	mock := &mockDockerClient{
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			return 1, &ContainerExitError{ContainerID: containerID, ExitCode: 1, Message: "clone failed"}
+		},
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			return ContainerLogs{Stdout: "", Stderr: "fatal: Authentication failed"}, nil
+		},
+	}
+
+	pool := mustNewPool(t, defaultPoolConfig(), mock)
+	result, err := pool.Run(context.Background(), defaultPayload())
+	if err == nil {
+		t.Fatal("失败场景应返回错误")
+	}
+	if result == nil {
+		t.Fatal("失败场景 result 不应为 nil")
+	}
+	if result.Output != "fatal: Authentication failed" {
+		t.Errorf("Output = %q, 期望保留 stderr 日志", result.Output)
 	}
 }
 
@@ -605,8 +629,8 @@ func TestPool_SanitizeName(t *testing.T) {
 	}{
 		{"abc123", "abc123"},
 		{"a.b.c", "a-b-c"},
-		{"a--b", "a-b"},     // 连续连字符压缩
-		{"a!!!b", "a-b"},    // 多个特殊字符压缩
+		{"a--b", "a-b"},  // 连续连字符压缩
+		{"a!!!b", "a-b"}, // 多个特殊字符压缩
 		{"hello world", "hello-world"},
 	}
 	for _, tc := range tests {
@@ -688,8 +712,8 @@ func TestPool_ShutdownIdempotent(t *testing.T) {
 // TestPool_RunLogError 验证获取日志失败时不影响整体执行
 func TestPool_RunLogError(t *testing.T) {
 	mock := &mockDockerClient{
-		getContainerLogsFunc: func(ctx context.Context, containerID string) (string, error) {
-			return "", errors.New("日志获取失败")
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			return ContainerLogs{}, errors.New("日志获取失败")
 		},
 	}
 	pool := mustNewPool(t, defaultPoolConfig(), mock)

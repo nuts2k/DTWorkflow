@@ -20,7 +20,7 @@ type mockDockerClient struct {
 	startContainerFunc   func(ctx context.Context, containerID string) error
 	waitContainerFunc    func(ctx context.Context, containerID string) (int64, error)
 	removeContainerFunc  func(ctx context.Context, containerID string) error
-	getContainerLogsFunc func(ctx context.Context, containerID string) (string, error)
+	getContainerLogsFunc func(ctx context.Context, containerID string) (ContainerLogs, error)
 	listContainersFunc   func(ctx context.Context, f filters.Args) ([]container.Summary, error)
 	attachContainerFunc  func(ctx context.Context, containerID string) (io.WriteCloser, error)
 	closeFunc            func() error
@@ -68,11 +68,11 @@ func (m *mockDockerClient) RemoveContainer(ctx context.Context, containerID stri
 	return nil
 }
 
-func (m *mockDockerClient) GetContainerLogs(ctx context.Context, containerID string) (string, error) {
+func (m *mockDockerClient) GetContainerLogs(ctx context.Context, containerID string) (ContainerLogs, error) {
 	if m.getContainerLogsFunc != nil {
 		return m.getContainerLogsFunc(ctx, containerID)
 	}
-	return "mock logs", nil
+	return ContainerLogs{Stdout: "mock logs"}, nil
 }
 
 func (m *mockDockerClient) ListContainers(ctx context.Context, f filters.Args) ([]container.Summary, error) {
@@ -228,13 +228,13 @@ func TestStdinWriteCloser_CloseWithHalfClose(t *testing.T) {
 
 // mockConn 实现 net.Conn 接口，用于测试 stdinWriteCloser
 type mockConn struct {
-	net.Conn // 嵌入 net.Conn 提供默认实现
+	net.Conn       // 嵌入 net.Conn 提供默认实现
 	closeFunc      func() error
 	closeWriteFunc func() error
 }
 
-func (m *mockConn) Write(p []byte) (int, error)         { return len(p), nil }
-func (m *mockConn) Read(p []byte) (int, error)           { return 0, io.EOF }
+func (m *mockConn) Write(p []byte) (int, error) { return len(p), nil }
+func (m *mockConn) Read(p []byte) (int, error)  { return 0, io.EOF }
 func (m *mockConn) Close() error {
 	if m.closeFunc != nil {
 		return m.closeFunc()
@@ -247,8 +247,8 @@ func (m *mockConn) CloseWrite() error {
 	}
 	return nil
 }
-func (m *mockConn) LocalAddr() net.Addr                  { return &net.TCPAddr{} }
-func (m *mockConn) RemoteAddr() net.Addr                 { return &net.TCPAddr{} }
-func (m *mockConn) SetDeadline(t time.Time) error        { return nil }
-func (m *mockConn) SetReadDeadline(t time.Time) error    { return nil }
-func (m *mockConn) SetWriteDeadline(t time.Time) error   { return nil }
+func (m *mockConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (m *mockConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (m *mockConn) SetDeadline(t time.Time) error      { return nil }
+func (m *mockConn) SetReadDeadline(t time.Time) error  { return nil }
+func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }

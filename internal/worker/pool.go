@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -248,9 +249,14 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 	duration := time.Since(start).Milliseconds()
 	p.total.Add(1)
 
+	output := logs.Stdout
+	if waitErr != nil || exitCode != 0 {
+		output = mergeLogStreams(logs.Stdout, logs.Stderr)
+	}
+
 	result := &ExecutionResult{
 		ExitCode:    int(exitCode),
-		Output:      logs,
+		Output:      output,
 		Duration:    duration,
 		ContainerID: containerID,
 	}
@@ -288,6 +294,19 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 	)
 
 	return result, nil
+}
+
+func mergeLogStreams(stdout, stderr string) string {
+	switch {
+	case stdout == "":
+		return stderr
+	case stderr == "":
+		return stdout
+	case strings.HasSuffix(stdout, "\n") || strings.HasPrefix(stderr, "\n"):
+		return stdout + stderr
+	default:
+		return stdout + "\n" + stderr
+	}
 }
 
 // Shutdown 优雅关闭 Worker 池，等待所有正在运行的容器完成

@@ -1,7 +1,7 @@
 ARG GO_VERSION=1.25.6
 FROM golang:${GO_VERSION}-bookworm AS builder
 
-ARG GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY
 ENV GOPROXY=${GOPROXY}
 
 WORKDIR /src
