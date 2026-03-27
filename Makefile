@@ -9,7 +9,7 @@ LDFLAGS     := -X '$(MODULE)/internal/cmd.version=$(VERSION)' \
                -X '$(MODULE)/internal/cmd.gitCommit=$(GIT_COMMIT)' \
                -X '$(MODULE)/internal/cmd.buildTime=$(BUILD_TIME)'
 
-.PHONY: build build-linux install lint test fmt clean dev-up dev-down docker-build help
+.PHONY: build build-linux install lint test fmt clean dev-up dev-down docker-build release deploy rollback help
 
 ## build: 构建本平台二进制到 bin/
 build:
@@ -52,6 +52,24 @@ docker-build:
 	docker build -f build/Dockerfile \
 		--build-arg LDFLAGS="$(LDFLAGS)" \
 		-t $(APP_NAME):$(VERSION) .
+
+## release: 构建发布包（用法：make release VERSION=v0.2.0）
+release:
+ifndef VERSION
+	$(error 请指定版本号: make release VERSION=v0.2.0)
+endif
+	scripts/build-release.sh $(VERSION)
+
+## deploy: 部署到测试服务器（用法：make deploy VERSION=v0.2.0 HOST=dtworkflow-test）
+deploy:
+ifndef VERSION
+	$(error 请指定版本号: make deploy VERSION=v0.2.0)
+endif
+	scripts/deploy.sh $(VERSION) $(HOST)
+
+## rollback: 回滚测试服务器（用法：make rollback HOST=dtworkflow-test）
+rollback:
+	scripts/rollback.sh $(HOST)
 
 ## help: 显示帮助信息
 help:
