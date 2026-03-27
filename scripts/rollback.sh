@@ -76,13 +76,24 @@ echo "  服务已重启"
 echo "[5/5] 健康检查..."
 sleep 5
 
+get_remote_dtworkflow_health() {
+    ssh "$DEPLOY_HOST" "cd $DEPLOY_DIR && \
+        container_id=\$(docker compose ps -q dtworkflow) && \
+        if [ -z \"\$container_id\" ]; then \
+            echo missing; \
+        else \
+            docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \"\$container_id\"; \
+        fi" 2>/dev/null || echo unreachable
+}
+
 HEALTH_OK=false
 for i in $(seq 1 6); do
-    if ssh "$DEPLOY_HOST" "curl -sf http://localhost:8080/healthz" >/dev/null 2>&1; then
+    HEALTH_STATUS="$(get_remote_dtworkflow_health)"
+    if [ "$HEALTH_STATUS" = "healthy" ]; then
         HEALTH_OK=true
         break
     fi
-    echo "  重试 ($i/6)..."
+    echo "  重试 ($i/6)，当前状态: $HEALTH_STATUS"
     sleep 5
 done
 

@@ -34,7 +34,7 @@ RUN useradd --uid 1001 --create-home dtworkflow && \
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
-    CMD curl -sf http://localhost:8080/healthz || exit 1
+    CMD curl -sf http://localhost:8080/readyz || exit 1
 
 USER dtworkflow
 
