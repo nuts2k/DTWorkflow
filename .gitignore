@@ -39,3 +39,6 @@ data/
 dtworkflow.yaml
 dtworkflow.yml
 .worktrees/
+
+# 发布产物（镜像 tar 包）
+.releases/
