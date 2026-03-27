@@ -497,6 +497,12 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 }
 
 // buildCommand 构造容器执行命令（stdin 模式，prompt 通过 stdin 传入）
+// 评审场景为只读模式：通过 --disallowedTools 禁止所有文件写工具，
+// 防止 Claude Code 误修改代码或执行 git 写操作。
 func (s *Service) buildCommand() []string {
-	return []string{"claude", "-p", "-", "--output-format", "json"}
+	return []string{
+		"claude", "-p", "-",
+		"--output-format", "json",
+		"--disallowedTools", "Edit,Write,NotebookEdit",
+	}
 }

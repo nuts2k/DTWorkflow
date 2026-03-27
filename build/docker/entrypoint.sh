@@ -90,6 +90,32 @@ case "${TASK_TYPE:-}" in
 esac
 
 log "仓库准备完成 ($(git log --oneline -1))"
+
+# --- 评审模式安全加固：锁定 Git 写操作 ---
+if [ "${TASK_TYPE:-}" = "review_pr" ]; then
+    # P0: 将 push URL 置为无效，防止任何 push 操作
+    git remote set-url --push origin no-push-allowed
+
+    # P1: 设置 pre-commit hook 拦截所有 commit 尝试
+    mkdir -p .git/hooks
+    cat > .git/hooks/pre-commit << 'HOOK'
+#!/bin/sh
+echo "ERROR: commits are disabled in review mode" >&2
+exit 1
+HOOK
+    chmod +x .git/hooks/pre-commit
+
+    # P1: 清除 Git 凭证，防止 Claude Code 通过 Bash 读取 token 后手动 push
+    git remote set-url origin "${REPO_CLONE_URL}"
+    git config credential.helper ''
+
+    log "评审模式安全加固已启用（push 已禁用，commit 已拦截，凭证已清除）"
+fi
+
+# 清除敏感环境变量，防止 Claude Code 通过 Bash 读取
+unset GITEA_TOKEN
+unset AUTH_URL
+
 log "开始执行任务命令..."
 
 # 执行传入的命令（通常是 claude -p "..."）
