@@ -122,6 +122,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 	// M2.4: 从 SQLite record 覆盖 payload.CreatedAt，确保与数据库一致
 	payload.CreatedAt = record.CreatedAt
+	payload.TaskID = record.ID
 
 	if record.Status == model.TaskStatusCancelled {
 		p.logger.InfoContext(ctx, "任务已标记为 cancelled，跳过执行",

@@ -265,7 +265,8 @@ func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string)
 	if _, err := stdcopy.StdCopy(&stdout, &stderr, limitedReader); err != nil {
 		return "", fmt.Errorf("读取容器 %s 日志失败: %w", containerID, err)
 	}
-	return stdout.String() + stderr.String(), nil
+	// 只返回 stdout：Claude CLI JSON 输出在 stdout，entrypoint 日志在 stderr
+	return stdout.String(), nil
 }
 
 // ListContainers 列举符合过滤条件的容器（用于 GC 扫描）

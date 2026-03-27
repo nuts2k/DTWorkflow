@@ -1,6 +1,9 @@
 ARG GO_VERSION=1.25.6
 FROM golang:${GO_VERSION}-bookworm AS builder
 
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -23,7 +26,8 @@ COPY --from=builder /out/dtworkflow /usr/local/bin/
 WORKDIR /app
 ARG DOCKER_GID=999
 RUN useradd --uid 1001 --create-home dtworkflow && \
-    chown dtworkflow:dtworkflow /app && \
+    mkdir -p /app/data && \
+    chown -R dtworkflow:dtworkflow /app && \
     # 添加 docker 组，使 dtworkflow 用户可访问挂载的 docker.sock
     groupadd -g ${DOCKER_GID} docker && usermod -aG docker dtworkflow
 

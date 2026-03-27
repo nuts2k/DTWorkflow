@@ -152,7 +152,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 			headSHA = pr.Head.SHA
 		}
 		input := WritebackInput{
-			TaskID:            payload.DeliveryID,
+			TaskID:            payload.TaskID,
 			Owner:             owner,
 			Repo:              repo,
 			PRNumber:          prNum,

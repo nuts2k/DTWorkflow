@@ -25,8 +25,8 @@ services:
       dockerfile: build/Dockerfile
     command: ["serve", "--config", "/app/dtworkflow.yaml"]
     ports:
-      # 仅绑定本地回环地址，如需外部访问应通过反向代理（如 Nginx/Caddy）转发
-      - "127.0.0.1:8080:8080"
+      # 绑定所有接口，允许局域网 Webhook 回调；生产环境建议通过反向代理限制访问
+      - "0.0.0.0:8080:8080"
     depends_on:
       redis:
         condition: service_healthy
@@ -36,6 +36,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    # macOS Docker Desktop: docker.sock 在容器内属 root:root(GID 0)，需加入 root 组才能访问
+    group_add:
+      - "0"
     environment:
       # 容器内网络：Redis 通过 compose 服务名访问（覆盖 yaml 中的 localhost:6379）
       - DTWORKFLOW_REDIS_ADDR=redis:6379

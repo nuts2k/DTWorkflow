@@ -541,6 +541,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
+	router.Use(gin.Logger())
 	router.Use(gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, err any) {
 		slog.Error("HTTP handler panic recovered", slog.Any("error", err), slog.String("path", c.Request.URL.Path))
 		c.AbortWithStatus(http.StatusInternalServerError)

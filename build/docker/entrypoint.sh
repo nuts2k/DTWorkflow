@@ -6,7 +6,7 @@ set -euo pipefail
 # 负责：运行环境准备 -> Git 仓库 clone -> PR 分支 checkout -> 执行 Claude Code CLI
 # ============================================================
 
-log() { echo "[entrypoint] $*"; }
+log() { echo "[entrypoint] $*" >&2; }
 
 # --- 准备可写的 HOME 目录 ---
 # 容器使用 ReadonlyRootfs，/home/worker 不可写。
@@ -39,7 +39,8 @@ AUTH_URL="${PROTO}://token:${GITEA_TOKEN}@${REST}"
 REPO_DIR="/workspace/repo"
 log "正在 clone 仓库: ${REPO_CLONE_URL} -> ${REPO_DIR}"
 # 过滤 git 输出中可能包含的 token（认证失败时 git 可能回显完整 URL）
-if ! git clone "${AUTH_URL}" "${REPO_DIR}" 2>&1 | sed "s|${GITEA_TOKEN}|***|g"; then
+# 所有 git 输出重定向到 stderr，保持 stdout 纯净（供 Claude CLI JSON 输出使用）
+if ! git clone "${AUTH_URL}" "${REPO_DIR}" 2>&1 | sed "s|${GITEA_TOKEN}|***|g" >&2; then
     log "clone 失败，退出"
     exit 1
 fi
@@ -51,29 +52,29 @@ case "${TASK_TYPE:-}" in
         if [ -n "${PR_NUMBER:-}" ]; then
             # 方式一：通过 Gitea 的 PR ref 获取（refs/pull/<number>/head）
             log "正在获取 PR #${PR_NUMBER} 的代码..."
-            if git fetch origin "pull/${PR_NUMBER}/head:pr-${PR_NUMBER}" 2>&1; then
-                git checkout "pr-${PR_NUMBER}" 2>&1
+            if git fetch origin "pull/${PR_NUMBER}/head:pr-${PR_NUMBER}" >&2 2>&1; then
+                git checkout "pr-${PR_NUMBER}" >&2 2>&1
                 log "通过 PR ref 获取成功"
             elif [ -n "${HEAD_REF:-}" ]; then
                 # 方式二：回退到直接 checkout HEAD_REF 分支
                 log "PR ref 不可用，回退到分支: ${HEAD_REF}"
-                git fetch origin "${HEAD_REF}" 2>&1
-                git checkout "FETCH_HEAD" 2>&1
+                git fetch origin "${HEAD_REF}" >&2 2>&1
+                git checkout "FETCH_HEAD" >&2 2>&1
             else
                 log "警告：无法获取 PR 分支，使用默认分支"
             fi
 
             # 获取 base 分支用于 diff 对比
             if [ -n "${BASE_REF:-}" ]; then
-                git fetch origin "${BASE_REF}" 2>&1 || true
+                git fetch origin "${BASE_REF}" >&2 2>&1 || true
                 log "已获取 base 分支: ${BASE_REF}"
             fi
 
             log "PR #${PR_NUMBER} 分支已就绪 (HEAD: $(git rev-parse --short HEAD))"
         elif [ -n "${HEAD_REF:-}" ]; then
             log "正在 checkout 分支: ${HEAD_REF}"
-            git fetch origin "${HEAD_REF}" 2>&1
-            git checkout "FETCH_HEAD" 2>&1
+            git fetch origin "${HEAD_REF}" >&2 2>&1
+            git checkout "FETCH_HEAD" >&2 2>&1
             log "分支已就绪"
         fi
         ;;

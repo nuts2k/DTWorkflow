@@ -69,6 +69,7 @@ type TaskPayload struct {
 	// TaskRecord.TaskType 用于 SQLite 列查询和索引过滤；
 	// TaskPayload.TaskType 随 JSON 序列化传递给 asynq Worker，使 Processor 无需反查数据库即可路由任务。
 	TaskType   TaskType `json:"task_type"`
+	TaskID     string   `json:"-"` // 运行时由 Processor 从 TaskRecord.ID 注入，不序列化
 	DeliveryID string   `json:"delivery_id,omitempty"` // Webhook delivery ID，用于幂等
 
 	// 仓库定位（所有任务类型共享）
