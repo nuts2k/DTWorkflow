@@ -23,6 +23,7 @@ type mockDockerClient struct {
 	getContainerLogsFunc func(ctx context.Context, containerID string) (ContainerLogs, error)
 	listContainersFunc   func(ctx context.Context, f filters.Args) ([]container.Summary, error)
 	attachContainerFunc  func(ctx context.Context, containerID string) (io.WriteCloser, error)
+	followLogsFunc       func(ctx context.Context, containerID string) (io.ReadCloser, error)
 	closeFunc            func() error
 }
 
@@ -89,6 +90,13 @@ func (m *mockDockerClient) AttachContainer(ctx context.Context, containerID stri
 	// 默认返回一个内存 pipe WriteCloser
 	_, server := net.Pipe()
 	return server, nil
+}
+
+func (m *mockDockerClient) FollowLogs(ctx context.Context, containerID string) (io.ReadCloser, error) {
+	if m.followLogsFunc != nil {
+		return m.followLogsFunc(ctx, containerID)
+	}
+	return io.NopCloser(strings.NewReader("")), nil
 }
 
 func (m *mockDockerClient) Close() error {

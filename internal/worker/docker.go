@@ -48,6 +48,10 @@ type DockerClient interface {
 	// AttachContainer attach 到容器 stdin，返回 WriteCloser。
 	// 调用方写入数据后必须 Close 以发送 EOF 信号。
 	AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, error)
+	// FollowLogs 以流式方式读取容器 stdout 日志。
+	// 返回的 reader 持续输出数据直到容器退出或 ctx 取消。
+	// 调用方负责 Close。
+	FollowLogs(ctx context.Context, containerID string) (io.ReadCloser, error)
 	// Close 关闭客户端连接
 	Close() error
 }
@@ -275,6 +279,20 @@ func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID string)
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
 	}, nil
+}
+
+// FollowLogs 以 Follow 模式读取容器 stdout，用于流式心跳监控
+func (d *dockerClient) FollowLogs(ctx context.Context, containerID string) (io.ReadCloser, error) {
+	reader, err := d.cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: false,
+		Follow:     true,
+		Timestamps: false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("follow 容器 %s 日志失败: %w", containerID, err)
+	}
+	return reader, nil
 }
 
 // ListContainers 列举符合过滤条件的容器（用于 GC 扫描）
