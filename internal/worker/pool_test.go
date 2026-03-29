@@ -1,9 +1,12 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -788,5 +791,198 @@ func TestPool_RunAfterShutdown(t *testing.T) {
 
 	if int(errCount.Load()) != concurrency {
 		t.Errorf("期望 %d 个 Run 调用返回错误，实际 %d 个", concurrency, errCount.Load())
+	}
+}
+
+// --- 流式心跳监控测试 ---
+
+// stdcopyFrame 构造带 Docker stdcopy 8 字节 header 的数据帧。
+// streamType: 1=stdout, 2=stderr
+func stdcopyFrame(streamType byte, data string) []byte {
+	payload := []byte(data)
+	header := make([]byte, 8)
+	header[0] = streamType
+	binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
+	return append(header, payload...)
+}
+
+// TestPool_RunWithStreamMonitor_Success 模拟完整 stream-json 事件流（含 result），验证 Output 正确提取
+func TestPool_RunWithStreamMonitor_Success(t *testing.T) {
+	var capturedCmd []string
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			capturedCmd = config.Cmd
+			return "container-stream-ok", nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			// 短暂延迟，确保 streamMonitorLoop 有时间处理流中的 result 事件
+			time.Sleep(200 * time.Millisecond)
+			return 0, nil
+		},
+		followLogsFunc: func(ctx context.Context, containerID string) (io.ReadCloser, error) {
+			var buf bytes.Buffer
+			buf.Write(stdcopyFrame(1, `{"type":"system","subtype":"init"}`+"\n"))
+			buf.Write(stdcopyFrame(1, `{"type":"assistant","message":{"role":"assistant"}}`+"\n"))
+			buf.Write(stdcopyFrame(1, `{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":1000,"is_error":false,"num_turns":3,"result":"{\"summary\":\"good\",\"verdict\":\"approve\",\"issues\":[]}","session_id":"sess-1"}`+"\n"))
+			return io.NopCloser(&buf), nil
+		},
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			return ContainerLogs{Stdout: "fallback logs"}, nil
+		},
+	}
+
+	config := defaultPoolConfig()
+	config.StreamMonitor = StreamMonitorConfig{
+		Enabled:         true,
+		ActivityTimeout: 5 * time.Second,
+	}
+	pool := mustNewPool(t, config, mock)
+
+	result, err := pool.RunWithCommand(context.Background(), defaultPayload(), []string{"claude", "-p", "review"})
+	if err != nil {
+		t.Fatalf("Run 返回非预期错误: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, 期望 0", result.ExitCode)
+	}
+	// 验证 Output 来自流式 result 事件（而非 fallback 日志）
+	// result 字段内的 JSON 是转义后的字符串，所以 verdict 出现为 \"verdict\"
+	if !strings.Contains(result.Output, `verdict`) {
+		t.Errorf("Output 应包含 result 事件内容，实际: %s", result.Output)
+	}
+	if !strings.Contains(result.Output, `"type":"success"`) {
+		t.Errorf("Output 应包含 CLI JSON 信封的 type=success，实际: %s", result.Output)
+	}
+	if result.Output == "fallback logs" {
+		t.Error("Output 不应为 fallback 日志")
+	}
+	// 验证命令被注入了 stream-json 标志
+	found := false
+	for _, arg := range capturedCmd {
+		if arg == "stream-json" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("开启流式监控时命令应包含 stream-json，实际: %v", capturedCmd)
+	}
+}
+
+// TestPool_RunWithStreamMonitor_Disabled 开关关闭走旧路径，验证从 GetContainerLogs 获取输出
+func TestPool_RunWithStreamMonitor_Disabled(t *testing.T) {
+	followLogsCalled := false
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-no-stream", nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			return 0, nil
+		},
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			return ContainerLogs{Stdout: "legacy log output"}, nil
+		},
+		followLogsFunc: func(ctx context.Context, containerID string) (io.ReadCloser, error) {
+			followLogsCalled = true
+			return io.NopCloser(strings.NewReader("")), nil
+		},
+	}
+
+	config := defaultPoolConfig()
+	config.StreamMonitor = StreamMonitorConfig{
+		Enabled: false,
+	}
+	pool := mustNewPool(t, config, mock)
+
+	result, err := pool.RunWithCommand(context.Background(), defaultPayload(), []string{"claude", "-p", "review"})
+	if err != nil {
+		t.Fatalf("Run 返回非预期错误: %v", err)
+	}
+	if result.Output != "legacy log output" {
+		t.Errorf("Output = %q, 期望 legacy log output", result.Output)
+	}
+	if followLogsCalled {
+		t.Error("开关关闭时不应调用 FollowLogs")
+	}
+}
+
+// blockingReadCloser 先返回 buf 中的数据，读完后阻塞直到 ctx 取消。
+// 模拟 Docker 日志流：容器还在运行，但长时间无新输出。
+type blockingReadCloser struct {
+	buf    *bytes.Buffer
+	ctx    context.Context
+	closed chan struct{}
+}
+
+func newBlockingReadCloser(ctx context.Context, data []byte) *blockingReadCloser {
+	return &blockingReadCloser{
+		buf:    bytes.NewBuffer(data),
+		ctx:    ctx,
+		closed: make(chan struct{}),
+	}
+}
+
+func (b *blockingReadCloser) Read(p []byte) (int, error) {
+	// 先返回缓冲区中的数据
+	if b.buf.Len() > 0 {
+		return b.buf.Read(p)
+	}
+	// 缓冲区空了之后阻塞，模拟流挂起
+	select {
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	case <-b.closed:
+		return 0, io.EOF
+	}
+}
+
+func (b *blockingReadCloser) Close() error {
+	select {
+	case <-b.closed:
+	default:
+		close(b.closed)
+	}
+	return nil
+}
+
+// TestPool_RunWithStreamMonitor_ActivityTimeout 模拟流中断（只输出一行后停止），验证活跃度超时后返回错误
+func TestPool_RunWithStreamMonitor_ActivityTimeout(t *testing.T) {
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-timeout", nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			// 等待 ctx 被超时取消
+			<-ctx.Done()
+			return -1, ctx.Err()
+		},
+		followLogsFunc: func(ctx context.Context, containerID string) (io.ReadCloser, error) {
+			// 只发一行后阻塞，模拟流中断（容器还在运行但无输出）
+			var buf bytes.Buffer
+			buf.Write(stdcopyFrame(1, `{"type":"system","subtype":"init"}`+"\n"))
+			return newBlockingReadCloser(ctx, buf.Bytes()), nil
+		},
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			return ContainerLogs{Stdout: "timeout fallback"}, nil
+		},
+	}
+
+	config := defaultPoolConfig()
+	config.StreamMonitor = StreamMonitorConfig{
+		Enabled:         true,
+		ActivityTimeout: 100 * time.Millisecond, // 短阈值加速测试
+	}
+	pool := mustNewPool(t, config, mock)
+
+	result, err := pool.RunWithCommand(context.Background(), defaultPayload(), []string{"claude", "-p", "review"})
+	// 活跃度超时应导致返回错误
+	if err == nil {
+		t.Fatal("活跃度超时后应返回错误")
+	}
+	if !strings.Contains(err.Error(), "活跃度超时") && !strings.Contains(err.Error(), "context") {
+		t.Errorf("错误应包含超时相关信息，实际: %v", err)
+	}
+	if result == nil {
+		t.Fatal("超时时 result 不应为 nil")
 	}
 }
