@@ -6,9 +6,33 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
 
-// TaskTimeout 返回指定任务类型的执行超时时长
-// PR 评审：10分钟 / Issue 修复：30分钟 / 测试生成：20分钟
-func TaskTimeout(taskType model.TaskType) time.Duration {
+// TaskTimeoutsConfig 按任务类型的超时配置
+// 在 queue 包中单独定义，避免依赖 worker 包导致循环引用
+type TaskTimeoutsConfig struct {
+	ReviewPR time.Duration
+	FixIssue time.Duration
+	GenTests time.Duration
+}
+
+// TaskTimeout 从配置中获取超时值，零值时回退到硬编码默认值
+func TaskTimeout(taskType model.TaskType, cfg TaskTimeoutsConfig) time.Duration {
+	var configured time.Duration
+	switch taskType {
+	case model.TaskTypeReviewPR:
+		configured = cfg.ReviewPR
+	case model.TaskTypeFixIssue:
+		configured = cfg.FixIssue
+	case model.TaskTypeGenTests:
+		configured = cfg.GenTests
+	}
+	if configured > 0 {
+		return configured
+	}
+	return defaultTaskTimeout(taskType)
+}
+
+// defaultTaskTimeout 硬编码默认超时值（fallback）
+func defaultTaskTimeout(taskType model.TaskType) time.Duration {
 	switch taskType {
 	case model.TaskTypeReviewPR:
 		return 10 * time.Minute

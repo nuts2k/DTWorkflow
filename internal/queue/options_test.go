@@ -8,21 +8,65 @@ import (
 )
 
 func TestTaskTimeout(t *testing.T) {
-	tests := []struct {
-		taskType model.TaskType
-		expected time.Duration
-	}{
-		{model.TaskTypeReviewPR, 10 * time.Minute},
-		{model.TaskTypeFixIssue, 30 * time.Minute},
-		{model.TaskTypeGenTests, 20 * time.Minute},
-		{"unknown", 10 * time.Minute}, // 未知类型返回默认值
-	}
-	for _, tt := range tests {
-		got := TaskTimeout(tt.taskType)
-		if got != tt.expected {
-			t.Errorf("TaskTimeout(%q) = %v, want %v", tt.taskType, got, tt.expected)
+	t.Run("零值配置回退到默认值", func(t *testing.T) {
+		cfg := TaskTimeoutsConfig{} // 全部零值
+		tests := []struct {
+			taskType model.TaskType
+			expected time.Duration
+		}{
+			{model.TaskTypeReviewPR, 10 * time.Minute},
+			{model.TaskTypeFixIssue, 30 * time.Minute},
+			{model.TaskTypeGenTests, 20 * time.Minute},
+			{"unknown", 10 * time.Minute}, // 未知类型返回默认值
 		}
-	}
+		for _, tt := range tests {
+			got := TaskTimeout(tt.taskType, cfg)
+			if got != tt.expected {
+				t.Errorf("TaskTimeout(%q, zero) = %v, want %v", tt.taskType, got, tt.expected)
+			}
+		}
+	})
+
+	t.Run("配置值优先于默认值", func(t *testing.T) {
+		cfg := TaskTimeoutsConfig{
+			ReviewPR: 5 * time.Minute,
+			FixIssue: 45 * time.Minute,
+			GenTests: 25 * time.Minute,
+		}
+		tests := []struct {
+			taskType model.TaskType
+			expected time.Duration
+		}{
+			{model.TaskTypeReviewPR, 5 * time.Minute},
+			{model.TaskTypeFixIssue, 45 * time.Minute},
+			{model.TaskTypeGenTests, 25 * time.Minute},
+			{"unknown", 10 * time.Minute}, // 未知类型仍回退默认值
+		}
+		for _, tt := range tests {
+			got := TaskTimeout(tt.taskType, cfg)
+			if got != tt.expected {
+				t.Errorf("TaskTimeout(%q, cfg) = %v, want %v", tt.taskType, got, tt.expected)
+			}
+		}
+	})
+
+	t.Run("部分配置仅覆盖已设定的类型", func(t *testing.T) {
+		cfg := TaskTimeoutsConfig{
+			ReviewPR: 15 * time.Minute, // 仅配置 ReviewPR
+		}
+		// ReviewPR 使用配置值
+		if got := TaskTimeout(model.TaskTypeReviewPR, cfg); got != 15*time.Minute {
+			t.Errorf("TaskTimeout(ReviewPR, partial) = %v, want 15m", got)
+		}
+		// FixIssue 回退到默认值
+		if got := TaskTimeout(model.TaskTypeFixIssue, cfg); got != 30*time.Minute {
+			t.Errorf("TaskTimeout(FixIssue, partial) = %v, want 30m", got)
+		}
+		// GenTests 回退到默认值
+		if got := TaskTimeout(model.TaskTypeGenTests, cfg); got != 20*time.Minute {
+			t.Errorf("TaskTimeout(GenTests, partial) = %v, want 20m", got)
+		}
+	})
 }
 
 func TestTaskMaxRetry(t *testing.T) {
@@ -68,7 +112,7 @@ func TestTaskRetryDelay_LargeRetryCount(t *testing.T) {
 }
 
 func TestBuildAsynqOptions_WithTaskID(t *testing.T) {
-	opts := buildAsynqOptions(model.TaskTypeReviewPR, EnqueueOptions{
+	opts := buildAsynqOptions(model.TaskTypeReviewPR, TaskTimeoutsConfig{}, EnqueueOptions{
 		Priority: model.PriorityHigh,
 		TaskID:   "my-task-id",
 	})
@@ -79,7 +123,7 @@ func TestBuildAsynqOptions_WithTaskID(t *testing.T) {
 }
 
 func TestBuildAsynqOptions_WithoutTaskID(t *testing.T) {
-	opts := buildAsynqOptions(model.TaskTypeFixIssue, EnqueueOptions{
+	opts := buildAsynqOptions(model.TaskTypeFixIssue, TaskTimeoutsConfig{}, EnqueueOptions{
 		Priority: model.PriorityNormal,
 	})
 	// 无 TaskID：Queue + MaxRetry + Timeout = 3

@@ -47,6 +47,7 @@ type Client struct {
 	inner      *asynq.Client
 	inspector  *asynq.Inspector
 	pingClient redis.UniversalClient // 缓存的 Redis 客户端，用于 Ping 健康检查
+	timeouts   TaskTimeoutsConfig    // 超时配置
 }
 
 // 编译时检查 *Client 实现 Enqueuer 和 TaskCanceller 接口
@@ -78,6 +79,11 @@ func NewClient(redisOpt asynq.RedisConnOpt) (*Client, error) {
 	return &Client{inner: inner, inspector: inspector, pingClient: pingClient}, nil
 }
 
+// SetTimeouts 设置任务超时配置。未调用时使用默认值（零值 config）。
+func (c *Client) SetTimeouts(cfg TaskTimeoutsConfig) {
+	c.timeouts = cfg
+}
+
 // Enqueue 将任务 payload 序列化后入队，返回 asynq 任务 ID
 func (c *Client) Enqueue(ctx context.Context, payload model.TaskPayload, opts EnqueueOptions) (string, error) {
 	data, err := json.Marshal(payload)
@@ -88,7 +94,7 @@ func (c *Client) Enqueue(ctx context.Context, payload model.TaskPayload, opts En
 	taskType := taskTypeToAsynq(payload.TaskType)
 	task := asynq.NewTask(taskType, data)
 
-	asynqOpts := buildAsynqOptions(payload.TaskType, opts)
+	asynqOpts := buildAsynqOptions(payload.TaskType, c.timeouts, opts)
 	info, err := c.inner.EnqueueContext(ctx, task, asynqOpts...)
 	if err != nil {
 		return "", fmt.Errorf("入队失败: %w", err)
@@ -153,12 +159,12 @@ func taskTypeToAsynq(t model.TaskType) string {
 }
 
 // buildAsynqOptions 根据 EnqueueOptions 构建 asynq 入队选项
-func buildAsynqOptions(taskType model.TaskType, opts EnqueueOptions) []asynq.Option {
+func buildAsynqOptions(taskType model.TaskType, timeouts TaskTimeoutsConfig, opts EnqueueOptions) []asynq.Option {
 	queue := PriorityToQueue(opts.Priority)
 	asynqOpts := []asynq.Option{
 		asynq.Queue(queue),
 		asynq.MaxRetry(TaskMaxRetry()),
-		asynq.Timeout(TaskTimeout(taskType)),
+		asynq.Timeout(TaskTimeout(taskType, timeouts)),
 	}
 	if opts.TaskID != "" {
 		asynqOpts = append(asynqOpts, asynq.TaskID(opts.TaskID))
