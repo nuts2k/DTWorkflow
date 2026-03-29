@@ -80,6 +80,7 @@ func NewClient(redisOpt asynq.RedisConnOpt) (*Client, error) {
 }
 
 // SetTimeouts 设置任务超时配置。未调用时使用默认值（零值 config）。
+// 注意：必须在调用 Enqueue 之前完成设置（即初始化阶段），不支持并发调用。
 func (c *Client) SetTimeouts(cfg TaskTimeoutsConfig) {
 	c.timeouts = cfg
 }

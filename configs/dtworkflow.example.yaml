@@ -47,14 +47,16 @@ log:
 # Worker 配置
 worker:
   concurrency: 3
-  # 当前版本：该字段为预留配置，尚未接入 Worker 运行链路。
+  # 全局兜底超时（asynq 任务级）。当 timeouts 中未配置对应任务类型时使用此值。
   timeout: "30m"
   image: "dtworkflow-worker:1.0"
   cpu_limit: "2.0"
   memory_limit: "4g"
   network_name: "dtworkflow-net"
-  # 按任务类型的硬超时（覆盖 timeout 默认值）
+  # 按任务类型的硬超时（优先级高于 timeout 字段）
+  # 同时作用于 asynq 任务级超时和 Worker 容器等待超时。
   # 零值或不填则使用默认值：review_pr=10m, fix_issue=30m, gen_tests=20m
+  # 上限 24h，超过会被校验拦截。
   timeouts:
     review_pr: "15m"
     fix_issue: "45m"

@@ -339,7 +339,8 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 
 	} else {
 		// === 旧路径（开关关闭时保持原有逻辑不变）===
-		waitCtx, waitCancel := context.WithTimeout(ctx, 30*time.Minute)
+		waitTimeout := p.config.Timeouts.Lookup(string(payload.TaskType))
+		waitCtx, waitCancel := context.WithTimeout(ctx, waitTimeout)
 		defer waitCancel()
 
 		// 可选：后台 goroutine 写入 stdin 数据，通过 channel 报告写入结果
@@ -445,7 +446,14 @@ func (p *Pool) streamMonitorLoop(
 	defer reader.Close()
 
 	// 用 pipe + goroutine 实现非阻塞读取：
-	// Docker 日志流带 8 字节 stdcopy header，需要解复用
+	// Docker 日志流带 8 字节 stdcopy header，需要解复用。
+	//
+	// 清理链条说明：
+	// 1. ctx 取消（活跃度超时或容器退出）
+	// 2. streamMonitorLoop return → defer reader.Close() 执行
+	// 3. reader 关闭 → stdcopy.StdCopy 返回错误 → pw.Close()
+	// 4. pw 关闭 → scanner.Read(pr) 返回 io.EOF → lineCh 关闭
+	// 因此两个内部 goroutine 的生命周期由 reader.Close() 级联终结。
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
@@ -485,14 +493,11 @@ func (p *Pool) streamMonitorLoop(
 			}
 			timer.Reset(p.config.StreamMonitor.ActivityTimeout)
 			if isResultEvent(line) {
-				event, err := parseResultEvent(line)
+				cliJSON, err := resultEventToCLIJSON(line)
 				if err == nil {
-					cliJSON, err := resultEventToCLIJSON(event)
-					if err == nil {
-						select {
-						case resultCh <- cliJSON:
-						default:
-						}
+					select {
+					case resultCh <- cliJSON:
+					default:
 					}
 				}
 			}

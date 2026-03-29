@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -58,15 +59,21 @@ func Validate(cfg *Config) error {
 		errs = append(errs, fmt.Errorf("worker.timeout 必须大于 0，当前值: %s", cfg.Worker.Timeout))
 	}
 
-	// worker.timeouts 各字段非负校验（零值表示使用默认值，允许）
-	if cfg.Worker.Timeouts.ReviewPR < 0 {
-		errs = append(errs, fmt.Errorf("worker.timeouts.review_pr 不能为负数，当前值: %s", cfg.Worker.Timeouts.ReviewPR))
-	}
-	if cfg.Worker.Timeouts.FixIssue < 0 {
-		errs = append(errs, fmt.Errorf("worker.timeouts.fix_issue 不能为负数，当前值: %s", cfg.Worker.Timeouts.FixIssue))
-	}
-	if cfg.Worker.Timeouts.GenTests < 0 {
-		errs = append(errs, fmt.Errorf("worker.timeouts.gen_tests 不能为负数，当前值: %s", cfg.Worker.Timeouts.GenTests))
+	// worker.timeouts 各字段非负校验（零值表示使用默认值，允许），且不超过 24h
+	const maxTimeout = 24 * time.Hour
+	for _, tc := range []struct {
+		name string
+		val  time.Duration
+	}{
+		{"worker.timeouts.review_pr", cfg.Worker.Timeouts.ReviewPR},
+		{"worker.timeouts.fix_issue", cfg.Worker.Timeouts.FixIssue},
+		{"worker.timeouts.gen_tests", cfg.Worker.Timeouts.GenTests},
+	} {
+		if tc.val < 0 {
+			errs = append(errs, fmt.Errorf("%s 不能为负数，当前值: %s", tc.name, tc.val))
+		} else if tc.val > maxTimeout {
+			errs = append(errs, fmt.Errorf("%s 不能超过 %s，当前值: %s", tc.name, maxTimeout, tc.val))
+		}
 	}
 
 	// worker.stream_monitor 校验（仅在 enabled 时校验 activity_timeout）

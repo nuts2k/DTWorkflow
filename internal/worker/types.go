@@ -40,6 +40,28 @@ type TaskTimeoutsConfig struct {
 	GenTests time.Duration
 }
 
+// Lookup 根据任务类型返回对应超时值。零值时回退到 defaultWaitTimeout。
+func (c TaskTimeoutsConfig) Lookup(taskType string) time.Duration {
+	switch taskType {
+	case "review_pr":
+		if c.ReviewPR > 0 {
+			return c.ReviewPR
+		}
+	case "fix_issue":
+		if c.FixIssue > 0 {
+			return c.FixIssue
+		}
+	case "gen_tests":
+		if c.GenTests > 0 {
+			return c.GenTests
+		}
+	}
+	return defaultWaitTimeout
+}
+
+// defaultWaitTimeout 旧路径容器等待的默认超时（当配置未指定时使用）
+const defaultWaitTimeout = 30 * time.Minute
+
 // StreamMonitorConfig Worker 层的流式监控配置
 type StreamMonitorConfig struct {
 	Enabled         bool

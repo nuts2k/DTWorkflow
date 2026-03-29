@@ -502,6 +502,53 @@ func TestValidate_WorkerTimeouts_Negative(t *testing.T) {
 	}
 }
 
+func TestValidate_WorkerTimeouts_ExceedsMax(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(cfg *Config)
+		errKey string
+	}{
+		{
+			name: "review_pr 超过 24h",
+			mutate: func(cfg *Config) {
+				cfg.Worker.Timeouts.ReviewPR = 25 * time.Hour
+			},
+			errKey: "worker.timeouts.review_pr",
+		},
+		{
+			name: "fix_issue 超过 24h",
+			mutate: func(cfg *Config) {
+				cfg.Worker.Timeouts.FixIssue = 48 * time.Hour
+			},
+			errKey: "worker.timeouts.fix_issue",
+		},
+		{
+			name: "gen_tests 超过 24h",
+			mutate: func(cfg *Config) {
+				cfg.Worker.Timeouts.GenTests = 999 * time.Hour
+			},
+			errKey: "worker.timeouts.gen_tests",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			tc.mutate(cfg)
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("超过 24h 的 %s 应校验失败", tc.errKey)
+			}
+			if !strings.Contains(err.Error(), tc.errKey) {
+				t.Errorf("错误应包含 %s，得到: %v", tc.errKey, err)
+			}
+			if !strings.Contains(err.Error(), "不能超过") {
+				t.Errorf("错误应包含 '不能超过'，得到: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidate_WorkerTimeouts_ZeroAllowed(t *testing.T) {
 	// 零值表示使用默认值，不应报错
 	cfg := validBaseConfig()

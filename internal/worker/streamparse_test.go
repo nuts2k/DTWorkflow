@@ -65,13 +65,8 @@ func TestParseResultEvent_InvalidJSON(t *testing.T) {
 }
 
 func TestResultEventToCLIJSON(t *testing.T) {
-	event := &resultEvent{
-		Type: "result", Subtype: "success",
-		CostUSD: 0.05, DurationMs: 12345, IsError: false,
-		NumTurns: 8, Result: `{"summary":"good","verdict":"approve","issues":[]}`,
-		SessionID: "sess-123",
-	}
-	out, err := resultEventToCLIJSON(event)
+	rawJSON := `{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":12345,"is_error":false,"num_turns":8,"result":"{\"summary\":\"good\",\"verdict\":\"approve\",\"issues\":[]}","session_id":"sess-123"}`
+	out, err := resultEventToCLIJSON(rawJSON)
 	if err != nil {
 		t.Fatalf("返回错误: %v", err)
 	}
@@ -85,6 +80,28 @@ func TestResultEventToCLIJSON(t *testing.T) {
 	}
 	if parsed["is_error"] != false {
 		t.Errorf("is_error = %v, want false", parsed["is_error"])
+	}
+	// subtype 应被移除
+	if _, ok := parsed["subtype"]; ok {
+		t.Error("subtype 字段应被移除")
+	}
+}
+
+func TestResultEventToCLIJSON_PreservesUnknownFields(t *testing.T) {
+	rawJSON := `{"type":"result","subtype":"success","cost_usd":0.05,"future_field":"hello","nested":{"a":1}}`
+	out, err := resultEventToCLIJSON(rawJSON)
+	if err != nil {
+		t.Fatalf("返回错误: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("输出不是合法 JSON: %v", err)
+	}
+	if parsed["future_field"] != "hello" {
+		t.Errorf("未知字段 future_field 应被保留，实际: %v", parsed["future_field"])
+	}
+	if parsed["nested"] == nil {
+		t.Error("未知字段 nested 应被保留")
 	}
 }
 
@@ -108,6 +125,19 @@ func TestInjectStreamJsonFlags_ReplaceExisting(t *testing.T) {
 	}
 	assertContains(t, got, "stream-json")
 	assertContains(t, got, "--verbose")
+}
+
+func TestInjectStreamJsonFlags_ReplaceEqualsForm(t *testing.T) {
+	cmd := []string{"claude", "-p", "-", "--output-format=json", "--disallowedTools", "Edit"}
+	got := injectStreamJsonFlags(cmd)
+	for _, arg := range got {
+		if arg == "--output-format=json" {
+			t.Error("旧的 --output-format=json（等号形式）应被替换")
+		}
+	}
+	assertContains(t, got, "stream-json")
+	assertContains(t, got, "--verbose")
+	assertContains(t, got, "--disallowedTools")
 }
 
 func TestInjectStreamJsonFlags_EmptyCmd(t *testing.T) {

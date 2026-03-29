@@ -3,6 +3,7 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // streamEvent 流式事件的类型标识（仅用于快速筛选）
@@ -46,19 +47,20 @@ func parseResultEvent(line string) (*resultEvent, error) {
 	return &e, nil
 }
 
-// resultEventToCLIJSON 将 stream-json result 事件转换为与 --output-format json 兼容的 JSON 字符串。
+// resultEventToCLIJSON 将 stream-json result 事件的原始 JSON 转换为与 --output-format json 兼容的 JSON 字符串。
 // 上层 review.Service.parseResult() 期望的是 CLI JSON 信封格式，此函数做格式对齐。
-func resultEventToCLIJSON(event *resultEvent) (string, error) {
-	envelope := map[string]any{
-		"type":        event.Subtype,
-		"cost_usd":    event.CostUSD,
-		"duration_ms": event.DurationMs,
-		"is_error":    event.IsError,
-		"num_turns":   event.NumTurns,
-		"result":      event.Result,
-		"session_id":  event.SessionID,
+// 使用 map[string]any 保留未知字段，避免 Claude CLI 新增字段时被静默丢弃。
+func resultEventToCLIJSON(rawJSON string) (string, error) {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
+		return "", fmt.Errorf("解析 result 事件失败: %w", err)
 	}
-	data, err := json.Marshal(envelope)
+	// CLI JSON 信封中 type 字段使用 subtype 的值（如 "success"），去掉 subtype
+	if subtype, ok := m["subtype"]; ok {
+		m["type"] = subtype
+		delete(m, "subtype")
+	}
+	data, err := json.Marshal(m)
 	if err != nil {
 		return "", fmt.Errorf("序列化 CLI JSON 信封失败: %w", err)
 	}
@@ -77,6 +79,9 @@ func injectStreamJsonFlags(cmd []string) []string {
 		}
 		if arg == "--output-format" {
 			skip = true
+			continue
+		}
+		if strings.HasPrefix(arg, "--output-format=") {
 			continue
 		}
 		result = append(result, arg)
