@@ -67,6 +67,22 @@ type WorkerConfig struct {
 	CPULimit    string `mapstructure:"cpu_limit"`
 	MemoryLimit string `mapstructure:"memory_limit"`
 	NetworkName string `mapstructure:"network_name"`
+
+	Timeouts      TaskTimeouts      `mapstructure:"timeouts"`       // 按任务类型的硬超时
+	StreamMonitor StreamMonitorConf `mapstructure:"stream_monitor"` // 流式心跳监控配置
+}
+
+// TaskTimeouts 按任务类型配置硬超时，零值表示使用默认值
+type TaskTimeouts struct {
+	ReviewPR time.Duration `mapstructure:"review_pr"`
+	FixIssue time.Duration `mapstructure:"fix_issue"`
+	GenTests time.Duration `mapstructure:"gen_tests"`
+}
+
+// StreamMonitorConf 流式心跳监控配置
+type StreamMonitorConf struct {
+	Enabled         bool          `mapstructure:"enabled"`
+	ActivityTimeout time.Duration `mapstructure:"activity_timeout"`
 }
 
 type WebhookConfig struct {

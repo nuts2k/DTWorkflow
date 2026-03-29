@@ -223,6 +223,77 @@ func TestManager_Load_DefaultsAndEnvWithoutConfigFile(t *testing.T) {
 	}
 }
 
+func TestWorkerTimeoutsAndStreamMonitor_Parse(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "dtworkflow.yaml")
+
+	// 构造包含新字段的 YAML，同时提供校验所需的最小必填项
+	content := []byte("" +
+		"gitea:\n" +
+		"  url: \"http://gitea:3000\"\n" +
+		"  token: \"test-token\"\n" +
+		"claude:\n" +
+		"  api_key: \"test-api-key\"\n" +
+		"redis:\n" +
+		"  addr: \"redis:6379\"\n" +
+		"webhook:\n" +
+		"  secret: \"test-secret\"\n" +
+		"notify:\n" +
+		"  default_channel: \"gitea\"\n" +
+		"  channels:\n" +
+		"    gitea:\n" +
+		"      enabled: true\n" +
+		"worker:\n" +
+		"  timeouts:\n" +
+		"    review_pr: \"15m\"\n" +
+		"    fix_issue: \"45m\"\n" +
+		"    gen_tests: \"30m\"\n" +
+		"  stream_monitor:\n" +
+		"    enabled: true\n" +
+		"    activity_timeout: \"2m\"\n")
+	if err := os.WriteFile(cfgPath, content, 0o600); err != nil {
+		t.Fatalf("write temp config file: %v", err)
+	}
+
+	m, err := NewManager(
+		WithConfigFile(cfgPath),
+		WithDefaults(),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := m.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	cfg := m.Get()
+	if cfg == nil {
+		t.Fatalf("Get returned nil config")
+	}
+
+	// 验证 Timeouts
+	if cfg.Worker.Timeouts.ReviewPR != 15*time.Minute {
+		t.Fatalf("worker.timeouts.review_pr got %s, want %s", cfg.Worker.Timeouts.ReviewPR, 15*time.Minute)
+	}
+	if cfg.Worker.Timeouts.FixIssue != 45*time.Minute {
+		t.Fatalf("worker.timeouts.fix_issue got %s, want %s", cfg.Worker.Timeouts.FixIssue, 45*time.Minute)
+	}
+	if cfg.Worker.Timeouts.GenTests != 30*time.Minute {
+		t.Fatalf("worker.timeouts.gen_tests got %s, want %s", cfg.Worker.Timeouts.GenTests, 30*time.Minute)
+	}
+
+	// 验证 StreamMonitor
+	if !cfg.Worker.StreamMonitor.Enabled {
+		t.Fatalf("worker.stream_monitor.enabled got false, want true")
+	}
+	if cfg.Worker.StreamMonitor.ActivityTimeout != 2*time.Minute {
+		t.Fatalf("worker.stream_monitor.activity_timeout got %s, want %s", cfg.Worker.StreamMonitor.ActivityTimeout, 2*time.Minute)
+	}
+}
+
 func TestExampleConfig_Loadable(t *testing.T) {
 	t.Parallel()
 
