@@ -58,6 +58,24 @@ func Validate(cfg *Config) error {
 		errs = append(errs, fmt.Errorf("worker.timeout 必须大于 0，当前值: %s", cfg.Worker.Timeout))
 	}
 
+	// worker.timeouts 各字段非负校验（零值表示使用默认值，允许）
+	if cfg.Worker.Timeouts.ReviewPR < 0 {
+		errs = append(errs, fmt.Errorf("worker.timeouts.review_pr 不能为负数，当前值: %s", cfg.Worker.Timeouts.ReviewPR))
+	}
+	if cfg.Worker.Timeouts.FixIssue < 0 {
+		errs = append(errs, fmt.Errorf("worker.timeouts.fix_issue 不能为负数，当前值: %s", cfg.Worker.Timeouts.FixIssue))
+	}
+	if cfg.Worker.Timeouts.GenTests < 0 {
+		errs = append(errs, fmt.Errorf("worker.timeouts.gen_tests 不能为负数，当前值: %s", cfg.Worker.Timeouts.GenTests))
+	}
+
+	// worker.stream_monitor 校验（仅在 enabled 时校验 activity_timeout）
+	if cfg.Worker.StreamMonitor.Enabled {
+		if cfg.Worker.StreamMonitor.ActivityTimeout <= 0 {
+			errs = append(errs, fmt.Errorf("worker.stream_monitor.activity_timeout 启用时必须大于 0，当前值: %s", cfg.Worker.StreamMonitor.ActivityTimeout))
+		}
+	}
+
 	// log.level 白名单
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if cfg.Log.Level != "" && !validLevels[strings.ToLower(cfg.Log.Level)] {

@@ -458,6 +458,98 @@ func TestValidate_ReviewSeverity(t *testing.T) {
 	})
 }
 
+func TestValidate_WorkerTimeouts_Negative(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(cfg *Config)
+		errKey string
+	}{
+		{
+			name: "负数 review_pr",
+			mutate: func(cfg *Config) {
+				cfg.Worker.Timeouts.ReviewPR = -1 * time.Minute
+			},
+			errKey: "worker.timeouts.review_pr",
+		},
+		{
+			name: "负数 fix_issue",
+			mutate: func(cfg *Config) {
+				cfg.Worker.Timeouts.FixIssue = -1 * time.Minute
+			},
+			errKey: "worker.timeouts.fix_issue",
+		},
+		{
+			name: "负数 gen_tests",
+			mutate: func(cfg *Config) {
+				cfg.Worker.Timeouts.GenTests = -1 * time.Minute
+			},
+			errKey: "worker.timeouts.gen_tests",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			tc.mutate(cfg)
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("负数 %s 应校验失败", tc.errKey)
+			}
+			if !strings.Contains(err.Error(), tc.errKey) {
+				t.Errorf("错误应包含 %s，得到: %v", tc.errKey, err)
+			}
+		})
+	}
+}
+
+func TestValidate_WorkerTimeouts_ZeroAllowed(t *testing.T) {
+	// 零值表示使用默认值，不应报错
+	cfg := validBaseConfig()
+	cfg.Worker.Timeouts.ReviewPR = 0
+	cfg.Worker.Timeouts.FixIssue = 0
+	cfg.Worker.Timeouts.GenTests = 0
+	err := Validate(cfg)
+	if err != nil {
+		t.Errorf("零值 timeouts 应通过校验，但返回: %v", err)
+	}
+}
+
+func TestValidate_StreamMonitor_InvalidActivityTimeout(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Worker.StreamMonitor.Enabled = true
+	cfg.Worker.StreamMonitor.ActivityTimeout = -1 * time.Second
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("启用 stream_monitor 时负数 activity_timeout 应校验失败")
+	}
+	if !strings.Contains(err.Error(), "stream_monitor.activity_timeout") {
+		t.Errorf("错误应包含 stream_monitor.activity_timeout，得到: %v", err)
+	}
+}
+
+func TestValidate_StreamMonitor_ZeroActivityTimeout(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Worker.StreamMonitor.Enabled = true
+	cfg.Worker.StreamMonitor.ActivityTimeout = 0
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("启用 stream_monitor 时零值 activity_timeout 应校验失败")
+	}
+	if !strings.Contains(err.Error(), "stream_monitor.activity_timeout") {
+		t.Errorf("错误应包含 stream_monitor.activity_timeout，得到: %v", err)
+	}
+}
+
+func TestValidate_StreamMonitor_DisabledNoValidation(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Worker.StreamMonitor.Enabled = false
+	cfg.Worker.StreamMonitor.ActivityTimeout = 0
+	err := Validate(cfg)
+	if err != nil {
+		t.Errorf("stream_monitor 关闭时不应校验 activity_timeout: %v", err)
+	}
+}
+
 func TestValidate_ReviewIgnorePatterns(t *testing.T) {
 	t.Run("合法 pattern 通过", func(t *testing.T) {
 		cfg := validBaseConfig()
