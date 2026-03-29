@@ -224,31 +224,21 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 		}, fmt.Errorf("启动容器失败: %w", err)
 	}
 
-	// 两条路径完全隔离：流式监控路径 vs 旧路径
+	// 两条路径共享 stdin 写入和结果收集逻辑，仅等待策略不同
 	var exitCode int64
 	var waitErr error
 	var output string
+	var stdinErrCh <-chan error
 
 	if p.config.StreamMonitor.Enabled {
 		// === 流式监控路径 ===
 		monitorCtx, monitorCancel := context.WithCancelCause(ctx)
 		defer monitorCancel(nil)
 
-		// 可选：后台 goroutine 写入 stdin 数据
-		var stdinErrCh chan error
 		if stdinWriter != nil {
-			stdinErrCh = make(chan error, 1)
-			go func() {
-				defer stdinWriter.Close()
-				if tc, ok := stdinWriter.(interface{ SetWriteDeadline(t time.Time) error }); ok {
-					_ = tc.SetWriteDeadline(time.Now().Add(stdinWriteTimeout))
-				}
-				_, werr := stdinWriter.Write(opts.stdinData)
-				stdinErrCh <- werr
-				if werr != nil {
-					monitorCancel(fmt.Errorf("stdin 写入失败: %w", werr))
-				}
-			}()
+			stdinErrCh = writeStdinAsync(stdinWriter, opts.stdinData, func() {
+				monitorCancel(fmt.Errorf("stdin 写入失败"))
+			})
 		}
 
 		// 启动流式心跳监控 goroutine
@@ -278,149 +268,115 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 		if hasStreamResult {
 			output = streamResult
 		} else {
-			// fallback: 从日志兜底
-			logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer logCancel()
-			logs, logErr := p.docker.GetContainerLogs(logCtx, containerID)
-			if logErr != nil {
-				p.logger.WarnContext(ctx, "获取容器日志失败（fallback）",
-					slog.String("container_id", containerID),
-					slog.String("error", logErr.Error()),
-				)
-			}
-			output = logs.Stdout
-			if waitErr != nil || exitCode != 0 {
-				output = mergeLogStreams(logs.Stdout, logs.Stderr)
-			}
+			output = p.fetchContainerLogs(ctx, containerID, waitErr, exitCode)
 		}
-
-		duration := time.Since(start).Milliseconds()
-		p.total.Add(1)
-
-		result := &ExecutionResult{
-			ExitCode:    int(exitCode),
-			Output:      output,
-			Duration:    duration,
-			ContainerID: containerID,
-		}
-
-		// 检查 stdin 写入错误
-		if stdinErrCh != nil {
-			if stdinErr := <-stdinErrCh; stdinErr != nil {
-				p.logger.ErrorContext(ctx, "写入容器 stdin 失败",
-					slog.String("container_id", containerID),
-					slog.String("error", stdinErr.Error()),
-				)
-				if waitErr == nil {
-					result.Error = stdinErr.Error()
-					return result, fmt.Errorf("stdin 写入失败，结果不可信: %w", stdinErr)
-				}
-			}
-		}
-
-		if waitErr != nil {
-			result.Error = waitErr.Error()
-			p.logger.ErrorContext(ctx, "容器执行失败",
-				slog.String("container_id", containerID),
-				slog.Int64("exit_code", exitCode),
-				slog.String("error", waitErr.Error()),
-				slog.Int64("duration_ms", duration),
-			)
-			return result, waitErr
-		}
-
-		p.logger.InfoContext(ctx, "容器执行完成",
-			slog.String("container_id", containerID),
-			slog.Int64("exit_code", exitCode),
-			slog.Int64("duration_ms", duration),
-		)
-
-		return result, nil
-
 	} else {
 		// === 旧路径（开关关闭时保持原有逻辑不变）===
-		waitTimeout := p.config.Timeouts.Lookup(string(payload.TaskType))
+		waitTimeout := p.config.Timeouts.Lookup(payload.TaskType)
 		waitCtx, waitCancel := context.WithTimeout(ctx, waitTimeout)
 		defer waitCancel()
 
-		// 可选：后台 goroutine 写入 stdin 数据，通过 channel 报告写入结果
-		var stdinErrCh chan error
 		if stdinWriter != nil {
-			stdinErrCh = make(chan error, 1)
-			go func() {
-				defer stdinWriter.Close()
-				if tc, ok := stdinWriter.(interface{ SetWriteDeadline(t time.Time) error }); ok {
-					_ = tc.SetWriteDeadline(time.Now().Add(stdinWriteTimeout))
-				}
-				_, werr := stdinWriter.Write(opts.stdinData)
-				stdinErrCh <- werr
-				if werr != nil {
-					waitCancel() // stdin 写入失败时提前终止容器等待，避免长时间挂起
-				}
-			}()
+			stdinErrCh = writeStdinAsync(stdinWriter, opts.stdinData, func() {
+				waitCancel()
+			})
 		}
+
 		exitCode, waitErr = p.docker.WaitContainer(waitCtx, containerID)
+		output = p.fetchContainerLogs(ctx, containerID, waitErr, exitCode)
+	}
 
-		// 无论成功与否，都尝试获取日志（使用独立 context，避免原 ctx 已取消导致无法获取日志）
-		logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer logCancel()
-		logs, logErr := p.docker.GetContainerLogs(logCtx, containerID)
-		if logErr != nil {
-			p.logger.WarnContext(ctx, "获取容器日志失败",
+	return p.finalizeResult(ctx, containerID, exitCode, waitErr, output, time.Since(start).Milliseconds(), stdinErrCh)
+}
+
+// writeStdinAsync 在后台 goroutine 中写入 stdin 数据，返回报告写入结果的 channel。
+// cancelOnError 在写入失败时调用，用于提前终止容器等待。
+func writeStdinAsync(stdinWriter io.WriteCloser, data []byte, cancelOnError func()) <-chan error {
+	ch := make(chan error, 1)
+	go func() {
+		defer stdinWriter.Close()
+		if tc, ok := stdinWriter.(interface{ SetWriteDeadline(t time.Time) error }); ok {
+			_ = tc.SetWriteDeadline(time.Now().Add(stdinWriteTimeout))
+		}
+		_, werr := stdinWriter.Write(data)
+		ch <- werr
+		if werr != nil && cancelOnError != nil {
+			cancelOnError()
+		}
+	}()
+	return ch
+}
+
+// fetchContainerLogs 获取容器日志，用独立 context 避免原 ctx 已取消导致无法获取。
+// 当容器执行失败或非零退出时，合并 stdout 和 stderr。
+func (p *Pool) fetchContainerLogs(ctx context.Context, containerID string, waitErr error, exitCode int64) string {
+	logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer logCancel()
+	logs, logErr := p.docker.GetContainerLogs(logCtx, containerID)
+	if logErr != nil {
+		p.logger.WarnContext(ctx, "获取容器日志失败",
+			slog.String("container_id", containerID),
+			slog.String("error", logErr.Error()),
+		)
+	}
+	if waitErr != nil || exitCode != 0 {
+		return mergeLogStreams(logs.Stdout, logs.Stderr)
+	}
+	return logs.Stdout
+}
+
+// finalizeResult 统一的结果收集：检查 stdin 写入错误、构造 ExecutionResult、记录日志。
+func (p *Pool) finalizeResult(
+	ctx context.Context,
+	containerID string,
+	exitCode int64,
+	waitErr error,
+	output string,
+	durationMs int64,
+	stdinErrCh <-chan error,
+) (*ExecutionResult, error) {
+	p.total.Add(1)
+
+	result := &ExecutionResult{
+		ExitCode:    int(exitCode),
+		Output:      output,
+		Duration:    durationMs,
+		ContainerID: containerID,
+	}
+
+	// 检查 stdin 写入错误：写入失败意味着容器收到的 prompt 为空或截断，结果不可信
+	if stdinErrCh != nil {
+		if stdinErr := <-stdinErrCh; stdinErr != nil {
+			p.logger.ErrorContext(ctx, "写入容器 stdin 失败",
 				slog.String("container_id", containerID),
-				slog.String("error", logErr.Error()),
+				slog.String("error", stdinErr.Error()),
 			)
-		}
-
-		duration := time.Since(start).Milliseconds()
-		p.total.Add(1)
-
-		output = logs.Stdout
-		if waitErr != nil || exitCode != 0 {
-			output = mergeLogStreams(logs.Stdout, logs.Stderr)
-		}
-
-		result := &ExecutionResult{
-			ExitCode:    int(exitCode),
-			Output:      output,
-			Duration:    duration,
-			ContainerID: containerID,
-		}
-
-		// 检查 stdin 写入错误：写入失败意味着容器收到的 prompt 为空或截断，结果不可信
-		if stdinErrCh != nil {
-			if stdinErr := <-stdinErrCh; stdinErr != nil {
-				p.logger.ErrorContext(ctx, "写入容器 stdin 失败",
-					slog.String("container_id", containerID),
-					slog.String("error", stdinErr.Error()),
-				)
-				// 容器等待也失败时，优先返回容器错误（根因更可能在容器侧）
-				if waitErr == nil {
-					result.Error = stdinErr.Error()
-					return result, fmt.Errorf("stdin 写入失败，结果不可信: %w", stdinErr)
-				}
+			// 容器等待也失败时，优先返回容器错误（根因更可能在容器侧）
+			if waitErr == nil {
+				result.Error = stdinErr.Error()
+				return result, fmt.Errorf("stdin 写入失败，结果不可信: %w", stdinErr)
 			}
 		}
+	}
 
-		if waitErr != nil {
-			result.Error = waitErr.Error()
-			p.logger.ErrorContext(ctx, "容器执行失败",
-				slog.String("container_id", containerID),
-				slog.Int64("exit_code", exitCode),
-				slog.String("error", waitErr.Error()),
-				slog.Int64("duration_ms", duration),
-			)
-			return result, waitErr
-		}
-
-		p.logger.InfoContext(ctx, "容器执行完成",
+	if waitErr != nil {
+		result.Error = waitErr.Error()
+		p.logger.ErrorContext(ctx, "容器执行失败",
 			slog.String("container_id", containerID),
 			slog.Int64("exit_code", exitCode),
-			slog.Int64("duration_ms", duration),
+			slog.String("error", waitErr.Error()),
+			slog.Int64("duration_ms", durationMs),
 		)
-
-		return result, nil
+		return result, waitErr
 	}
+
+	p.logger.InfoContext(ctx, "容器执行完成",
+		slog.String("container_id", containerID),
+		slog.Int64("exit_code", exitCode),
+		slog.Int64("duration_ms", durationMs),
+	)
+
+	return result, nil
 }
 
 // streamMonitorLoop 流式心跳监控，在独立 goroutine 中运行。
@@ -492,13 +448,10 @@ func (p *Pool) streamMonitorLoop(
 				return // 流结束（容器退出）
 			}
 			timer.Reset(p.config.StreamMonitor.ActivityTimeout)
-			if isResultEvent(line) {
-				cliJSON, err := resultEventToCLIJSON(line)
-				if err == nil {
-					select {
-					case resultCh <- cliJSON:
-					default:
-					}
+			if cliJSON, ok := tryExtractResultCLIJSON(line); ok {
+				select {
+				case resultCh <- cliJSON:
+				default:
 				}
 			}
 		case <-ctx.Done():

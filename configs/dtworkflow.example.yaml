@@ -54,8 +54,8 @@ worker:
   memory_limit: "4g"
   network_name: "dtworkflow-net"
   # 按任务类型的硬超时（优先级高于 timeout 字段）
-  # 同时作用于 asynq 任务级超时和 Worker 容器等待超时。
-  # 零值或不填则使用默认值：review_pr=10m, fix_issue=30m, gen_tests=20m
+  # 同时作用于 asynq 任务级超时和 Worker 容器等待超时（两层使用相同默认值）。
+  # 零值或不填则使用内置默认值：review_pr=10m, fix_issue=30m, gen_tests=20m。
   # 上限 24h，超过会被校验拦截。
   timeouts:
     review_pr: "15m"

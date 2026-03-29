@@ -6,45 +6,30 @@ import (
 	"strings"
 )
 
-// streamEvent 流式事件的类型标识（仅用于快速筛选）
-type streamEvent struct {
-	Type string `json:"type"`
-}
-
-// resultEvent stream-json 的 result 事件完整结构
-type resultEvent struct {
-	Type       string  `json:"type"`
-	Subtype    string  `json:"subtype"`
-	CostUSD    float64 `json:"cost_usd"`
-	DurationMs int64   `json:"duration_ms"`
-	IsError    bool    `json:"is_error"`
-	NumTurns   int     `json:"num_turns"`
-	Result     string  `json:"result"`
-	SessionID  string  `json:"session_id"`
-}
-
-// isResultEvent 快速判断一行是否为 result 事件（仅解析 type 字段）
-func isResultEvent(line string) bool {
-	if len(line) == 0 {
-		return false
+// tryExtractResultCLIJSON 尝试从 stream-json 行中提取 result 事件并转换为 CLI JSON 信封格式。
+// 合并了 isResultEvent + resultEventToCLIJSON，避免对同一行做两次 JSON 反序列化。
+// 使用 strings.Contains 做快速前置过滤，大部分非 result 行无需 JSON 解析。
+func tryExtractResultCLIJSON(line string) (string, bool) {
+	if len(line) == 0 || !strings.Contains(line, `"type":"result"`) {
+		return "", false
 	}
-	var e streamEvent
-	if err := json.Unmarshal([]byte(line), &e); err != nil {
-		return false
+	var m map[string]any
+	if err := json.Unmarshal([]byte(line), &m); err != nil {
+		return "", false
 	}
-	return e.Type == "result"
-}
-
-// parseResultEvent 完整解析 result 事件
-func parseResultEvent(line string) (*resultEvent, error) {
-	var e resultEvent
-	if err := json.Unmarshal([]byte(line), &e); err != nil {
-		return nil, fmt.Errorf("解析 result 事件失败: %w", err)
+	if m["type"] != "result" {
+		return "", false
 	}
-	if e.Type != "result" {
-		return nil, fmt.Errorf("非 result 事件: type=%s", e.Type)
+	// CLI JSON 信封中 type 字段使用 subtype 的值（如 "success"），去掉 subtype
+	if subtype, ok := m["subtype"]; ok {
+		m["type"] = subtype
+		delete(m, "subtype")
 	}
-	return &e, nil
+	data, err := json.Marshal(m)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
 }
 
 // resultEventToCLIJSON 将 stream-json result 事件的原始 JSON 转换为与 --output-format json 兼容的 JSON 字符串。

@@ -5,62 +5,85 @@ import (
 	"testing"
 )
 
-func TestIsResultEvent(t *testing.T) {
+func TestTryExtractResultCLIJSON(t *testing.T) {
 	tests := []struct {
-		name string
-		line string
-		want bool
+		name    string
+		line    string
+		wantOK  bool
+		wantKey string // 验证输出中某个 key 的值
+		wantVal any
 	}{
-		{"result event", `{"type":"result","subtype":"success"}`, true},
-		{"assistant event", `{"type":"assistant","message":{}}`, false},
-		{"system event", `{"type":"system","subtype":"init"}`, false},
-		{"empty line", "", false},
-		{"invalid json", "not json", false},
-		{"empty object", "{}", false},
+		{
+			name:    "result event",
+			line:    `{"type":"result","subtype":"success","cost_usd":0.05}`,
+			wantOK:  true,
+			wantKey: "type",
+			wantVal: "success",
+		},
+		{
+			name:   "assistant event",
+			line:   `{"type":"assistant","message":{}}`,
+			wantOK: false,
+		},
+		{
+			name:   "system event",
+			line:   `{"type":"system","subtype":"init"}`,
+			wantOK: false,
+		},
+		{
+			name:   "empty line",
+			line:   "",
+			wantOK: false,
+		},
+		{
+			name:   "invalid json",
+			line:   "not json",
+			wantOK: false,
+		},
+		{
+			name:   "empty object",
+			line:   "{}",
+			wantOK: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isResultEvent(tt.line); got != tt.want {
-				t.Errorf("isResultEvent(%q) = %v, want %v", tt.line, got, tt.want)
+			got, ok := tryExtractResultCLIJSON(tt.line)
+			if ok != tt.wantOK {
+				t.Errorf("tryExtractResultCLIJSON(%q) ok = %v, want %v", tt.line, ok, tt.wantOK)
+			}
+			if ok && tt.wantKey != "" {
+				var parsed map[string]any
+				if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+					t.Fatalf("输出不是合法 JSON: %v", err)
+				}
+				if parsed[tt.wantKey] != tt.wantVal {
+					t.Errorf("%s = %v, want %v", tt.wantKey, parsed[tt.wantKey], tt.wantVal)
+				}
+				// subtype 应被移除
+				if _, has := parsed["subtype"]; has {
+					t.Error("subtype 字段应被移除")
+				}
 			}
 		})
 	}
 }
 
-func TestParseResultEvent(t *testing.T) {
-	line := `{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":12345,"is_error":false,"num_turns":8,"result":"review output","session_id":"sess-123"}`
-	e, err := parseResultEvent(line)
-	if err != nil {
-		t.Fatalf("parseResultEvent 返回错误: %v", err)
+func TestTryExtractResultCLIJSON_PreservesUnknownFields(t *testing.T) {
+	rawJSON := `{"type":"result","subtype":"success","cost_usd":0.05,"future_field":"hello","nested":{"a":1}}`
+	out, ok := tryExtractResultCLIJSON(rawJSON)
+	if !ok {
+		t.Fatal("应成功提取 result 事件")
 	}
-	if e.Type != "result" {
-		t.Errorf("Type = %q, want result", e.Type)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("输出不是合法 JSON: %v", err)
 	}
-	if e.Subtype != "success" {
-		t.Errorf("Subtype = %q, want success", e.Subtype)
+	if parsed["future_field"] != "hello" {
+		t.Errorf("未知字段 future_field 应被保留，实际: %v", parsed["future_field"])
 	}
-	if e.CostUSD != 0.05 {
-		t.Errorf("CostUSD = %f, want 0.05", e.CostUSD)
-	}
-	if e.NumTurns != 8 {
-		t.Errorf("NumTurns = %d, want 8", e.NumTurns)
-	}
-	if e.Result != "review output" {
-		t.Errorf("Result = %q", e.Result)
-	}
-}
-
-func TestParseResultEvent_NotResult(t *testing.T) {
-	_, err := parseResultEvent(`{"type":"assistant"}`)
-	if err == nil {
-		t.Error("非 result 事件应返回错误")
-	}
-}
-
-func TestParseResultEvent_InvalidJSON(t *testing.T) {
-	_, err := parseResultEvent("not json")
-	if err == nil {
-		t.Error("无效 JSON 应返回错误")
+	if parsed["nested"] == nil {
+		t.Error("未知字段 nested 应被保留")
 	}
 }
 
@@ -84,24 +107,6 @@ func TestResultEventToCLIJSON(t *testing.T) {
 	// subtype 应被移除
 	if _, ok := parsed["subtype"]; ok {
 		t.Error("subtype 字段应被移除")
-	}
-}
-
-func TestResultEventToCLIJSON_PreservesUnknownFields(t *testing.T) {
-	rawJSON := `{"type":"result","subtype":"success","cost_usd":0.05,"future_field":"hello","nested":{"a":1}}`
-	out, err := resultEventToCLIJSON(rawJSON)
-	if err != nil {
-		t.Fatalf("返回错误: %v", err)
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("输出不是合法 JSON: %v", err)
-	}
-	if parsed["future_field"] != "hello" {
-		t.Errorf("未知字段 future_field 应被保留，实际: %v", parsed["future_field"])
-	}
-	if parsed["nested"] == nil {
-		t.Error("未知字段 nested 应被保留")
 	}
 }
 
