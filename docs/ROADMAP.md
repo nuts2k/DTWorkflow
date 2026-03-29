@@ -264,16 +264,16 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - 完整可用的 PR 自动评审功能
 - 评审 prompt 模板库（Java / Vue）
 - 评审配置文档
+- 容器执行超时可配置化（`worker.timeouts` 按任务类型）+ stream-json 活跃度检测（`worker.stream_monitor`，默认关闭）
 
-#### 待解决：容器执行超时与可观测性
+#### 容器执行超时与可观测性
 > 讨论记录：`docs/discussions/2026-03-27-container-timeout-observability.md`
+> 设计文档：`docs/plans/2026-03-29-container-timeout-observability-design.md`
+> 说明：2026-03-29 完成全部实施（方案 D 可配置超时 + 方案 E stream-json 活跃度检测）。
 
-当前容器执行期间为完全黑盒，Claude Code 卡住时只能等到超时（10 分钟）才能发现。超时值本身也难以确定——评审耗时与 diff 大小不成正比，与项目大小和 Claude 探索深度关系更大。
-
-待验证技术点：
-- [ ] `claude -p` 非交互模式下 stderr 是否有稳定的进度输出（决定能否用作心跳信号）
-- [ ] 基于验证结果选定方案：stderr 心跳检测 / Docker Stats 活跃度检测 / 仅可配置超时
-- [ ] 将 `TaskTimeout` 改为 YAML 可配置（全局 + 仓库级），替代代码硬编码
+- [x] `claude -p` 非交互模式下 stderr 是否有稳定的进度输出（决定能否用作心跳信号）——已验证不可行（stderr 全程静默），改用 `--output-format stream-json --verbose --include-partial-messages` 的 stdout 事件流
+- [x] 基于验证结果选定方案：选定方案 E（stream-json stdout 心跳）；2 分钟活跃度阈值，最大静默间隔实测 9 秒，留 13 倍余量；关闭时自动降级为原有 JSON 路径，零改动
+- [x] 将 `TaskTimeout` 改为 YAML 可配置（`worker.timeouts.review_pr / fix_issue / gen_tests`），零值时回退硬编码默认值；`stream_monitor.enabled / activity_timeout` 控制活跃度检测开关
 
 ### 验证标准
 - [x] 创建一个包含已知问题的 PR → 自动评审 → 正确识别问题并分级 → 逐行 comment + summary → 严重问题自动打回（2026-03-27 E2E 验证通过，PR #9）
