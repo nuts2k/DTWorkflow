@@ -19,6 +19,10 @@ import (
 // stdinWriteTimeout stdin 数据写入超时，防止容器未读 stdin 导致 goroutine 永久阻塞
 const stdinWriteTimeout = 30 * time.Second
 
+// streamMonitorDrainTimeout 容器退出后等待流式监控收尾的最长时间。
+// 目的是给最后一个 result 事件留出落入 resultCh 的窗口，避免过早 fallback 到原始日志。
+const streamMonitorDrainTimeout = 2 * time.Second
+
 // consecutiveHyphens 匹配连续的连字符，用于容器名称清理
 var consecutiveHyphens = regexp.MustCompile(`-{2,}`)
 
@@ -249,17 +253,31 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 
 		// 启动流式心跳监控 goroutine
 		resultCh := make(chan string, 1)
-		go p.streamMonitorLoop(monitorCtx, monitorCancel, containerID, resultCh)
+		monitorDone := make(chan struct{})
+		go p.streamMonitorLoop(monitorCtx, monitorCancel, containerID, resultCh, monitorDone)
 
 		// 等待容器退出（受 monitorCtx 控制，活跃度超时会取消此 ctx）
 		exitCode, waitErr = p.docker.WaitContainer(monitorCtx, containerID)
-		monitorCancel(nil) // 容器已退出，停止监控 goroutine
+
+		streamResult, hasStreamResult := "", false
+		if waitErr == nil {
+			streamResult, hasStreamResult = waitForStreamResult(resultCh, monitorDone, streamMonitorDrainTimeout)
+		}
+		monitorCancel(nil) // 容器已退出或等待失败，停止监控 goroutine
+		if !waitForStreamMonitorDone(monitorDone, streamMonitorDrainTimeout) {
+			p.logger.WarnContext(ctx, "流式监控未在预期时间内退出",
+				slog.String("container_id", containerID),
+				slog.Duration("timeout", streamMonitorDrainTimeout),
+			)
+		}
+		if !hasStreamResult {
+			streamResult, hasStreamResult = drainStreamResult(resultCh)
+		}
 
 		// 尝试从流中获取 result
-		select {
-		case streamResult := <-resultCh:
+		if hasStreamResult {
 			output = streamResult
-		default:
+		} else {
 			// fallback: 从日志兜底
 			logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer logCancel()
@@ -407,7 +425,16 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 // streamMonitorLoop 流式心跳监控，在独立 goroutine 中运行。
 // 检测容器 stdout 流的活跃度，长时间无新数据则判定卡住并取消 context。
 // 同时捕获 result 事件，通过 resultCh 返回给调用方。
-func (p *Pool) streamMonitorLoop(ctx context.Context, cancel context.CancelCauseFunc, containerID string, resultCh chan<- string) {
+func (p *Pool) streamMonitorLoop(
+	ctx context.Context,
+	cancel context.CancelCauseFunc,
+	containerID string,
+	resultCh chan<- string,
+	monitorDone chan<- struct{},
+) {
+	defer close(resultCh)
+	defer close(monitorDone)
+
 	reader, err := p.docker.FollowLogs(ctx, containerID)
 	if err != nil {
 		p.logger.ErrorContext(ctx, "启动流式监控失败",
@@ -472,6 +499,49 @@ func (p *Pool) streamMonitorLoop(ctx context.Context, cancel context.CancelCause
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func waitForStreamResult(resultCh <-chan string, monitorDone <-chan struct{}, timeout time.Duration) (string, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case result, ok := <-resultCh:
+			if !ok {
+				return "", false
+			}
+			return result, true
+		case <-monitorDone:
+			monitorDone = nil
+		case <-timer.C:
+			return "", false
+		}
+	}
+}
+
+func waitForStreamMonitorDone(monitorDone <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-monitorDone:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func drainStreamResult(resultCh <-chan string) (string, bool) {
+	select {
+	case result, ok := <-resultCh:
+		if !ok {
+			return "", false
+		}
+		return result, true
+	default:
+		return "", false
 	}
 }
 

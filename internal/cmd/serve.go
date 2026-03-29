@@ -121,14 +121,16 @@ type readinessSnapshot struct {
 
 func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 	pcfg := worker.PoolConfig{
-		Image:        cfg.WorkerImage,
-		CPULimit:     cfg.CPULimit,
-		MemoryLimit:  cfg.MemoryLimit,
-		GiteaURL:     cfg.GiteaURL,
-		GiteaToken:   worker.SecretString(cfg.GiteaToken),
+		Image:         cfg.WorkerImage,
+		CPULimit:      cfg.CPULimit,
+		MemoryLimit:   cfg.MemoryLimit,
+		GiteaURL:      cfg.GiteaURL,
+		GiteaToken:    worker.SecretString(cfg.GiteaToken),
 		ClaudeAPIKey:  worker.SecretString(cfg.ClaudeAPIKey),
 		ClaudeBaseURL: cfg.ClaudeBaseURL,
 		NetworkName:   cfg.NetworkName,
+		Timeouts:      buildWorkerTimeoutConfigFromAppConfig(cfg.AppCfg),
+		StreamMonitor: buildWorkerStreamMonitorConfigFromAppConfig(cfg.AppCfg),
 	}
 	if cfg.AppCfg != nil {
 		pcfg.GiteaInsecureSkipVerify = cfg.AppCfg.Gitea.InsecureSkipVerify
@@ -375,6 +377,7 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 		cleanup()
 		return nil, nil, fmt.Errorf("初始化 asynq Client 失败: %w", err)
 	}
+	queueClient.SetTimeouts(buildQueueTimeoutConfigFromAppConfig(cfg.AppCfg))
 	cleanups = append(cleanups, func() { _ = queueClient.Close() })
 	// 验证 Redis 连通性：Redis 是任务队列的核心依赖，不可用时必须快速失败
 	if err := queueClient.Ping(context.Background()); err != nil {

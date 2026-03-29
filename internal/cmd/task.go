@@ -153,6 +153,9 @@ var taskCmd = &cobra.Command{
 			taskStore = nil
 			return fmt.Errorf("初始化队列客户端失败: %w", err)
 		}
+		if cfgManager != nil {
+			taskQueueClient.SetTimeouts(buildQueueTimeoutConfigFromAppConfig(cfgManager.Get()))
+		}
 		return nil
 	},
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {

@@ -529,6 +529,17 @@ func TestBuildServiceDeps_UsesServeConfigResourceLimitsAndNetwork(t *testing.T) 
 
 	// 最小通知配置（避免 buildNotifier 直接返回 nil）
 	cfg.AppCfg = &config.Config{
+		Worker: config.WorkerConfig{
+			Timeouts: config.TaskTimeouts{
+				ReviewPR: 11 * time.Minute,
+				FixIssue: 22 * time.Minute,
+				GenTests: 33 * time.Minute,
+			},
+			StreamMonitor: config.StreamMonitorConf{
+				Enabled:         true,
+				ActivityTimeout: 90 * time.Second,
+			},
+		},
 		Notify: config.NotifyConfig{
 			DefaultChannel: "gitea",
 			Channels:       map[string]config.ChannelConfig{"gitea": {Enabled: true}},
@@ -556,6 +567,21 @@ func TestBuildServiceDeps_UsesServeConfigResourceLimitsAndNetwork(t *testing.T) 
 	}
 	if string(poolCfg.ClaudeAPIKey) != cfg.ClaudeAPIKey {
 		t.Fatalf("ClaudeAPIKey should come from serveConfig")
+	}
+	if poolCfg.Timeouts.ReviewPR != 11*time.Minute {
+		t.Fatalf("ReviewPR timeout = %s, want %s", poolCfg.Timeouts.ReviewPR, 11*time.Minute)
+	}
+	if poolCfg.Timeouts.FixIssue != 22*time.Minute {
+		t.Fatalf("FixIssue timeout = %s, want %s", poolCfg.Timeouts.FixIssue, 22*time.Minute)
+	}
+	if poolCfg.Timeouts.GenTests != 33*time.Minute {
+		t.Fatalf("GenTests timeout = %s, want %s", poolCfg.Timeouts.GenTests, 33*time.Minute)
+	}
+	if !poolCfg.StreamMonitor.Enabled {
+		t.Fatal("StreamMonitor.Enabled = false, want true")
+	}
+	if poolCfg.StreamMonitor.ActivityTimeout != 90*time.Second {
+		t.Fatalf("StreamMonitor.ActivityTimeout = %s, want %s", poolCfg.StreamMonitor.ActivityTimeout, 90*time.Second)
 	}
 }
 

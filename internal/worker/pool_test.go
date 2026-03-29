@@ -869,6 +869,56 @@ func TestPool_RunWithStreamMonitor_Success(t *testing.T) {
 	}
 }
 
+// TestPool_RunWithStreamMonitor_WaitsForLateResult 模拟容器先退出、result 事件稍后到达，
+// 验证不会过早 fallback 到原始日志。
+func TestPool_RunWithStreamMonitor_WaitsForLateResult(t *testing.T) {
+	var fallbackCalled atomic.Bool
+
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-stream-late-result", nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			return 0, nil
+		},
+		followLogsFunc: func(ctx context.Context, containerID string) (io.ReadCloser, error) {
+			pr, pw := io.Pipe()
+			go func() {
+				defer pw.Close()
+				_, _ = pw.Write(stdcopyFrame(1, `{"type":"system","subtype":"init"}`+"\n"))
+				time.Sleep(50 * time.Millisecond)
+				_, _ = pw.Write(stdcopyFrame(1, `{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":1000,"is_error":false,"num_turns":3,"result":"{\"summary\":\"good\",\"verdict\":\"approve\",\"issues\":[]}","session_id":"sess-late"}`+"\n"))
+			}()
+			return pr, nil
+		},
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			fallbackCalled.Store(true)
+			return ContainerLogs{Stdout: "fallback logs"}, nil
+		},
+	}
+
+	config := defaultPoolConfig()
+	config.StreamMonitor = StreamMonitorConfig{
+		Enabled:         true,
+		ActivityTimeout: 5 * time.Second,
+	}
+	pool := mustNewPool(t, config, mock)
+
+	result, err := pool.RunWithCommand(context.Background(), defaultPayload(), []string{"claude", "-p", "review"})
+	if err != nil {
+		t.Fatalf("Run 返回非预期错误: %v", err)
+	}
+	if fallbackCalled.Load() {
+		t.Fatal("不应在最终 result 事件可达时 fallback 到日志")
+	}
+	if !strings.Contains(result.Output, `"type":"success"`) {
+		t.Fatalf("Output 应包含流式 result 对齐后的 CLI JSON，实际: %s", result.Output)
+	}
+	if !strings.Contains(result.Output, `sess-late`) {
+		t.Fatalf("Output 应包含延迟到达的 result 事件，实际: %s", result.Output)
+	}
+}
+
 // TestPool_RunWithStreamMonitor_Disabled 开关关闭走旧路径，验证从 GetContainerLogs 获取输出
 func TestPool_RunWithStreamMonitor_Disabled(t *testing.T) {
 	followLogsCalled := false
