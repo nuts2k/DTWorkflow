@@ -53,6 +53,19 @@ worker:
   cpu_limit: "2.0"
   memory_limit: "4g"
   network_name: "dtworkflow-net"
+  # 按任务类型的硬超时（覆盖 timeout 默认值）
+  # 零值或不填则使用默认值：review_pr=10m, fix_issue=30m, gen_tests=20m
+  timeouts:
+    review_pr: "15m"
+    fix_issue: "45m"
+    gen_tests: "30m"
+  # 流式心跳监控（stream-json 活跃度检测）
+  # 启用后容器内 claude -p 改用 stream-json 输出格式，
+  # 通过监控 stdout 事件流检测容器是否卡住。
+  # 关闭时退回到 --output-format json + 静态超时等待。
+  stream_monitor:
+    enabled: false
+    activity_timeout: "2m"
 
 # 通知配置（路由配置驱动）
 # 说明：
