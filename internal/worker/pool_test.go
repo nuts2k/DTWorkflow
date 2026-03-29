@@ -945,6 +945,49 @@ func (b *blockingReadCloser) Close() error {
 	return nil
 }
 
+// TestPool_RunWithStreamMonitor_FallbackToLogs 流中没有 result 事件（只有 system/assistant），
+// 验证从 GetContainerLogs 兜底获取输出
+func TestPool_RunWithStreamMonitor_FallbackToLogs(t *testing.T) {
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-fallback", nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			// 短暂延迟，让 streamMonitorLoop 有时间消费完流中的事件
+			time.Sleep(200 * time.Millisecond)
+			return 0, nil
+		},
+		followLogsFunc: func(ctx context.Context, containerID string) (io.ReadCloser, error) {
+			// 只包含 system 和 assistant 事件，不包含 result
+			var buf bytes.Buffer
+			buf.Write(stdcopyFrame(1, `{"type":"system","subtype":"init"}`+"\n"))
+			buf.Write(stdcopyFrame(1, `{"type":"assistant","message":{"role":"assistant","content":"thinking..."}}`+"\n"))
+			return io.NopCloser(&buf), nil
+		},
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			return ContainerLogs{Stdout: "fallback log output"}, nil
+		},
+	}
+
+	config := defaultPoolConfig()
+	config.StreamMonitor = StreamMonitorConfig{
+		Enabled:         true,
+		ActivityTimeout: 5 * time.Second,
+	}
+	pool := mustNewPool(t, config, mock)
+
+	result, err := pool.RunWithCommand(context.Background(), defaultPayload(), []string{"claude", "-p", "review"})
+	if err != nil {
+		t.Fatalf("Run 返回非预期错误: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, 期望 0", result.ExitCode)
+	}
+	if result.Output != "fallback log output" {
+		t.Errorf("Output = %q, 期望 %q（应从日志兜底获取）", result.Output, "fallback log output")
+	}
+}
+
 // TestPool_RunWithStreamMonitor_ActivityTimeout 模拟流中断（只输出一行后停止），验证活跃度超时后返回错误
 func TestPool_RunWithStreamMonitor_ActivityTimeout(t *testing.T) {
 	mock := &mockDockerClient{
