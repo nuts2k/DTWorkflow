@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // 编译时接口检查
@@ -32,6 +33,19 @@ type ExecutionResult struct {
 	ContainerID string `json:"container_id"`
 }
 
+// TaskTimeoutsConfig Worker 层的超时配置（从 config.TaskTimeouts 转换而来）
+type TaskTimeoutsConfig struct {
+	ReviewPR time.Duration
+	FixIssue time.Duration
+	GenTests time.Duration
+}
+
+// StreamMonitorConfig Worker 层的流式监控配置
+type StreamMonitorConfig struct {
+	Enabled         bool
+	ActivityTimeout time.Duration
+}
+
 // PoolConfig Worker 池配置
 type PoolConfig struct {
 	Image        string // 锁定 tag，如 dtworkflow-worker:1.0
@@ -44,6 +58,8 @@ type PoolConfig struct {
 	WorkDir       string       // 容器内工作目录
 	NetworkName  string // Docker bridge 网络名，默认 "dtworkflow-net"
 	GiteaInsecureSkipVerify bool // 跳过 Gitea TLS 证书验证（自签名证书场景）
+	Timeouts      TaskTimeoutsConfig  // 按任务类型的硬超时配置
+	StreamMonitor StreamMonitorConfig // 流式心跳监控配置
 }
 
 // Validate 校验 PoolConfig 必填字段，在 NewPool 中调用
