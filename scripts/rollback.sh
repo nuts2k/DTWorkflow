@@ -4,10 +4,16 @@ set -euo pipefail
 # ============================================================
 # DTWorkflow 回滚脚本
 # 用法: scripts/rollback.sh [ssh-host]
-# 示例: scripts/rollback.sh dtworkflow-test
+# 示例: scripts/rollback.sh companytest
 # ============================================================
 
-DEPLOY_HOST="${1:-${DEPLOY_HOST:-dtworkflow-test}}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 加载本机部署配置（如存在，设置 DEPLOY_HOST 等本机变量）
+[ -f "$PROJECT_ROOT/deploy/local.env" ] && source "$PROJECT_ROOT/deploy/local.env"
+
+DEPLOY_HOST="${1:-${DEPLOY_HOST:-companytest}}"
 DEPLOY_DIR="/opt/dtworkflow"
 
 echo "=== DTWorkflow 回滚 ==="

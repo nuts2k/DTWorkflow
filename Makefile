@@ -60,14 +60,14 @@ ifndef VERSION
 endif
 	scripts/build-release.sh $(VERSION)
 
-## deploy: 部署到测试服务器（用法：make deploy VERSION=v0.2.0 HOST=dtworkflow-test）
+## deploy: 部署到测试服务器（用法：make deploy VERSION=v0.2.0，HOST 默认取自 deploy/local.env）
 deploy:
 ifndef VERSION
 	$(error 请指定版本号: make deploy VERSION=v0.2.0)
 endif
 	scripts/deploy.sh $(VERSION) $(HOST)
 
-## rollback: 回滚测试服务器（用法：make rollback HOST=dtworkflow-test）
+## rollback: 回滚测试服务器（用法：make rollback，HOST 默认取自 deploy/local.env）
 rollback:
 	scripts/rollback.sh $(HOST)
 

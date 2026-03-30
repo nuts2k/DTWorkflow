@@ -42,3 +42,6 @@ dtworkflow.yml
 
 # 发布产物（镜像 tar 包）
 .releases/
+
+# 本机部署配置（包含 SSH host 等本机变量，勿提交）
+deploy/local.env

@@ -10,9 +10,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# 加载本机部署配置（如存在，设置 DEPLOY_HOST 等本机变量）
+[ -f "$PROJECT_ROOT/deploy/local.env" ] && source "$PROJECT_ROOT/deploy/local.env"
+
 # --- 参数 ---
 VERSION="${1:-}"
-DEPLOY_HOST="${2:-${DEPLOY_HOST:-dtworkflow-test}}"
+DEPLOY_HOST="${2:-${DEPLOY_HOST:-companytest}}"
 DEPLOY_DIR="/opt/dtworkflow"
 
 if [ -z "$VERSION" ]; then
