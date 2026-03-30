@@ -29,9 +29,6 @@
 - 数据卷使用 bind mount 到 `${DEPLOY_DIR}/shared/` 下
 
 ```yaml
-volumes:
-  redis-data:
-
 services:
   redis:
     image: redis:7-alpine
@@ -58,7 +55,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/readyz"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -399,13 +396,24 @@ echo "[7/7] 健康检查..."
 echo "  等待服务启动..."
 sleep 5
 
+get_remote_dtworkflow_health() {
+    ssh "$DEPLOY_HOST" "cd $DEPLOY_DIR && \
+        container_id=\$(docker compose ps -q dtworkflow) && \
+        if [ -z \"\$container_id\" ]; then \
+            echo missing; \
+        else \
+            docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \"\$container_id\"; \
+        fi" 2>/dev/null || echo unreachable
+}
+
 HEALTH_OK=false
 for i in $(seq 1 6); do
-    if ssh "$DEPLOY_HOST" "curl -sf http://localhost:8080/healthz" >/dev/null 2>&1; then
+    HEALTH_STATUS="$(get_remote_dtworkflow_health)"
+    if [ "$HEALTH_STATUS" = "healthy" ]; then
         HEALTH_OK=true
         break
     fi
-    echo "  重试 ($i/6)..."
+    echo "  重试 ($i/6)，当前状态: $HEALTH_STATUS"
     sleep 5
 done
 
@@ -535,13 +543,24 @@ echo "  服务已重启"
 echo "[5/5] 健康检查..."
 sleep 5
 
+get_remote_dtworkflow_health() {
+    ssh "$DEPLOY_HOST" "cd $DEPLOY_DIR && \
+        container_id=\$(docker compose ps -q dtworkflow) && \
+        if [ -z \"\$container_id\" ]; then \
+            echo missing; \
+        else \
+            docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \"\$container_id\"; \
+        fi" 2>/dev/null || echo unreachable
+}
+
 HEALTH_OK=false
 for i in $(seq 1 6); do
-    if ssh "$DEPLOY_HOST" "curl -sf http://localhost:8080/healthz" >/dev/null 2>&1; then
+    HEALTH_STATUS="$(get_remote_dtworkflow_health)"
+    if [ "$HEALTH_STATUS" = "healthy" ]; then
         HEALTH_OK=true
         break
     fi
-    echo "  重试 ($i/6)..."
+    echo "  重试 ($i/6)，当前状态: $HEALTH_STATUS"
     sleep 5
 done
 
@@ -720,7 +739,16 @@ stat -c '%g' /var/run/docker.sock
 # 将结果写入 .env 的 DOCKER_GID
 
 # 3. 创建 dtworkflow.yaml（手动填写敏感配置）
-# 参考 configs/ 目录下的模板
+# 参考 configs/dtworkflow.example.yaml 模板，重点确认以下字段：
+#
+# worker:
+#   timeouts:
+#     review_pr: "15m"   # 默认硬编码仅 10m，大型 PR 评审容易超时
+#     fix_issue: "45m"
+#     gen_tests: "30m"
+#   stream_monitor:
+#     enabled: true      # 启用流式心跳监控，检测容器卡住并自动触发重试
+#     activity_timeout: "2m"
 
 # 4. 验证 Docker 环境
 docker --version
