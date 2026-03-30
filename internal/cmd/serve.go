@@ -352,7 +352,7 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 			giteaOpts = append(giteaOpts, gitea.WithHTTPClient(&http.Client{
 				Timeout: 30 * time.Second,
 				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12}, //nolint:gosec
 				},
 			}))
 		}
