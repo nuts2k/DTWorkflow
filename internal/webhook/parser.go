@@ -32,7 +32,7 @@ func (p *Parser) parsePullRequest(deliveryID string, body []byte) (Event, error)
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, ErrInvalidPayload
 	}
-	if payload.Action != "opened" && payload.Action != "synchronized" {
+	if payload.Action != "opened" && payload.Action != "synchronized" && payload.Action != "reopened" {
 		return nil, ErrUnsupportedAction
 	}
 	if payload.PullRequest.Number == 0 || payload.Repository.FullName == "" {
