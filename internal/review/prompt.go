@@ -293,6 +293,13 @@ func extractJSON(text string) string {
 		}
 		return strings.TrimSpace(fenced)
 	}
+	// 无 code fence：定位第一个 '{' 和最后一个 '}'，
+	// 处理 Claude 在 JSON 前后输出自然语言文本的情况。
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start >= 0 && end > start {
+		return text[start : end+1]
+	}
 	return text
 }
 
