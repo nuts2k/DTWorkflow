@@ -450,6 +450,13 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 		filteredFiles = files
 	}
 
+	// 0. 只读模式约束（最高优先级，最先出现）
+	b.WriteString("IMPORTANT: You are in READ-ONLY code analysis mode.\n")
+	b.WriteString("- Do NOT call any external APIs, HTTP endpoints, or network services\n")
+	b.WriteString("- Do NOT attempt to submit reviews, comments, or status updates to Gitea or any other platform\n")
+	b.WriteString("- Do NOT run curl, wget, python requests, or any other network commands\n")
+	b.WriteString("- Your ONLY task is to analyze the code and output the JSON result to stdout\n\n")
+
 	// 1. 任务上下文
 	b.WriteString(fmt.Sprintf("You are reviewing PR #%d in repository %s.\n", pr.Number, pr.Base.Repo.FullName))
 	b.WriteString(fmt.Sprintf("Author: %s\n", pr.User.Login))

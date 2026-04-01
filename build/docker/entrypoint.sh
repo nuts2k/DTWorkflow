@@ -115,6 +115,8 @@ fi
 # 清除敏感环境变量，防止 Claude Code 通过 Bash 读取
 unset GITEA_TOKEN
 unset AUTH_URL
+unset GITEA_URL
+unset REPO_CLONE_URL
 
 log "开始执行任务命令..."
 
