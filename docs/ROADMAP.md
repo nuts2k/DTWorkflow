@@ -89,7 +89,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 #### M1.4 Webhook 接收器
 - [x] Gin 路由接收 Gitea Webhook
 - [x] Webhook 签名验证（安全性）
-- [x] 事件解析：PR 事件（opened / synchronized）、Issue 标签变更事件
+- [x] 事件解析：PR 事件（opened / synchronized / reopened）、Issue 标签变更事件
 - [x] Gitea 侧 Webhook 配置指南
 
 #### M1.5 任务队列
@@ -107,6 +107,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 容器内 Git 仓库 clone + worktree 实现（entrypoint.sh 实现 clone + PR 分支 checkout，Claude Code CLI 固定为 v2.1.76）
 - [x] Claude Code CLI 非交互模式验证（`claude -p` 在容器内运行）
 - [x] API Key 安全注入（环境变量 / Docker secrets）
+- [x] 安全加固：entrypoint.sh clone 阶段结束后清除 `GITEA_URL` / `REPO_CLONE_URL`，确保 Claude Code 执行阶段不可读取克隆凭证
 
 #### M1.7 通知框架
 - [x] 通知接口定义（Go interface，策略模式）
@@ -119,7 +120,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Viper 集成，全局配置文件格式定义（YAML）
   - [x] `internal/config` 包：Manager + Config 模型 + Functional Options
   - [x] 默认值（WithDefaults）、环境变量绑定（WithEnvPrefix）、配置文件加载
-  - [x] 配置校验（Validate）：server.port 范围、gitea.url 格式、redis.addr/worker.timeout/webhook.secret/claude.api_key 必填、log.level/format 白名单、notify 路由合法性
+  - [x] 配置校验（Validate）：server.port 范围、gitea.url 格式、redis.addr/worker.timeout/webhook.secret/claude.api_key 必填、log.level/format 白名单、notify 路由合法性、claude.model/effort 格式校验、review.model/effort 及仓库级 model/effort 格式校验
   - [x] 错误体系：ErrInvalidConfig 哨兵 + ValidationError（支持 errors.Is/As）
   - [x] `root` 命令统一配置入口（PersistentPreRunE）、CLI flag > env > file > default 优先级
   - [x] `serve` 从 cfgManager 读取全部运行参数，包括 Redis password/DB 透传
@@ -129,6 +130,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 仓库级配置支持
   - [x] `repos` 配置段：per-repo notify 路由覆盖
   - [x] `repos` 配置段：per-repo review 配置预留（Enabled/Severity/IgnorePatterns）
+  - [x] `repos` 配置段：per-repo model/effort 覆盖（继承全局 claude.model/effort，仓库级可单独覆盖）
   - [x] ResolveNotifyRoutes / ResolveReviewConfig 合并逻辑
 - [x] 配置热加载（Viper WatchConfig）
   - [x] fsnotify 目录级监听 + 200ms debounce 防抖
@@ -198,6 +200,9 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 配置扩展：ReviewOverride 新增 TechStack / CodeStandardsPaths 字段，仓库级覆盖合并
 - [x] 示例配置 dtworkflow.example.yaml 补充 tech_stack / code_standards_paths 示例
 - [x] Dimensions 配置动态控制 prompt 评审维度（M2.5 实现：拆分 reviewPreamble + dimensionInstructions，按配置动态组装）
+- [x] Claude 模型与推理强度可配置：全局 `claude.model` / `claude.effort`，仓库级可单独覆盖；`buildCommand` 透传 `--model` / `--effort` 给 Claude Code CLI
+- [x] 安全加固：prompt 最前置 READ-ONLY 约束文本（禁止调用外部 API/网络），与 `--disallowedTools` 形成双层防御（意图层 + 工具层）
+- [x] extractJSON 兼容性修复：无 code fence 时定位首个 `{` 与末尾 `}` 提取 JSON，兼容 Claude 在 JSON 前后输出自然语言的场景
 
 #### M2.3 评审结果解析与回写
 > 说明：2026-03-26 完成全部实施与审核修复（14 个审核问题已修复）。
@@ -263,7 +268,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 ### 交付物
 - 完整可用的 PR 自动评审功能
 - 评审 prompt 模板库（Java / Vue）
-- 评审配置文档
+- 评审配置文档（含 Claude 模型/推理强度配置说明）
 - 容器执行超时可配置化（`worker.timeouts` 按任务类型）+ stream-json 活跃度检测（`worker.stream_monitor`，默认关闭）
 
 #### 容器执行超时与可观测性
