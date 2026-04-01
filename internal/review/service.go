@@ -133,7 +133,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 
 	// 5. 构造 prompt + 命令
 	prompt := s.buildPrompt(pr, files, cfg, techStack)
-	cmd := s.buildCommand()
+	cmd := s.buildCommand(cfg)
 
 	// 6. 通过 stdin 传入 prompt 执行容器
 	execResult, err := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
@@ -230,8 +230,10 @@ func (s *Service) resolveConfig(repoFullName string) ReviewConfig {
 		LargePRThreshold:   override.LargePRThreshold,
 		TechStack:          override.TechStack,
 		CodeStandardsPaths: override.CodeStandardsPaths,
-		Severity:           override.Severity,       // M2.5 新增
-		IgnorePatterns:     override.IgnorePatterns,  // M2.5 新增
+		Severity:           override.Severity,      // M2.5 新增
+		IgnorePatterns:     override.IgnorePatterns, // M2.5 新增
+		Model:              override.Model,
+		Effort:             override.Effort,
 	}
 
 	// 应用默认值

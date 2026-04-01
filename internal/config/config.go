@@ -31,6 +31,8 @@ type Config struct {
 type ClaudeConfig struct {
 	APIKey  string `mapstructure:"api_key"`
 	BaseURL string `mapstructure:"base_url"` // 代理或自定义 API 端点，留空则使用官方地址
+	Model   string `mapstructure:"model"`    // 使用的模型，默认 claude-sonnet-4-6
+	Effort  string `mapstructure:"effort"`   // 推理强度：low / medium / high，默认 high
 }
 
 type ServerConfig struct {
@@ -231,6 +233,8 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("gitea.url", "")
 		m.v.SetDefault("gitea.token", "")
 		m.v.SetDefault("claude.api_key", "")
+		m.v.SetDefault("claude.model", "claude-sonnet-4-6")
+		m.v.SetDefault("claude.effort", "high")
 		m.v.SetDefault("webhook.secret", "")
 		m.v.SetDefault("notify.default_channel", "gitea")
 		m.v.SetDefault("notify.channels.gitea.enabled", false)

@@ -27,6 +27,8 @@ type ReviewConfig struct {
 	CodeStandardsPaths []string // 自定义规范文件路径
 	Severity           string   // M2.5: severity 过滤阈值
 	IgnorePatterns     []string // M2.5: 文件忽略 glob 模式列表
+	Model              string   // Claude 模型，默认 claude-sonnet-4-6
+	Effort             string   // 推理强度：low / medium / high
 }
 
 // jsonSchemaInstruction 输出格式约束（硬编码，不可配置）
@@ -513,10 +515,17 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 // buildCommand 构造容器执行命令（stdin 模式，prompt 通过 stdin 传入）
 // 评审场景为只读模式：通过 --disallowedTools 禁止所有文件写工具，
 // 防止 Claude Code 误修改代码或执行 git 写操作。
-func (s *Service) buildCommand() []string {
-	return []string{
+func (s *Service) buildCommand(cfg ReviewConfig) []string {
+	cmd := []string{
 		"claude", "-p", "-",
 		"--output-format", "json",
 		"--disallowedTools", "Edit,Write,NotebookEdit",
 	}
+	if cfg.Model != "" {
+		cmd = append(cmd, "--model", cfg.Model)
+	}
+	if cfg.Effort != "" {
+		cmd = append(cmd, "--effort", cfg.Effort)
+	}
+	return cmd
 }

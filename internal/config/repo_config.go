@@ -29,6 +29,10 @@ type ReviewOverride struct {
 	// --- M2.2 新增 ---
 	TechStack          []string `mapstructure:"tech_stack"`           // 技术栈显式指定：["java", "vue"]
 	CodeStandardsPaths []string `mapstructure:"code_standards_paths"` // 自定义规范文件路径
+
+	// --- 模型配置 ---
+	Model  string `mapstructure:"model"`  // 覆盖全局 claude.model
+	Effort string `mapstructure:"effort"` // 覆盖全局 claude.effort
 }
 
 // ResolveNotifyRoutes 解析指定仓库的最终通知路由规则。
@@ -61,8 +65,14 @@ func (c *Config) ResolveReviewConfig(repoFullName string) ReviewOverride {
 		return ReviewOverride{}
 	}
 
-	// 基础：使用全局 Review 作为默认值。
+	// 基础：使用全局 Review 作为默认值，model/effort 从全局 Claude 配置填充。
 	merged := c.Review
+	if merged.Model == "" {
+		merged.Model = c.Claude.Model
+	}
+	if merged.Effort == "" {
+		merged.Effort = c.Claude.Effort
+	}
 
 	for _, repo := range c.Repos {
 		if repo.Name != repoFullName || repo.Review == nil {
@@ -95,6 +105,12 @@ func (c *Config) ResolveReviewConfig(repoFullName string) ReviewOverride {
 		}
 		if repo.Review.CodeStandardsPaths != nil {
 			merged.CodeStandardsPaths = repo.Review.CodeStandardsPaths
+		}
+		if repo.Review.Model != "" {
+			merged.Model = repo.Review.Model
+		}
+		if repo.Review.Effort != "" {
+			merged.Effort = repo.Review.Effort
 		}
 		break
 	}
