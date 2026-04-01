@@ -458,6 +458,65 @@ func TestValidate_ReviewSeverity(t *testing.T) {
 	})
 }
 
+func TestValidate_ClaudeEffort(t *testing.T) {
+	t.Run("有效值通过并允许大小写混用", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Effort = "HIGH"
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("有效 claude.effort 应通过校验，但返回: %v", err)
+		}
+	})
+
+	t.Run("无效值报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Effort = "hgh"
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("无效 claude.effort 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "claude.effort") {
+			t.Errorf("错误应包含 claude.effort，得到: %v", err)
+		}
+	})
+}
+
+func TestValidate_ReviewEffort(t *testing.T) {
+	t.Run("全局 review.effort 有效值通过", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Effort = "medium"
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("有效 review.effort 应通过校验，但返回: %v", err)
+		}
+	})
+
+	t.Run("全局 review.effort 无效值报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Review.Effort = "ultra"
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("无效 review.effort 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "review.effort") {
+			t.Errorf("错误应包含 review.effort，得到: %v", err)
+		}
+	})
+
+	t.Run("仓库级 review.effort 无效值报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "owner/repo",
+			Review: &ReviewOverride{Effort: "hgh"},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仓库级无效 review.effort 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "repos[0].review.effort") {
+			t.Errorf("错误应包含 repos[0].review.effort，得到: %v", err)
+		}
+	})
+}
+
 func TestValidate_WorkerTimeouts_Negative(t *testing.T) {
 	tests := []struct {
 		name   string

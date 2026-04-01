@@ -9,6 +9,12 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 )
 
+var validClaudeEfforts = map[string]bool{
+	"low":    true,
+	"medium": true,
+	"high":   true,
+}
+
 // Validate 校验配置的完整性与合法性。
 func Validate(cfg *Config) error {
 	if cfg == nil {
@@ -44,6 +50,9 @@ func Validate(cfg *Config) error {
 	// claude 必填
 	if strings.TrimSpace(cfg.Claude.APIKey) == "" {
 		errs = append(errs, fmt.Errorf("claude.api_key 不能为空"))
+	}
+	if err := validateClaudeEffort("claude.effort", cfg.Claude.Effort); err != nil {
+		errs = append(errs, err)
 	}
 
 	// webhook 必填
@@ -165,6 +174,9 @@ func Validate(cfg *Config) error {
 	if cfg.Review.Severity != "" && !validSeverities[strings.ToLower(cfg.Review.Severity)] {
 		errs = append(errs, fmt.Errorf("review.severity 值无效 %q，有效值: critical, error, warning, info", cfg.Review.Severity))
 	}
+	if err := validateClaudeEffort("review.effort", cfg.Review.Effort); err != nil {
+		errs = append(errs, err)
+	}
 
 	// review.ignore_patterns 语法校验
 	for i, pattern := range cfg.Review.IgnorePatterns {
@@ -186,6 +198,9 @@ func Validate(cfg *Config) error {
 		if repo.Review.Severity != "" && !validSeverities[strings.ToLower(repo.Review.Severity)] {
 			errs = append(errs, fmt.Errorf("repos[%d].review.severity 值无效 %q，有效值: critical, error, warning, info", i, repo.Review.Severity))
 		}
+		if err := validateClaudeEffort(fmt.Sprintf("repos[%d].review.effort", i), repo.Review.Effort); err != nil {
+			errs = append(errs, err)
+		}
 		for j, pattern := range repo.Review.IgnorePatterns {
 			if !doublestar.ValidatePattern(pattern) {
 				errs = append(errs, fmt.Errorf("repos[%d].review.ignore_patterns[%d] 语法不合法: %q", i, j, pattern))
@@ -195,6 +210,17 @@ func Validate(cfg *Config) error {
 
 	if len(errs) > 0 {
 		return &ValidationError{Errors: errs}
+	}
+	return nil
+}
+
+func validateClaudeEffort(field, effort string) error {
+	effort = strings.TrimSpace(effort)
+	if effort == "" {
+		return nil
+	}
+	if !validClaudeEfforts[strings.ToLower(effort)] {
+		return fmt.Errorf("%s 值无效 %q，有效值: low, medium, high", field, effort)
 	}
 	return nil
 }

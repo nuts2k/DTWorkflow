@@ -7,6 +7,23 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 )
 
+func TestBuildCommand_NormalizesEffort(t *testing.T) {
+	svc := &Service{}
+
+	cmd := svc.buildCommand(ReviewConfig{
+		Model:  "claude-sonnet-4-6",
+		Effort: " HIGH ",
+	})
+
+	cmdLine := strings.Join(cmd, " ")
+	if !strings.Contains(cmdLine, "--effort high") {
+		t.Fatalf("命令应包含规范化后的 effort 参数，实际: %v", cmd)
+	}
+	if strings.Contains(cmdLine, "--effort  HIGH ") {
+		t.Fatalf("命令不应保留未规范化的 effort 值，实际: %v", cmd)
+	}
+}
+
 func TestBuildDynamicInstructions(t *testing.T) {
 	t.Run("全部四维度", func(t *testing.T) {
 		dims := []string{"security", "logic", "architecture", "style"}

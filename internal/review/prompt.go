@@ -524,8 +524,8 @@ func (s *Service) buildCommand(cfg ReviewConfig) []string {
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)
 	}
-	if cfg.Effort != "" {
-		cmd = append(cmd, "--effort", cfg.Effort)
+	if effort := strings.ToLower(strings.TrimSpace(cfg.Effort)); effort != "" {
+		cmd = append(cmd, "--effort", effort)
 	}
 	return cmd
 }
