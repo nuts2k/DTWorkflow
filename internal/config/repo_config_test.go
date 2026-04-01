@@ -144,3 +144,84 @@ func TestResolveReviewConfig_M22Fields(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveReviewConfig_ModelEffort(t *testing.T) {
+	t.Run("claude.model 作为全局默认填充", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Model = "claude-sonnet-4-6"
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if resolved.Model != "claude-sonnet-4-6" {
+			t.Errorf("Model = %q, want %q", resolved.Model, "claude-sonnet-4-6")
+		}
+	})
+
+	t.Run("review.model 覆盖全局 claude.model", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Model = "claude-sonnet-4-6"
+		cfg.Review.Model = "claude-opus-4-6"
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if resolved.Model != "claude-opus-4-6" {
+			t.Errorf("Model = %q, want %q", resolved.Model, "claude-opus-4-6")
+		}
+	})
+
+	t.Run("仓库级 review.model 覆盖全局和顶级 review.model", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Model = "claude-sonnet-4-6"
+		cfg.Review.Model = "claude-opus-4-6"
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Review: &ReviewOverride{Model: "claude-haiku-4-5"},
+		}}
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if resolved.Model != "claude-haiku-4-5" {
+			t.Errorf("Model = %q, want %q", resolved.Model, "claude-haiku-4-5")
+		}
+	})
+
+	t.Run("claude.effort 作为全局默认填充", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Effort = "high"
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if resolved.Effort != "high" {
+			t.Errorf("Effort = %q, want %q", resolved.Effort, "high")
+		}
+	})
+
+	t.Run("review.effort 覆盖全局 claude.effort", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Effort = "high"
+		cfg.Review.Effort = "medium"
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if resolved.Effort != "medium" {
+			t.Errorf("Effort = %q, want %q", resolved.Effort, "medium")
+		}
+	})
+
+	t.Run("仓库级 review.effort 覆盖全局和顶级 review.effort", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Effort = "high"
+		cfg.Review.Effort = "medium"
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Review: &ReviewOverride{Effort: "low"},
+		}}
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if resolved.Effort != "low" {
+			t.Errorf("Effort = %q, want %q", resolved.Effort, "low")
+		}
+	})
+
+	t.Run("仓库级空 effort 不覆盖全局", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Claude.Effort = "high"
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Review: &ReviewOverride{Effort: ""},
+		}}
+		resolved := cfg.ResolveReviewConfig("acme/repo")
+		if resolved.Effort != "high" {
+			t.Errorf("Effort = %q, want %q（空仓库级 effort 不应覆盖全局）", resolved.Effort, "high")
+		}
+	})
+}

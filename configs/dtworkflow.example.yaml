@@ -28,6 +28,8 @@ webhook:
 claude:
   api_key: "REPLACE_ME_CLAUDE_API_KEY"
   base_url: ""  # 代理或自定义端点，留空使用官方地址（如 https://api.anthropic.com）
+  model: "claude-sonnet-4-6"  # 使用的模型，默认 claude-sonnet-4-6
+  effort: "high"              # 推理强度：low / medium / high，默认 high
 
 # Redis 配置
 redis:
@@ -122,3 +124,5 @@ repos:
       # tech_stack: ["java"]
       # code_standards_paths:
       #   - "docs/java-standards.md"
+      # model: "claude-opus-4-6"        # 仓库级模型覆盖（留空则继承 claude.model）
+      # effort: "medium"                # 仓库级推理强度覆盖（留空则继承 claude.effort）

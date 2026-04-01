@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -52,6 +53,9 @@ func Validate(cfg *Config) error {
 		errs = append(errs, fmt.Errorf("claude.api_key 不能为空"))
 	}
 	if err := validateClaudeEffort("claude.effort", cfg.Claude.Effort); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateClaudeModel("claude.model", cfg.Claude.Model); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -177,6 +181,9 @@ func Validate(cfg *Config) error {
 	if err := validateClaudeEffort("review.effort", cfg.Review.Effort); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateClaudeModel("review.model", cfg.Review.Model); err != nil {
+		errs = append(errs, err)
+	}
 
 	// review.ignore_patterns 语法校验
 	for i, pattern := range cfg.Review.IgnorePatterns {
@@ -201,6 +208,9 @@ func Validate(cfg *Config) error {
 		if err := validateClaudeEffort(fmt.Sprintf("repos[%d].review.effort", i), repo.Review.Effort); err != nil {
 			errs = append(errs, err)
 		}
+		if err := validateClaudeModel(fmt.Sprintf("repos[%d].review.model", i), repo.Review.Model); err != nil {
+			errs = append(errs, err)
+		}
 		for j, pattern := range repo.Review.IgnorePatterns {
 			if !doublestar.ValidatePattern(pattern) {
 				errs = append(errs, fmt.Errorf("repos[%d].review.ignore_patterns[%d] 语法不合法: %q", i, j, pattern))
@@ -221,6 +231,19 @@ func validateClaudeEffort(field, effort string) error {
 	}
 	if !validClaudeEfforts[strings.ToLower(effort)] {
 		return fmt.Errorf("%s 值无效 %q，有效值: low, medium, high", field, effort)
+	}
+	return nil
+}
+
+var validModelPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func validateClaudeModel(field, model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
+	if !validModelPattern.MatchString(model) {
+		return fmt.Errorf("%s 模型名格式不合法 %q，仅允许字母、数字、点、连字符和下划线", field, model)
 	}
 	return nil
 }

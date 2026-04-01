@@ -24,6 +24,48 @@ func TestBuildCommand_NormalizesEffort(t *testing.T) {
 	}
 }
 
+func TestBuildCommand_Flags(t *testing.T) {
+	svc := &Service{}
+
+	t.Run("model 和 effort 均为空时不注入额外参数", func(t *testing.T) {
+		cmd := svc.buildCommand(ReviewConfig{})
+		for _, arg := range cmd {
+			if arg == "--model" || arg == "--effort" {
+				t.Fatalf("空 model/effort 不应注入 %q 参数，实际命令: %v", arg, cmd)
+			}
+		}
+	})
+
+	t.Run("仅设置 model 不设置 effort", func(t *testing.T) {
+		cmd := svc.buildCommand(ReviewConfig{Model: "claude-opus-4-6"})
+		cmdLine := strings.Join(cmd, " ")
+		if !strings.Contains(cmdLine, "--model claude-opus-4-6") {
+			t.Fatalf("应包含 --model claude-opus-4-6，实际: %v", cmd)
+		}
+		if strings.Contains(cmdLine, "--effort") {
+			t.Fatalf("未设置 effort 时不应出现 --effort，实际: %v", cmd)
+		}
+	})
+
+	t.Run("仅设置 effort 不设置 model", func(t *testing.T) {
+		cmd := svc.buildCommand(ReviewConfig{Effort: "low"})
+		cmdLine := strings.Join(cmd, " ")
+		if !strings.Contains(cmdLine, "--effort low") {
+			t.Fatalf("应包含 --effort low，实际: %v", cmd)
+		}
+		if strings.Contains(cmdLine, "--model") {
+			t.Fatalf("未设置 model 时不应出现 --model，实际: %v", cmd)
+		}
+	})
+
+	t.Run("effort=medium 正确注入", func(t *testing.T) {
+		cmd := svc.buildCommand(ReviewConfig{Effort: "medium"})
+		if !strings.Contains(strings.Join(cmd, " "), "--effort medium") {
+			t.Fatalf("应包含 --effort medium，实际: %v", cmd)
+		}
+	})
+}
+
 func TestBuildDynamicInstructions(t *testing.T) {
 	t.Run("全部四维度", func(t *testing.T) {
 		dims := []string{"security", "logic", "architecture", "style"}

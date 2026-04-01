@@ -53,6 +53,9 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	if config.GiteaInsecureSkipVerify {
 		env = append(env, "GIT_SSL_NO_VERIFY=true")
 	}
+	// 注意：GITEA_URL 和 REPO_CLONE_URL 仅供 entrypoint.sh 的 clone 阶段使用。
+	// entrypoint.sh 在 clone 完成后会 unset 这两个变量，确保 Claude Code 进程看不到它们。
+	// 这是有意为之的安全设计：凭证信息不暴露给 AI 执行阶段。
 	env = append(env,
 		fmt.Sprintf("REPO_CLONE_URL=%s", sanitizeEnvValue(payload.CloneURL)),
 		fmt.Sprintf("REPO_OWNER=%s", sanitizeEnvValue(payload.RepoOwner)),

@@ -512,9 +512,16 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 	return b.String()
 }
 
+// normalizeEffort 规范化推理强度值（去除首尾空格并转为小写）。
+func normalizeEffort(effort string) string {
+	return strings.ToLower(strings.TrimSpace(effort))
+}
+
 // buildCommand 构造容器执行命令（stdin 模式，prompt 通过 stdin 传入）
 // 评审场景为只读模式：通过 --disallowedTools 禁止所有文件写工具，
 // 防止 Claude Code 误修改代码或执行 git 写操作。
+// 注意：buildPrompt 中的 READ-ONLY 约束文本与此处的 --disallowedTools 是有意为之的双层防御，
+// 前者约束 Claude 行为意图，后者在工具层面强制限制——两层缺一不可，请勿删除其中任何一层。
 func (s *Service) buildCommand(cfg ReviewConfig) []string {
 	cmd := []string{
 		"claude", "-p", "-",
@@ -524,7 +531,7 @@ func (s *Service) buildCommand(cfg ReviewConfig) []string {
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)
 	}
-	if effort := strings.ToLower(strings.TrimSpace(cfg.Effort)); effort != "" {
+	if effort := normalizeEffort(cfg.Effort); effort != "" {
 		cmd = append(cmd, "--effort", effort)
 	}
 	return cmd
