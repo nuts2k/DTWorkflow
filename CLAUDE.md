@@ -56,7 +56,8 @@ configs/        # 配置文件模板
 
 ## 代码搜索规则
 
-- **宽泛语义搜索**（"X 是怎么实现的"、"找所有涉及 Y 的文件"、探索陌生模块）→ 优先用 `mcp__fast-context__fast_context_search`
+- **探索性问题必须先语义搜索**：当用户提问包含"…是什么"、"怎么实现的"、"机制"、"流程"、"逻辑"、"策略"等探索性关键词时 → **必须**先用 `mcp__fast-context__fast_context_search`，禁止直接 Grep
+- **宽泛语义搜索**（"找所有涉及 Y 的文件"、探索陌生模块、需要超过 2 次 Grep 才能定位的问题）→ 优先用 `mcp__fast-context__fast_context_search`
 - **精确定位**（已知文件名、函数名、字符串）→ 用 Grep / Glob
 - 并行读取多个文件时无需等待，直接同时发起所有 Read 调用
 
