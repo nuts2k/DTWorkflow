@@ -161,9 +161,6 @@ func TestExecute_Success(t *testing.T) {
 	if len(result.IssueContext.Comments) != 2 {
 		t.Errorf("Comments count = %d, want 2", len(result.IssueContext.Comments))
 	}
-	if len(result.IssueContext.Labels) != 1 {
-		t.Errorf("Labels count = %d, want 1", len(result.IssueContext.Labels))
-	}
 	if result.CLIMeta != nil {
 		t.Error("M3.1 阶段 CLIMeta 应为 nil")
 	}

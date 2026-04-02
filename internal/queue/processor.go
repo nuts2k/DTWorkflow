@@ -234,48 +234,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			return p.markTaskCancelled(ctx, record, "评审已过时，被更新的任务取代")
 		}
 
-		// ErrPRNotOpen 是确定性失败，直接标记 failed 并跳过重试
+		// ErrPRNotOpen / ErrIssueNotOpen 是确定性失败，直接标记 failed 并跳过重试
 		if errors.Is(runErr, review.ErrPRNotOpen) {
-			record.Status = model.TaskStatusFailed
-			record.Error = runErr.Error()
-			completedAt := time.Now()
-			record.CompletedAt = &completedAt
-			p.logger.WarnContext(ctx, "PR 不处于 open 状态，跳过评审",
-				"task_id", taskID,
-				"error", runErr,
-			)
-			if err := p.store.UpdateTask(ctx, record); err != nil {
-				p.logger.ErrorContext(ctx, "更新任务最终状态失败",
-					"task_id", taskID,
-					"status", record.Status,
-					"error", err,
-				)
-			} else {
-				p.sendCompletionNotification(ctx, record, reviewResult)
-			}
-			return fmt.Errorf("PR 不处于 open 状态: %w", asynq.SkipRetry)
+			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, "PR 不处于 open 状态，跳过评审")
 		}
-		// M3.2 激活：当 fix.Service 接管路由后，pool.Run() 不再处理 fix_issue，
-		// 此分支将变为可达，处理 fix.Service.Execute 返回的 ErrIssueNotOpen。
 		if errors.Is(runErr, fix.ErrIssueNotOpen) {
-			record.Status = model.TaskStatusFailed
-			record.Error = runErr.Error()
-			completedAt := time.Now()
-			record.CompletedAt = &completedAt
-			p.logger.WarnContext(ctx, "Issue 不处于 open 状态，跳过分析",
-				"task_id", taskID,
-				"error", runErr,
-			)
-			if err := p.store.UpdateTask(ctx, record); err != nil {
-				p.logger.ErrorContext(ctx, "更新任务最终状态失败",
-					"task_id", taskID,
-					"status", record.Status,
-					"error", err,
-				)
-			} else {
-				p.sendCompletionNotification(ctx, record, reviewResult)
-			}
-			return fmt.Errorf("Issue 不处于 open 状态: %w", asynq.SkipRetry)
+			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, "Issue 不处于 open 状态，跳过分析")
 		}
 		// 根据 shouldRetry 判断是否还有剩余重试机会：
 		// - 有剩余重试：设为 retrying，asynq 将自动安排下次重试
@@ -604,6 +568,29 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 		}
 	}
 	return result
+}
+
+// handleSkipRetryFailure 处理确定性失败（如 PR/Issue 不处于 open 状态），
+// 标记任务 failed、持久化、发送通知，并返回 SkipRetry 错误。
+func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, logMsg string) error {
+	record.Status = model.TaskStatusFailed
+	record.Error = runErr.Error()
+	completedAt := time.Now()
+	record.CompletedAt = &completedAt
+	p.logger.WarnContext(ctx, logMsg,
+		"task_id", record.ID,
+		"error", runErr,
+	)
+	if err := p.store.UpdateTask(ctx, record); err != nil {
+		p.logger.ErrorContext(ctx, "更新任务最终状态失败",
+			"task_id", record.ID,
+			"status", record.Status,
+			"error", err,
+		)
+	} else {
+		p.sendCompletionNotification(ctx, record, reviewResult)
+	}
+	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
 }
 
 func (p *Processor) markTaskCancelled(ctx context.Context, record *model.TaskRecord, reason string) error {

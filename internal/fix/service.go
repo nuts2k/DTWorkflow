@@ -70,7 +70,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 	}
 
 	// 3. 采集上下文
-	issueCtx, err := s.collectContext(ctx, owner, repo, issueNum, issue)
+	issueCtx, err := s.collectContext(ctx, owner, repo, issue)
 	if err != nil {
 		return nil, fmt.Errorf("采集 Issue #%d 上下文失败: %w", issueNum, err)
 	}
@@ -78,7 +78,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 	s.logger.InfoContext(ctx, "Issue 上下文采集完成",
 		"issue", issueNum,
 		"comments", len(issueCtx.Comments),
-		"labels", len(issueCtx.Labels),
+		"labels", len(issue.Labels),
 	)
 
 	// 4. M3.2 在此处插入：构造 prompt + 容器执行
@@ -88,16 +88,16 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 }
 
 // collectContext 采集 Issue 富上下文
-func (s *Service) collectContext(ctx context.Context, owner, repo string, issueNum int64, issue *gitea.Issue) (*IssueContext, error) {
+func (s *Service) collectContext(ctx context.Context, owner, repo string, issue *gitea.Issue) (*IssueContext, error) {
 	// 单页获取评论（最多 50 条）
-	comments, _, err := s.gitea.ListIssueComments(ctx, owner, repo, issueNum, gitea.ListOptions{PageSize: 50})
+	comments, _, err := s.gitea.ListIssueComments(ctx, owner, repo, issue.Number, gitea.ListOptions{PageSize: 50})
 	if err != nil {
 		return nil, fmt.Errorf("获取评论失败: %w", err)
 	}
 
 	if issue.Comments > len(comments) {
 		s.logger.WarnContext(ctx, "Issue 评论数超过单页上限，部分评论未采集",
-			"issue", issueNum,
+			"issue", issue.Number,
 			"total", issue.Comments,
 			"fetched", len(comments),
 		)
@@ -106,6 +106,5 @@ func (s *Service) collectContext(ctx context.Context, owner, repo string, issueN
 	return &IssueContext{
 		Issue:    issue,
 		Comments: comments,
-		Labels:   issue.Labels,
 	}, nil
 }

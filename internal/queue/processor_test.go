@@ -774,7 +774,7 @@ func TestProcessTask_InvalidPayload(t *testing.T) {
 func TestAdaptReviewResult_CLIError(t *testing.T) {
 	r := &review.ReviewResult{
 		RawOutput: "some raw output",
-		CLIMeta: &review.CLIMeta{
+		CLIMeta: &model.CLIMeta{
 			IsError:    true,
 			DurationMs: 500,
 		},
@@ -819,7 +819,7 @@ func TestProcessTask_ReviewSuccess_SeverityCounts(t *testing.T) {
 	// 构造包含 2 CRITICAL + 1 ERROR + 1 WARNING 的评审结果
 	reviewResult := &review.ReviewResult{
 		RawOutput: "severity test output",
-		CLIMeta:   &review.CLIMeta{IsError: false},
+		CLIMeta:   &model.CLIMeta{IsError: false},
 		Review: &review.ReviewOutput{
 			Summary: "有若干问题",
 			Verdict: review.VerdictRequestChanges,
@@ -859,7 +859,7 @@ func TestProcessTask_AdaptReviewResult_WritebackError(t *testing.T) {
 	// 测试 adaptReviewResult 中同时存在 Error 和 WritebackError 的拼接分支
 	r := &review.ReviewResult{
 		RawOutput:      "partial output",
-		CLIMeta:        &review.CLIMeta{IsError: false},
+		CLIMeta:        &model.CLIMeta{IsError: false},
 		ParseError:     errors.New("parse failed"),
 		WritebackError: errors.New("gitea api timeout"),
 	}
@@ -1550,7 +1550,7 @@ func TestProcessTask_CompletionNotification_HasMetadata(t *testing.T) {
 
 	reviewResult := &review.ReviewResult{
 		RawOutput: "review output",
-		CLIMeta:   &review.CLIMeta{IsError: false},
+		CLIMeta:   &model.CLIMeta{IsError: false},
 		Review: &review.ReviewOutput{
 			Summary: "有问题",
 			Verdict: review.VerdictRequestChanges,

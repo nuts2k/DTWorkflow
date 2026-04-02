@@ -62,7 +62,7 @@ index abc..def 100644
 func approveResult() *ReviewResult {
 	return &ReviewResult{
 		RawOutput: `{"type":"result","subtype":"success","is_error":false,"result":"{}"}`,
-		CLIMeta:   &CLIMeta{CostUSD: 0.01, DurationMs: 1000},
+		CLIMeta:   &model.CLIMeta{CostUSD: 0.01, DurationMs: 1000},
 		Review: &ReviewOutput{
 			Summary: "looks good",
 			Verdict: VerdictApprove,
@@ -74,7 +74,7 @@ func approveResult() *ReviewResult {
 func requestChangesResult(issues []ReviewIssue) *ReviewResult {
 	return &ReviewResult{
 		RawOutput: `{"type":"result","subtype":"success","is_error":false,"result":"{}"}`,
-		CLIMeta:   &CLIMeta{CostUSD: 0.02, DurationMs: 2000},
+		CLIMeta:   &model.CLIMeta{CostUSD: 0.02, DurationMs: 2000},
 		Review: &ReviewOutput{
 			Summary: "有问题",
 			Verdict: VerdictRequestChanges,
@@ -86,7 +86,7 @@ func requestChangesResult(issues []ReviewIssue) *ReviewResult {
 func parseFailedResult() *ReviewResult {
 	return &ReviewResult{
 		RawOutput:  "raw claude output",
-		CLIMeta:    &CLIMeta{CostUSD: 0.005, DurationMs: 500},
+		CLIMeta:    &model.CLIMeta{CostUSD: 0.005, DurationMs: 500},
 		Review:     nil,
 		ParseError: errors.New("JSON 解析失败"),
 	}

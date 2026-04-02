@@ -193,7 +193,7 @@ func (s *Service) parseResult(output string) *ReviewResult {
 		result.ParseError = fmt.Errorf("CLI JSON 解析失败: %w", err)
 		return result
 	}
-	result.CLIMeta = &CLIMeta{
+	result.CLIMeta = &model.CLIMeta{
 		CostUSD:    cliResp.CostUSD,
 		DurationMs: cliResp.DurationMs,
 		IsError:    cliResp.IsError,
