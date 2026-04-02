@@ -332,9 +332,9 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 	// 按配置构造飞书通知器（可选）
 	var feishuNotifier notify.Notifier
 	if feishuEnabled {
-		webhookURL := feishuCfg.Options["webhook_url"]
+		webhookURL := feishuCfg.Options[config.FeishuOptionWebhookURL]
 		var feishuOpts []notify.FeishuOption
-		if secret := feishuCfg.Options["secret"]; secret != "" {
+		if secret := feishuCfg.Options[config.FeishuOptionSecret]; secret != "" {
 			feishuOpts = append(feishuOpts, notify.WithFeishuSecret(secret))
 		}
 		feishuOpts = append(feishuOpts, notify.WithFeishuLogger(slog.Default()))

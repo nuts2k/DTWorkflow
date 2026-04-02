@@ -17,6 +17,12 @@ var validClaudeEfforts = map[string]bool{
 	"high":   true,
 }
 
+// 飞书渠道配置选项 key
+const (
+	FeishuOptionWebhookURL = "webhook_url"
+	FeishuOptionSecret     = "secret"
+)
+
 // validNotifyChannels 合法通知渠道白名单
 var validNotifyChannels = map[string]bool{
 	"gitea":  true,
@@ -170,7 +176,7 @@ func Validate(cfg *Config) error {
 
 	// 飞书渠道专属校验：启用时 webhook_url 必填且格式合法
 	if feishuCfg, ok := cfg.Notify.Channels["feishu"]; ok && feishuCfg.Enabled {
-		webhookURL := feishuCfg.Options["webhook_url"]
+		webhookURL := feishuCfg.Options[FeishuOptionWebhookURL]
 		if strings.TrimSpace(webhookURL) == "" {
 			errs = append(errs, fmt.Errorf("notify.channels.feishu 已启用但未配置 webhook_url"))
 		} else if u, err := url.Parse(webhookURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

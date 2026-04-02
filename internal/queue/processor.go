@@ -318,14 +318,37 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	return nil
 }
 
-// buildPRURL 基于 Gitea 配置构造 PR 页面链接
+// buildPRURL 基于 Gitea 配置构造 PR 页面链接。
+// 调用方（WithGiteaBaseURL）已保证 giteaBaseURL 无尾斜杠。
 func buildPRURL(giteaBaseURL string, payload model.TaskPayload) string {
 	return fmt.Sprintf("%s/%s/%s/pulls/%d",
-		strings.TrimRight(giteaBaseURL, "/"),
+		giteaBaseURL,
 		payload.RepoOwner,
 		payload.RepoName,
 		payload.PRNumber,
 	)
+}
+
+// buildPRMetadata 构造 PR 相关通知的公共 metadata 字段
+func (p *Processor) buildPRMetadata(payload model.TaskPayload) map[string]string {
+	metadata := map[string]string{}
+	if p.giteaBaseURL != "" {
+		metadata[notify.MetaKeyPRURL] = buildPRURL(p.giteaBaseURL, payload)
+	}
+	if payload.PRTitle != "" {
+		metadata[notify.MetaKeyPRTitle] = payload.PRTitle
+	}
+	return metadata
+}
+
+// buildPRTarget 构造 PR 相关通知的 Target
+func buildPRTarget(payload model.TaskPayload) notify.Target {
+	return notify.Target{
+		Owner:  payload.RepoOwner,
+		Repo:   payload.RepoName,
+		Number: payload.PRNumber,
+		IsPR:   true,
+	}
 }
 
 // formatIssueSummary 从 ReviewIssue 列表生成 issue 统计摘要
@@ -376,25 +399,13 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 		if payload.PRNumber <= 0 {
 			return notify.Message{}, false
 		}
-		metadata := map[string]string{}
-		if p.giteaBaseURL != "" {
-			metadata["pr_url"] = buildPRURL(p.giteaBaseURL, payload)
-		}
-		if payload.PRTitle != "" {
-			metadata["pr_title"] = payload.PRTitle
-		}
 		return notify.Message{
 			EventType: notify.EventPRReviewStarted,
 			Severity:  notify.SeverityInfo,
-			Target: notify.Target{
-				Owner:  payload.RepoOwner,
-				Repo:   payload.RepoName,
-				Number: payload.PRNumber,
-				IsPR:   true,
-			},
-			Title:    "PR 自动评审开始",
-			Body:     fmt.Sprintf("正在评审 PR #%d\n\n仓库：%s", payload.PRNumber, payload.RepoFullName),
-			Metadata: metadata,
+			Target:    buildPRTarget(payload),
+			Title:     "PR 自动评审开始",
+			Body:      fmt.Sprintf("正在评审 PR #%d\n\n仓库：%s", payload.PRNumber, payload.RepoFullName),
+			Metadata:  p.buildPRMetadata(payload),
 		}, true
 	default:
 		return notify.Message{}, false
@@ -442,44 +453,29 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		if payload.PRNumber <= 0 {
 			return notify.Message{}, false
 		}
-		metadata := map[string]string{}
-		if p.giteaBaseURL != "" {
-			metadata["pr_url"] = buildPRURL(p.giteaBaseURL, payload)
-		}
-		if payload.PRTitle != "" {
-			metadata["pr_title"] = payload.PRTitle
-		}
+		metadata := p.buildPRMetadata(payload)
 		if reviewResult != nil && reviewResult.Review != nil {
-			metadata["verdict"] = string(reviewResult.Review.Verdict)
-			metadata["issue_summary"] = formatIssueSummary(reviewResult.Review.Issues)
+			metadata[notify.MetaKeyVerdict] = string(reviewResult.Review.Verdict)
+			metadata[notify.MetaKeyIssueSummary] = formatIssueSummary(reviewResult.Review.Issues)
 		}
+		target := buildPRTarget(payload)
 		if record.Status == model.TaskStatusSucceeded {
 			return notify.Message{
 				EventType: notify.EventPRReviewDone,
 				Severity:  notify.SeverityInfo,
-				Target: notify.Target{
-					Owner:  payload.RepoOwner,
-					Repo:   payload.RepoName,
-					Number: payload.PRNumber,
-					IsPR:   true,
-				},
-				Title:    "PR 自动评审任务完成",
-				Body:     body,
-				Metadata: metadata,
+				Target:    target,
+				Title:     "PR 自动评审任务完成",
+				Body:      body,
+				Metadata:  metadata,
 			}, true
 		}
 		return notify.Message{
 			EventType: notify.EventSystemError,
 			Severity:  notify.SeverityWarning,
-			Target: notify.Target{
-				Owner:  payload.RepoOwner,
-				Repo:   payload.RepoName,
-				Number: payload.PRNumber,
-				IsPR:   true,
-			},
-			Title:    "PR 自动评审任务失败",
-			Body:     body,
-			Metadata: metadata,
+			Target:    target,
+			Title:     "PR 自动评审任务失败",
+			Body:      body,
+			Metadata:  metadata,
 		}, true
 	case model.TaskTypeFixIssue:
 		if payload.IssueNumber <= 0 {

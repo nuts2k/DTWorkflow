@@ -1,20 +1,19 @@
 package notify
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 )
 
-// FormatFeishuCard 将 Message 格式化为飞书交互卡片 JSON。
-// 返回的 JSON 包含顶层 msg_type + card 结构，可直接嵌入 Webhook 请求体。
-func FormatFeishuCard(msg Message) ([]byte, error) {
+// FormatFeishuCard 将 Message 格式化为飞书交互卡片结构。
+// 返回的 map 包含顶层 msg_type + card 结构，由调用方统一序列化为 JSON。
+func FormatFeishuCard(msg Message) (map[string]any, error) {
 	title, color := resolveHeaderStyle(msg)
 
 	var mdParts []string
 	mdParts = append(mdParts, fmt.Sprintf("**仓库**: %s/%s", msg.Target.Owner, msg.Target.Repo))
 	if msg.Target.IsPR && msg.Target.Number > 0 {
-		prTitle := msg.Metadata["pr_title"]
+		prTitle := msg.Metadata[MetaKeyPRTitle]
 		if prTitle != "" {
 			mdParts = append(mdParts, fmt.Sprintf("**PR**: #%d - %s", msg.Target.Number, prTitle))
 		} else {
@@ -22,10 +21,10 @@ func FormatFeishuCard(msg Message) ([]byte, error) {
 		}
 	}
 
-	if verdict := msg.Metadata["verdict"]; verdict != "" {
+	if verdict := msg.Metadata[MetaKeyVerdict]; verdict != "" {
 		mdParts = append(mdParts, fmt.Sprintf("**结论**: %s", strings.ToUpper(verdict)))
 	}
-	if issueSummary := msg.Metadata["issue_summary"]; issueSummary != "" {
+	if issueSummary := msg.Metadata[MetaKeyIssueSummary]; issueSummary != "" {
 		mdParts = append(mdParts, fmt.Sprintf("**发现问题**: %s", issueSummary))
 	}
 
@@ -69,7 +68,7 @@ func FormatFeishuCard(msg Message) ([]byte, error) {
 		},
 	}
 
-	return json.Marshal(card)
+	return card, nil
 }
 
 // resolveHeaderStyle 根据消息事件类型和元数据推断卡片标题与主题色。
@@ -78,7 +77,7 @@ func resolveHeaderStyle(msg Message) (title, color string) {
 	case EventPRReviewStarted:
 		return "PR 评审开始", "blue"
 	case EventPRReviewDone:
-		verdict := strings.ToLower(msg.Metadata["verdict"])
+		verdict := strings.ToLower(msg.Metadata[MetaKeyVerdict])
 		switch verdict {
 		case "request_changes":
 			return "PR 评审完成", "orange"
@@ -97,10 +96,10 @@ func resolveButtonURL(msg Message) string {
 	if msg.Metadata == nil {
 		return ""
 	}
-	if u := msg.Metadata["pr_url"]; u != "" {
+	if u := msg.Metadata[MetaKeyPRURL]; u != "" {
 		return u
 	}
-	return msg.Metadata["issue_url"]
+	return msg.Metadata[MetaKeyIssueURL]
 }
 
 // resolveButtonStyle 根据事件类型返回按钮文案和样式。

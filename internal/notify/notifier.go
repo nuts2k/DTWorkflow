@@ -18,6 +18,15 @@ const (
 	EventSystemError       EventType = "system.error"
 )
 
+// Metadata key 常量，用于 Message.Metadata 的键名，确保生产端和消费端类型安全。
+const (
+	MetaKeyPRURL        = "pr_url"
+	MetaKeyPRTitle      = "pr_title"
+	MetaKeyIssueURL     = "issue_url"
+	MetaKeyVerdict      = "verdict"
+	MetaKeyIssueSummary = "issue_summary"
+)
+
 // Severity 通知紧急程度
 type Severity string
 

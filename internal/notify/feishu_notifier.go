@@ -67,12 +67,12 @@ func (n *FeishuNotifier) Name() string { return "feishu" }
 
 // Send 发送飞书交互卡片消息
 func (n *FeishuNotifier) Send(ctx context.Context, msg Message) error {
-	cardJSON, err := FormatFeishuCard(msg)
+	cardMap, err := FormatFeishuCard(msg)
 	if err != nil {
 		return fmt.Errorf("格式化卡片失败 (%w): %w", ErrSendFailed, err)
 	}
 
-	body, err := n.buildRequestBody(cardJSON)
+	body, err := n.marshalRequestBody(cardMap)
 	if err != nil {
 		return fmt.Errorf("构建请求体失败 (%w): %w", ErrSendFailed, err)
 	}
@@ -151,26 +151,18 @@ func (r feishuWebhookResponse) message() string {
 	return r.StatusMessage
 }
 
-// buildRequestBody 构建最终请求体。若配置了签名密钥，则追加 timestamp 和 sign 字段。
-func (n *FeishuNotifier) buildRequestBody(cardJSON []byte) ([]byte, error) {
-	if n.secret == "" {
-		return cardJSON, nil
+// marshalRequestBody 将卡片 map 序列化为 JSON。若配置了签名密钥，则追加 timestamp 和 sign 字段。
+// 仅执行一次 json.Marshal，避免 Marshal→Unmarshal→Marshal 的三重序列化。
+func (n *FeishuNotifier) marshalRequestBody(cardMap map[string]any) ([]byte, error) {
+	if n.secret != "" {
+		timestamp := time.Now().Unix()
+		sign, err := genSign(n.secret, timestamp)
+		if err != nil {
+			return nil, err
+		}
+		cardMap["timestamp"] = fmt.Sprintf("%d", timestamp)
+		cardMap["sign"] = sign
 	}
-
-	var cardMap map[string]any
-	if err := json.Unmarshal(cardJSON, &cardMap); err != nil {
-		return nil, err
-	}
-
-	timestamp := time.Now().Unix()
-	sign, err := genSign(n.secret, timestamp)
-	if err != nil {
-		return nil, err
-	}
-
-	cardMap["timestamp"] = fmt.Sprintf("%d", timestamp)
-	cardMap["sign"] = sign
-
 	return json.Marshal(cardMap)
 }
 

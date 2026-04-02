@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"encoding/json"
 	"testing"
 )
 
@@ -13,19 +12,14 @@ func TestFormatFeishuCard_PRReviewStarted(t *testing.T) {
 		Title:     "PR 自动评审开始",
 		Body:      "正在评审 PR #42\n\n仓库：org/repo",
 		Metadata: map[string]string{
-			"pr_url":   "https://gitea.example.com/org/repo/pulls/42",
-			"pr_title": "修复登录验证逻辑",
+			MetaKeyPRURL:   "https://gitea.example.com/org/repo/pulls/42",
+			MetaKeyPRTitle: "修复登录验证逻辑",
 		},
 	}
 
-	data, err := FormatFeishuCard(msg)
+	result, err := FormatFeishuCard(msg)
 	if err != nil {
 		t.Fatalf("FormatFeishuCard error: %v", err)
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("JSON unmarshal error: %v", err)
 	}
 
 	if result["msg_type"] != "interactive" {
@@ -53,21 +47,16 @@ func TestFormatFeishuCard_PRReviewDone_Approve(t *testing.T) {
 		Title:     "PR 自动评审任务完成",
 		Body:      "任务执行完成",
 		Metadata: map[string]string{
-			"pr_url":        "https://gitea.example.com/org/repo/pulls/42",
-			"pr_title":      "修复登录验证逻辑",
-			"verdict":       "approve",
-			"issue_summary": "2 WARNING, 1 INFO",
+			MetaKeyPRURL:        "https://gitea.example.com/org/repo/pulls/42",
+			MetaKeyPRTitle:      "修复登录验证逻辑",
+			MetaKeyVerdict:      "approve",
+			MetaKeyIssueSummary: "2 WARNING, 1 INFO",
 		},
 	}
 
-	data, err := FormatFeishuCard(msg)
+	result, err := FormatFeishuCard(msg)
 	if err != nil {
 		t.Fatalf("FormatFeishuCard error: %v", err)
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("JSON unmarshal error: %v", err)
 	}
 
 	card := result["card"].(map[string]any)
@@ -85,19 +74,14 @@ func TestFormatFeishuCard_PRReviewDone_RequestChanges(t *testing.T) {
 		Title:     "PR 自动评审任务完成",
 		Body:      "任务执行完成",
 		Metadata: map[string]string{
-			"pr_url":  "https://gitea.example.com/org/repo/pulls/42",
-			"verdict": "request_changes",
+			MetaKeyPRURL:   "https://gitea.example.com/org/repo/pulls/42",
+			MetaKeyVerdict: "request_changes",
 		},
 	}
 
-	data, err := FormatFeishuCard(msg)
+	result, err := FormatFeishuCard(msg)
 	if err != nil {
 		t.Fatalf("FormatFeishuCard error: %v", err)
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("JSON unmarshal error: %v", err)
 	}
 
 	card := result["card"].(map[string]any)
@@ -115,18 +99,13 @@ func TestFormatFeishuCard_SystemError(t *testing.T) {
 		Title:     "PR 自动评审任务失败",
 		Body:      "容器执行超时",
 		Metadata: map[string]string{
-			"pr_url": "https://gitea.example.com/org/repo/pulls/42",
+			MetaKeyPRURL: "https://gitea.example.com/org/repo/pulls/42",
 		},
 	}
 
-	data, err := FormatFeishuCard(msg)
+	result, err := FormatFeishuCard(msg)
 	if err != nil {
 		t.Fatalf("FormatFeishuCard error: %v", err)
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("JSON unmarshal error: %v", err)
 	}
 
 	card := result["card"].(map[string]any)
@@ -145,14 +124,9 @@ func TestFormatFeishuCard_NoMetadata_Degrades(t *testing.T) {
 		Body:      "任务执行完成",
 	}
 
-	data, err := FormatFeishuCard(msg)
+	result, err := FormatFeishuCard(msg)
 	if err != nil {
 		t.Fatalf("FormatFeishuCard error: %v", err)
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("JSON unmarshal error: %v", err)
 	}
 
 	card := result["card"].(map[string]any)
@@ -171,11 +145,11 @@ func TestFormatFeishuCard_EmptyBody(t *testing.T) {
 		Body:      "",
 	}
 
-	data, err := FormatFeishuCard(msg)
+	result, err := FormatFeishuCard(msg)
 	if err != nil {
 		t.Fatalf("FormatFeishuCard error: %v", err)
 	}
-	if len(data) == 0 {
+	if result == nil {
 		t.Fatal("空 Body 时也应能生成卡片")
 	}
 }

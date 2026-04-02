@@ -1406,11 +1406,11 @@ func TestProcessTask_ReviewPR_SendStartNotification(t *testing.T) {
 	if startMsg.Target.Number != 50 || !startMsg.Target.IsPR {
 		t.Errorf("start msg target: %+v", startMsg.Target)
 	}
-	if startMsg.Metadata["pr_url"] != "https://gitea.example.com/org/repo/pulls/50" {
-		t.Errorf("start msg pr_url = %q", startMsg.Metadata["pr_url"])
+	if startMsg.Metadata[notify.MetaKeyPRURL] != "https://gitea.example.com/org/repo/pulls/50" {
+		t.Errorf("start msg pr_url = %q", startMsg.Metadata[notify.MetaKeyPRURL])
 	}
-	if startMsg.Metadata["pr_title"] != "修复登录验证逻辑" {
-		t.Errorf("start msg pr_title = %q", startMsg.Metadata["pr_title"])
+	if startMsg.Metadata[notify.MetaKeyPRTitle] != "修复登录验证逻辑" {
+		t.Errorf("start msg pr_title = %q", startMsg.Metadata[notify.MetaKeyPRTitle])
 	}
 
 	completeMsg := notifier.messages[1]
@@ -1554,16 +1554,16 @@ func TestProcessTask_CompletionNotification_HasMetadata(t *testing.T) {
 	}
 
 	completeMsg := notifier.messages[1]
-	if completeMsg.Metadata["pr_url"] != "https://gitea.example.com/org/repo/pulls/52" {
-		t.Errorf("pr_url = %q", completeMsg.Metadata["pr_url"])
+	if completeMsg.Metadata[notify.MetaKeyPRURL] != "https://gitea.example.com/org/repo/pulls/52" {
+		t.Errorf("pr_url = %q", completeMsg.Metadata[notify.MetaKeyPRURL])
 	}
-	if completeMsg.Metadata["pr_title"] != "重构登录模块" {
-		t.Errorf("pr_title = %q", completeMsg.Metadata["pr_title"])
+	if completeMsg.Metadata[notify.MetaKeyPRTitle] != "重构登录模块" {
+		t.Errorf("pr_title = %q", completeMsg.Metadata[notify.MetaKeyPRTitle])
 	}
-	if completeMsg.Metadata["verdict"] != "request_changes" {
-		t.Errorf("verdict = %q", completeMsg.Metadata["verdict"])
+	if completeMsg.Metadata[notify.MetaKeyVerdict] != "request_changes" {
+		t.Errorf("verdict = %q", completeMsg.Metadata[notify.MetaKeyVerdict])
 	}
-	if completeMsg.Metadata["issue_summary"] == "" {
+	if completeMsg.Metadata[notify.MetaKeyIssueSummary] == "" {
 		t.Error("issue_summary 不应为空")
 	}
 }
@@ -1577,7 +1577,7 @@ func TestBuildPRURL(t *testing.T) {
 		expected string
 	}{
 		{"https://gitea.example.com", "org", "repo", 42, "https://gitea.example.com/org/repo/pulls/42"},
-		{"https://gitea.example.com/", "org", "repo", 1, "https://gitea.example.com/org/repo/pulls/1"},
+		{"https://gitea.example.com", "org", "repo", 1, "https://gitea.example.com/org/repo/pulls/1"},
 	}
 	for _, tc := range tests {
 		got := buildPRURL(tc.baseURL, model.TaskPayload{RepoOwner: tc.owner, RepoName: tc.repo, PRNumber: tc.number})
