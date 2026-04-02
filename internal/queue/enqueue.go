@@ -78,6 +78,7 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		RepoFullName:    event.Repository.FullName,
 		CloneURL:        event.Repository.CloneURL,
 		PRNumber:        event.PullRequest.Number,
+		PRTitle:         event.PullRequest.Title,
 		BaseRef:         event.PullRequest.BaseRef,
 		HeadRef:         event.PullRequest.HeadRef,
 		HeadSHA:         event.PullRequest.HeadSHA,

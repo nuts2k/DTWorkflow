@@ -80,6 +80,7 @@ type TaskPayload struct {
 
 	// PR 评审定位
 	PRNumber int64  `json:"pr_number,omitempty"`
+	PRTitle  string `json:"pr_title,omitempty"`
 	BaseRef  string `json:"base_ref,omitempty"`
 	HeadRef  string `json:"head_ref,omitempty"`
 	HeadSHA  string `json:"head_sha,omitempty"`
