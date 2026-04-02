@@ -69,12 +69,12 @@ func (n *FeishuNotifier) Name() string { return "feishu" }
 func (n *FeishuNotifier) Send(ctx context.Context, msg Message) error {
 	cardJSON, err := FormatFeishuCard(msg)
 	if err != nil {
-		return fmt.Errorf("格式化卡片失败 (%w): %v", ErrSendFailed, err)
+		return fmt.Errorf("格式化卡片失败 (%w): %w", ErrSendFailed, err)
 	}
 
 	body, err := n.buildRequestBody(cardJSON)
 	if err != nil {
-		return fmt.Errorf("构建请求体失败 (%w): %v", ErrSendFailed, err)
+		return fmt.Errorf("构建请求体失败 (%w): %w", ErrSendFailed, err)
 	}
 
 	// 提前快速失败：如果 context 已取消则避免网络调用
@@ -84,7 +84,7 @@ func (n *FeishuNotifier) Send(ctx context.Context, msg Message) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.webhookURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("创建请求失败 (%w): %v", ErrSendFailed, err)
+		return fmt.Errorf("创建请求失败 (%w): %w", ErrSendFailed, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -96,7 +96,7 @@ func (n *FeishuNotifier) Send(ctx context.Context, msg Message) error {
 
 	resp, err := n.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("HTTP 请求失败 (%w): %v", ErrSendFailed, err)
+		return fmt.Errorf("HTTP 请求失败 (%w): %w", ErrSendFailed, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -120,7 +120,7 @@ func (n *FeishuNotifier) Send(ctx context.Context, msg Message) error {
 
 	var apiResp feishuWebhookResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return fmt.Errorf("解析飞书响应失败 (%w): %v", ErrSendFailed, err)
+		return fmt.Errorf("解析飞书响应失败 (%w): %w", ErrSendFailed, err)
 	}
 	if code, ok := apiResp.code(); ok && code != 0 {
 		msg := apiResp.message()

@@ -401,8 +401,7 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 	}
 }
 
-// findRecord 根据 payload 中的 delivery_id 查找任务记录，
-// 当 delivery_id 查找不到时回退到按 task ID 查找（支持 RecoveryLoop 场景）
+// sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知
 func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult) {
 	if p.notifier == nil || record == nil {
 		return
@@ -572,6 +571,8 @@ func (p *Processor) markTaskCancelled(ctx context.Context, record *model.TaskRec
 	return fmt.Errorf("%s: %w", reason, asynq.SkipRetry)
 }
 
+// findRecord 根据 payload 中的 delivery_id 查找任务记录，
+// 当 delivery_id 查找不到时回退到按 task ID 查找（支持 RecoveryLoop 场景）
 func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (*model.TaskRecord, error) {
 	// 优先通过 delivery_id 查找（适用于 webhook 触发的任务）
 	if payload.DeliveryID != "" {

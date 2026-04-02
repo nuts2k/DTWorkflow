@@ -173,8 +173,8 @@ func Validate(cfg *Config) error {
 		webhookURL := feishuCfg.Options["webhook_url"]
 		if strings.TrimSpace(webhookURL) == "" {
 			errs = append(errs, fmt.Errorf("notify.channels.feishu 已启用但未配置 webhook_url"))
-		} else if u, err := url.ParseRequestURI(webhookURL); err != nil || u.Host == "" {
-			errs = append(errs, fmt.Errorf("notify.channels.feishu.webhook_url 格式无效: %q", webhookURL))
+		} else if u, err := url.Parse(webhookURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("notify.channels.feishu.webhook_url 格式无效，需以 http:// 或 https:// 开头: %q", webhookURL))
 		}
 	}
 

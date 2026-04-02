@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,9 @@ func TestFeishuNotifier_Send_Non2xx(t *testing.T) {
 	if err == nil {
 		t.Fatal("非 2xx 响应应返回错误")
 	}
+	if !errors.Is(err, ErrSendFailed) {
+		t.Errorf("错误应包装 ErrSendFailed，得到: %v", err)
+	}
 }
 
 func TestFeishuNotifier_Send_429Warning(t *testing.T) {
@@ -159,6 +163,9 @@ func TestFeishuNotifier_Send_429Warning(t *testing.T) {
 	err = n.Send(context.Background(), msg)
 	if err == nil {
 		t.Fatal("429 应返回错误")
+	}
+	if !errors.Is(err, ErrSendFailed) {
+		t.Errorf("错误应包装 ErrSendFailed，得到: %v", err)
 	}
 	if !strings.Contains(err.Error(), "rate limit") && !strings.Contains(err.Error(), "429") {
 		t.Errorf("429 错误应包含 rate limit 或 429 标识，得到: %v", err)
@@ -188,6 +195,9 @@ func TestFeishuNotifier_Send_APIErrorIn200Response(t *testing.T) {
 	err = n.Send(context.Background(), msg)
 	if err == nil {
 		t.Fatal("200 响应中的飞书 API 错误应返回错误")
+	}
+	if !errors.Is(err, ErrSendFailed) {
+		t.Errorf("错误应包装 ErrSendFailed，得到: %v", err)
 	}
 	if !strings.Contains(err.Error(), "19024") || !strings.Contains(err.Error(), "invalid sign") {
 		t.Fatalf("错误应包含飞书业务错误码与消息，得到: %v", err)
