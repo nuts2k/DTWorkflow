@@ -200,7 +200,7 @@ func TestBuildPrompt_FileFiltering(t *testing.T) {
 		}
 
 		// 忽略范围应明确传达给模型
-		if !strings.Contains(result, "Ignored paths (configured via ignore_patterns):") {
+		if !strings.Contains(result, "已忽略的路径（通过 ignore_patterns 配置）：") {
 			t.Error("应出现 ignore_patterns 提示段")
 		}
 		if !strings.Contains(result, "**/*.md") || !strings.Contains(result, "docs/**") {
@@ -209,7 +209,7 @@ func TestBuildPrompt_FileFiltering(t *testing.T) {
 		if !strings.Contains(result, "docs/README.md") || !strings.Contains(result, "docs/guide.md") {
 			t.Error("应列出当前 PR 中被忽略的文件")
 		}
-		if !strings.Contains(result, "do not mention them in summary, verdict reasoning, or issues") {
+		if !strings.Contains(result, "不要在 summary、verdict 理由或 issues 中提及它们") {
 			t.Error("应明确要求模型不要在 summary/verdict/issues 中提及被忽略文件")
 		}
 	})
@@ -252,7 +252,7 @@ func TestBuildPrompt_FileFiltering(t *testing.T) {
 			t.Error("所有文件被忽略时，摘要应显示 0 个文件")
 		}
 		// 忽略提示中应包含正确数量
-		if !strings.Contains(result, "Ignored files in this PR (4 files):") {
+		if !strings.Contains(result, "本次 PR 中被忽略的文件（共 4 个）：") {
 			t.Errorf("应提示 4 个文件被忽略，实际 prompt: %s", result[:min(300, len(result))])
 		}
 		if !strings.Contains(result, "src/main.go") {

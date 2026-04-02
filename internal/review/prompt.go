@@ -34,13 +34,14 @@ type ReviewConfig struct {
 // jsonSchemaInstruction 输出格式约束（硬编码，不可配置）
 const jsonSchemaInstruction = `
 
-## Output Format
+## 输出格式
 
-You MUST output your review as a single JSON object with the following schema.
-Do NOT wrap it in markdown code fences. Output ONLY the raw JSON.
+你必须将评审结果输出为如下结构的单个 JSON 对象。
+不要用 markdown 代码块包裹，只输出原始 JSON。
+**所有文本字段（summary、message、suggestion）必须使用中文书写。**
 
 {
-  "summary": "Overall review summary in 2-3 paragraphs",
+  "summary": "整体评审摘要，2-3 段，使用中文",
   "verdict": "approve | request_changes | comment",
   "issues": [
     {
@@ -49,28 +50,28 @@ Do NOT wrap it in markdown code fences. Output ONLY the raw JSON.
       "end_line": 45,
       "severity": "CRITICAL | ERROR | WARNING | INFO",
       "category": "security | logic | style | architecture",
-      "message": "Description of the issue",
-      "suggestion": "How to fix it (optional)"
+      "message": "问题描述（中文）",
+      "suggestion": "修复建议（中文，可选）"
     }
   ]
 }
 
-Verdict rules:
-- If any issue has severity CRITICAL or ERROR -> "request_changes"
-- If issues exist but all are WARNING or INFO -> "comment"
-- If no issues found -> "approve"
+Verdict 规则：
+- 存在 CRITICAL 或 ERROR 级别问题 -> "request_changes"
+- 存在问题但均为 WARNING 或 INFO -> "comment"
+- 无问题 -> "approve"
 `
 
 // largePRGuidance 大 PR 警示（条件性追加）
 const largePRGuidance = `
 
-## Large PR Notice
+## 大 PR 提示
 
-This is a large PR. Focus your review on:
-1. Security-critical changes first
-2. Core logic changes (new features, bug fixes)
-3. Skip trivial formatting or auto-generated files
-Do not try to comment on every file. Prioritize high-impact issues.
+本次 PR 变更量较大，请聚焦以下内容：
+1. 优先审查安全相关变更
+2. 核心逻辑变更（新功能、bug 修复）
+3. 跳过琐碎的格式调整或自动生成的文件
+不要逐一评论每个文件，优先关注高影响问题。
 `
 
 // reviewPreamble 评审指令前言：标题 + 评审原则 + 严重程度定义（始终包含）
@@ -407,12 +408,12 @@ func formatIgnoredFilesSection(patterns []string, ignoredFiles []*gitea.ChangedF
 	const maxFiles = 20
 
 	var b strings.Builder
-	b.WriteString("\nIgnored paths (configured via ignore_patterns):\n")
+	b.WriteString("\n已忽略的路径（通过 ignore_patterns 配置）：\n")
 	for _, pattern := range patterns {
 		b.WriteString(fmt.Sprintf("  - %s\n", pattern))
 	}
-	b.WriteString("These files are out of scope for this review. Even if they appear in `git diff`, do not review them and do not mention them in summary, verdict reasoning, or issues.\n")
-	b.WriteString(fmt.Sprintf("Ignored files in this PR (%d files):\n", len(ignoredFiles)))
+	b.WriteString("这些文件不在本次评审范围内。即使它们出现在 `git diff` 中，也不要评审，也不要在 summary、verdict 理由或 issues 中提及它们。\n")
+	b.WriteString(fmt.Sprintf("本次 PR 中被忽略的文件（共 %d 个）：\n", len(ignoredFiles)))
 
 	limit := len(ignoredFiles)
 	if limit > maxFiles {
@@ -423,7 +424,7 @@ func formatIgnoredFilesSection(patterns []string, ignoredFiles []*gitea.ChangedF
 			f.Filename, f.Additions, f.Deletions, f.Status))
 	}
 	if len(ignoredFiles) > maxFiles {
-		b.WriteString(fmt.Sprintf("  ... and %d more ignored files\n", len(ignoredFiles)-maxFiles))
+		b.WriteString(fmt.Sprintf("  ... 以及另外 %d 个被忽略的文件\n", len(ignoredFiles)-maxFiles))
 	}
 
 	return b.String()
@@ -484,7 +485,7 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 
 	// 2b. 仓库级追加指令
 	if cfg.RepoInstructions != "" {
-		b.WriteString("\n\nAdditional repository-specific instructions:\n")
+		b.WriteString("\n\n### 仓库专项补充指令\n")
 		b.WriteString(cfg.RepoInstructions)
 	}
 

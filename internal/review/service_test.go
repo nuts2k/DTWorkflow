@@ -526,7 +526,7 @@ func TestBuildPrompt(t *testing.T) {
 	checks := []string{
 		"PR #42",        // 1. 任务上下文
 		"自定义指令",         // 2. 评审指令
-		"Output Format", // 3. 输出格式约束
+		"输出格式", // 3. 输出格式约束
 		"main.go",       // 文件列表
 	}
 	for _, check := range checks {
@@ -567,8 +567,8 @@ func TestBuildPrompt_LargePRGuidance(t *testing.T) {
 
 	prompt := svc.buildPrompt(pr, files, cfg, 0)
 
-	if !strings.Contains(prompt, "Large PR Notice") {
-		t.Error("超大 PR 应包含 Large PR Notice")
+	if !strings.Contains(prompt, "大 PR 提示") {
+		t.Error("超大 PR 应包含大 PR 提示")
 	}
 }
 
