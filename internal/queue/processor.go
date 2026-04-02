@@ -206,7 +206,6 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	var reviewResult *review.ReviewResult
-	var fixResult *fix.FixResult
 	var result *worker.ExecutionResult
 	var runErr error
 	switch {
@@ -215,12 +214,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if reviewResult != nil {
 			result = adaptReviewResult(reviewResult)
 		}
-	case payload.TaskType == model.TaskTypeFixIssue && p.fixService != nil:
-		fixResult, runErr = p.fixService.Execute(ctx, payload)
-		if fixResult != nil {
-			result = adaptFixResult(fixResult)
-		}
 	default:
+		// fix.Service 在 M3.1 仍只负责上下文采集，尚未执行实际修复。
+		// 在真正接管 fix_issue 前，必须保持容器执行路径，避免任务“空跑成功”。
 		result, runErr = p.pool.Run(ctx, payload)
 	}
 
@@ -601,25 +597,6 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 			result.Error = msg
 		} else if !strings.Contains(result.Error, msg) {
 			result.Error = result.Error + "; " + msg
-		}
-	}
-	return result
-}
-
-// adaptFixResult 将 fix.FixResult 适配为 worker.ExecutionResult
-func adaptFixResult(r *fix.FixResult) *worker.ExecutionResult {
-	if r == nil {
-		return nil
-	}
-	result := &worker.ExecutionResult{
-		ExitCode: 0,
-		Output:   r.RawOutput,
-	}
-	if r.CLIMeta != nil {
-		result.Duration = r.CLIMeta.DurationMs
-		if r.CLIMeta.IsError {
-			result.ExitCode = 1
-			result.Error = "Claude CLI 报告错误"
 		}
 	}
 	return result

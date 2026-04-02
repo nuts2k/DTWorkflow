@@ -1626,7 +1626,7 @@ func TestFormatIssueSummary(t *testing.T) {
 	}
 }
 
-func TestProcessTask_FixIssue_WithService(t *testing.T) {
+func TestProcessTask_FixIssue_WithServiceStillUsesPool(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{
 		TaskType:     model.TaskTypeFixIssue,
@@ -1666,11 +1666,11 @@ func TestProcessTask_FixIssue_WithService(t *testing.T) {
 		t.Fatalf("ProcessTask error: %v", err)
 	}
 
-	if fixExec.calls != 1 {
-		t.Errorf("fixService.Execute 应被调用 1 次，实际 %d 次", fixExec.calls)
+	if fixExec.calls != 0 {
+		t.Errorf("fixService.Execute 不应被调用，实际 %d 次", fixExec.calls)
 	}
-	if pool.calls != 0 {
-		t.Errorf("pool.Run 不应被调用，实际 %d 次", pool.calls)
+	if pool.calls != 1 {
+		t.Errorf("pool.Run 应被调用 1 次，实际 %d 次", pool.calls)
 	}
 
 	got := s.tasks["proc-fix-svc-1"]
@@ -1719,7 +1719,7 @@ func TestProcessTask_FixIssue_WithoutService(t *testing.T) {
 	}
 }
 
-func TestProcessTask_FixIssue_IssueNotOpen(t *testing.T) {
+func TestProcessTask_FixIssue_WithServiceErrorStillUsesPool(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{
 		TaskType:     model.TaskTypeFixIssue,
@@ -1745,20 +1745,25 @@ func TestProcessTask_FixIssue_IssueNotOpen(t *testing.T) {
 	fixExec := &mockFixExecutor{
 		err: fmt.Errorf("Issue #5 状态为 closed: %w", fix.ErrIssueNotOpen),
 	}
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: "pool result"},
+	}
 
-	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithFixService(fixExec))
+	p := NewProcessor(pool, s, nil, slog.Default(), WithFixService(fixExec))
 	task := buildAsynqTask(t, payload)
 
-	err := p.ProcessTask(context.Background(), task)
-	if err == nil {
-		t.Fatal("预期返回错误")
-	}
-	if !errors.Is(err, asynq.SkipRetry) {
-		t.Errorf("预期 asynq.SkipRetry，实际: %v", err)
+	if err := p.ProcessTask(context.Background(), task); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
 	}
 
 	got := s.tasks["proc-fix-closed-1"]
-	if got.Status != model.TaskStatusFailed {
-		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	if got.Status != model.TaskStatusSucceeded {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+	if fixExec.calls != 0 {
+		t.Errorf("fixService.Execute 不应被调用，实际 %d 次", fixExec.calls)
+	}
+	if pool.calls != 1 {
+		t.Errorf("pool.Run 应被调用 1 次，实际 %d 次", pool.calls)
 	}
 }
