@@ -700,3 +700,117 @@ func TestValidate_ReviewIgnorePatterns(t *testing.T) {
 		}
 	})
 }
+
+func TestValidate_FeishuChannelIsValid(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["feishu"] = ChannelConfig{
+		Enabled: true,
+		Options: map[string]string{
+			"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+		},
+	}
+	cfg.Notify.Routes = []RouteConfig{{Repo: "*", Channels: []string{"gitea", "feishu"}}}
+
+	err := Validate(cfg)
+	if err != nil {
+		t.Fatalf("feishu 应为合法渠道，但校验失败: %v", err)
+	}
+}
+
+func TestValidate_FeishuDefaultChannelIsValid(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["feishu"] = ChannelConfig{
+		Enabled: true,
+		Options: map[string]string{
+			"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+		},
+	}
+	cfg.Notify.DefaultChannel = "feishu"
+
+	err := Validate(cfg)
+	if err != nil {
+		t.Fatalf("feishu 应可作为 default_channel，但校验失败: %v", err)
+	}
+}
+
+func TestValidate_FeishuMissingWebhookURL(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["feishu"] = ChannelConfig{
+		Enabled: true,
+		Options: map[string]string{},
+	}
+	cfg.Notify.Routes = []RouteConfig{{Repo: "*", Channels: []string{"gitea", "feishu"}}}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("飞书渠道缺少 webhook_url 应校验失败")
+	}
+	if !strings.Contains(err.Error(), "webhook_url") {
+		t.Errorf("错误应包含 webhook_url，得到: %v", err)
+	}
+}
+
+func TestValidate_FeishuInvalidWebhookURL(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["feishu"] = ChannelConfig{
+		Enabled: true,
+		Options: map[string]string{
+			"webhook_url": "not-a-url",
+		},
+	}
+	cfg.Notify.Routes = []RouteConfig{{Repo: "*", Channels: []string{"gitea", "feishu"}}}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("飞书渠道 webhook_url 格式无效应校验失败")
+	}
+	if !strings.Contains(err.Error(), "webhook_url") {
+		t.Errorf("错误应包含 webhook_url，得到: %v", err)
+	}
+}
+
+func TestValidate_FeishuDisabled_NoWebhookValidation(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["feishu"] = ChannelConfig{
+		Enabled: false,
+		Options: map[string]string{},
+	}
+
+	err := Validate(cfg)
+	if err != nil {
+		t.Fatalf("飞书渠道未启用时不应校验 webhook_url，但返回: %v", err)
+	}
+}
+
+func TestValidate_RepoNotifyRoutesFeishuIsValid(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["feishu"] = ChannelConfig{
+		Enabled: true,
+		Options: map[string]string{
+			"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+		},
+	}
+	cfg.Repos = []RepoConfig{{
+		Name:   "acme/repo",
+		Notify: &NotifyOverride{Routes: []RouteConfig{{Repo: "*", Channels: []string{"feishu"}}}},
+	}}
+
+	err := Validate(cfg)
+	if err != nil {
+		t.Fatalf("仓库级 feishu 路由应合法，但校验失败: %v", err)
+	}
+}
+
+func TestValidate_UnknownChannelStillRejected(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["slack"] = ChannelConfig{Enabled: true}
+	cfg.Notify.Routes = []RouteConfig{{Repo: "*", Channels: []string{"slack"}}}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("未知渠道 slack 应校验失败")
+	}
+	if !strings.Contains(err.Error(), "仅支持") {
+		t.Errorf("错误应包含 '仅支持'，得到: %v", err)
+	}
+}

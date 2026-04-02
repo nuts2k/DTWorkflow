@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,12 @@ var validClaudeEfforts = map[string]bool{
 	"low":    true,
 	"medium": true,
 	"high":   true,
+}
+
+// validNotifyChannels 合法通知渠道白名单
+var validNotifyChannels = map[string]bool{
+	"gitea":  true,
+	"feishu": true,
 }
 
 // Validate 校验配置的完整性与合法性。
@@ -116,8 +123,8 @@ func Validate(cfg *Config) error {
 		if !ok || !ch.Enabled {
 			errs = append(errs, fmt.Errorf("notify.default_channel %q 未配置或未启用", cfg.Notify.DefaultChannel))
 		}
-		if cfg.Notify.DefaultChannel != "gitea" {
-			errs = append(errs, fmt.Errorf("notify.default_channel 当前仅支持 %q，当前值: %q", "gitea", cfg.Notify.DefaultChannel))
+		if !validNotifyChannels[cfg.Notify.DefaultChannel] {
+			errs = append(errs, fmt.Errorf("notify.default_channel 当前仅支持 %v，当前值: %q", validNotifyChannelNames(), cfg.Notify.DefaultChannel))
 		}
 	}
 
@@ -128,8 +135,8 @@ func Validate(cfg *Config) error {
 				errs = append(errs, fmt.Errorf("notify.routes[%d] 引用了未配置的渠道: %q", i, chName))
 				continue
 			}
-			if chName != "gitea" {
-				errs = append(errs, fmt.Errorf("notify.routes[%d] 当前仅支持 %q 渠道，发现: %q", i, "gitea", chName))
+			if !validNotifyChannels[chName] {
+				errs = append(errs, fmt.Errorf("notify.routes[%d] 当前仅支持 %v 渠道，发现: %q", i, validNotifyChannelNames(), chName))
 			}
 		}
 	}
@@ -154,10 +161,20 @@ func Validate(cfg *Config) error {
 					errs = append(errs, fmt.Errorf("repos[%d].notify.routes[%d] 引用了未配置的渠道: %q", i, j, chName))
 					continue
 				}
-				if chName != "gitea" {
-					errs = append(errs, fmt.Errorf("repos[%d].notify.routes[%d] 当前仅支持 %q 渠道，发现: %q", i, j, "gitea", chName))
+				if !validNotifyChannels[chName] {
+					errs = append(errs, fmt.Errorf("repos[%d].notify.routes[%d] 当前仅支持 %v 渠道，发现: %q", i, j, validNotifyChannelNames(), chName))
 				}
 			}
+		}
+	}
+
+	// 飞书渠道专属校验：启用时 webhook_url 必填且格式合法
+	if feishuCfg, ok := cfg.Notify.Channels["feishu"]; ok && feishuCfg.Enabled {
+		webhookURL := feishuCfg.Options["webhook_url"]
+		if strings.TrimSpace(webhookURL) == "" {
+			errs = append(errs, fmt.Errorf("notify.channels.feishu 已启用但未配置 webhook_url"))
+		} else if u, err := url.ParseRequestURI(webhookURL); err != nil || u.Host == "" {
+			errs = append(errs, fmt.Errorf("notify.channels.feishu.webhook_url 格式无效: %q", webhookURL))
 		}
 	}
 
@@ -246,6 +263,16 @@ func validateClaudeModel(field, model string) error {
 		return fmt.Errorf("%s 模型名格式不合法 %q，仅允许字母、数字、点、连字符和下划线", field, model)
 	}
 	return nil
+}
+
+// validNotifyChannelNames 返回合法渠道名列表字符串，用于错误消息
+func validNotifyChannelNames() string {
+	names := make([]string, 0, len(validNotifyChannels))
+	for k := range validNotifyChannels {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // ValidationError 配置校验聚合错误。
