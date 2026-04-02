@@ -165,6 +165,35 @@ func TestFeishuNotifier_Send_429Warning(t *testing.T) {
 	}
 }
 
+func TestFeishuNotifier_Send_APIErrorIn200Response(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"StatusCode":19024,"StatusMessage":"invalid sign"}`))
+	}))
+	defer srv.Close()
+
+	n, err := NewFeishuNotifier(srv.URL)
+	if err != nil {
+		t.Fatalf("NewFeishuNotifier error: %v", err)
+	}
+
+	msg := Message{
+		EventType: EventPRReviewStarted,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo", Number: 1, IsPR: true},
+		Title:     "test",
+		Body:      "test",
+	}
+
+	err = n.Send(context.Background(), msg)
+	if err == nil {
+		t.Fatal("200 响应中的飞书 API 错误应返回错误")
+	}
+	if !strings.Contains(err.Error(), "19024") || !strings.Contains(err.Error(), "invalid sign") {
+		t.Fatalf("错误应包含飞书业务错误码与消息，得到: %v", err)
+	}
+}
+
 func TestGenSign(t *testing.T) {
 	sign, err := genSign("test-secret", 1617000000)
 	if err != nil {

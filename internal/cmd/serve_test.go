@@ -255,6 +255,35 @@ func TestBuildNotifier_WithClientAndConfig(t *testing.T) {
 	}
 }
 
+func TestBuildNotifier_FeishuOnlyConfig(t *testing.T) {
+	cfg := &config.Config{
+		Notify: config.NotifyConfig{
+			DefaultChannel: "feishu",
+			Channels: map[string]config.ChannelConfig{
+				"feishu": {
+					Enabled: true,
+					Options: map[string]string{
+						"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test",
+					},
+				},
+			},
+			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"feishu"}}},
+		},
+	}
+
+	client, err := gitea.NewClient("https://gitea.example.com", gitea.WithToken("test-token"))
+	if err != nil {
+		t.Fatalf("NewClient error: %v", err)
+	}
+	router, err := buildNotifier(cfg, client)
+	if err != nil {
+		t.Fatalf("buildNotifier(cfg, client) error: %v", err)
+	}
+	if router == nil {
+		t.Fatal("buildNotifier(feishu-only) should return non-nil router")
+	}
+}
+
 func TestConfigDrivenNotifier_ReusesGlobalRouterWithoutRepoOverride(t *testing.T) {
 	cfg := &config.Config{
 		Notify: config.NotifyConfig{
@@ -288,6 +317,38 @@ func TestConfigDrivenNotifier_ReusesGlobalRouterWithoutRepoOverride(t *testing.T
 	}
 	if len(n.routers) != 0 {
 		t.Fatalf("override routers length = %d, want 0", len(n.routers))
+	}
+}
+
+func TestConfigDrivenNotifier_FeishuOnlyRouter(t *testing.T) {
+	cfg := &config.Config{
+		Notify: config.NotifyConfig{
+			DefaultChannel: "feishu",
+			Channels: map[string]config.ChannelConfig{
+				"feishu": {Enabled: true},
+			},
+			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"feishu"}}},
+		},
+	}
+
+	n := &configDrivenNotifier{
+		cfg:            cfg,
+		feishuNotifier: noopNotifier{name: "feishu"},
+		logger:         slog.Default(),
+	}
+
+	router, err := n.getRouter("acme/repo1")
+	if err != nil {
+		t.Fatalf("getRouter(repo1) error: %v", err)
+	}
+	if router == nil {
+		t.Fatal("expected feishu-only router to be initialized")
+	}
+	if err := router.Send(context.Background(), notify.Message{
+		EventType: notify.EventPRReviewStarted,
+		Target:    notify.Target{Owner: "acme", Repo: "repo1", Number: 1, IsPR: true},
+	}); err != nil {
+		t.Fatalf("router.Send() error: %v", err)
 	}
 }
 

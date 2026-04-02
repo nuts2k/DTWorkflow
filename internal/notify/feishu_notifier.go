@@ -39,6 +39,13 @@ type FeishuNotifier struct {
 	logger     *slog.Logger
 }
 
+type feishuWebhookResponse struct {
+	Code          *int   `json:"code"`
+	Msg           string `json:"msg"`
+	StatusCode    *int   `json:"StatusCode"`
+	StatusMessage string `json:"StatusMessage"`
+}
+
 // NewFeishuNotifier 创建飞书通知器
 func NewFeishuNotifier(webhookURL string, opts ...FeishuOption) (*FeishuNotifier, error) {
 	if webhookURL == "" {
@@ -107,7 +114,41 @@ func (n *FeishuNotifier) Send(ctx context.Context, msg Message) error {
 		return fmt.Errorf("HTTP %d (%w), response: %s", resp.StatusCode, ErrSendFailed, string(respBody))
 	}
 
+	if len(respBody) == 0 {
+		return nil
+	}
+
+	var apiResp feishuWebhookResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return fmt.Errorf("解析飞书响应失败 (%w): %v", ErrSendFailed, err)
+	}
+	if code, ok := apiResp.code(); ok && code != 0 {
+		msg := apiResp.message()
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return fmt.Errorf("飞书 API 返回错误 code=%d, message=%s (%w)", code, msg, ErrSendFailed)
+	}
+
 	return nil
+}
+
+func (r feishuWebhookResponse) code() (int, bool) {
+	switch {
+	case r.Code != nil:
+		return *r.Code, true
+	case r.StatusCode != nil:
+		return *r.StatusCode, true
+	default:
+		return 0, false
+	}
+}
+
+func (r feishuWebhookResponse) message() string {
+	if r.Msg != "" {
+		return r.Msg
+	}
+	return r.StatusMessage
 }
 
 // buildRequestBody 构建最终请求体。若配置了签名密钥，则追加 timestamp 和 sign 字段。

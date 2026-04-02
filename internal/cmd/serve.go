@@ -264,12 +264,14 @@ func (n *configDrivenNotifier) newRouter(repoFullName string) (*notify.Router, e
 	rules, fallback := buildNotifyRules(n.cfg, repoFullName)
 
 	opts := []notify.RouterOption{
-		notify.WithNotifier(n.giteaNotifier),
 		notify.WithRules(rules),
 		notify.WithFallback(fallback),
 		notify.WithRouterLogger(n.logger),
 	}
 
+	if n.giteaNotifier != nil {
+		opts = append(opts, notify.WithNotifier(n.giteaNotifier))
+	}
 	if n.feishuNotifier != nil {
 		opts = append(opts, notify.WithNotifier(n.feishuNotifier))
 	}
@@ -305,23 +307,31 @@ func (a *configAdapter) IsReviewEnabled(repoFullName string) bool {
 }
 
 func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNotifier, error) {
-	if cfg == nil || giteaClient == nil {
+	if cfg == nil {
 		return nil, nil
 	}
 
-	ch, ok := cfg.Notify.Channels["gitea"]
-	if !ok || !ch.Enabled {
+	giteaCh, giteaEnabled := cfg.Notify.Channels["gitea"]
+	feishuCfg, feishuEnabled := cfg.Notify.Channels["feishu"]
+	feishuEnabled = feishuEnabled && feishuCfg.Enabled
+	giteaEnabled = giteaEnabled && giteaCh.Enabled
+
+	if !giteaEnabled && !feishuEnabled {
 		return nil, nil
 	}
 
-	giteaNotifier, err := notify.NewGiteaNotifier(&giteaCommentAdapter{client: giteaClient}, notify.WithLogger(slog.Default()))
-	if err != nil {
-		return nil, fmt.Errorf("构造 GiteaNotifier 失败: %w", err)
+	var giteaNotifier notify.Notifier
+	if giteaEnabled && giteaClient != nil {
+		gn, err := notify.NewGiteaNotifier(&giteaCommentAdapter{client: giteaClient}, notify.WithLogger(slog.Default()))
+		if err != nil {
+			return nil, fmt.Errorf("构造 GiteaNotifier 失败: %w", err)
+		}
+		giteaNotifier = gn
 	}
 
 	// 按配置构造飞书通知器（可选）
 	var feishuNotifier notify.Notifier
-	if feishuCfg, ok := cfg.Notify.Channels["feishu"]; ok && feishuCfg.Enabled {
+	if feishuEnabled {
 		webhookURL := feishuCfg.Options["webhook_url"]
 		var feishuOpts []notify.FeishuOption
 		if secret := feishuCfg.Options["secret"]; secret != "" {
@@ -333,6 +343,10 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 			return nil, fmt.Errorf("构造 FeishuNotifier 失败: %w", err)
 		}
 		feishuNotifier = fn
+	}
+
+	if giteaNotifier == nil && feishuNotifier == nil {
+		return nil, nil
 	}
 
 	return &configDrivenNotifier{

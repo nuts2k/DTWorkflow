@@ -187,7 +187,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	// M2.6: 评审开关检查通过后、实际执行前，发送"开始"通知
-	p.sendStartNotification(ctx, payload)
+	if record.RetryCount == 0 {
+		p.sendStartNotification(ctx, payload)
+	}
 
 	var reviewResult *review.ReviewResult
 	var result *worker.ExecutionResult

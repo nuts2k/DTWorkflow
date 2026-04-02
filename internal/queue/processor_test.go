@@ -1419,6 +1419,49 @@ func TestProcessTask_ReviewPR_SendStartNotification(t *testing.T) {
 	}
 }
 
+func TestProcessTask_ReviewPR_RetryDoesNotResendStartNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-start-notify-retry-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     53,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-start-notify-retry",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusRetrying,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		RetryCount: 1,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	reviewSvc := &mockReviewExecutor{result: &review.ReviewResult{RawOutput: "ok"}}
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(),
+		WithReviewService(reviewSvc),
+		WithGiteaBaseURL("https://gitea.example.com"),
+	)
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+	if notifier.messages[0].EventType != notify.EventPRReviewDone {
+		t.Fatalf("retry attempt should only send completion notification, got %q", notifier.messages[0].EventType)
+	}
+}
+
 func TestProcessTask_ReviewDisabled_NoStartNotification(t *testing.T) {
 	s := newMockStore()
 	notifier := &stubNotifier{}
