@@ -118,10 +118,11 @@ func TestProcessTask_Success_SendReviewNotification(t *testing.T) {
 	if err := p.ProcessTask(context.Background(), task); err != nil {
 		t.Fatalf("ProcessTask error: %v", err)
 	}
-	if len(notifier.messages) != 1 {
-		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	// M2.6: 新增开始通知，预期 2 条（开始 + 完成）
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2", len(notifier.messages))
 	}
-	msg := notifier.messages[0]
+	msg := notifier.messages[1] // 完成通知
 	if msg.EventType != notify.EventPRReviewDone {
 		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventPRReviewDone)
 	}
@@ -296,8 +297,12 @@ func TestProcessTask_StaleReview_IsCancelledWithoutNotification(t *testing.T) {
 	if !strings.Contains(got.Error, "评审已过时") {
 		t.Fatalf("error = %q, want contains %q", got.Error, "评审已过时")
 	}
-	if len(notifier.messages) != 0 {
-		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	// M2.6: 开始通知在执行前发送，stale review 仅阻止完成通知
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1 (仅开始通知)", len(notifier.messages))
+	}
+	if notifier.messages[0].EventType != notify.EventPRReviewStarted {
+		t.Errorf("唯一通知应为开始通知，实际 event type = %q", notifier.messages[0].EventType)
 	}
 	if reviewSvc.calls != 1 {
 		t.Fatalf("review service calls = %d, want 1", reviewSvc.calls)
@@ -333,10 +338,11 @@ func TestProcessTask_FailedReview_SendNotification(t *testing.T) {
 	if err == nil {
 		t.Fatal("ProcessTask should return error when review task fails")
 	}
-	if len(notifier.messages) != 1 {
-		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	// M2.6: 开始通知 + 完成通知
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2", len(notifier.messages))
 	}
-	msg := notifier.messages[0]
+	msg := notifier.messages[1] // 完成通知
 	if msg.EventType != notify.EventSystemError {
 		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventSystemError)
 	}
@@ -385,8 +391,9 @@ func TestProcessTask_NotificationFailure_DoesNotAffectTaskResult(t *testing.T) {
 	if got.Status != model.TaskStatusFailed {
 		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
 	}
-	if len(notifier.messages) != 1 {
-		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	// M2.6: 开始通知 + 完成通知（即使 notifier 返回 err，仍会尝试发送两条）
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2", len(notifier.messages))
 	}
 }
 
@@ -422,8 +429,9 @@ func TestProcessTask_Success_NotificationFailure_DoesNotAffectTaskResult(t *test
 	if got.Status != model.TaskStatusSucceeded {
 		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
 	}
-	if len(notifier.messages) != 1 {
-		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	// M2.6: 开始通知 + 完成通知
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2", len(notifier.messages))
 	}
 }
 
@@ -579,8 +587,12 @@ func TestProcessTask_FinalStatusPersistFailure_NoNotification(t *testing.T) {
 	if s.updateCalls != 2 {
 		t.Fatalf("update calls = %d, want 2", s.updateCalls)
 	}
-	if len(notifier.messages) != 0 {
-		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	// M2.6: 开始通知仍会发送，完成通知因持久化失败而跳过
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1 (仅开始通知)", len(notifier.messages))
+	}
+	if notifier.messages[0].EventType != notify.EventPRReviewStarted {
+		t.Errorf("唯一通知应为开始通知，实际 event type = %q", notifier.messages[0].EventType)
 	}
 }
 
@@ -633,7 +645,7 @@ func TestProcessTask_Retrying_NoNotification(t *testing.T) {
 		},
 	}
 	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default())
-	p.sendCompletionNotification(context.Background(), record)
+	p.sendCompletionNotification(context.Background(), record, nil)
 	if len(notifier.messages) != 0 {
 		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
 	}
@@ -941,7 +953,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 			PRNumber:     1,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record)
+	_, ok := p.buildNotificationMessage(record, nil)
 	if ok {
 		t.Error("RepoOwner 为空时不应生成通知消息")
 	}
@@ -949,7 +961,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 
 func TestBuildNotificationMessage_NilRecord(t *testing.T) {
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
-	_, ok := p.buildNotificationMessage(nil)
+	_, ok := p.buildNotificationMessage(nil, nil)
 	if ok {
 		t.Error("nil record 不应生成通知消息")
 	}
@@ -969,7 +981,7 @@ func TestBuildNotificationMessage_FixIssue_InvalidNumber(t *testing.T) {
 			IssueNumber: 0,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record)
+	_, ok := p.buildNotificationMessage(record, nil)
 	if ok {
 		t.Error("IssueNumber=0 不应生成通知消息")
 	}
@@ -1341,5 +1353,209 @@ func TestProcessTask_PreCancelledRecord_SkipsExecution(t *testing.T) {
 	got := s.tasks["proc-task-pre-cancelled"]
 	if got.Status != model.TaskStatusCancelled {
 		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusCancelled)
+	}
+}
+
+func TestProcessTask_ReviewPR_SendStartNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-start-notify-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     50,
+		PRTitle:      "修复登录验证逻辑",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-start-notify",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	reviewSvc := &mockReviewExecutor{result: &review.ReviewResult{RawOutput: "ok"}}
+	checker := &mockReviewEnabledChecker{enabled: map[string]bool{"org/repo": true}}
+
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(),
+		WithReviewService(reviewSvc),
+		WithReviewEnabledChecker(checker),
+		WithGiteaBaseURL("https://gitea.example.com"),
+	)
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	// 应有 2 条通知：开始 + 完成
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2", len(notifier.messages))
+	}
+
+	startMsg := notifier.messages[0]
+	if startMsg.EventType != notify.EventPRReviewStarted {
+		t.Errorf("start msg event type = %q, want %q", startMsg.EventType, notify.EventPRReviewStarted)
+	}
+	if startMsg.Target.Number != 50 || !startMsg.Target.IsPR {
+		t.Errorf("start msg target: %+v", startMsg.Target)
+	}
+	if startMsg.Metadata["pr_url"] != "https://gitea.example.com/org/repo/pulls/50" {
+		t.Errorf("start msg pr_url = %q", startMsg.Metadata["pr_url"])
+	}
+	if startMsg.Metadata["pr_title"] != "修复登录验证逻辑" {
+		t.Errorf("start msg pr_title = %q", startMsg.Metadata["pr_title"])
+	}
+
+	completeMsg := notifier.messages[1]
+	if completeMsg.EventType != notify.EventPRReviewDone {
+		t.Errorf("complete msg event type = %q, want %q", completeMsg.EventType, notify.EventPRReviewDone)
+	}
+}
+
+func TestProcessTask_ReviewDisabled_NoStartNotification(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-disabled-no-start-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     51,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-disabled-no-start",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	checker := &mockReviewEnabledChecker{enabled: map[string]bool{"org/repo": false}}
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(),
+		WithReviewEnabledChecker(checker),
+		WithGiteaBaseURL("https://gitea.example.com"),
+	)
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	}
+}
+
+func TestProcessTask_CompletionNotification_HasMetadata(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-metadata-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     52,
+		PRTitle:      "重构登录模块",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-metadata",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	reviewResult := &review.ReviewResult{
+		RawOutput: "review output",
+		CLIMeta:   &review.CLIMeta{IsError: false},
+		Review: &review.ReviewOutput{
+			Summary: "有问题",
+			Verdict: review.VerdictRequestChanges,
+			Issues: []review.ReviewIssue{
+				{Severity: "CRITICAL", File: "a.go", Line: 1, Message: "严重问题"},
+				{Severity: "WARNING", File: "b.go", Line: 2, Message: "警告问题"},
+			},
+		},
+	}
+
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(),
+		WithReviewService(&mockReviewExecutor{result: reviewResult}),
+		WithReviewEnabledChecker(&mockReviewEnabledChecker{enabled: map[string]bool{"org/repo": true}}),
+		WithGiteaBaseURL("https://gitea.example.com"),
+	)
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	if len(notifier.messages) < 2 {
+		t.Fatalf("notification count = %d, want >= 2", len(notifier.messages))
+	}
+
+	completeMsg := notifier.messages[1]
+	if completeMsg.Metadata["pr_url"] != "https://gitea.example.com/org/repo/pulls/52" {
+		t.Errorf("pr_url = %q", completeMsg.Metadata["pr_url"])
+	}
+	if completeMsg.Metadata["pr_title"] != "重构登录模块" {
+		t.Errorf("pr_title = %q", completeMsg.Metadata["pr_title"])
+	}
+	if completeMsg.Metadata["verdict"] != "request_changes" {
+		t.Errorf("verdict = %q", completeMsg.Metadata["verdict"])
+	}
+	if completeMsg.Metadata["issue_summary"] == "" {
+		t.Error("issue_summary 不应为空")
+	}
+}
+
+func TestBuildPRURL(t *testing.T) {
+	tests := []struct {
+		baseURL  string
+		owner    string
+		repo     string
+		number   int64
+		expected string
+	}{
+		{"https://gitea.example.com", "org", "repo", 42, "https://gitea.example.com/org/repo/pulls/42"},
+		{"https://gitea.example.com/", "org", "repo", 1, "https://gitea.example.com/org/repo/pulls/1"},
+	}
+	for _, tc := range tests {
+		got := buildPRURL(tc.baseURL, model.TaskPayload{RepoOwner: tc.owner, RepoName: tc.repo, PRNumber: tc.number})
+		if got != tc.expected {
+			t.Errorf("buildPRURL(%q, ...) = %q, want %q", tc.baseURL, got, tc.expected)
+		}
+	}
+}
+
+func TestFormatIssueSummary(t *testing.T) {
+	issues := []review.ReviewIssue{
+		{Severity: "CRITICAL"},
+		{Severity: "CRITICAL"},
+		{Severity: "WARNING"},
+		{Severity: "INFO"},
+	}
+	got := formatIssueSummary(issues)
+	if got == "" {
+		t.Fatal("formatIssueSummary 不应返回空字符串")
+	}
+	if !strings.Contains(got, "CRITICAL") || !strings.Contains(got, "WARNING") || !strings.Contains(got, "INFO") {
+		t.Errorf("formatIssueSummary = %q, should contain severity counts", got)
 	}
 }

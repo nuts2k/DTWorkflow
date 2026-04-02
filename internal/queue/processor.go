@@ -57,6 +57,13 @@ func WithReviewEnabledChecker(c ReviewEnabledChecker) ProcessorOption {
 	return func(p *Processor) { p.reviewEnabledChecker = c }
 }
 
+// WithGiteaBaseURL 注入 Gitea 实例 URL，用于通知消息中的跳转链接
+func WithGiteaBaseURL(url string) ProcessorOption {
+	return func(p *Processor) {
+		p.giteaBaseURL = strings.TrimRight(url, "/")
+	}
+}
+
 // Processor 处理 asynq 任务，协调 Store 状态更新与 PoolRunner 执行
 type Processor struct {
 	pool                 PoolRunner
@@ -65,6 +72,7 @@ type Processor struct {
 	logger               *slog.Logger
 	reviewService        ReviewExecutor
 	reviewEnabledChecker ReviewEnabledChecker // 可选，nil 时默认启用
+	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 
 // NewProcessor 创建 Processor 实例。
@@ -178,11 +186,14 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		}
 	}
 
+	// M2.6: 评审开关检查通过后、实际执行前，发送"开始"通知
+	p.sendStartNotification(ctx, payload)
+
+	var reviewResult *review.ReviewResult
 	var result *worker.ExecutionResult
 	var runErr error
 	switch {
 	case payload.TaskType == model.TaskTypeReviewPR && p.reviewService != nil:
-		var reviewResult *review.ReviewResult
 		reviewResult, runErr = p.reviewService.Execute(ctx, payload)
 		if reviewResult != nil {
 			result = adaptReviewResult(reviewResult)
@@ -220,7 +231,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 					"error", err,
 				)
 			} else {
-				p.sendCompletionNotification(ctx, record)
+				p.sendCompletionNotification(ctx, record, reviewResult)
 			}
 			return fmt.Errorf("PR 不处于 open 状态: %w", asynq.SkipRetry)
 		}
@@ -288,7 +299,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if finalStatePersisted {
-		p.sendCompletionNotification(ctx, record)
+		p.sendCompletionNotification(ctx, record, reviewResult)
 	}
 
 	if runErr != nil {
@@ -305,13 +316,96 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	return nil
 }
 
+// buildPRURL 基于 Gitea 配置构造 PR 页面链接
+func buildPRURL(giteaBaseURL string, payload model.TaskPayload) string {
+	return fmt.Sprintf("%s/%s/%s/pulls/%d",
+		strings.TrimRight(giteaBaseURL, "/"),
+		payload.RepoOwner,
+		payload.RepoName,
+		payload.PRNumber,
+	)
+}
+
+// formatIssueSummary 从 ReviewIssue 列表生成 issue 统计摘要
+func formatIssueSummary(issues []review.ReviewIssue) string {
+	if len(issues) == 0 {
+		return ""
+	}
+	counts := make(map[string]int)
+	for _, issue := range issues {
+		severity := strings.ToUpper(issue.Severity)
+		if severity == "" {
+			severity = "UNKNOWN"
+		}
+		counts[severity]++
+	}
+	var parts []string
+	for _, sev := range []string{"CRITICAL", "ERROR", "WARNING", "INFO"} {
+		if c, ok := counts[sev]; ok {
+			parts = append(parts, fmt.Sprintf("%d %s", c, sev))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (p *Processor) sendStartNotification(ctx context.Context, payload model.TaskPayload) {
+	if p.notifier == nil {
+		return
+	}
+	msg, ok := p.buildStartMessage(payload)
+	if !ok {
+		return
+	}
+	if err := p.notifier.Send(ctx, msg); err != nil {
+		p.logger.ErrorContext(ctx, "发送任务开始通知失败",
+			"task_type", payload.TaskType,
+			"error", err,
+		)
+	}
+}
+
+func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message, bool) {
+	if payload.RepoOwner == "" || payload.RepoName == "" {
+		return notify.Message{}, false
+	}
+
+	switch payload.TaskType {
+	case model.TaskTypeReviewPR:
+		if payload.PRNumber <= 0 {
+			return notify.Message{}, false
+		}
+		metadata := map[string]string{}
+		if p.giteaBaseURL != "" {
+			metadata["pr_url"] = buildPRURL(p.giteaBaseURL, payload)
+		}
+		if payload.PRTitle != "" {
+			metadata["pr_title"] = payload.PRTitle
+		}
+		return notify.Message{
+			EventType: notify.EventPRReviewStarted,
+			Severity:  notify.SeverityInfo,
+			Target: notify.Target{
+				Owner:  payload.RepoOwner,
+				Repo:   payload.RepoName,
+				Number: payload.PRNumber,
+				IsPR:   true,
+			},
+			Title:    "PR 自动评审开始",
+			Body:     fmt.Sprintf("正在评审 PR #%d\n\n仓库：%s", payload.PRNumber, payload.RepoFullName),
+			Metadata: metadata,
+		}, true
+	default:
+		return notify.Message{}, false
+	}
+}
+
 // findRecord 根据 payload 中的 delivery_id 查找任务记录，
 // 当 delivery_id 查找不到时回退到按 task ID 查找（支持 RecoveryLoop 场景）
-func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord) {
+func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult) {
 	if p.notifier == nil || record == nil {
 		return
 	}
-	msg, ok := p.buildNotificationMessage(record)
+	msg, ok := p.buildNotificationMessage(record, reviewResult)
 	if !ok {
 		return
 	}
@@ -324,7 +418,7 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 	}
 }
 
-func (p *Processor) buildNotificationMessage(record *model.TaskRecord) (notify.Message, bool) {
+func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult) (notify.Message, bool) {
 	if record == nil {
 		return notify.Message{}, false
 	}
@@ -347,6 +441,17 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord) (notify.M
 		if payload.PRNumber <= 0 {
 			return notify.Message{}, false
 		}
+		metadata := map[string]string{}
+		if p.giteaBaseURL != "" {
+			metadata["pr_url"] = buildPRURL(p.giteaBaseURL, payload)
+		}
+		if payload.PRTitle != "" {
+			metadata["pr_title"] = payload.PRTitle
+		}
+		if reviewResult != nil && reviewResult.Review != nil {
+			metadata["verdict"] = string(reviewResult.Review.Verdict)
+			metadata["issue_summary"] = formatIssueSummary(reviewResult.Review.Issues)
+		}
 		if record.Status == model.TaskStatusSucceeded {
 			return notify.Message{
 				EventType: notify.EventPRReviewDone,
@@ -357,8 +462,9 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord) (notify.M
 					Number: payload.PRNumber,
 					IsPR:   true,
 				},
-				Title: "PR 自动评审任务完成",
-				Body:  body,
+				Title:    "PR 自动评审任务完成",
+				Body:     body,
+				Metadata: metadata,
 			}, true
 		}
 		return notify.Message{
@@ -370,8 +476,9 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord) (notify.M
 				Number: payload.PRNumber,
 				IsPR:   true,
 			},
-			Title: "PR 自动评审任务失败",
-			Body:  body,
+			Title:    "PR 自动评审任务失败",
+			Body:     body,
+			Metadata: metadata,
 		}, true
 	case model.TaskTypeFixIssue:
 		if payload.IssueNumber <= 0 {
