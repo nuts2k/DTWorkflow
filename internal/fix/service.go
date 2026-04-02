@@ -38,7 +38,6 @@ func WithServiceLogger(logger *slog.Logger) ServiceOption {
 // Service Issue 分析编排服务，负责 Issue 上下文采集和分析执行
 type Service struct {
 	gitea  IssueClient
-	pool   FixPoolRunner // M3.2 容器执行用，M3.1 可为 nil
 	logger *slog.Logger
 }
 
