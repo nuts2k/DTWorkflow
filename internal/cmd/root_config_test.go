@@ -207,3 +207,11 @@ func TestRootPersistentPreRun_ConfigOptional_HelpSkipsConfigLoad(t *testing.T) {
 		t.Fatalf("help 命令应跳过配置加载，但 cfgManager 不为 nil")
 	}
 }
+
+// TestIsConfigOptionalCommand_NilCmd 覆盖 cmd == nil 时返回 false
+func TestIsConfigOptionalCommand_NilCmd(t *testing.T) {
+	got := isConfigOptionalCommand(nil)
+	if got != false {
+		t.Fatal("isConfigOptionalCommand(nil) = true, want false")
+	}
+}

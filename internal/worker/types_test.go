@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
+	"time"
+
+	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
 
 // TestSecretString_String 验证 String() 返回 [REDACTED]
@@ -155,5 +158,67 @@ func TestExecutionResult_Fields(t *testing.T) {
 	}
 	if r.ExitCode != 0 || r.Output != "output" || r.Duration != 1234 || r.ContainerID != "cid" {
 		t.Error("字段赋值不匹配")
+	}
+}
+
+// TestTaskTimeoutsConfig_Lookup 验证 Lookup 按任务类型返回正确超时值
+func TestTaskTimeoutsConfig_Lookup(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   TaskTimeoutsConfig
+		taskType model.TaskType
+		want     time.Duration
+	}{
+		{
+			name:     "ReviewPR 使用配置值",
+			config:   TaskTimeoutsConfig{ReviewPR: 5 * time.Minute},
+			taskType: model.TaskTypeReviewPR,
+			want:     5 * time.Minute,
+		},
+		{
+			name:     "ReviewPR 零值回退到默认 10m",
+			config:   TaskTimeoutsConfig{},
+			taskType: model.TaskTypeReviewPR,
+			want:     10 * time.Minute,
+		},
+		{
+			name:     "FixIssue 使用配置值",
+			config:   TaskTimeoutsConfig{FixIssue: 15 * time.Minute},
+			taskType: model.TaskTypeFixIssue,
+			want:     15 * time.Minute,
+		},
+		{
+			name:     "FixIssue 零值回退到默认 30m",
+			config:   TaskTimeoutsConfig{},
+			taskType: model.TaskTypeFixIssue,
+			want:     30 * time.Minute,
+		},
+		{
+			name:     "GenTests 使用配置值",
+			config:   TaskTimeoutsConfig{GenTests: 8 * time.Minute},
+			taskType: model.TaskTypeGenTests,
+			want:     8 * time.Minute,
+		},
+		{
+			name:     "GenTests 零值回退到默认 20m",
+			config:   TaskTimeoutsConfig{},
+			taskType: model.TaskTypeGenTests,
+			want:     20 * time.Minute,
+		},
+		{
+			name:     "未知任务类型回退到默认 10m",
+			config:   TaskTimeoutsConfig{},
+			taskType: model.TaskType("unknown"),
+			want:     10 * time.Minute,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.config.Lookup(tc.taskType)
+			if got != tc.want {
+				t.Errorf("Lookup(%q) = %v, 期望 %v", tc.taskType, got, tc.want)
+			}
+		})
 	}
 }

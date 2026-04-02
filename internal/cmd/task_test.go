@@ -754,3 +754,20 @@ func TestRetryTask_UpdateStoreFailure_ReturnsSyncError(t *testing.T) {
 		t.Fatal("retryTask should return sync error")
 	}
 }
+
+// TestBuildRetryTaskID_NonEmptyDeliveryID 覆盖 deliveryID 非空时返回拼接字符串
+func TestBuildRetryTaskID_NonEmptyDeliveryID(t *testing.T) {
+	got := buildRetryTaskID("delivery-abc", model.TaskTypeReviewPR)
+	want := "delivery-abc:" + string(model.TaskTypeReviewPR)
+	if got != want {
+		t.Fatalf("buildRetryTaskID = %q, want %q", got, want)
+	}
+}
+
+// TestBuildRetryTaskID_EmptyDeliveryID 覆盖 deliveryID 为空时返回空字符串
+func TestBuildRetryTaskID_EmptyDeliveryID(t *testing.T) {
+	got := buildRetryTaskID("", model.TaskTypeReviewPR)
+	if got != "" {
+		t.Fatalf("buildRetryTaskID = %q, want empty string", got)
+	}
+}

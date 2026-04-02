@@ -48,3 +48,31 @@ func TestBuildWorkerStreamMonitorConfigFromAppConfig(t *testing.T) {
 		t.Fatalf("ActivityTimeout = %s, want %s", got.ActivityTimeout, 2*time.Minute)
 	}
 }
+
+// TestBuildQueueTimeoutConfigFromAppConfig_NilConfig 覆盖 cfg == nil 时返回零值
+func TestBuildQueueTimeoutConfigFromAppConfig_NilConfig(t *testing.T) {
+	got := buildQueueTimeoutConfigFromAppConfig(nil)
+	if got.ReviewPR != 0 {
+		t.Fatalf("ReviewPR = %s, want 0", got.ReviewPR)
+	}
+	if got.FixIssue != 0 {
+		t.Fatalf("FixIssue = %s, want 0", got.FixIssue)
+	}
+	if got.GenTests != 0 {
+		t.Fatalf("GenTests = %s, want 0", got.GenTests)
+	}
+}
+
+// TestBuildWorkerTimeoutConfigFromAppConfig_NilConfig 覆盖 cfg == nil 时返回零值
+func TestBuildWorkerTimeoutConfigFromAppConfig_NilConfig(t *testing.T) {
+	got := buildWorkerTimeoutConfigFromAppConfig(nil)
+	if got.ReviewPR != 0 {
+		t.Fatalf("ReviewPR = %s, want 0", got.ReviewPR)
+	}
+	if got.FixIssue != 0 {
+		t.Fatalf("FixIssue = %s, want 0", got.FixIssue)
+	}
+	if got.GenTests != 0 {
+		t.Fatalf("GenTests = %s, want 0", got.GenTests)
+	}
+}
