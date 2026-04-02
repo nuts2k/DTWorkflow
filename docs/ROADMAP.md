@@ -310,52 +310,131 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 ## Phase 3：Issue 自动分析与修复
 
-**目标**：实现 Issue 到修复 PR 的自动化闭环
+**目标**：分两轮迭代交付——第一轮实现 Issue 自动分析与根因定位（只读），第二轮实现自动修复与 PR 创建（写操作）
 
 **依赖**：Phase 1 完成（Phase 2 非必须依赖，可并行开发）
 
+### 关键设计决策
+
+> 以下决策在 2026-04-02 brainstorming 中确认，指导后续设计与实施。
+
+1. **两轮迭代策略**：第一轮（M3.1-M3.3）只做分析与定位，容器只读模式（安全模型同 Phase 2）；第二轮（M3.4-M3.5）才引入写操作（代码修改、push、PR 创建）。第一轮独立交付价值：根因分析报告本身即可帮助开发者快速定位和修复问题。
+2. **PR 创建策略（混合模式）**：容器内完成代码修改 + commit + `git push`（Claude Code 核心能力），容器外由 `fix.Service` 通过 Gitea API 创建 PR（结构化操作更可控：描述模板、Issue 关联、标签管理）。仅需保留 Git push 凭证，不需要给容器 Gitea API Token。
+3. **Git 凭证管理（credential helper 缓存）**：entrypoint.sh 在 clone 前配置 `git config --global credential.helper store`，clone 过程自动写入 `.git-credentials` 文件；clone 完成后照常清除 `GITEA_URL` / `REPO_CLONE_URL` 环境变量。凭证仅对 git 命令可用，不像环境变量对所有进程可见，攻击面更小。（仅第二轮 M3.4 需要，第一轮容器无需 push 权限。）
+4. **信息充分性判断（MVP 简化）**：不实现自动监听 Issue 新评论恢复分析的状态机。Claude 直接在分析 prompt 中判断信息是否充分，不充分时在 Issue 评论中报告"信息不足"并列出需补充内容；用户补充后移除再添加 `auto-fix` 标签即可重新触发。后续可平滑升级为自动监听恢复，无架构返工。
+5. **修复 PR 自动评审（天然复用）**：`fix.Service` 通过 Gitea API 创建 PR 后，Gitea 发出 PR created Webhook，Phase 2 评审流程自然触发。auto-fix PR 与人工 PR 完全一视同仁，不做特殊处理。不存在无限循环风险（评审只产生 comment，不会再触发 fix）。无需额外代码。
+
+### 已有基础设施（Phase 1/2 已搭建）
+
+以下能力在 Phase 1/2 中已实现，Phase 3 直接复用：
+
+- **Webhook 接收**：`IssueLabelEvent` 解析 + `auto-fix` 标签检测（`internal/webhook/parser.go`、`event.go`）
+- **任务入队**：`HandleIssueLabel` 幂等入队（`internal/queue/enqueue.go`），含 DeliveryID 幂等检查
+- **任务模型**：`TaskTypeFixIssue` 已定义，`TaskPayload` 含 `IssueNumber` / `IssueTitle`（`internal/model/task.go`）
+- **容器执行**：`buildContainerCmd` 有基础 fix_issue prompt（`internal/worker/container.go`），第一轮需替换为分析 prompt
+- **通知**：`EventFixIssueDone` 已定义（`internal/notify/notifier.go`），Processor 已有 fix_issue 通知构建逻辑
+- **Gitea API**：`GetIssue` / `ListIssueComments` / `CreateIssueComment` / Label 操作（`internal/gitea/issues.go`）
+- **Processor**：fix_issue 当前走默认 `pool.Run()` 路径，需改为分发到 `fix.Service`（同 review 的 `ReviewExecutor` 模式）
+
 ### 里程碑
 
-#### M3.1 Issue 信息采集
-- [ ] 监听 Issue 标签变更事件（Webhook）
-- [ ] `auto-fix` 标签触发任务创建
-- [ ] 幂等性保证：同一 Issue 不重复触发
-- [ ] 采集 Issue 标题、描述、所有评论
-- [ ] 关联信息提取：错误日志、堆栈跟踪、复现步骤识别
+---
 
-#### M3.2 信息充分性判断
-- [ ] 设计信息充分性评估 prompt
-- [ ] 信息不足时：自动在 Issue 中回复追问模板
-- [ ] 自动添加 `waiting-info` 标签
-- [ ] 监听 Issue 新评论 → 判断信息是否已补充 → 恢复分析
+#### 第一轮：Issue 分析与定位（只读）
 
-#### M3.3 根因分析
-- [ ] 基于 Issue 关键词的代码库搜索策略
-- [ ] 调用链分析（从入口到异常点）
-- [ ] 根因分析报告生成：定位文件/方法/行号，解释原因
-- [ ] 分析报告作为 Issue 评论发布
+> 容器安全模型与 Phase 2 一致（ReadonlyRootfs、无 push 权限）。交付物为 Issue 评论中的根因分析报告。
 
-#### M3.4 自动修复与 PR 创建
-- [ ] 从目标仓库的默认分支创建修复分支（命名规范：`auto-fix/issue-{id}`）
-- [ ] Claude Code 在容器内执行代码修改
-- [ ] 修复后运行现有测试（如有），确保不引入回归
-- [ ] 推送分支并通过 Gitea API 创建 PR
-- [ ] PR 描述模板：根因分析 + 修复方案 + 影响范围 + 关联 Issue
-- [ ] PR 自动关联 Issue（`fixes #xxx`）
+##### M3.1 fix.Service 骨架与 Issue 上下文采集
+- [ ] 新建 `internal/fix` 包，架构仿照 `internal/review`（Service/Execute/parseResult/resolveConfig）
+- [ ] 定义 `FixExecutor` 窄接口，注入 Processor（同 `ReviewExecutor` 模式）
+- [ ] Processor `processTask` 新增 `fix.Service` 分发路径（`case payload.TaskType == model.TaskTypeFixIssue && p.fixService != nil`）
+- [ ] 通过 Gitea API 采集 Issue 富上下文：Issue 详情（标题、描述、状态）、全部评论、标签列表
+- [ ] Issue 上下文结构体定义（`IssueContext`），包含原始数据和提取的关键信息（错误日志、堆栈跟踪、复现步骤等）
+- [ ] `serve.go` 装配层注册 `fix.Service`，注入 Gitea 客户端和 PoolRunner
+- [ ] Issue 状态检查：Issue 已关闭时跳过分析（类似 review 的 `ErrPRNotOpen`）
 
-#### M3.5 修复质量保障
-- [ ] 修复代码的基础验证（编译通过、测试通过）
-- [ ] 修复 PR 自动进入 Phase 2 的评审流程（Claude 自审）
-- [ ] 修复失败时自动在 Issue 中报告失败原因
+##### M3.2 分析 Prompt 工程与容器执行
+- [ ] 设计分析 prompt，包含以下层次：
+  - 信息充分性判断指令（判断 Issue 是否包含足够信息进行分析）
+  - 根因分析指令（代码库搜索策略、调用链追踪、关联文件检查）
+  - 输出格式定义（结构化 JSON schema）
+- [ ] 定义分析输出 JSON schema（`AnalysisOutput`），字段包括：
+  - `info_sufficient`（bool）：信息是否充分
+  - `missing_info`（[]string）：缺失的信息项（信息不足时填写）
+  - `root_cause`：根因定位（文件路径、方法名、行号范围、原因描述）
+  - `analysis`：详细分析说明
+  - `fix_suggestion`：修复建议
+  - `confidence`（high/medium/low）：分析置信度
+  - `related_files`（[]string）：相关文件列表
+- [ ] Prompt 通过 stdin 传入容器（同 Phase 2 安全实践，避免 ps aux 暴露）
+- [ ] 容器只读模式执行，安全约束同 Phase 2（ReadonlyRootfs + `--disallowedTools` + READ-ONLY 约束文本）
+- [ ] 双层 JSON 解析（同 Phase 2）：CLI 信封（`CLIResponse`）→ 内层分析结果（`AnalysisOutput`）
+- [ ] 技术栈检测复用（可选）：根据仓库文件结构检测技术栈，为分析 prompt 提供上下文
+- [ ] Claude 模型与推理强度可配置（复用 `claude.model` / `claude.effort` 配置体系）
+
+##### M3.3 分析结果解析与 Issue 评论回写
+- [ ] 解析 Claude 输出的结构化分析结果
+- [ ] **正常场景（信息充分）**：格式化根因分析报告并发布为 Issue 评论
+  - 报告内容：置信度 + 根因定位（文件/方法/行号）+ 原因分析 + 修复建议 + 相关文件
+  - Markdown 格式化，含代码块和文件链接
+- [ ] **信息不足场景**：发布追问评论，列出需要补充的具体信息项
+  - 评论提示用户补充信息后重新添加 `auto-fix` 标签触发
+- [ ] **降级场景**：Claude 输出解析失败时，将原始输出包裹在代码块中发布（同 Phase 2 降级策略）
+- [ ] 分析结果持久化到数据库（可选，复用或扩展 `review_results` 表结构，或新建 `analysis_results` 表）
+- [ ] 错误处理与降级链：分析失败时在 Issue 评论中报告失败原因
+- [ ] Markdown 注入防护（转义外部内容，同 Phase 2 安全实践）
+- [ ] 单元测试覆盖
+
+---
+
+#### 第二轮：自动修复与 PR 创建（后续迭代）
+
+> 引入容器写权限，需修改 entrypoint.sh 和容器安全配置。依赖第一轮分析能力验证后启动。
+
+##### M3.4 容器写权限适配与修复执行
+- [ ] entrypoint.sh 适配 fix_issue 任务类型：
+  - checkout 默认分支（非 PR 分支）
+  - 配置 `git config --global credential.helper store`（clone 时自动缓存凭证）
+  - clone 完成后照常清除环境变量（凭证已在 `.git-credentials` 文件中）
+- [ ] 修复 prompt 设计：基于第一轮分析结果，指导 Claude Code 执行修复
+  - 从默认分支创建修复分支（命名规范：`auto-fix/issue-{id}`）
+  - 修复代码 + 运行现有测试（如有）
+  - git commit（规范化 commit message）+ git push
+- [ ] 容器安全配置调整：仓库目录可写（tmpfs 已支持），评估是否需要放宽 `--disallowedTools` 限制
+- [ ] 修复输出 JSON schema 定义（分支名、commit SHA、修改文件列表、测试结果等）
+
+##### M3.5 PR 创建与 Issue 关联
+- [ ] fix.Service 在容器执行成功后，通过 Gitea API 创建 PR：
+  - PR 标题：`fix: #{issue_id} {issue_title}`
+  - PR 描述模板：根因分析 + 修复方案 + 影响范围 + `fixes #{issue_id}`（自动关联）
+  - 必要时打标签（如 `auto-fix`）
+- [ ] Issue 评论通知：修复 PR 已创建，附 PR 链接
+- [ ] 修复失败处理：在 Issue 评论中报告失败原因和已尝试的修复方向
+- [ ] 修复 PR 自动评审：无需额外代码，Gitea PR created Webhook 自然触发 Phase 2 评审流程
+- [ ] 单元测试覆盖
 
 ### 交付物
+
+**第一轮**：
+- Issue 自动分析与根因定位能力（`internal/fix` 包）
+- 分析 prompt 模板
+- Issue 评论格式化报告（根因分析 / 信息不足追问 / 失败报告）
+
+**第二轮**：
 - 完整的 Issue → 分析 → 修复 → PR 自动化流程
-- 信息不足追问机制
-- 修复 PR 模板
+- entrypoint.sh fix_issue 适配（credential helper + 默认分支 checkout）
+- 修复 PR 描述模板
 
 ### 验证标准
-- 创建一个描述完整的 bug Issue → 添加 `auto-fix` 标签 → 自动分析根因 → 自动创建修复 PR → PR 关联 Issue
-- 创建一个描述不足的 Issue → 添加标签 → 自动追问 → 补充信息后自动恢复分析
+
+**第一轮**：
+- 创建一个描述完整的 bug Issue → 添加 `auto-fix` 标签 → 自动分析 → Issue 收到根因分析评论（定位到文件/方法/行号 + 原因分析 + 修复建议）
+- 创建一个描述不足的 Issue → 添加标签 → Issue 收到追问评论（列出需补充的信息）
+- 同一 Issue 重复添加标签不重复触发（幂等性，已有基础设施保障）
+
+**第二轮**：
+- 创建一个描述完整的 bug Issue → 添加 `auto-fix` 标签 → 自动分析根因 → 自动创建修复 PR → PR 关联 Issue → Phase 2 自动评审修复 PR
+- 修复失败时 Issue 收到失败报告评论
 - Java 和 Vue 仓库各验证一轮
 
 ---
@@ -473,7 +552,8 @@ Phase 1 (基础设施)
 |------|------|---------|
 | Phase 1 | 基础设施——所有后续功能的基座 | 第一优先 |
 | Phase 2 | PR 评审——最快产出业务价值，团队感知最明显 | 紧接 Phase 1 |
-| Phase 3 | Issue 修复——第二业务价值，需要 Phase 2 的评审做质量兜底 | Phase 2 之后 |
+| Phase 3 第一轮 | Issue 分析与定位——只读模式，独立交付根因分析价值 | Phase 2 之后 |
+| Phase 3 第二轮 | Issue 自动修复与 PR 创建——引入写操作，需第一轮验证分析质量后启动 | 第一轮之后 |
 | Phase 4 | 测试补全——补足质量基础，为 Phase 5 做准备 | Phase 3 之后 |
 | Phase 5 | E2E 测试——最复杂，依赖前面所有基础 | 最后实施 |
 
