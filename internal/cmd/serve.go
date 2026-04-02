@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
@@ -629,6 +630,14 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		)
 		reviewOpts = append(reviewOpts, queue.WithReviewService(reviewSvc))
 		reviewOpts = append(reviewOpts, queue.WithReviewEnabledChecker(cfgAdapter))
+	}
+	// 构建 fix.Service 并注入 Processor
+	if deps.GiteaClient != nil {
+		fixSvc := fix.NewService(
+			deps.GiteaClient,
+			fix.WithServiceLogger(slog.Default()),
+		)
+		reviewOpts = append(reviewOpts, queue.WithFixService(fixSvc))
 	}
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), reviewOpts...)
 	mux := asynq.NewServeMux()
