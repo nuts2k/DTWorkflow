@@ -463,10 +463,15 @@ func TestProcessTask_Success_SendFixIssueNotification(t *testing.T) {
 	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
 		t.Fatalf("ProcessTask error: %v", err)
 	}
-	if len(notifier.messages) != 1 {
-		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2 (start + done)", len(notifier.messages))
 	}
-	msg := notifier.messages[0]
+	// 第一条是 start 通知
+	if notifier.messages[0].EventType != notify.EventIssueFixStarted {
+		t.Errorf("first event type = %q, want %q", notifier.messages[0].EventType, notify.EventIssueFixStarted)
+	}
+	// 第二条是 completion 通知
+	msg := notifier.messages[1]
 	if msg.EventType != notify.EventFixIssueDone {
 		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventFixIssueDone)
 	}
@@ -507,10 +512,15 @@ func TestProcessTask_FailedFixIssue_SendNotification(t *testing.T) {
 	if err == nil {
 		t.Fatal("ProcessTask should return error when fix task fails")
 	}
-	if len(notifier.messages) != 1 {
-		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2 (start + failed)", len(notifier.messages))
 	}
-	msg := notifier.messages[0]
+	// 第一条是 start 通知
+	if notifier.messages[0].EventType != notify.EventIssueFixStarted {
+		t.Errorf("first event type = %q, want %q", notifier.messages[0].EventType, notify.EventIssueFixStarted)
+	}
+	// 第二条是 completion 通知
+	msg := notifier.messages[1]
 	if msg.EventType != notify.EventSystemError {
 		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventSystemError)
 	}

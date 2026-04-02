@@ -11,6 +11,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
@@ -34,6 +35,18 @@ type TaskNotifier interface {
 // ReviewExecutor 窄接口，解耦 review 包
 type ReviewExecutor interface {
 	Execute(ctx context.Context, payload model.TaskPayload) (*review.ReviewResult, error)
+}
+
+// FixExecutor 窄接口，解耦 fix 包
+type FixExecutor interface {
+	Execute(ctx context.Context, payload model.TaskPayload) (*fix.FixResult, error)
+}
+
+// WithFixService 注入 Issue 分析服务
+func WithFixService(svc FixExecutor) ProcessorOption {
+	return func(p *Processor) {
+		p.fixService = svc
+	}
 }
 
 // ReviewEnabledChecker 是 Processor 层的窄接口（ISP）
@@ -72,6 +85,7 @@ type Processor struct {
 	logger               *slog.Logger
 	reviewService        ReviewExecutor
 	reviewEnabledChecker ReviewEnabledChecker // 可选，nil 时默认启用
+	fixService           FixExecutor          // 可选，nil 时 fix_issue 走默认 pool.Run() 路径
 	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 
@@ -192,6 +206,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	var reviewResult *review.ReviewResult
+	var fixResult *fix.FixResult
 	var result *worker.ExecutionResult
 	var runErr error
 	switch {
@@ -199,6 +214,11 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		reviewResult, runErr = p.reviewService.Execute(ctx, payload)
 		if reviewResult != nil {
 			result = adaptReviewResult(reviewResult)
+		}
+	case payload.TaskType == model.TaskTypeFixIssue && p.fixService != nil:
+		fixResult, runErr = p.fixService.Execute(ctx, payload)
+		if fixResult != nil {
+			result = adaptFixResult(fixResult)
 		}
 	default:
 		result, runErr = p.pool.Run(ctx, payload)
@@ -236,6 +256,26 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 				p.sendCompletionNotification(ctx, record, reviewResult)
 			}
 			return fmt.Errorf("PR 不处于 open 状态: %w", asynq.SkipRetry)
+		}
+		if errors.Is(runErr, fix.ErrIssueNotOpen) {
+			record.Status = model.TaskStatusFailed
+			record.Error = runErr.Error()
+			completedAt := time.Now()
+			record.CompletedAt = &completedAt
+			p.logger.WarnContext(ctx, "Issue 不处于 open 状态，跳过分析",
+				"task_id", taskID,
+				"error", runErr,
+			)
+			if err := p.store.UpdateTask(ctx, record); err != nil {
+				p.logger.ErrorContext(ctx, "更新任务最终状态失败",
+					"task_id", taskID,
+					"status", record.Status,
+					"error", err,
+				)
+			} else {
+				p.sendCompletionNotification(ctx, record, reviewResult)
+			}
+			return fmt.Errorf("Issue 不处于 open 状态: %w", asynq.SkipRetry)
 		}
 		// 根据 shouldRetry 判断是否还有剩余重试机会：
 		// - 有剩余重试：设为 retrying，asynq 将自动安排下次重试
@@ -407,6 +447,28 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 			Body:      fmt.Sprintf("正在评审 PR #%d\n\n仓库：%s", payload.PRNumber, payload.RepoFullName),
 			Metadata:  p.buildPRMetadata(payload),
 		}, true
+	case model.TaskTypeFixIssue:
+		if payload.IssueNumber <= 0 {
+			return notify.Message{}, false
+		}
+		metadata := map[string]string{}
+		if p.giteaBaseURL != "" {
+			metadata[notify.MetaKeyIssueURL] = fmt.Sprintf("%s/%s/%s/issues/%d",
+				p.giteaBaseURL, payload.RepoOwner, payload.RepoName, payload.IssueNumber)
+		}
+		return notify.Message{
+			EventType: notify.EventIssueFixStarted,
+			Severity:  notify.SeverityInfo,
+			Target: notify.Target{
+				Owner:  payload.RepoOwner,
+				Repo:   payload.RepoName,
+				Number: payload.IssueNumber,
+				IsPR:   false,
+			},
+			Title:    "Issue 自动分析开始",
+			Body:     fmt.Sprintf("正在分析 Issue #%d\n\n仓库：%s", payload.IssueNumber, payload.RepoFullName),
+			Metadata: metadata,
+		}, true
 	default:
 		return notify.Message{}, false
 	}
@@ -539,6 +601,25 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 			result.Error = msg
 		} else if !strings.Contains(result.Error, msg) {
 			result.Error = result.Error + "; " + msg
+		}
+	}
+	return result
+}
+
+// adaptFixResult 将 fix.FixResult 适配为 worker.ExecutionResult
+func adaptFixResult(r *fix.FixResult) *worker.ExecutionResult {
+	if r == nil {
+		return nil
+	}
+	result := &worker.ExecutionResult{
+		ExitCode: 0,
+		Output:   r.RawOutput,
+	}
+	if r.CLIMeta != nil {
+		result.Duration = r.CLIMeta.DurationMs
+		if r.CLIMeta.IsError {
+			result.ExitCode = 1
+			result.Error = "Claude CLI 报告错误"
 		}
 	}
 	return result
