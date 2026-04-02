@@ -345,13 +345,13 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > 容器安全模型与 Phase 2 一致（ReadonlyRootfs、无 push 权限）。交付物为 Issue 评论中的根因分析报告。
 
 ##### M3.1 fix.Service 骨架与 Issue 上下文采集
-- [ ] 新建 `internal/fix` 包，架构仿照 `internal/review`（Service/Execute/parseResult/resolveConfig）
-- [ ] 定义 `FixExecutor` 窄接口，注入 Processor（同 `ReviewExecutor` 模式）
-- [ ] Processor `processTask` 新增 `fix.Service` 分发路径（`case payload.TaskType == model.TaskTypeFixIssue && p.fixService != nil`）
-- [ ] 通过 Gitea API 采集 Issue 富上下文：Issue 详情（标题、描述、状态）、全部评论、标签列表
-- [ ] Issue 上下文结构体定义（`IssueContext`），包含原始数据和提取的关键信息（错误日志、堆栈跟踪、复现步骤等）
-- [ ] `serve.go` 装配层注册 `fix.Service`，注入 Gitea 客户端和 PoolRunner
-- [ ] Issue 状态检查：Issue 已关闭时跳过分析（类似 review 的 `ErrPRNotOpen`）
+- [x] 新建 `internal/fix` 包，架构仿照 `internal/review`（Service/Execute 模式）
+- [x] 定义 `FixExecutor` 窄接口（M3.2 激活路由时使用，M3.1 仅声明接口）
+- [x] 通过 Gitea API 采集 Issue 富上下文：Issue 详情（标题、描述、状态）、评论（单页最多 50 条）、标签列表
+- [x] Issue 上下文结构体定义（`IssueContext`），包含纯原始数据（Issue 详情、评论、标签），智能提取由 M3.2 Claude 分析完成
+- [x] Issue 状态检查：Issue 已关闭时返回 `ErrIssueNotOpen`（类似 review 的 `ErrPRNotOpen`）
+- [x] 单元测试（7 个用例）覆盖校验、状态检查、API 错误、正常路径、评论截断
+- 注：M3.1 的 fix_issue 任务仍走 `pool.Run()` 默认路径，`fix.Service` 尚未接管 Processor 路由（避免上下文采集阶段任务空跑成功）。M3.2 实现容器执行后再激活路由。
 
 ##### M3.2 分析 Prompt 工程与容器执行
 - [ ] 设计分析 prompt，包含以下层次：

@@ -37,12 +37,14 @@ type ReviewExecutor interface {
 	Execute(ctx context.Context, payload model.TaskPayload) (*review.ReviewResult, error)
 }
 
-// FixExecutor 窄接口，解耦 fix 包
+// FixExecutor 窄接口，解耦 fix 包。
+// M3.2 激活：当 fix.Service 实现容器执行后，Processor 将通过此接口路由 fix_issue 任务。
 type FixExecutor interface {
 	Execute(ctx context.Context, payload model.TaskPayload) (*fix.FixResult, error)
 }
 
-// WithFixService 注入 Issue 分析服务
+// WithFixService 注入 Issue 分析服务。
+// M3.2 激活：serve.go 装配层将调用此函数注入 fix.Service。
 func WithFixService(svc FixExecutor) ProcessorOption {
 	return func(p *Processor) {
 		p.fixService = svc
@@ -85,7 +87,7 @@ type Processor struct {
 	logger               *slog.Logger
 	reviewService        ReviewExecutor
 	reviewEnabledChecker ReviewEnabledChecker // 可选，nil 时默认启用
-	fixService           FixExecutor          // 可选，nil 时 fix_issue 走默认 pool.Run() 路径
+	fixService           FixExecutor          // M3.2 激活；M3.1 始终为 nil，fix_issue 走 pool.Run()
 	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 
@@ -253,6 +255,8 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			}
 			return fmt.Errorf("PR 不处于 open 状态: %w", asynq.SkipRetry)
 		}
+		// M3.2 激活：当 fix.Service 接管路由后，pool.Run() 不再处理 fix_issue，
+		// 此分支将变为可达，处理 fix.Service.Execute 返回的 ErrIssueNotOpen。
 		if errors.Is(runErr, fix.ErrIssueNotOpen) {
 			record.Status = model.TaskStatusFailed
 			record.Error = runErr.Error()

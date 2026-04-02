@@ -7,7 +7,6 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
-	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
 // IssueClient 窄接口，仅暴露 fix 所需的 Gitea API。
@@ -15,12 +14,6 @@ import (
 type IssueClient interface {
 	GetIssue(ctx context.Context, owner, repo string, index int64) (*gitea.Issue, *gitea.Response, error)
 	ListIssueComments(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error)
-}
-
-// FixPoolRunner fix 专用的容器执行接口（M3.2 使用）。
-// M3.1 声明接口但 Service 构造时可不传入。
-type FixPoolRunner interface {
-	RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
 }
 
 // ServiceOption Service 配置选项
@@ -43,7 +36,6 @@ type Service struct {
 
 // NewService 创建 Issue 分析服务实例。
 // gitea 为必要依赖，传入 nil 属于编程错误。
-// pool 在 M3.1 不是必须依赖（不执行容器），M3.2 时升级为必须参数。
 func NewService(gitea IssueClient, opts ...ServiceOption) *Service {
 	if gitea == nil {
 		panic("NewService: gitea 不能为 nil")

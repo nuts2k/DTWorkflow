@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -1626,6 +1625,9 @@ func TestFormatIssueSummary(t *testing.T) {
 	}
 }
 
+// TestProcessTask_FixIssue_WithServiceStillUsesPool 验证 M3.1 阶段即使注入了 fixService，
+// fix_issue 任务仍走 pool.Run() 路径（因为 M3.1 的 fix.Service 只做上下文采集，不执行容器）。
+// M3.2 激活路由后，此测试需反转：验证 fixService.Execute 被调用、pool.Run 不被调用。
 func TestProcessTask_FixIssue_WithServiceStillUsesPool(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{
@@ -1719,51 +1721,3 @@ func TestProcessTask_FixIssue_WithoutService(t *testing.T) {
 	}
 }
 
-func TestProcessTask_FixIssue_WithServiceErrorStillUsesPool(t *testing.T) {
-	s := newMockStore()
-	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
-		DeliveryID:   "dlv-fix-closed-1",
-		RepoOwner:    "org",
-		RepoName:     "repo",
-		RepoFullName: "org/repo",
-		IssueNumber:  5,
-	}
-
-	now := time.Now()
-	record := &model.TaskRecord{
-		ID:         "proc-fix-closed-1",
-		TaskType:   model.TaskTypeFixIssue,
-		Status:     model.TaskStatusQueued,
-		Payload:    payload,
-		DeliveryID: payload.DeliveryID,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}
-	seedRecord(s, record)
-
-	fixExec := &mockFixExecutor{
-		err: fmt.Errorf("Issue #5 状态为 closed: %w", fix.ErrIssueNotOpen),
-	}
-	pool := &mockPoolRunner{
-		result: &worker.ExecutionResult{ExitCode: 0, Output: "pool result"},
-	}
-
-	p := NewProcessor(pool, s, nil, slog.Default(), WithFixService(fixExec))
-	task := buildAsynqTask(t, payload)
-
-	if err := p.ProcessTask(context.Background(), task); err != nil {
-		t.Fatalf("ProcessTask error: %v", err)
-	}
-
-	got := s.tasks["proc-fix-closed-1"]
-	if got.Status != model.TaskStatusSucceeded {
-		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
-	}
-	if fixExec.calls != 0 {
-		t.Errorf("fixService.Execute 不应被调用，实际 %d 次", fixExec.calls)
-	}
-	if pool.calls != 1 {
-		t.Errorf("pool.Run 应被调用 1 次，实际 %d 次", pool.calls)
-	}
-}
