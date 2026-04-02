@@ -266,21 +266,24 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 示例配置 dtworkflow.example.yaml 补充 M2.5 配置示例与注释
 
 #### M2.6 飞书通知渠道接入
+> 说明：2026-04-02 完成全部实施（常量化重构 + 代码审核 4 个 Major 问题修复 + 测试覆盖补充）。
 > 详细设计见 `docs/plans/2026-04-01-m2.6-feishu-notification-design.md`。
-- [ ] 飞书自定义机器人（Webhook）通知渠道实现（`FeishuNotifier`）
-  - [ ] Webhook POST + 可选 HMAC-SHA256 签名校验
-  - [ ] 飞书交互卡片格式化（`feishu_card.go`：蓝色-进行中 / 绿色-成功 / 橙色-需修改 / 红色-失败）
-  - [ ] 消息内容：评审结论 + 关键 issue 统计摘要 + PR 跳转链接按钮
-- [ ] 双通知时机
-  - [ ] 任务开始时发送"评审开始"通知（新增 `EventPRReviewStarted`）
-  - [ ] 任务完成时发送状态同步通知（复用现有 `sendCompletionNotification`，补充 Metadata）
-- [ ] 配置与装配
-  - [ ] `notify.channels.feishu` 配置段（webhook_url / secret）
-  - [ ] 配置校验：飞书渠道启用时 webhook_url 必填且格式合法
-  - [ ] `serve.go` 装配层按配置动态注册 FeishuNotifier
-  - [ ] 示例配置 `dtworkflow.example.yaml` 补充飞书配置示例
-- [ ] 错误隔离：飞书通知失败不影响 Gitea 回写和任务执行
-- [ ] 预留应用机器人（App Bot）扩展空间（个人消息 / @用户 / 卡片回调）
+- [x] 飞书自定义机器人（Webhook）通知渠道实现（`FeishuNotifier`）
+  - [x] Webhook POST + 可选 HMAC-SHA256 签名校验
+  - [x] 飞书交互卡片格式化（`feishu_card.go`：蓝色-进行中 / 绿色-成功 / 橙色-需修改 / 红色-失败）
+  - [x] 消息内容：评审结论 + 关键 issue 统计摘要 + PR 跳转链接按钮
+- [x] 双通知时机
+  - [x] 任务开始时发送"评审开始"通知（新增 `EventPRReviewStarted`）
+  - [x] 任务完成时发送状态同步通知（复用现有 `sendCompletionNotification`，补充 Metadata）
+- [x] 配置与装配
+  - [x] `notify.channels.feishu` 配置段（webhook_url / secret）
+  - [x] 配置校验：飞书渠道启用时 webhook_url 必填且格式合法
+  - [x] `serve.go` 装配层按配置动态注册 FeishuNotifier
+  - [x] 示例配置 `dtworkflow.example.yaml` 补充飞书配置示例
+- [x] 错误隔离：飞书通知失败不影响 Gitea 回写和任务执行
+- [x] 预留应用机器人（App Bot）扩展空间（个人消息 / @用户 / 卡片回调）
+- [x] 本地开发环境对接飞书 Webhook 联调测试（2026-04-02 验证通过：蓝色"开始"卡片 + 绿色"完成"卡片均正常推送，HMAC-SHA256 签名校验通过）
+- [ ] 远程测试服务器端到端测试（真实 Gitea PR 流程 → 飞书开始/完成双通知验证）
 
 ### 交付物
 - 完整可用的 PR 自动评审功能
