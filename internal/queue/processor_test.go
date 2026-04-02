@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
@@ -46,6 +48,17 @@ type mockReviewExecutor struct {
 }
 
 func (m *mockReviewExecutor) Execute(_ context.Context, _ model.TaskPayload) (*review.ReviewResult, error) {
+	m.calls++
+	return m.result, m.err
+}
+
+type mockFixExecutor struct {
+	result *fix.FixResult
+	err    error
+	calls  int
+}
+
+func (m *mockFixExecutor) Execute(_ context.Context, _ model.TaskPayload) (*fix.FixResult, error) {
 	m.calls++
 	return m.result, m.err
 }
@@ -1610,5 +1623,142 @@ func TestFormatIssueSummary(t *testing.T) {
 	}
 	if !strings.Contains(got, "CRITICAL") || !strings.Contains(got, "WARNING") || !strings.Contains(got, "INFO") {
 		t.Errorf("formatIssueSummary = %q, should contain severity counts", got)
+	}
+}
+
+func TestProcessTask_FixIssue_WithService(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-svc-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  5,
+		IssueTitle:   "bug report",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-fix-svc-1",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	fixExec := &mockFixExecutor{
+		result: &fix.FixResult{
+			IssueContext: &fix.IssueContext{},
+		},
+	}
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: "fallback"},
+	}
+
+	p := NewProcessor(pool, s, nil, slog.Default(), WithFixService(fixExec))
+	task := buildAsynqTask(t, payload)
+
+	if err := p.ProcessTask(context.Background(), task); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	if fixExec.calls != 1 {
+		t.Errorf("fixService.Execute 应被调用 1 次，实际 %d 次", fixExec.calls)
+	}
+	if pool.calls != 0 {
+		t.Errorf("pool.Run 不应被调用，实际 %d 次", pool.calls)
+	}
+
+	got := s.tasks["proc-fix-svc-1"]
+	if got.Status != model.TaskStatusSucceeded {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+}
+
+func TestProcessTask_FixIssue_WithoutService(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-fallback-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  5,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-fix-fallback-1",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: "pool result"},
+	}
+
+	// fixService 未注入
+	p := NewProcessor(pool, s, nil, slog.Default())
+	task := buildAsynqTask(t, payload)
+
+	if err := p.ProcessTask(context.Background(), task); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	if pool.calls != 1 {
+		t.Errorf("pool.Run 应被调用 1 次，实际 %d 次", pool.calls)
+	}
+}
+
+func TestProcessTask_FixIssue_IssueNotOpen(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-closed-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  5,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-fix-closed-1",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	fixExec := &mockFixExecutor{
+		err: fmt.Errorf("Issue #5 状态为 closed: %w", fix.ErrIssueNotOpen),
+	}
+
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithFixService(fixExec))
+	task := buildAsynqTask(t, payload)
+
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("预期返回错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Errorf("预期 asynq.SkipRetry，实际: %v", err)
+	}
+
+	got := s.tasks["proc-fix-closed-1"]
+	if got.Status != model.TaskStatusFailed {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
 	}
 }
