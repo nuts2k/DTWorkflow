@@ -190,9 +190,10 @@ func buildNotifyRules(cfg *config.Config, repoFullName string) ([]notify.Routing
 }
 
 type configDrivenNotifier struct {
-	cfg           *config.Config
-	giteaNotifier notify.Notifier
-	logger        *slog.Logger
+	cfg            *config.Config
+	giteaNotifier  notify.Notifier
+	feishuNotifier notify.Notifier // 飞书通知器（可选）
+	logger         *slog.Logger
 
 	// 对未声明仓库级 notify 覆盖的仓库，复用同一个全局 Router，避免按 repoFullName 无上限缓存。
 	// 对显式声明了 repo.notify.routes 的仓库，才按仓库缓存 Router。
@@ -262,12 +263,18 @@ func (n *configDrivenNotifier) hasRepoNotifyOverride(repoFullName string) bool {
 func (n *configDrivenNotifier) newRouter(repoFullName string) (*notify.Router, error) {
 	rules, fallback := buildNotifyRules(n.cfg, repoFullName)
 
-	router, err := notify.NewRouter(
+	opts := []notify.RouterOption{
 		notify.WithNotifier(n.giteaNotifier),
 		notify.WithRules(rules),
 		notify.WithFallback(fallback),
 		notify.WithRouterLogger(n.logger),
-	)
+	}
+
+	if n.feishuNotifier != nil {
+		opts = append(opts, notify.WithNotifier(n.feishuNotifier))
+	}
+
+	router, err := notify.NewRouter(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("构造通知路由失败: %w", err)
 	}
@@ -302,8 +309,6 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 		return nil, nil
 	}
 
-	// 当前最小实现边界：仅支持 gitea 渠道。
-	// 该约束已在 config.Validate 中统一校验；此处仅根据 gitea 渠道是否启用决定是否构造 Notifier。
 	ch, ok := cfg.Notify.Channels["gitea"]
 	if !ok || !ch.Enabled {
 		return nil, nil
@@ -314,10 +319,27 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 		return nil, fmt.Errorf("构造 GiteaNotifier 失败: %w", err)
 	}
 
+	// 按配置构造飞书通知器（可选）
+	var feishuNotifier notify.Notifier
+	if feishuCfg, ok := cfg.Notify.Channels["feishu"]; ok && feishuCfg.Enabled {
+		webhookURL := feishuCfg.Options["webhook_url"]
+		var feishuOpts []notify.FeishuOption
+		if secret := feishuCfg.Options["secret"]; secret != "" {
+			feishuOpts = append(feishuOpts, notify.WithFeishuSecret(secret))
+		}
+		feishuOpts = append(feishuOpts, notify.WithFeishuLogger(slog.Default()))
+		fn, err := notify.NewFeishuNotifier(webhookURL, feishuOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("构造 FeishuNotifier 失败: %w", err)
+		}
+		feishuNotifier = fn
+	}
+
 	return &configDrivenNotifier{
-		cfg:           cfg,
-		giteaNotifier: giteaNotifier,
-		logger:        slog.Default(),
+		cfg:            cfg,
+		giteaNotifier:  giteaNotifier,
+		feishuNotifier: feishuNotifier,
+		logger:         slog.Default(),
 	}, nil
 }
 
@@ -580,6 +602,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 
 	// 启动 asynq Processor（消费端）
 	var reviewOpts []queue.ProcessorOption
+	reviewOpts = append(reviewOpts, queue.WithGiteaBaseURL(cfg.GiteaURL))
 	if deps.GiteaClient != nil && cfgManager != nil {
 		cfgAdapter := &configAdapter{mgr: cfgManager}
 		writer := review.NewWriter(deps.GiteaClient, deps.Store, deps.Store, slog.Default())
