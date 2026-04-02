@@ -13,7 +13,7 @@ const (
 	// commentMaxLen 行级评论正文最大字符数
 	commentMaxLen = 8000
 	// messageMaxLen unmapped issues 列表中单条 message 截断长度
-	messageMaxLen = 200
+	messageMaxLen = 800
 )
 
 // FormatOptions formatReviewBody 的输入参数
