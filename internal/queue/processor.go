@@ -559,8 +559,15 @@ func adaptFixResult(r *fix.FixResult) *worker.ExecutionResult {
 			res.Error = "Claude CLI 报告错误"
 		}
 	}
-	if r.ParseError != nil && res.Error == "" {
-		res.Error = r.ParseError.Error()
+	if r.ParseError != nil {
+		if res.ExitCode == 0 {
+			res.ExitCode = 1
+		}
+		if res.Error == "" {
+			res.Error = r.ParseError.Error()
+		} else if !strings.Contains(res.Error, r.ParseError.Error()) {
+			res.Error = res.Error + "; " + r.ParseError.Error()
+		}
 	}
 	return res
 }

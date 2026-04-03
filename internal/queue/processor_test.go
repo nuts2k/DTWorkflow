@@ -881,6 +881,48 @@ func TestProcessTask_AdaptReviewResult_WritebackError(t *testing.T) {
 	}
 }
 
+func TestAdaptFixResult_ParseErrorMarksFailure(t *testing.T) {
+	r := &fix.FixResult{
+		RawOutput:  "plain text output",
+		ParseError: errors.New("analysis parse failed"),
+	}
+
+	result := adaptFixResult(r)
+
+	if result == nil {
+		t.Fatal("adaptFixResult 应返回非 nil")
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("ParseError 必须转成非零退出码，实际: %d", result.ExitCode)
+	}
+	if result.Error != "analysis parse failed" {
+		t.Fatalf("error = %q, want %q", result.Error, "analysis parse failed")
+	}
+}
+
+func TestAdaptFixResult_PreservesCLIErrorAndParseError(t *testing.T) {
+	r := &fix.FixResult{
+		RawOutput:  "bad output",
+		CLIMeta:    &model.CLIMeta{IsError: true},
+		ParseError: errors.New("analysis parse failed"),
+	}
+
+	result := adaptFixResult(r)
+
+	if result == nil {
+		t.Fatal("adaptFixResult 应返回非 nil")
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("exit_code = %d, want 1", result.ExitCode)
+	}
+	if !strings.Contains(result.Error, "Claude CLI 报告错误") {
+		t.Fatalf("Error 应保留 CLI 错误，实际: %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "analysis parse failed") {
+		t.Fatalf("Error 应附加 ParseError，实际: %q", result.Error)
+	}
+}
+
 func TestShouldRetry(t *testing.T) {
 	// shouldRetry 依赖 asynq context 中的 retry_count 和 max_retry，
 	// 但 asynq 的 context key 是未导出的，无法在外部注入。
@@ -1725,4 +1767,3 @@ func TestProcessTask_FixIssue_WithoutService(t *testing.T) {
 		t.Errorf("pool.Run 应被调用 1 次，实际 %d 次", pool.calls)
 	}
 }
-

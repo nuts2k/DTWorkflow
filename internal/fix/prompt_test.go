@@ -77,6 +77,30 @@ func TestBuildPrompt_WithComments(t *testing.T) {
 	}
 }
 
+func TestBuildPrompt_WithMissingCommentAuthor(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	ctx := &IssueContext{
+		Issue: &gitea.Issue{
+			Number: 10,
+			Title:  "Bug",
+			Body:   "问题描述",
+		},
+		Comments: []*gitea.Comment{
+			{Body: "作者字段缺失", User: nil},
+			{Body: "作者登录名为空", User: &gitea.User{Login: ""}},
+		},
+	}
+
+	prompt := svc.buildPrompt(ctx)
+
+	if strings.Count(prompt, "未知作者") != 2 {
+		t.Fatalf("prompt 应为缺失作者信息使用兜底名，实际: %q", prompt)
+	}
+	if !strings.Contains(prompt, "作者字段缺失") || !strings.Contains(prompt, "作者登录名为空") {
+		t.Error("prompt 应保留评论内容")
+	}
+}
+
 func TestBuildPrompt_LongBody(t *testing.T) {
 	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
 	longBody := strings.Repeat("a", 6000)
@@ -106,7 +130,7 @@ func TestBuildPrompt_CommentsTotalTruncated(t *testing.T) {
 	comments := make([]*gitea.Comment, 15)
 	for i := range comments {
 		comments[i] = &gitea.Comment{
-			Body:   strings.Repeat("x", 2000), // 15 * 2000 = 30000 > 20000
+			Body: strings.Repeat("x", 2000), // 15 * 2000 = 30000 > 20000
 			User: &gitea.User{Login: "user"},
 		}
 	}

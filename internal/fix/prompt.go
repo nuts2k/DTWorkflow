@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
@@ -127,14 +128,18 @@ func (s *Service) buildPrompt(issueCtx *IssueContext) string {
 		const maxCommentTotalRunes = 20000
 		commentRunes := 0
 		for i, c := range issueCtx.Comments {
-			body := truncate(c.Body, 2000)
+			author := commentAuthor(c)
+			body := ""
+			if c != nil {
+				body = truncate(c.Body, 2000)
+			}
 			if commentRunes+len([]rune(body)) > maxCommentTotalRunes {
 				b.WriteString(fmt.Sprintf("（剩余 %d 条评论因长度限制被省略）\n", len(issueCtx.Comments)-i))
 				break
 			}
 			commentRunes += len([]rune(body))
 			b.WriteString(fmt.Sprintf("--- 评论 #%d（%s）---\n%s\n",
-				i+1, c.User.Login, body))
+				i+1, author, body))
 		}
 	}
 
@@ -148,6 +153,13 @@ func (s *Service) buildPrompt(issueCtx *IssueContext) string {
 	b.WriteString(analysisJSONSchemaInstruction)
 
 	return b.String()
+}
+
+func commentAuthor(c *gitea.Comment) string {
+	if c == nil || c.User == nil || strings.TrimSpace(c.User.Login) == "" {
+		return "未知作者"
+	}
+	return c.User.Login
 }
 
 // buildCommand 构造容器执行命令
