@@ -7,6 +7,7 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
 // --- mock 实现 ---
@@ -22,6 +23,27 @@ func (m *mockIssueClient) GetIssue(ctx context.Context, owner, repo string, inde
 
 func (m *mockIssueClient) ListIssueComments(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
 	return m.listComments(ctx, owner, repo, index, opts)
+}
+
+type mockFixPoolRunner struct {
+	result    *worker.ExecutionResult
+	err       error
+	calls     int
+	lastCmd   []string
+	lastStdin []byte
+}
+
+func (m *mockFixPoolRunner) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error) {
+	m.calls++
+	m.lastCmd = cmd
+	m.lastStdin = stdinData
+	return m.result, m.err
+}
+
+func defaultPool() *mockFixPoolRunner {
+	return &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: "{}"},
+	}
 }
 
 // --- 辅助函数 ---
@@ -57,11 +79,20 @@ func TestNewService_NilGitea(t *testing.T) {
 			t.Fatal("预期 panic")
 		}
 	}()
-	NewService(nil)
+	NewService(nil, &mockFixPoolRunner{})
+}
+
+func TestNewService_NilPool(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("预期 panic")
+		}
+	}()
+	NewService(&mockIssueClient{}, nil)
 }
 
 func TestExecute_InvalidIssueNumber(t *testing.T) {
-	svc := NewService(&mockIssueClient{})
+	svc := NewService(&mockIssueClient{}, defaultPool())
 
 	payload := fixPayload()
 	payload.IssueNumber = 0
@@ -80,7 +111,7 @@ func TestExecute_IssueNotOpen(t *testing.T) {
 		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
 			return closedIssue, nil, nil
 		},
-	})
+	}, defaultPool())
 
 	_, err := svc.Execute(context.Background(), fixPayload())
 	if err == nil {
@@ -97,7 +128,7 @@ func TestExecute_GetIssueFailed(t *testing.T) {
 		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
 			return nil, nil, apiErr
 		},
-	})
+	}, defaultPool())
 
 	_, err := svc.Execute(context.Background(), fixPayload())
 	if err == nil {
@@ -117,7 +148,7 @@ func TestExecute_ListCommentsFailed(t *testing.T) {
 		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
 			return nil, nil, commentErr
 		},
-	})
+	}, defaultPool())
 
 	_, err := svc.Execute(context.Background(), fixPayload())
 	if err == nil {
@@ -143,7 +174,7 @@ func TestExecute_Success(t *testing.T) {
 		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
 			return comments, nil, nil
 		},
-	})
+	}, defaultPool())
 
 	result, err := svc.Execute(context.Background(), fixPayload())
 	if err != nil {
@@ -185,7 +216,7 @@ func TestExecute_CommentsTruncated(t *testing.T) {
 			}
 			return comments, nil, nil
 		},
-	})
+	}, defaultPool())
 
 	result, err := svc.Execute(context.Background(), fixPayload())
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
 // IssueClient 窄接口，仅暴露 fix 所需的 Gitea API。
@@ -14,6 +15,18 @@ import (
 type IssueClient interface {
 	GetIssue(ctx context.Context, owner, repo string, index int64) (*gitea.Issue, *gitea.Response, error)
 	ListIssueComments(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error)
+}
+
+// FixPoolRunner fix 专用的容器执行接口。
+// *worker.Pool 通过 RunWithCommandAndStdin 满足此接口。
+type FixPoolRunner interface {
+	RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
+}
+
+// FixConfigProvider 获取全局 Claude 配置的接口
+type FixConfigProvider interface {
+	GetClaudeModel() string
+	GetClaudeEffort() string
 }
 
 // ServiceOption Service 配置选项
@@ -28,20 +41,31 @@ func WithServiceLogger(logger *slog.Logger) ServiceOption {
 	}
 }
 
+// WithConfigProvider 注入配置提供者（可选）
+func WithConfigProvider(p FixConfigProvider) ServiceOption {
+	return func(s *Service) { s.cfgProv = p }
+}
+
 // Service Issue 分析编排服务，负责 Issue 上下文采集和分析执行
 type Service struct {
-	gitea  IssueClient
-	logger *slog.Logger
+	gitea   IssueClient
+	pool    FixPoolRunner
+	cfgProv FixConfigProvider
+	logger  *slog.Logger
 }
 
 // NewService 创建 Issue 分析服务实例。
-// gitea 为必要依赖，传入 nil 属于编程错误。
-func NewService(gitea IssueClient, opts ...ServiceOption) *Service {
+// gitea 和 pool 为必要依赖，传入 nil 属于编程错误。
+func NewService(gitea IssueClient, pool FixPoolRunner, opts ...ServiceOption) *Service {
 	if gitea == nil {
 		panic("NewService: gitea 不能为 nil")
 	}
+	if pool == nil {
+		panic("NewService: pool 不能为 nil")
+	}
 	s := &Service{
 		gitea:  gitea,
+		pool:   pool,
 		logger: slog.Default(),
 	}
 	for _, opt := range opts {
