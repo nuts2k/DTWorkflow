@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
@@ -304,6 +305,24 @@ func (a *configAdapter) IsReviewEnabled(repoFullName string) bool {
 	}
 	override := cfg.ResolveReviewConfig(repoFullName)
 	return override.Enabled == nil || *override.Enabled
+}
+
+// GetClaudeModel 实现 fix.FixConfigProvider 接口
+func (a *configAdapter) GetClaudeModel() string {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Claude.Model
+}
+
+// GetClaudeEffort 实现 fix.FixConfigProvider 接口
+func (a *configAdapter) GetClaudeEffort() string {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Claude.Effort
 }
 
 func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNotifier, error) {
@@ -629,6 +648,15 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		)
 		reviewOpts = append(reviewOpts, queue.WithReviewService(reviewSvc))
 		reviewOpts = append(reviewOpts, queue.WithReviewEnabledChecker(cfgAdapter))
+
+		// M3.2: 装配 fix.Service
+		fixSvc := fix.NewService(
+			deps.GiteaClient,
+			deps.Pool,
+			fix.WithServiceLogger(slog.Default()),
+			fix.WithConfigProvider(cfgAdapter),
+		)
+		reviewOpts = append(reviewOpts, queue.WithFixService(fixSvc))
 	}
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), reviewOpts...)
 	mux := asynq.NewServeMux()
