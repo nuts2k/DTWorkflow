@@ -2,6 +2,7 @@ package fix
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -105,10 +106,59 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 		"labels", len(issue.Labels),
 	)
 
-	// 4. M3.2 在此处插入：构造 prompt + 容器执行
-	// 5. M3.3 在此处插入：解析结果 + 回写
+	// 4. 构造 prompt + 容器执行
+	prompt := s.buildPrompt(issueCtx)
+	cmd := s.buildCommand()
+	execResult, err := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
+	if err != nil {
+		return &FixResult{
+			IssueContext: issueCtx,
+			RawOutput:    safeOutput(execResult),
+		}, fmt.Errorf("容器执行失败: %w", err)
+	}
 
-	return &FixResult{IssueContext: issueCtx}, nil
+	// 5. 解析结果
+	result := s.parseResult(execResult.Output)
+	result.IssueContext = issueCtx
+	result.RawOutput = execResult.Output
+
+	// 6. M3.3 在此处插入：回写 Issue 评论
+
+	return result, nil
+}
+
+// parseResult 双层 JSON 解析：外层 CLI 信封 -> 内层分析输出
+func (s *Service) parseResult(output string) *FixResult {
+	result := &FixResult{}
+
+	// 外层 CLI JSON 信封
+	var cliResp CLIResponse
+	if err := json.Unmarshal([]byte(output), &cliResp); err != nil {
+		result.ParseError = fmt.Errorf("CLI JSON 解析失败: %w", err)
+		return result
+	}
+	result.CLIMeta = &model.CLIMeta{
+		CostUSD:    cliResp.CostUSD,
+		DurationMs: cliResp.DurationMs,
+		IsError:    cliResp.IsError,
+		NumTurns:   cliResp.NumTurns,
+		SessionID:  cliResp.SessionID,
+	}
+
+	if cliResp.IsError {
+		result.ParseError = fmt.Errorf("Claude CLI 报告错误: subtype=%s", cliResp.Subtype)
+		return result
+	}
+
+	// 内层分析 JSON
+	jsonText := extractJSON(cliResp.Result)
+	var analysis AnalysisOutput
+	if err := json.Unmarshal([]byte(jsonText), &analysis); err != nil {
+		result.ParseError = fmt.Errorf("分析 JSON 解析失败: %w", err)
+		return result
+	}
+	result.Analysis = &analysis
+	return result
 }
 
 // collectContext 采集 Issue 富上下文

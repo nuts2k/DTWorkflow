@@ -3,6 +3,7 @@ package fix
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
@@ -163,8 +164,8 @@ func TestExecute_Success(t *testing.T) {
 	issue := openIssue(10)
 	issue.Comments = 2
 	comments := []*gitea.Comment{
-		{ID: 1, Body: "I can reproduce this"},
-		{ID: 2, Body: "Stack trace: ..."},
+		{ID: 1, Body: "I can reproduce this", User: &gitea.User{Login: "user1"}},
+		{ID: 2, Body: "Stack trace: ...", User: &gitea.User{Login: "user2"}},
 	}
 
 	svc := NewService(&mockIssueClient{
@@ -192,11 +193,11 @@ func TestExecute_Success(t *testing.T) {
 	if len(result.IssueContext.Comments) != 2 {
 		t.Errorf("Comments count = %d, want 2", len(result.IssueContext.Comments))
 	}
-	if result.CLIMeta != nil {
-		t.Error("M3.1 阶段 CLIMeta 应为 nil")
+	if result.CLIMeta == nil {
+		t.Error("CLIMeta 不应为 nil")
 	}
-	if result.RawOutput != "" {
-		t.Error("M3.1 阶段 RawOutput 应为空")
+	if result.RawOutput != "{}" {
+		t.Errorf("RawOutput = %q, want %q", result.RawOutput, "{}")
 	}
 }
 
@@ -212,7 +213,7 @@ func TestExecute_CommentsTruncated(t *testing.T) {
 			// 模拟只返回 50 条
 			comments := make([]*gitea.Comment, 50)
 			for i := range comments {
-				comments[i] = &gitea.Comment{ID: int64(i + 1)}
+				comments[i] = &gitea.Comment{ID: int64(i + 1), User: &gitea.User{Login: "user"}}
 			}
 			return comments, nil, nil
 		},
@@ -224,5 +225,232 @@ func TestExecute_CommentsTruncated(t *testing.T) {
 	}
 	if len(result.IssueContext.Comments) != 50 {
 		t.Errorf("Comments count = %d, want 50", len(result.IssueContext.Comments))
+	}
+}
+
+func TestParseResult_Success(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	cliJSON := `{
+		"type": "result",
+		"subtype": "success",
+		"cost_usd": 0.05,
+		"duration_ms": 12345,
+		"duration_api_ms": 10000,
+		"is_error": false,
+		"num_turns": 3,
+		"result": "{\"info_sufficient\":true,\"root_cause\":{\"file\":\"main.go\",\"function\":\"handler\",\"start_line\":42,\"end_line\":55,\"description\":\"空指针引用\"},\"analysis\":\"详细分析\",\"fix_suggestion\":\"添加空值检查\",\"confidence\":\"high\",\"related_files\":[\"util.go\"]}",
+		"session_id": "sess-123"
+	}`
+
+	result := svc.parseResult(cliJSON)
+	if result.ParseError != nil {
+		t.Fatalf("ParseError 应为 nil，实际: %v", result.ParseError)
+	}
+	if result.CLIMeta == nil {
+		t.Fatal("CLIMeta 不应为 nil")
+	}
+	if result.CLIMeta.CostUSD != 0.05 {
+		t.Errorf("CostUSD = %f, want 0.05", result.CLIMeta.CostUSD)
+	}
+	if result.CLIMeta.SessionID != "sess-123" {
+		t.Errorf("SessionID = %q, want %q", result.CLIMeta.SessionID, "sess-123")
+	}
+	if result.Analysis == nil {
+		t.Fatal("Analysis 不应为 nil")
+	}
+	if !result.Analysis.InfoSufficient {
+		t.Error("InfoSufficient should be true")
+	}
+	if result.Analysis.RootCause == nil {
+		t.Fatal("RootCause 不应为 nil")
+	}
+	if result.Analysis.RootCause.File != "main.go" {
+		t.Errorf("RootCause.File = %q, want %q", result.Analysis.RootCause.File, "main.go")
+	}
+	if result.Analysis.Confidence != "high" {
+		t.Errorf("Confidence = %q, want %q", result.Analysis.Confidence, "high")
+	}
+}
+
+func TestParseResult_CLIError(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	cliJSON := `{
+		"type": "result",
+		"subtype": "error",
+		"is_error": true,
+		"cost_usd": 0.01,
+		"duration_ms": 1000,
+		"duration_api_ms": 800,
+		"num_turns": 1,
+		"result": "",
+		"session_id": "sess-err"
+	}`
+
+	result := svc.parseResult(cliJSON)
+	if result.ParseError == nil {
+		t.Fatal("CLI 错误时 ParseError 应非 nil")
+	}
+	if result.Analysis != nil {
+		t.Error("CLI 错误时 Analysis 应为 nil")
+	}
+	if result.CLIMeta == nil {
+		t.Fatal("即使 CLI 错误，CLIMeta 也应被解析")
+	}
+	if !result.CLIMeta.IsError {
+		t.Error("CLIMeta.IsError should be true")
+	}
+}
+
+func TestParseResult_InnerJSONFail(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	cliJSON := `{
+		"type": "result",
+		"subtype": "success",
+		"is_error": false,
+		"cost_usd": 0.02,
+		"duration_ms": 5000,
+		"duration_api_ms": 4000,
+		"num_turns": 2,
+		"result": "not valid json at all",
+		"session_id": "sess-bad"
+	}`
+
+	result := svc.parseResult(cliJSON)
+	if result.ParseError == nil {
+		t.Fatal("内层 JSON 解析失败时 ParseError 应非 nil")
+	}
+	if result.Analysis != nil {
+		t.Error("解析失败时 Analysis 应为 nil")
+	}
+	if result.CLIMeta == nil {
+		t.Fatal("外层解析成功时 CLIMeta 应非 nil")
+	}
+}
+
+func TestParseResult_InfoInsufficient(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	cliJSON := `{
+		"type": "result",
+		"subtype": "success",
+		"is_error": false,
+		"cost_usd": 0.01,
+		"duration_ms": 3000,
+		"duration_api_ms": 2500,
+		"num_turns": 1,
+		"result": "{\"info_sufficient\":false,\"missing_info\":[\"缺少错误堆栈信息\",\"缺少复现步骤\"],\"analysis\":\"初步判断可能是配置问题\",\"confidence\":\"low\",\"related_files\":[]}",
+		"session_id": "sess-info"
+	}`
+
+	result := svc.parseResult(cliJSON)
+	if result.ParseError != nil {
+		t.Fatalf("ParseError 应为 nil，实际: %v", result.ParseError)
+	}
+	if result.Analysis == nil {
+		t.Fatal("Analysis 不应为 nil")
+	}
+	if result.Analysis.InfoSufficient {
+		t.Error("InfoSufficient should be false")
+	}
+	if result.Analysis.RootCause != nil {
+		t.Error("信息不足时 RootCause 应为 nil")
+	}
+	if len(result.Analysis.MissingInfo) != 2 {
+		t.Errorf("MissingInfo 长度 = %d, want 2", len(result.Analysis.MissingInfo))
+	}
+}
+
+func TestParseResult_OuterJSONFail(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	result := svc.parseResult("not json")
+	if result.ParseError == nil {
+		t.Fatal("外层 JSON 解析失败时 ParseError 应非 nil")
+	}
+	if result.CLIMeta != nil {
+		t.Error("外层解析失败时 CLIMeta 应为 nil")
+	}
+}
+
+func TestExecute_ContainerSuccess(t *testing.T) {
+	issue := openIssue(10)
+	cliJSON := `{
+		"type":"result","subtype":"success","is_error":false,
+		"cost_usd":0.03,"duration_ms":8000,"duration_api_ms":7000,
+		"num_turns":2,"session_id":"sess-ok",
+		"result":"{\"info_sufficient\":true,\"root_cause\":{\"file\":\"main.go\",\"description\":\"问题\"},\"analysis\":\"分析\",\"confidence\":\"medium\",\"related_files\":[]}"
+	}`
+
+	pool := &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: cliJSON},
+	}
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+		},
+		pool,
+	)
+
+	result, err := svc.Execute(context.Background(), fixPayload())
+	if err != nil {
+		t.Fatalf("预期无错误，实际: %v", err)
+	}
+	if pool.calls != 1 {
+		t.Errorf("pool.RunWithCommandAndStdin 应被调用 1 次，实际 %d 次", pool.calls)
+	}
+	if result.RawOutput != cliJSON {
+		t.Error("RawOutput 应等于 CLI 输出")
+	}
+	if result.Analysis == nil {
+		t.Fatal("Analysis 不应为 nil")
+	}
+	if result.Analysis.RootCause == nil {
+		t.Fatal("RootCause 不应为 nil")
+	}
+	if result.CLIMeta == nil {
+		t.Fatal("CLIMeta 不应为 nil")
+	}
+}
+
+func TestExecute_ContainerError(t *testing.T) {
+	issue := openIssue(10)
+	containerErr := fmt.Errorf("container timeout")
+
+	pool := &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 1, Output: "partial output"},
+		err:    containerErr,
+	}
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+		},
+		pool,
+	)
+
+	result, err := svc.Execute(context.Background(), fixPayload())
+	if err == nil {
+		t.Fatal("容器错误时应返回 error")
+	}
+	if !errors.Is(err, containerErr) {
+		t.Errorf("应包装原始容器错误，实际: %v", err)
+	}
+	if result == nil {
+		t.Fatal("即使容器失败，result 不应为 nil")
+	}
+	if result.RawOutput != "partial output" {
+		t.Errorf("RawOutput = %q, want %q", result.RawOutput, "partial output")
+	}
+	if result.IssueContext == nil {
+		t.Error("即使容器失败，IssueContext 应已采集")
 	}
 }
