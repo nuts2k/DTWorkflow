@@ -351,14 +351,14 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Issue 上下文结构体定义（`IssueContext`），包含纯原始数据（Issue 详情、评论、标签），智能提取由 M3.2 Claude 分析完成
 - [x] Issue 状态检查：Issue 已关闭时返回 `ErrIssueNotOpen`（类似 review 的 `ErrPRNotOpen`）
 - [x] 单元测试（7 个用例）覆盖校验、状态检查、API 错误、正常路径、评论截断
-- 注：M3.1 的 fix_issue 任务仍走 `pool.Run()` 默认路径，`fix.Service` 尚未接管 Processor 路由（避免上下文采集阶段任务空跑成功）。M3.2 实现容器执行后再激活路由。
+- 注：M3.1 的 fix_issue 任务仍走 `pool.Run()` 默认路径，`fix.Service` 尚未接管 Processor 路由（避免上下文采集阶段任务空跑成功）。M3.2 已激活路由，fix_issue 任务现在走 `fixService.Execute` 路径。
 
 ##### M3.2 分析 Prompt 工程与容器执行
-- [ ] 设计分析 prompt，包含以下层次：
+- [x] 设计分析 prompt，包含以下层次：
   - 信息充分性判断指令（判断 Issue 是否包含足够信息进行分析）
   - 根因分析指令（代码库搜索策略、调用链追踪、关联文件检查）
   - 输出格式定义（结构化 JSON schema）
-- [ ] 定义分析输出 JSON schema（`AnalysisOutput`），字段包括：
+- [x] 定义分析输出 JSON schema（`AnalysisOutput`），字段包括：
   - `info_sufficient`（bool）：信息是否充分
   - `missing_info`（[]string）：缺失的信息项（信息不足时填写）
   - `root_cause`：根因定位（文件路径、方法名、行号范围、原因描述）
@@ -366,11 +366,11 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
   - `fix_suggestion`：修复建议
   - `confidence`（high/medium/low）：分析置信度
   - `related_files`（[]string）：相关文件列表
-- [ ] Prompt 通过 stdin 传入容器（同 Phase 2 安全实践，避免 ps aux 暴露）
-- [ ] 容器只读模式执行，安全约束同 Phase 2（ReadonlyRootfs + `--disallowedTools` + READ-ONLY 约束文本）
-- [ ] 双层 JSON 解析（同 Phase 2）：CLI 信封（`CLIResponse`）→ 内层分析结果（`AnalysisOutput`）
+- [x] Prompt 通过 stdin 传入容器（同 Phase 2 安全实践，避免 ps aux 暴露）
+- [x] 容器只读模式执行，安全约束同 Phase 2（ReadonlyRootfs + `--disallowedTools` + READ-ONLY 约束文本）
+- [x] 双层 JSON 解析（同 Phase 2）：CLI 信封（`CLIResponse`）→ 内层分析结果（`AnalysisOutput`）
 - [ ] 技术栈检测复用（可选）：根据仓库文件结构检测技术栈，为分析 prompt 提供上下文
-- [ ] Claude 模型与推理强度可配置（复用 `claude.model` / `claude.effort` 配置体系）
+- [x] Claude 模型与推理强度可配置（复用 `claude.model` / `claude.effort` 配置体系）
 
 ##### M3.3 分析结果解析与 Issue 评论回写
 - [ ] 解析 Claude 输出的结构化分析结果
