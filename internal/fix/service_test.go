@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
@@ -90,6 +92,21 @@ func TestNewService_NilPool(t *testing.T) {
 		}
 	}()
 	NewService(&mockIssueClient{}, nil)
+}
+
+func TestWithServiceLogger_NonNil(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{}, WithServiceLogger(logger))
+	if svc == nil {
+		t.Fatal("service should not be nil")
+	}
+}
+
+func TestWithServiceLogger_Nil(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{}, WithServiceLogger(nil))
+	if svc == nil {
+		t.Fatal("service should not be nil")
+	}
 }
 
 func TestExecute_InvalidIssueNumber(t *testing.T) {
@@ -414,6 +431,12 @@ func TestExecute_ContainerSuccess(t *testing.T) {
 	if result.CLIMeta == nil {
 		t.Fatal("CLIMeta 不应为 nil")
 	}
+	if len(pool.lastCmd) == 0 || pool.lastCmd[0] != "claude" {
+		t.Errorf("expected command to start with 'claude', got %v", pool.lastCmd)
+	}
+	if len(pool.lastStdin) == 0 {
+		t.Error("stdin (prompt) should not be empty")
+	}
 }
 
 func TestExecute_ContainerError(t *testing.T) {
@@ -452,5 +475,38 @@ func TestExecute_ContainerError(t *testing.T) {
 	}
 	if result.IssueContext == nil {
 		t.Error("即使容器失败，IssueContext 应已采集")
+	}
+}
+
+func TestExecute_ContainerNilResult(t *testing.T) {
+	issue := openIssue(10)
+	containerErr := fmt.Errorf("docker daemon not running")
+
+	pool := &mockFixPoolRunner{
+		result: nil,
+		err:    containerErr,
+	}
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+		},
+		pool,
+	)
+
+	result, err := svc.Execute(context.Background(), fixPayload())
+	if err == nil {
+		t.Fatal("容器错误时应返回 error")
+	}
+	if result == nil {
+		t.Fatal("即使容器失败，result 不应为 nil")
+	}
+	if result.RawOutput != "" {
+		t.Errorf("nil result 时 RawOutput 应为空，实际: %q", result.RawOutput)
 	}
 }

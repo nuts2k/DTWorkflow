@@ -284,6 +284,9 @@ func (n *configDrivenNotifier) newRouter(repoFullName string) (*notify.Router, e
 	return router, nil
 }
 
+// 编译时检查 *configAdapter 实现 fix.FixConfigProvider 接口
+var _ fix.FixConfigProvider = (*configAdapter)(nil)
+
 // configAdapter 将 config.Manager 适配为 review.ConfigProvider 接口
 type configAdapter struct {
 	mgr *config.Manager
@@ -634,8 +637,8 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	})
 
 	// 启动 asynq Processor（消费端）
-	var reviewOpts []queue.ProcessorOption
-	reviewOpts = append(reviewOpts, queue.WithGiteaBaseURL(cfg.GiteaURL))
+	var processorOpts []queue.ProcessorOption
+	processorOpts = append(processorOpts, queue.WithGiteaBaseURL(cfg.GiteaURL))
 	if deps.GiteaClient != nil && cfgManager != nil {
 		cfgAdapter := &configAdapter{mgr: cfgManager}
 		writer := review.NewWriter(deps.GiteaClient, deps.Store, deps.Store, slog.Default())
@@ -646,8 +649,8 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 			review.WithServiceLogger(slog.Default()),
 			review.WithWriter(writer),
 		)
-		reviewOpts = append(reviewOpts, queue.WithReviewService(reviewSvc))
-		reviewOpts = append(reviewOpts, queue.WithReviewEnabledChecker(cfgAdapter))
+		processorOpts = append(processorOpts, queue.WithReviewService(reviewSvc))
+		processorOpts = append(processorOpts, queue.WithReviewEnabledChecker(cfgAdapter))
 
 		// M3.2: 装配 fix.Service
 		fixSvc := fix.NewService(
@@ -656,9 +659,9 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 			fix.WithServiceLogger(slog.Default()),
 			fix.WithConfigProvider(cfgAdapter),
 		)
-		reviewOpts = append(reviewOpts, queue.WithFixService(fixSvc))
+		processorOpts = append(processorOpts, queue.WithFixService(fixSvc))
 	}
-	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), reviewOpts...)
+	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), processorOpts...)
 	mux := asynq.NewServeMux()
 	mux.Handle(queue.AsynqTypeReviewPR, processor)
 	mux.Handle(queue.AsynqTypeFixIssue, processor)
