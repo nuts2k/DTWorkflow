@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -136,5 +137,81 @@ func TestFormatAnalysisComment_InsufficientInfo(t *testing.T) {
 		if !strings.Contains(body, c.want) {
 			t.Errorf("[%s] body 应包含 %q", c.name, c.want)
 		}
+	}
+}
+
+func TestFormatAnalysisComment_Fallback_ParseError(t *testing.T) {
+	result := &FixResult{
+		RawOutput:  "这是 Claude 原始输出文本",
+		ParseError: fmt.Errorf("JSON 解析失败"),
+		CLIMeta: &model.CLIMeta{
+			DurationMs: 30000,
+			CostUSD:    0.025,
+		},
+	}
+
+	body := FormatAnalysisComment(result)
+
+	checks := []struct {
+		name string
+		want string
+	}{
+		{"标题", "## DTWorkflow Issue 分析报告"},
+		{"降级提示", "分析结果解析失败"},
+		{"原始输出", "这是 Claude 原始输出文本"},
+		{"代码块", "```"},
+		{"耗时", "耗时 30s"},
+		{"费用", "$0.0250"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(body, c.want) {
+			t.Errorf("[%s] body 应包含 %q", c.name, c.want)
+		}
+	}
+	// 不应暴露内部错误详情
+	if strings.Contains(body, "JSON 解析失败") {
+		t.Error("不应暴露内部 ParseError 详情到评论")
+	}
+}
+
+func TestFormatAnalysisComment_Fallback_NilAnalysis(t *testing.T) {
+	result := &FixResult{
+		RawOutput: "raw output",
+		CLIMeta:   &model.CLIMeta{DurationMs: 5000, CostUSD: 0.01},
+	}
+
+	body := FormatAnalysisComment(result)
+
+	if !strings.Contains(body, "分析结果解析失败") {
+		t.Error("Analysis 为 nil 时应走降级场景")
+	}
+}
+
+func TestFormatAnalysisComment_Fallback_LongOutput(t *testing.T) {
+	result := &FixResult{
+		RawOutput:  strings.Repeat("X", 70000),
+		ParseError: fmt.Errorf("parse error"),
+	}
+
+	body := FormatAnalysisComment(result)
+
+	if len(body) > bodyMaxLen {
+		t.Errorf("降级评论长度不应超过 %d，实际=%d", bodyMaxLen, len(body))
+	}
+}
+
+func TestFormatAnalysisComment_NilCLIMeta(t *testing.T) {
+	result := &FixResult{
+		Analysis: &AnalysisOutput{
+			InfoSufficient: true,
+			Analysis:       "分析内容",
+			Confidence:     "medium",
+		},
+	}
+
+	body := FormatAnalysisComment(result)
+
+	if !strings.Contains(body, "耗时 0s") {
+		t.Errorf("CLIMeta 为 nil 时耗时应为 0s，body=%s", body)
 	}
 }

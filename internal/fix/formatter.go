@@ -150,7 +150,26 @@ func formatInsufficientInfo(analysis *AnalysisOutput, durationSec, costUSD float
 	return body
 }
 
-func formatFallback(_ string, _, _ float64) string {
-	// Task 5 实现
-	return ""
+func formatFallback(rawOutput string, durationSec, costUSD float64) string {
+	var sb strings.Builder
+	sb.WriteString("## DTWorkflow Issue 分析报告\n\n")
+	sb.WriteString("> 分析结果解析失败，以下为 Claude 原始输出。\n\n")
+	sb.WriteString("---\n\n")
+
+	raw := rawOutput
+	if len(raw) > bodyMaxLen-300 {
+		raw = truncateString(raw, bodyMaxLen-300)
+	}
+	sb.WriteString("```\n")
+	sb.WriteString(raw)
+	sb.WriteString("\n```\n\n")
+
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))
+
+	body := sb.String()
+	if len(body) > bodyMaxLen {
+		body = truncateString(body, bodyMaxLen)
+	}
+	return body
 }
