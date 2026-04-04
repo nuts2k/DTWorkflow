@@ -12,10 +12,10 @@ import (
 )
 
 // IssueClient 窄接口，仅暴露 fix 所需的 Gitea API。
-// M3.3 回写时再扩展 CreateIssueComment。
 type IssueClient interface {
 	GetIssue(ctx context.Context, owner, repo string, index int64) (*gitea.Issue, *gitea.Response, error)
 	ListIssueComments(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error)
+	CreateIssueComment(ctx context.Context, owner, repo string, index int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error)
 }
 
 // FixPoolRunner fix 专用的容器执行接口。
@@ -122,7 +122,14 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 	result.IssueContext = issueCtx
 	result.RawOutput = execResult.Output
 
-	// 6. M3.3 在此处插入：回写 Issue 评论
+	// 6. 回写 Issue 评论
+	comment := FormatAnalysisComment(result)
+	if _, _, err := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
+		gitea.CreateIssueCommentOption{Body: comment}); err != nil {
+		s.logger.ErrorContext(ctx, "回写分析评论失败",
+			"issue", issueNum, "error", err)
+		result.WritebackError = fmt.Errorf("回写分析评论失败: %w", err)
+	}
 
 	return result, nil
 }

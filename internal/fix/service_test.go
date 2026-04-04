@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
@@ -16,8 +17,9 @@ import (
 // --- mock 实现 ---
 
 type mockIssueClient struct {
-	getIssue     func(ctx context.Context, owner, repo string, index int64) (*gitea.Issue, *gitea.Response, error)
-	listComments func(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error)
+	getIssue      func(ctx context.Context, owner, repo string, index int64) (*gitea.Issue, *gitea.Response, error)
+	listComments  func(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error)
+	createComment func(ctx context.Context, owner, repo string, index int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error)
 }
 
 func (m *mockIssueClient) GetIssue(ctx context.Context, owner, repo string, index int64) (*gitea.Issue, *gitea.Response, error) {
@@ -26,6 +28,13 @@ func (m *mockIssueClient) GetIssue(ctx context.Context, owner, repo string, inde
 
 func (m *mockIssueClient) ListIssueComments(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
 	return m.listComments(ctx, owner, repo, index, opts)
+}
+
+func (m *mockIssueClient) CreateIssueComment(ctx context.Context, owner, repo string, index int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+	if m.createComment != nil {
+		return m.createComment(ctx, owner, repo, index, opts)
+	}
+	return &gitea.Comment{ID: 999}, nil, nil
 }
 
 type mockFixPoolRunner struct {
@@ -475,6 +484,85 @@ func TestExecute_ContainerError(t *testing.T) {
 	}
 	if result.IssueContext == nil {
 		t.Error("即使容器失败，IssueContext 应已采集")
+	}
+}
+
+func TestExecute_WritebackSuccess(t *testing.T) {
+	issue := openIssue(10)
+	cliJSON := `{
+		"type":"result","subtype":"success","is_error":false,
+		"cost_usd":0.03,"duration_ms":8000,"duration_api_ms":7000,
+		"num_turns":2,"session_id":"sess-ok",
+		"result":"{\"info_sufficient\":true,\"root_cause\":{\"file\":\"main.go\",\"description\":\"问题\"},\"analysis\":\"分析\",\"confidence\":\"medium\",\"related_files\":[]}"
+	}`
+
+	var commentBody string
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+			createComment: func(_ context.Context, _, _ string, _ int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+				commentBody = opts.Body
+				return &gitea.Comment{ID: 100}, nil, nil
+			},
+		},
+		&mockFixPoolRunner{
+			result: &worker.ExecutionResult{ExitCode: 0, Output: cliJSON},
+		},
+	)
+
+	result, err := svc.Execute(context.Background(), fixPayload())
+	if err != nil {
+		t.Fatalf("预期无错误，实际: %v", err)
+	}
+	if result.WritebackError != nil {
+		t.Errorf("WritebackError 应为 nil，实际: %v", result.WritebackError)
+	}
+	if commentBody == "" {
+		t.Fatal("CreateIssueComment 应被调用")
+	}
+	if !strings.Contains(commentBody, "## DTWorkflow Issue 分析报告") {
+		t.Error("评论应包含分析报告标题")
+	}
+}
+
+func TestExecute_WritebackFailure(t *testing.T) {
+	issue := openIssue(10)
+	cliJSON := `{
+		"type":"result","subtype":"success","is_error":false,
+		"cost_usd":0.03,"duration_ms":8000,"duration_api_ms":7000,
+		"num_turns":2,"session_id":"sess-ok",
+		"result":"{\"info_sufficient\":true,\"root_cause\":{\"file\":\"main.go\",\"description\":\"问题\"},\"analysis\":\"分析\",\"confidence\":\"medium\",\"related_files\":[]}"
+	}`
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+			createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, fmt.Errorf("Gitea API 500")
+			},
+		},
+		&mockFixPoolRunner{
+			result: &worker.ExecutionResult{ExitCode: 0, Output: cliJSON},
+		},
+	)
+
+	result, err := svc.Execute(context.Background(), fixPayload())
+	// 回写失败不影响 Execute 的返回 error
+	if err != nil {
+		t.Fatalf("回写失败不应导致 Execute 返回 error，实际: %v", err)
+	}
+	if result.WritebackError == nil {
+		t.Fatal("WritebackError 应非 nil")
 	}
 }
 
