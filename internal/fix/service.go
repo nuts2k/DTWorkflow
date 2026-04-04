@@ -116,6 +116,22 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 			RawOutput:    safeOutput(execResult),
 		}, fmt.Errorf("容器执行失败: %w", err)
 	}
+	if execResult == nil {
+		return &FixResult{
+			IssueContext: issueCtx,
+		}, fmt.Errorf("容器执行结果为空")
+	}
+	if execResult.ExitCode != 0 {
+		s.logger.ErrorContext(ctx, "Issue 分析 worker 非零退出",
+			"issue", issueNum,
+			"exit_code", execResult.ExitCode,
+		)
+		return &FixResult{
+			IssueContext: issueCtx,
+			RawOutput:    execResult.Output,
+			ExitCode:     execResult.ExitCode,
+		}, nil
+	}
 
 	// 5. 解析结果
 	result := s.parseResult(execResult.Output)
@@ -123,12 +139,15 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 	result.RawOutput = execResult.Output
 
 	// 6. 回写 Issue 评论
-	comment := FormatAnalysisComment(result)
-	if _, _, err := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
-		gitea.CreateIssueCommentOption{Body: comment}); err != nil {
-		s.logger.ErrorContext(ctx, "回写分析评论失败",
-			"issue", issueNum, "error", err)
-		result.WritebackError = fmt.Errorf("回写分析评论失败: %w", err)
+	// Claude 已明确返回可重试错误时，不在这里发送兜底评论，避免每次重试都重复刷屏。
+	if result.CLIMeta == nil || !result.CLIMeta.IsError {
+		comment := FormatAnalysisComment(result)
+		if _, _, err := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
+			gitea.CreateIssueCommentOption{Body: comment}); err != nil {
+			s.logger.ErrorContext(ctx, "回写分析评论失败",
+				"issue", issueNum, "error", err)
+			result.WritebackError = fmt.Errorf("回写分析评论失败: %w", err)
+		}
 	}
 
 	return result, nil

@@ -34,6 +34,7 @@ type RootCause struct {
 type FixResult struct {
 	IssueContext   *IssueContext   // 采集到的 Issue 上下文
 	RawOutput      string          // Claude CLI 原始 stdout
+	ExitCode       int             // worker 原始退出码；非零时表示执行失败，通常不会再进入 JSON 解析
 	CLIMeta        *model.CLIMeta  // CLI 执行元数据
 	Analysis       *AnalysisOutput // 解析成功的分析结果（可能为 nil）
 	ParseError     error           // JSON 解析失败时非 nil

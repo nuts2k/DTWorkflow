@@ -552,6 +552,10 @@ func adaptFixResult(r *fix.FixResult) *worker.ExecutionResult {
 		Output:   r.RawOutput,
 		ExitCode: 0,
 	}
+	if r.ExitCode != 0 {
+		res.ExitCode = r.ExitCode
+		res.Error = fmt.Sprintf("fix worker 退出码非零: %d", r.ExitCode)
+	}
 	if r.CLIMeta != nil {
 		res.Duration = r.CLIMeta.DurationMs
 		if r.CLIMeta.IsError {
@@ -567,9 +571,12 @@ func adaptFixResult(r *fix.FixResult) *worker.ExecutionResult {
 			res.Error = res.Error + "; " + r.ParseError.Error()
 		}
 	}
-	// WritebackError 不影响退出码，仅保留信息
+	// fix 流程的用户可见结果只有 Issue 评论；回写失败必须失败并允许重试。
 	if r.WritebackError != nil {
 		msg := fmt.Sprintf("回写失败: %v", r.WritebackError)
+		if res.ExitCode == 0 {
+			res.ExitCode = 1
+		}
 		if res.Error == "" {
 			res.Error = msg
 		} else if !strings.Contains(res.Error, msg) {

@@ -487,6 +487,49 @@ func TestExecute_ContainerError(t *testing.T) {
 	}
 }
 
+func TestExecute_ContainerNonZeroExitSkipsParseAndWriteback(t *testing.T) {
+	issue := openIssue(10)
+	createCalls := 0
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+			createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+				createCalls++
+				return &gitea.Comment{ID: 1}, nil, nil
+			},
+		},
+		&mockFixPoolRunner{
+			result: &worker.ExecutionResult{ExitCode: 17, Output: "invalid model"},
+		},
+	)
+
+	result, err := svc.Execute(context.Background(), fixPayload())
+	if err != nil {
+		t.Fatalf("非零退出码应通过结果返回给上层处理，实际错误: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+	if result.ExitCode != 17 {
+		t.Fatalf("ExitCode = %d, want 17", result.ExitCode)
+	}
+	if result.CLIMeta != nil {
+		t.Fatal("非零退出时不应继续解析 CLI envelope")
+	}
+	if result.Analysis != nil {
+		t.Fatal("非零退出时不应产生 Analysis")
+	}
+	if createCalls != 0 {
+		t.Fatalf("非零退出时不应回写评论，实际调用 %d 次", createCalls)
+	}
+}
+
 func TestExecute_WritebackSuccess(t *testing.T) {
 	issue := openIssue(10)
 	cliJSON := `{
@@ -563,6 +606,51 @@ func TestExecute_WritebackFailure(t *testing.T) {
 	}
 	if result.WritebackError == nil {
 		t.Fatal("WritebackError 应非 nil")
+	}
+}
+
+func TestExecute_CLIErrorDoesNotWritebackFallbackComment(t *testing.T) {
+	issue := openIssue(10)
+	createCalls := 0
+	cliJSON := `{
+		"type":"result","subtype":"error","is_error":true,
+		"cost_usd":0.01,"duration_ms":1000,"duration_api_ms":900,
+		"num_turns":1,"session_id":"sess-rate-limit","result":""
+	}`
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+			createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+				createCalls++
+				return &gitea.Comment{ID: 1}, nil, nil
+			},
+		},
+		&mockFixPoolRunner{
+			result: &worker.ExecutionResult{ExitCode: 0, Output: cliJSON},
+		},
+	)
+
+	result, err := svc.Execute(context.Background(), fixPayload())
+	if err != nil {
+		t.Fatalf("预期无 transport error，实际: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+	if result.CLIMeta == nil || !result.CLIMeta.IsError {
+		t.Fatal("应保留 Claude CLI 错误元数据")
+	}
+	if result.WritebackError != nil {
+		t.Fatalf("CLI 错误未尝试回写时不应设置 WritebackError，实际: %v", result.WritebackError)
+	}
+	if createCalls != 0 {
+		t.Fatalf("CLI 可重试错误不应发送兜底评论，实际调用 %d 次", createCalls)
 	}
 }
 

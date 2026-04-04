@@ -959,11 +959,30 @@ func TestAdaptFixResult_WritebackErrorPreserved(t *testing.T) {
 	if result == nil {
 		t.Fatal("adaptFixResult 应返回非 nil")
 	}
-	if result.ExitCode != 0 {
-		t.Fatalf("WritebackError 不应影响退出码，实际: %d", result.ExitCode)
+	if result.ExitCode != 1 {
+		t.Fatalf("WritebackError 应触发可重试失败，实际退出码: %d", result.ExitCode)
 	}
 	if !strings.Contains(result.Error, "回写失败") {
 		t.Fatalf("Error 应包含回写失败信息，实际: %q", result.Error)
+	}
+}
+
+func TestAdaptFixResult_PreservesWorkerExitCode(t *testing.T) {
+	r := &fix.FixResult{
+		RawOutput: "invalid model",
+		ExitCode:  17,
+	}
+
+	result := adaptFixResult(r)
+
+	if result == nil {
+		t.Fatal("adaptFixResult 应返回非 nil")
+	}
+	if result.ExitCode != 17 {
+		t.Fatalf("ExitCode = %d, want 17", result.ExitCode)
+	}
+	if !strings.Contains(result.Error, "17") {
+		t.Fatalf("Error 应包含原始退出码，实际: %q", result.Error)
 	}
 }
 
@@ -1769,6 +1788,65 @@ func TestProcessTask_FixIssue_WithService(t *testing.T) {
 	got := s.tasks["proc-fix-svc-1"]
 	if got.Status != model.TaskStatusSucceeded {
 		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+}
+
+func TestProcessTask_FixIssue_WithService_WritebackErrorFailsTask(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-svc-writeback-failed-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  5,
+		IssueTitle:   "bug report",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-fix-svc-writeback-failed-1",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	fixExec := &mockFixExecutor{
+		result: &fix.FixResult{
+			RawOutput:      `{"type":"result"}`,
+			CLIMeta:        &model.CLIMeta{IsError: false, DurationMs: 8000},
+			WritebackError: errors.New("Gitea API 500"),
+		},
+	}
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: "should not be used"},
+	}
+
+	p := NewProcessor(pool, s, nil, slog.Default(), WithFixService(fixExec))
+	task := buildAsynqTask(t, payload)
+
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("writeback 失败应导致任务失败")
+	}
+
+	if fixExec.calls != 1 {
+		t.Errorf("fixService.Execute 应被调用 1 次，实际 %d 次", fixExec.calls)
+	}
+	if pool.calls != 0 {
+		t.Errorf("pool.Run 不应被调用，实际 %d 次", pool.calls)
+	}
+
+	got := s.tasks["proc-fix-svc-writeback-failed-1"]
+	if got.Status != model.TaskStatusFailed {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if !strings.Contains(got.Error, "回写失败") {
+		t.Errorf("error = %q, should contain writeback failure", got.Error)
 	}
 }
 
