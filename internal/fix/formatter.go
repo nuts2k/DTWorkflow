@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -34,4 +35,96 @@ func truncateString(s string, maxBytes int) string {
 		maxBytes--
 	}
 	return s[:maxBytes] + "…"
+}
+
+// FormatAnalysisComment 根据分析结果生成 Issue 评论 Markdown。
+// 三场景分支：正常 / 信息不足 / 降级。
+func FormatAnalysisComment(result *FixResult) string {
+	var durationSec, costUSD float64
+	if result.CLIMeta != nil {
+		durationSec = float64(result.CLIMeta.DurationMs) / 1000.0
+		costUSD = result.CLIMeta.CostUSD
+	}
+
+	// 降级场景
+	if result.ParseError != nil || result.Analysis == nil {
+		return formatFallback(result.RawOutput, durationSec, costUSD)
+	}
+
+	// 信息不足
+	if !result.Analysis.InfoSufficient {
+		return formatInsufficientInfo(result.Analysis, durationSec, costUSD)
+	}
+
+	// 正常
+	return formatNormalReport(result.Analysis, durationSec, costUSD)
+}
+
+func formatNormalReport(analysis *AnalysisOutput, durationSec, costUSD float64) string {
+	var sb strings.Builder
+	sb.WriteString("## DTWorkflow Issue 分析报告\n\n")
+	sb.WriteString(fmt.Sprintf("> 置信度：**%s** | 分析基于 Issue 描述和评论\n\n", escapeMarkdown(analysis.Confidence)))
+
+	// 根因定位
+	if analysis.RootCause != nil {
+		rc := analysis.RootCause
+		sb.WriteString("### 根因定位\n\n")
+		sb.WriteString("| 项目 | 详情 |\n")
+		sb.WriteString("|------|------|\n")
+		sb.WriteString(fmt.Sprintf("| 文件 | `%s` |\n", escapeMarkdown(rc.File)))
+		if rc.Function != "" {
+			sb.WriteString(fmt.Sprintf("| 方法 | `%s` |\n", escapeMarkdown(rc.Function)))
+		}
+		if rc.StartLine > 0 {
+			if rc.EndLine > rc.StartLine {
+				sb.WriteString(fmt.Sprintf("| 行号 | %d-%d |\n", rc.StartLine, rc.EndLine))
+			} else {
+				sb.WriteString(fmt.Sprintf("| 行号 | %d |\n", rc.StartLine))
+			}
+		}
+		sb.WriteString(fmt.Sprintf("| 原因 | %s |\n\n", escapeMarkdown(rc.Description)))
+	}
+
+	// 详细分析
+	if analysis.Analysis != "" {
+		sb.WriteString("### 详细分析\n\n")
+		sb.WriteString(escapeMarkdown(analysis.Analysis))
+		sb.WriteString("\n\n")
+	}
+
+	// 修复建议
+	if analysis.FixSuggestion != "" {
+		sb.WriteString("### 修复建议\n\n")
+		sb.WriteString(escapeMarkdown(analysis.FixSuggestion))
+		sb.WriteString("\n\n")
+	}
+
+	// 相关文件
+	if len(analysis.RelatedFiles) > 0 {
+		sb.WriteString("### 相关文件\n\n")
+		for _, f := range analysis.RelatedFiles {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", escapeMarkdown(f)))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))
+
+	body := sb.String()
+	if len(body) > bodyMaxLen {
+		truncMsg := "\n\n_（内容过长，已截断）_"
+		body = truncateString(body, bodyMaxLen-len(truncMsg)) + truncMsg
+	}
+	return body
+}
+
+func formatInsufficientInfo(_ *AnalysisOutput, _, _ float64) string {
+	// Task 4 实现
+	return ""
+}
+
+func formatFallback(_ string, _, _ float64) string {
+	// Task 5 实现
+	return ""
 }
