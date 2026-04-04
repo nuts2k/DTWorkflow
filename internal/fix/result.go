@@ -32,9 +32,10 @@ type RootCause struct {
 
 // FixResult 是 Service.Execute 的返回值
 type FixResult struct {
-	IssueContext *IssueContext   // 采集到的 Issue 上下文
-	RawOutput    string          // Claude CLI 原始 stdout
-	CLIMeta      *model.CLIMeta  // CLI 执行元数据
-	Analysis     *AnalysisOutput // 解析成功的分析结果（可能为 nil）
-	ParseError   error           // JSON 解析失败时非 nil
+	IssueContext   *IssueContext   // 采集到的 Issue 上下文
+	RawOutput      string          // Claude CLI 原始 stdout
+	CLIMeta        *model.CLIMeta  // CLI 执行元数据
+	Analysis       *AnalysisOutput // 解析成功的分析结果（可能为 nil）
+	ParseError     error           // JSON 解析失败时非 nil
+	WritebackError error           // 回写失败时非 nil
 }

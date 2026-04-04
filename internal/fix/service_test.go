@@ -478,6 +478,15 @@ func TestExecute_ContainerError(t *testing.T) {
 	}
 }
 
+func TestFixResult_HasWritebackError(t *testing.T) {
+	r := &FixResult{
+		WritebackError: fmt.Errorf("test error"),
+	}
+	if r.WritebackError == nil {
+		t.Fatal("WritebackError 应非 nil")
+	}
+}
+
 func TestExecute_ContainerNilResult(t *testing.T) {
 	issue := openIssue(10)
 	containerErr := fmt.Errorf("docker daemon not running")
