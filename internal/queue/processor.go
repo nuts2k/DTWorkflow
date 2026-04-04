@@ -225,8 +225,6 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	default:
 		result, runErr = p.pool.Run(ctx, payload)
 	}
-	_ = fixResult // M3.3 回写时使用
-
 	// 5. 根据执行结果更新状态
 	record.UpdatedAt = time.Now()
 
@@ -543,7 +541,9 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 	}
 }
 
-// adaptFixResult 将 fix.FixResult 适配为 worker.ExecutionResult
+// adaptFixResult 将 fix.FixResult 适配为 worker.ExecutionResult。
+// M3.3: ParseError 仅保留信息到 Error 字段供调试，不再导致 ExitCode=1（降级评论已发出）。
+// CLIMeta.IsError 仍保留 ExitCode=1（与 review 包对齐）。
 func adaptFixResult(r *fix.FixResult) *worker.ExecutionResult {
 	if r == nil {
 		return &worker.ExecutionResult{ExitCode: 0}
@@ -559,14 +559,21 @@ func adaptFixResult(r *fix.FixResult) *worker.ExecutionResult {
 			res.Error = "Claude CLI 报告错误"
 		}
 	}
+	// ParseError 信息保留到 Error 字段供调试，但不影响退出码
 	if r.ParseError != nil {
-		if res.ExitCode == 0 {
-			res.ExitCode = 1
-		}
 		if res.Error == "" {
 			res.Error = r.ParseError.Error()
 		} else if !strings.Contains(res.Error, r.ParseError.Error()) {
 			res.Error = res.Error + "; " + r.ParseError.Error()
+		}
+	}
+	// WritebackError 不影响退出码，仅保留信息
+	if r.WritebackError != nil {
+		msg := fmt.Sprintf("回写失败: %v", r.WritebackError)
+		if res.Error == "" {
+			res.Error = msg
+		} else if !strings.Contains(res.Error, msg) {
+			res.Error = res.Error + "; " + msg
 		}
 	}
 	return res

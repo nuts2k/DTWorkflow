@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -881,7 +882,7 @@ func TestProcessTask_AdaptReviewResult_WritebackError(t *testing.T) {
 	}
 }
 
-func TestAdaptFixResult_ParseErrorMarksFailure(t *testing.T) {
+func TestAdaptFixResult_ParseErrorNoLongerFails(t *testing.T) {
 	r := &fix.FixResult{
 		RawOutput:  "plain text output",
 		ParseError: errors.New("analysis parse failed"),
@@ -892,11 +893,34 @@ func TestAdaptFixResult_ParseErrorMarksFailure(t *testing.T) {
 	if result == nil {
 		t.Fatal("adaptFixResult 应返回非 nil")
 	}
-	if result.ExitCode == 0 {
-		t.Fatalf("ParseError 必须转成非零退出码，实际: %d", result.ExitCode)
+	// M3.3: ParseError 不再导致任务失败
+	if result.ExitCode != 0 {
+		t.Fatalf("ParseError 不应导致非零退出码，实际: %d", result.ExitCode)
 	}
 	if result.Error != "analysis parse failed" {
-		t.Fatalf("error = %q, want %q", result.Error, "analysis parse failed")
+		t.Fatalf("Error 应保留 ParseError 信息，实际: %q", result.Error)
+	}
+}
+
+func TestAdaptFixResult_ParseErrorWithoutCLIError_Succeeds(t *testing.T) {
+	r := &fix.FixResult{
+		RawOutput:  "plain text output",
+		CLIMeta:    &model.CLIMeta{IsError: false, DurationMs: 5000},
+		ParseError: errors.New("analysis parse failed"),
+	}
+
+	result := adaptFixResult(r)
+
+	if result == nil {
+		t.Fatal("adaptFixResult 应返回非 nil")
+	}
+	// M3.3: ParseError 不再导致 ExitCode=1（降级评论已发）
+	if result.ExitCode != 0 {
+		t.Fatalf("ParseError（无 CLIError）应 ExitCode=0，实际: %d", result.ExitCode)
+	}
+	// 错误信息仍保留在 Error 字段供调试
+	if result.Error != "analysis parse failed" {
+		t.Fatalf("Error 应保留 ParseError 信息，实际: %q", result.Error)
 	}
 }
 
@@ -920,6 +944,26 @@ func TestAdaptFixResult_PreservesCLIErrorAndParseError(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "analysis parse failed") {
 		t.Fatalf("Error 应附加 ParseError，实际: %q", result.Error)
+	}
+}
+
+func TestAdaptFixResult_WritebackErrorPreserved(t *testing.T) {
+	r := &fix.FixResult{
+		RawOutput:      "output",
+		CLIMeta:        &model.CLIMeta{IsError: false},
+		WritebackError: fmt.Errorf("Gitea API 500"),
+	}
+
+	result := adaptFixResult(r)
+
+	if result == nil {
+		t.Fatal("adaptFixResult 应返回非 nil")
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("WritebackError 不应影响退出码，实际: %d", result.ExitCode)
+	}
+	if !strings.Contains(result.Error, "回写失败") {
+		t.Fatalf("Error 应包含回写失败信息，实际: %q", result.Error)
 	}
 }
 
