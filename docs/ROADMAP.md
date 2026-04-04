@@ -343,6 +343,8 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 #### 第一轮：Issue 分析与定位（只读）
 
 > 容器安全模型与 Phase 2 一致（ReadonlyRootfs、无 push 权限）。交付物为 Issue 评论中的根因分析报告。
+>
+> **完成说明**：2026-04-04 完成全部实施（M3.1-M3.3）。交付物：Issue 自动分析与根因定位能力，用户可收到结构化分析报告（正常/信息不足/降级三场景）。
 
 ##### M3.1 fix.Service 骨架与 Issue 上下文采集
 - [x] 新建 `internal/fix` 包，架构仿照 `internal/review`（Service/Execute 模式）
@@ -373,17 +375,19 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Claude 模型与推理强度可配置（复用 `claude.model` / `claude.effort` 配置体系）
 
 ##### M3.3 分析结果解析与 Issue 评论回写
-- [ ] 解析 Claude 输出的结构化分析结果
-- [ ] **正常场景（信息充分）**：格式化根因分析报告并发布为 Issue 评论
+> 说明：2026-04-04 完成全部实施（含三场景格式化、WritebackError 处理、adaptFixResult 重构、代码审核修复）。
+> 详细设计见 `docs/plans/2026-04-04-m3.3-analysis-writeback-design.md`。
+- [x] 解析 Claude 输出的结构化分析结果
+- [x] **正常场景（信息充分）**：格式化根因分析报告并发布为 Issue 评论
   - 报告内容：置信度 + 根因定位（文件/方法/行号）+ 原因分析 + 修复建议 + 相关文件
-  - Markdown 格式化，含代码块和文件链接
-- [ ] **信息不足场景**：发布追问评论，列出需要补充的具体信息项
+  - Markdown 格式化 + UTF-8 安全截断（60000 字节上限）
+- [x] **信息不足场景**：发布追问评论，列出需要补充的具体信息项
   - 评论提示用户补充信息后重新添加 `auto-fix` 标签触发
-- [ ] **降级场景**：Claude 输出解析失败时，将原始输出包裹在代码块中发布（同 Phase 2 降级策略）
-- [ ] 分析结果持久化到数据库（可选，复用或扩展 `review_results` 表结构，或新建 `analysis_results` 表）
-- [ ] 错误处理与降级链：分析失败时在 Issue 评论中报告失败原因
-- [ ] Markdown 注入防护（转义外部内容，同 Phase 2 安全实践）
-- [ ] 单元测试覆盖
+- [x] **降级场景**：Claude 输出解析失败时，将原始输出包裹在动态 fence 代码块中发布（同 Phase 2 降级策略）
+- [x] 分析结果持久化到数据库（暂不做；TaskRecord.result 已保存原始输出，Issue 评论本身即持久化）
+- [x] 错误处理与降级链：用户至少能看到一条评论；回写失败触发任务重试（与 review 有意不对称）
+- [x] 安全防护：Markdown 转义（含反引号和 # 号）+ 动态 fence 代码块包裹 + 长度截断 + 内部错误不泄露
+- [x] 单元测试覆盖（formatter_test.go 12 个 + service_test.go 回写相关 5 个 + processor_test.go adaptFixResult 5 个）
 
 ---
 
