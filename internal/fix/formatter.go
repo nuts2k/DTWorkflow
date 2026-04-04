@@ -11,23 +11,29 @@ const (
 	bodyMaxLen = 60000
 )
 
-// escapeMarkdown 转义 Markdown 特殊字符，防止注入钓鱼链接。
+// mdReplacer 转义 Markdown 特殊字符，防止注入钓鱼链接和格式干扰。
+var mdReplacer = strings.NewReplacer(
+	`[`, `\[`,
+	`]`, `\]`,
+	`(`, `\(`,
+	`)`, `\)`,
+	`!`, `\!`,
+	`<`, `\<`,
+	`>`, `\>`,
+	"`", "\\`",
+	`#`, `\#`,
+)
+
 func escapeMarkdown(s string) string {
-	replacer := strings.NewReplacer(
-		`[`, `\[`,
-		`]`, `\]`,
-		`(`, `\(`,
-		`)`, `\)`,
-		`!`, `\!`,
-		`<`, `\<`,
-		`>`, `\>`,
-	)
-	return replacer.Replace(s)
+	return mdReplacer.Replace(s)
 }
 
 // truncateString 按字节截断字符串，回退到最近的完整 UTF-8 字符边界。
 // 截断时追加 "…" 后缀。
 func truncateString(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return "…"
+	}
 	if len(s) <= maxBytes {
 		return s
 	}
@@ -160,9 +166,13 @@ func formatFallback(rawOutput string, durationSec, costUSD float64) string {
 	if len(raw) > bodyMaxLen-300 {
 		raw = truncateString(raw, bodyMaxLen-300)
 	}
-	sb.WriteString("```\n")
+	fence := "```"
+	for strings.Contains(raw, fence) {
+		fence += "`"
+	}
+	sb.WriteString(fence + "\n")
 	sb.WriteString(raw)
-	sb.WriteString("\n```\n\n")
+	sb.WriteString("\n" + fence + "\n\n")
 
 	sb.WriteString("---\n")
 	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))

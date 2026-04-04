@@ -16,6 +16,8 @@ func TestEscapeMarkdown(t *testing.T) {
 		{"[link](url)", `\[link\]\(url\)`},
 		{"![img](x)", `\!\[img\]\(x\)`},
 		{"<script>", `\<script\>`},
+		{"`inline code`", "\\`inline code\\`"},
+		{"# heading", `\# heading`},
 		{"普通文本 abc", "普通文本 abc"},
 	}
 	for _, tc := range tests {
@@ -46,6 +48,15 @@ func TestTruncateString_BodyMaxLen(t *testing.T) {
 	result := truncateString(long, bodyMaxLen)
 	if len(result) > bodyMaxLen+len("…") {
 		t.Errorf("截断后长度不应超过 bodyMaxLen，got=%d", len(result))
+	}
+}
+
+func TestTruncateString_ZeroOrNegativeMaxBytes(t *testing.T) {
+	if got := truncateString("hello", 0); got != "…" {
+		t.Errorf("maxBytes=0 应返回省略号，got=%q", got)
+	}
+	if got := truncateString("hello", -1); got != "…" {
+		t.Errorf("maxBytes=-1 应返回省略号，got=%q", got)
 	}
 }
 
@@ -197,6 +208,26 @@ func TestFormatAnalysisComment_Fallback_LongOutput(t *testing.T) {
 
 	if len(body) > bodyMaxLen {
 		t.Errorf("降级评论长度不应超过 %d，实际=%d", bodyMaxLen, len(body))
+	}
+}
+
+func TestFormatAnalysisComment_Fallback_BacktickEscape(t *testing.T) {
+	rawWithBackticks := "some output\n```\ncode block\n```\nmore output"
+	result := &FixResult{
+		RawOutput:  rawWithBackticks,
+		ParseError: fmt.Errorf("parse error"),
+		CLIMeta:    &model.CLIMeta{DurationMs: 5000, CostUSD: 0.01},
+	}
+
+	body := FormatAnalysisComment(result)
+
+	// 应使用更长的 fence 包裹，避免代码块提前关闭
+	if !strings.Contains(body, "````\n") {
+		t.Error("原始输出包含 ``` 时应使用更长的 fence")
+	}
+	// 原始内容应完整保留
+	if !strings.Contains(body, rawWithBackticks) {
+		t.Error("原始输出内容应完整保留")
 	}
 }
 
