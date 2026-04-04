@@ -100,3 +100,41 @@ func TestFormatAnalysisComment_Normal(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatAnalysisComment_InsufficientInfo(t *testing.T) {
+	result := &FixResult{
+		Analysis: &AnalysisOutput{
+			InfoSufficient: false,
+			MissingInfo:    []string{"缺少错误堆栈信息", "缺少复现步骤"},
+			Analysis:       "初步判断可能是配置问题",
+			Confidence:     "low",
+		},
+		CLIMeta: &model.CLIMeta{
+			DurationMs: 12000,
+			CostUSD:    0.008,
+		},
+	}
+
+	body := FormatAnalysisComment(result)
+
+	checks := []struct {
+		name string
+		want string
+	}{
+		{"标题", "## DTWorkflow Issue 分析报告"},
+		{"信息不足提示", "信息不足"},
+		{"缺失标题", "### 缺失信息"},
+		{"缺失1", "缺少错误堆栈信息"},
+		{"缺失2", "缺少复现步骤"},
+		{"初步判断标题", "### 初步判断"},
+		{"初步判断内容", "初步判断可能是配置问题"},
+		{"重新触发提示", "补充信息后"},
+		{"耗时", "耗时 12s"},
+		{"费用", "$0.0080"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(body, c.want) {
+			t.Errorf("[%s] body 应包含 %q", c.name, c.want)
+		}
+	}
+}

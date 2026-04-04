@@ -119,9 +119,35 @@ func formatNormalReport(analysis *AnalysisOutput, durationSec, costUSD float64) 
 	return body
 }
 
-func formatInsufficientInfo(_ *AnalysisOutput, _, _ float64) string {
-	// Task 4 实现
-	return ""
+func formatInsufficientInfo(analysis *AnalysisOutput, durationSec, costUSD float64) string {
+	var sb strings.Builder
+	sb.WriteString("## DTWorkflow Issue 分析报告\n\n")
+	sb.WriteString("> Issue 提供的信息不足以进行根因定位，需要补充以下信息：\n\n")
+
+	if len(analysis.MissingInfo) > 0 {
+		sb.WriteString("### 缺失信息\n\n")
+		for _, info := range analysis.MissingInfo {
+			sb.WriteString(fmt.Sprintf("- %s\n", escapeMarkdown(info)))
+		}
+		sb.WriteString("\n")
+	}
+
+	if analysis.Analysis != "" {
+		sb.WriteString("### 初步判断\n\n")
+		sb.WriteString(escapeMarkdown(analysis.Analysis))
+		sb.WriteString("\n\n")
+	}
+
+	sb.WriteString("---\n\n")
+	sb.WriteString("**补充信息后**，请移除 `auto-fix` 标签再重新添加以触发分析。\n\n")
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))
+
+	body := sb.String()
+	if len(body) > bodyMaxLen {
+		body = truncateString(body, bodyMaxLen)
+	}
+	return body
 }
 
 func formatFallback(_ string, _, _ float64) string {
