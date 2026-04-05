@@ -391,6 +391,30 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 ---
 
+#### M3.3.1 远程瘦客户端与 REST API 层
+
+> 独立二进制 `dtw`，类似 GitHub CLI（`gh`），可部署在任意客户端或服务器上，通过 HTTP API 远程操作 DTWorkflow 服务端。
+> 需同步扩展服务端 REST API 以支撑瘦客户端的全部功能。当前服务端仅有健康检查和 Webhook 端点，无业务 REST API。
+
+**服务端 REST API 扩展**：
+- [ ] API 认证中间件（Bearer Token）
+- [ ] 任务管理 API：查询、列表、重试
+- [ ] PR 评审触发 API：手动触发指定仓库 PR 的评审
+- [ ] Issue 修复触发 API：手动触发指定仓库 Issue 的分析/修复
+- [ ] 服务状态与版本查询 API
+- [ ] API 版本化（`/api/v1/` 前缀）
+
+**瘦客户端（`dtw` 二进制）**：
+- [ ] 独立二进制，同仓库 `cmd/dtw` 入口
+- [ ] 多服务器认证管理（`dtw auth login/logout/status/switch`），支持同时认证多个 DTWorkflow 实例并切换
+- [ ] 认证信息持久化（`~/.config/dtw/hosts.yml`）
+- [ ] 覆盖服务端 CLI 命令：`review-pr` / `fix-issue` / `task status/list/retry`
+- [ ] `--json` 结构化输出 + 人类可读默认格式（与 `dtworkflow` CLI 输出规范一致）
+- [ ] 服务器状态检查（`dtw status`）
+- [ ] 命令体系设计与 `dtworkflow` 保持一致，未来新增命令同步扩展
+
+---
+
 #### 第二轮：自动修复与 PR 创建（后续迭代）
 
 > 引入容器写权限，需修改 entrypoint.sh 和容器安全配置。依赖第一轮分析能力验证后启动。
@@ -424,6 +448,10 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - 分析 prompt 模板
 - Issue 评论格式化报告（根因分析 / 信息不足追问 / 失败报告）
 
+**M3.3.1**：
+- 服务端 REST API 层（`/api/v1/`，含认证、任务管理、评审/修复触发）
+- `dtw` 瘦客户端二进制（多服务器认证、远程命令执行）
+
 **第二轮**：
 - 完整的 Issue → 分析 → 修复 → PR 自动化流程
 - entrypoint.sh fix_issue 适配（credential helper + 默认分支 checkout）
@@ -435,6 +463,12 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - 创建一个描述完整的 bug Issue → 添加 `auto-fix` 标签 → 自动分析 → Issue 收到根因分析评论（定位到文件/方法/行号 + 原因分析 + 修复建议）
 - 创建一个描述不足的 Issue → 添加标签 → Issue 收到追问评论（列出需补充的信息）
 - 同一 Issue 重复添加标签不重复触发（幂等性，已有基础设施保障）
+
+**M3.3.1**：
+- `dtw auth login` 认证到 DTWorkflow 服务端 → `dtw status` 查看连接状态
+- `dtw task list` 远程查询任务列表 → 结果与 `dtworkflow task list` 一致
+- `dtw review-pr --repo myrepo --pr 42` 远程触发评审 → 服务端创建评审任务
+- 认证多个服务器 → `dtw auth switch` 切换 → 命令作用于切换后的服务器
 
 **第二轮**：
 - 创建一个描述完整的 bug Issue → 添加 `auto-fix` 标签 → 自动分析根因 → 自动创建修复 PR → PR 关联 Issue → Phase 2 自动评审修复 PR
@@ -557,7 +591,8 @@ Phase 1 (基础设施)
 | Phase 1 | 基础设施——所有后续功能的基座 | 第一优先 |
 | Phase 2 | PR 评审——最快产出业务价值，团队感知最明显 | 紧接 Phase 1 |
 | Phase 3 第一轮 | Issue 分析与定位——只读模式，独立交付根因分析价值 | Phase 2 之后 |
-| Phase 3 第二轮 | Issue 自动修复与 PR 创建——引入写操作，需第一轮验证分析质量后启动 | 第一轮之后 |
+| Phase 3 M3.3.1 | 远程瘦客户端与 REST API——服务端 API 层 + `dtw` 瘦客户端 | 第一轮之后 |
+| Phase 3 第二轮 | Issue 自动修复与 PR 创建——引入写操作，需第一轮验证分析质量后启动 | M3.3.1 之后 |
 | Phase 4 | 测试补全——补足质量基础，为 Phase 5 做准备 | Phase 3 之后 |
 | Phase 5 | E2E 测试——最复杂，依赖前面所有基础 | 最后实施 |
 
