@@ -285,12 +285,32 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 本地开发环境对接飞书 Webhook 联调测试（2026-04-02 验证通过：蓝色"开始"卡片 + 绿色"完成"卡片均正常推送，HMAC-SHA256 签名校验通过）
 - [ ] 远程测试服务器端到端测试（真实 Gitea PR 流程 → 飞书开始/完成双通知验证）
 
+#### M2.7 每日评审统计报告
+> 说明：每日定时通过飞书通知发送前一天的 PR 评审统计摘要。初期聚焦 PR 评审维度，架构预留扩展到 Issue 修复、测试生成等统计维度。
+- [ ] 定时调度机制（asynq periodic task，cron 表达式可配置，默认每天 09:00）
+- [ ] 前日评审数据聚合（基于 `review_results` + `tasks` 表按时间窗口查���）
+  - [ ] 基础统计：评审总数、成功次数、失败次数、需修改（Request Changes）次数
+  - [ ] 严重程度分布：CRITICAL / ERROR / WARNING / INFO 各计数
+  - [ ] 关键 PR 高亮：评审次数最多的 PR（重新评审触发最多）、issue 数量最多的 PR
+  - [ ] 仓库维度分组（多仓库场景下按仓库拆分统计）
+- [ ] 飞书统计摘要卡片格式化（复用 M2.6 卡片能力，新设计统计专用布局）
+  - [ ] 卡片内容：日期 + 统计表格 + 关键 PR 链接 + 趋势指示（较前日变化）
+- [ ] 配置段 `daily_report`
+  - [ ] `enabled`：启用开关
+  - [ ] `cron`：cron 表达式（默认 `0 9 * * *`）
+  - [ ] `timezone`：时区（默认 `Asia/Shanghai`）
+  - [ ] `feishu_webhook_url` / `feishu_secret`：独立 Webhook 配置（与实时通知可发不同群）
+- [ ] 可扩展统计收集器架构：接口化设计，未来可插拔新增 fix_issue / gen_tests 等维度
+- [ ] 空数据处理：前日无评审任务时发送简短"无评审活动"通知或跳过（可配置）
+- [ ] 示例配置 `dtworkflow.example.yaml` 补充 `daily_report` 配置示例
+
 ### 交付物
 - 完整可用的 PR 自动评审功能
 - 评审 prompt 模板库（Java / Vue）
 - 评审配置文档（含 Claude 模型/推理强度配置说明）
 - 容器执行超时可配置化（`worker.timeouts` 按任务类型）+ stream-json 活跃度检测（`worker.stream_monitor`，默认关闭）
 - 飞书通知渠道（Webhook 模式，交互卡片格式，双通知时机）
+- 每日评审统计报告（定时飞书推送，前日 PR 评审摘要）
 
 #### 容器执行超时与可观测性
 > 讨论记录：`docs/discussions/2026-03-27-container-timeout-observability.md`
@@ -305,6 +325,8 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 创建一个包含已知问题的 PR → 自动评审 → 正确识别问题并分级 → 逐行 comment + summary → 严重问题自动打回（2026-03-27 E2E 验证通过，PR #9）
 - [ ] 更新 PR 后自动重新评审（单元测试覆盖，E2E 待补充）
 - [ ] Java 和 Vue 仓库各验证一轮
+- [ ] 每日统计报告定时触发 → 飞书收到统计摘要卡片（含评审总数、成功/失败计数、关键 PR 链接）
+- [ ] 无评审活动日正确处理（跳过或发送简短通知）
 
 ---
 
@@ -592,6 +614,7 @@ Phase 1 (基础设施)
 | Phase 2 | PR 评审——最快产出业务价值，团队感知最明显 | 紧接 Phase 1 |
 | Phase 3 第一轮 | Issue 分析与定位——只读模式，独立交付根因分析价值 | Phase 2 之后 |
 | Phase 3 M3.3.1 | 远程瘦客户端与 REST API——服务端 API 层 + `dtw` 瘦客户端 | 第一轮之后 |
+| Phase 2 M2.7 | 每日评审统计报告——定时飞书推送，运营可观测性 | Phase 3 第一轮之后或并行 |
 | Phase 3 第二轮 | Issue 自动修复与 PR 创建——引入写操作，需第一轮验证分析质量后启动 | M3.3.1 之后 |
 | Phase 4 | 测试补全——补足质量基础，为 Phase 5 做准备 | Phase 3 之后 |
 | Phase 5 | E2E 测试——最复杂，依赖前面所有基础 | 最后实施 |
