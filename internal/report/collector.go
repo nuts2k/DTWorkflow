@@ -2,6 +2,7 @@ package report
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,15 @@ func (c *ReviewStatCollector) Collect(ctx context.Context, tr TimeRange) (*Daily
 	records, err := c.store.ListReviewResultsByTimeRange(ctx, tr.Start, tr.End)
 	if err != nil {
 		return nil, err
+	}
+
+	// 数据库查询硬上限 2000 条，达到上限时输出警告
+	if len(records) >= 2000 {
+		slog.WarnContext(ctx, "评审记录数量达到查询上限，统计数据可能不完整",
+			"count", len(records),
+			"limit", 2000,
+			"date", tr.Start.Format("2006-01-02"),
+		)
 	}
 
 	stats := &DailyStats{

@@ -155,21 +155,27 @@ func (r feishuWebhookResponse) message() string {
 // 仅执行一次 json.Marshal，避免 Marshal→Unmarshal→Marshal 的三重序列化。
 func (n *FeishuNotifier) marshalRequestBody(cardMap map[string]any) ([]byte, error) {
 	if n.secret != "" {
+		// 浅拷贝避免修改调用者的 map
+		m := make(map[string]any, len(cardMap)+2)
+		for k, v := range cardMap {
+			m[k] = v
+		}
 		timestamp := time.Now().Unix()
-		sign, err := genSign(n.secret, timestamp)
+		sign, err := GenSign(n.secret, timestamp)
 		if err != nil {
 			return nil, err
 		}
-		cardMap["timestamp"] = fmt.Sprintf("%d", timestamp)
-		cardMap["sign"] = sign
+		m["timestamp"] = fmt.Sprintf("%d", timestamp)
+		m["sign"] = sign
+		return json.Marshal(m)
 	}
 	return json.Marshal(cardMap)
 }
 
-// genSign 按飞书自定义机器人签名算法生成签名。
+// GenSign 按飞书自定义机器人签名算法生成签名。
 // 算法：将 "timestamp\nsecret" 作为 HMAC-SHA256 的密钥，对空消息体签名，再 base64 编码。
 // 参考：https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot
-func genSign(secret string, timestamp int64) (string, error) {
+func GenSign(secret string, timestamp int64) (string, error) {
 	stringToSign := fmt.Sprintf("%d\n%s", timestamp, secret)
 	h := hmac.New(sha256.New, []byte(stringToSign))
 	_, err := h.Write([]byte{})

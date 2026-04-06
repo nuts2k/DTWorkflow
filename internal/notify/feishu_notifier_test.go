@@ -205,19 +205,24 @@ func TestFeishuNotifier_Send_APIErrorIn200Response(t *testing.T) {
 }
 
 func TestGenSign(t *testing.T) {
-	sign, err := genSign("test-secret", 1617000000)
+	// 固定时间戳和密钥，验证输出稳定
+	sign, err := GenSign("test-secret", 1700000000)
 	if err != nil {
-		t.Fatalf("genSign error: %v", err)
+		t.Fatalf("GenSign: %v", err)
 	}
 	if sign == "" {
-		t.Fatal("签名不应为空")
+		t.Fatal("GenSign returned empty string")
 	}
-	sign2, _ := genSign("test-secret", 1617000000)
+
+	// 相同输入应产生相同输出
+	sign2, _ := GenSign("test-secret", 1700000000)
 	if sign != sign2 {
-		t.Errorf("相同输入应产生相同签名: %q != %q", sign, sign2)
+		t.Errorf("GenSign not deterministic: %q != %q", sign, sign2)
 	}
-	sign3, _ := genSign("other-secret", 1617000000)
+
+	// 不同密钥应产生不同签名
+	sign3, _ := GenSign("other-secret", 1700000000)
 	if sign == sign3 {
-		t.Error("不同 secret 应产生不同签名")
+		t.Error("different secrets should produce different signs")
 	}
 }

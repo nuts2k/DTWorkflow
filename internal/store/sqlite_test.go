@@ -524,6 +524,7 @@ func TestAllTaskTypesCanBeInserted(t *testing.T) {
 		model.TaskTypeReviewPR,
 		model.TaskTypeFixIssue,
 		model.TaskTypeGenTests,
+		model.TaskTypeGenDailyReport,
 	}
 
 	for i, tt := range allTypes {

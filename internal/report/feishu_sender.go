@@ -3,15 +3,14 @@ package report
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 )
 
 // CardSender 发送预格式化的飞书卡片
@@ -84,26 +83,18 @@ func (s *ReportFeishuSender) SendCard(ctx context.Context, cardMap map[string]an
 // marshalWithSign 序列化卡片并添加签名（若配置了 secret）
 func (s *ReportFeishuSender) marshalWithSign(cardMap map[string]any) ([]byte, error) {
 	if s.secret != "" {
+		m := make(map[string]any, len(cardMap)+2)
+		for k, v := range cardMap {
+			m[k] = v
+		}
 		timestamp := time.Now().Unix()
-		sign, err := reportGenSign(s.secret, timestamp)
+		sign, err := notify.GenSign(s.secret, timestamp)
 		if err != nil {
 			return nil, err
 		}
-		cardMap["timestamp"] = fmt.Sprintf("%d", timestamp)
-		cardMap["sign"] = sign
+		m["timestamp"] = fmt.Sprintf("%d", timestamp)
+		m["sign"] = sign
+		return json.Marshal(m)
 	}
 	return json.Marshal(cardMap)
-}
-
-// reportGenSign 按飞书自定义机器人签名算法生成签名。
-// 算法与 notify.genSign 一致：HMAC-SHA256(key="timestamp\nsecret", msg="") -> base64。
-// 因 notify.genSign 未导出，此处独立实现。
-func reportGenSign(secret string, timestamp int64) (string, error) {
-	stringToSign := fmt.Sprintf("%d\n%s", timestamp, secret)
-	h := hmac.New(sha256.New, []byte(stringToSign))
-	_, err := h.Write([]byte{})
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
 }

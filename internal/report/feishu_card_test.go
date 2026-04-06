@@ -82,7 +82,7 @@ func TestTrendIndicator(t *testing.T) {
 	}{
 		{10, 5, true, "(+5)"},
 		{3, 8, true, "(-5)"},
-		{5, 5, true, "(-)"},
+		{5, 5, true, "(=)"},
 		{10, 0, false, ""},
 	}
 	for _, tt := range tests {

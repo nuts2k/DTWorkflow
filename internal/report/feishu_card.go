@@ -128,7 +128,7 @@ func trendIndicator(current, previous int, hasPrev bool) string {
 	case diff < 0:
 		return fmt.Sprintf("(%d)", diff)
 	default:
-		return "(-)"
+		return "(=)"
 	}
 }
 
