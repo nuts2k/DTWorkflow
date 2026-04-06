@@ -73,6 +73,10 @@ func (m *mockStoreForRecovery) HasNewerReviewTask(_ context.Context, _ string, _
 	return false, nil
 }
 
+func (m *mockStoreForRecovery) ListReviewResultsByTimeRange(_ context.Context, _, _ time.Time) ([]*model.ReviewRecord, error) {
+	return nil, nil
+}
+
 // mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
 type mockEnqueuerForRecovery struct {
 	enqueueErr error

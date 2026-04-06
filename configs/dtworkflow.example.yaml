@@ -143,3 +143,14 @@ repos:
       #   - "docs/java-standards.md"
       # model: "claude-opus-4-6"        # 仓库级模型覆盖（留空则继承 claude.model）
       # effort: "medium"                # 仓库级推理强度覆盖（留空则继承 claude.effort）
+
+# 每日评审统计报告
+# 定时通过飞书发送前一天的 PR 评审统计摘要。
+# 与实时通知的飞书 Webhook 独立配置，可发送到不同群。
+daily_report:
+  enabled: false                            # 启用开关
+  cron: "0 9 * * *"                         # 定时触发表达式（默认每天 09:00）
+  timezone: "Asia/Shanghai"                 # 触发时区
+  skip_empty: false                         # 无评审活动时是否跳过发送（false = 发送简短心跳通知）
+  feishu_webhook: ""                        # 飞书 Webhook URL
+  feishu_secret: ""                         # 签名密钥（建议开启）

@@ -57,6 +57,10 @@ type Store interface {
 	// ListReviewResults 按仓库全名列出评审结果，按创建时间倒序
 	ListReviewResults(ctx context.Context, repoFullName string, limit, offset int) ([]*model.ReviewRecord, error)
 
+	// ListReviewResultsByTimeRange 按时间范围查询所有仓库的评审结果。
+	// start inclusive, end exclusive。按 created_at DESC 排序。硬上限 2000 条。
+	ListReviewResultsByTimeRange(ctx context.Context, start, end time.Time) ([]*model.ReviewRecord, error)
+
 	// Ping 检测数据库连接是否可用，用于健康检查
 	Ping(ctx context.Context) error
 

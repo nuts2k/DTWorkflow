@@ -18,7 +18,8 @@ import (
 const (
 	AsynqTypeReviewPR = "dtworkflow:review_pr"
 	AsynqTypeFixIssue = "dtworkflow:fix_issue"
-	AsynqTypeGenTests = "dtworkflow:gen_tests"
+	AsynqTypeGenTests       = "dtworkflow:gen_tests"
+	AsynqTypeGenDailyReport = "dtworkflow:gen_daily_report"
 )
 
 // 队列名称常量
@@ -153,6 +154,8 @@ func taskTypeToAsynq(t model.TaskType) string {
 		return AsynqTypeFixIssue
 	case model.TaskTypeGenTests:
 		return AsynqTypeGenTests
+	case model.TaskTypeGenDailyReport:
+		return AsynqTypeGenDailyReport
 	default:
 		slog.Warn("未知的任务类型，将原样使用", slog.String("task_type", string(t)))
 		return string(t)

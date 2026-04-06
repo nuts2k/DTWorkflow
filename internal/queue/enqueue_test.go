@@ -113,6 +113,10 @@ func (m *mockStore) HasNewerReviewTask(_ context.Context, _ string, _ int64, _ t
 	return false, nil
 }
 
+func (m *mockStore) ListReviewResultsByTimeRange(_ context.Context, _, _ time.Time) ([]*model.ReviewRecord, error) {
+	return nil, nil
+}
+
 // mockEnqueuer 实现 Enqueuer 接口的 mock
 type mockEnqueuer struct {
 	enqueueErr error

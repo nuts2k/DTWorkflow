@@ -8,7 +8,8 @@ type TaskType string
 const (
 	TaskTypeReviewPR TaskType = "review_pr"
 	TaskTypeFixIssue TaskType = "fix_issue"
-	TaskTypeGenTests TaskType = "gen_tests"
+	TaskTypeGenTests       TaskType = "gen_tests"
+	TaskTypeGenDailyReport TaskType = "gen_daily_report"
 )
 
 // TaskPriority 任务优先级（asynq 使用整数，越小越高）
@@ -37,7 +38,7 @@ const (
 // IsValid 检查任务类型是否为已知值
 func (t TaskType) IsValid() bool {
 	switch t {
-	case TaskTypeReviewPR, TaskTypeFixIssue, TaskTypeGenTests:
+	case TaskTypeReviewPR, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport:
 		return true
 	}
 	return false

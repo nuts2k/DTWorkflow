@@ -24,8 +24,9 @@ type Config struct {
 	Worker   WorkerConfig   `mapstructure:"worker"`
 	Webhook  WebhookConfig  `mapstructure:"webhook"`
 	Notify   NotifyConfig   `mapstructure:"notify"`
-	Review   ReviewOverride `mapstructure:"review"`
-	Repos    []RepoConfig   `mapstructure:"repos"`
+	Review      ReviewOverride    `mapstructure:"review"`
+	DailyReport DailyReportConfig `mapstructure:"daily_report"`
+	Repos       []RepoConfig      `mapstructure:"repos"`
 }
 
 type ClaudeConfig struct {
@@ -89,6 +90,16 @@ type StreamMonitorConf struct {
 
 type WebhookConfig struct {
 	Secret string `mapstructure:"secret"`
+}
+
+// DailyReportConfig 每日评审统计报告配置
+type DailyReportConfig struct {
+	Enabled       bool   `mapstructure:"enabled"`
+	Cron          string `mapstructure:"cron"`
+	Timezone      string `mapstructure:"timezone"`
+	SkipEmpty     bool   `mapstructure:"skip_empty"`
+	FeishuWebhook string `mapstructure:"feishu_webhook"`
+	FeishuSecret  string `mapstructure:"feishu_secret"`
 }
 
 type NotifyConfig struct {
@@ -238,6 +249,11 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("webhook.secret", "")
 		m.v.SetDefault("notify.default_channel", "gitea")
 		m.v.SetDefault("notify.channels.gitea.enabled", false)
+
+		m.v.SetDefault("daily_report.enabled", false)
+		m.v.SetDefault("daily_report.cron", "0 9 * * *")
+		m.v.SetDefault("daily_report.timezone", "Asia/Shanghai")
+		m.v.SetDefault("daily_report.skip_empty", false)
 
 		return nil
 	}

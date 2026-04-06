@@ -1317,6 +1317,71 @@ func TestHasNewerReviewTask_IgnoresCancelledAndFailed(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_ListReviewResultsByTimeRange(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// 准备时间基准：以 UTC 天为单位
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+	yesterday := now.Add(-24 * time.Hour)
+
+	// 创建关联任务（满足 review_results.task_id 外键约束）
+	for _, id := range []string{"task-tr-1", "task-tr-2", "task-tr-3"} {
+		task := &model.TaskRecord{
+			ID:        id,
+			TaskType:  model.TaskTypeReviewPR,
+			Status:    model.TaskStatusSucceeded,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		if err := s.CreateTask(ctx, task); err != nil {
+			t.Fatalf("CreateTask(%s): %v", id, err)
+		}
+	}
+
+	// 准备测试数据：3 条记录，跨越两天
+	records := []*model.ReviewRecord{
+		{ID: "rr-tr-1", TaskID: "task-tr-1", RepoFullName: "acme/backend", PRNumber: 1, HeadSHA: "a1", Verdict: "approve", CreatedAt: yesterday.Add(2 * time.Hour)},
+		{ID: "rr-tr-2", TaskID: "task-tr-2", RepoFullName: "acme/frontend", PRNumber: 2, HeadSHA: "a2", Verdict: "request_changes", CriticalCount: 1, CreatedAt: yesterday.Add(10 * time.Hour)},
+		{ID: "rr-tr-3", TaskID: "task-tr-3", RepoFullName: "acme/backend", PRNumber: 3, HeadSHA: "a3", Verdict: "approve", CreatedAt: now.Add(1 * time.Hour)}, // 今天的，应被排除
+	}
+	for _, r := range records {
+		if err := s.SaveReviewResult(ctx, r); err != nil {
+			t.Fatalf("SaveReviewResult(%s): %v", r.ID, err)
+		}
+	}
+
+	// 查询昨天的记录
+	results, err := s.ListReviewResultsByTimeRange(ctx, yesterday, now)
+	if err != nil {
+		t.Fatalf("ListReviewResultsByTimeRange: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("want 2 results for yesterday, got %d", len(results))
+	}
+
+	// 查询今天的记录
+	tomorrow := now.Add(24 * time.Hour)
+	results, err = s.ListReviewResultsByTimeRange(ctx, now, tomorrow)
+	if err != nil {
+		t.Fatalf("ListReviewResultsByTimeRange: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("want 1 result for today, got %d", len(results))
+	}
+
+	// 空时间窗口
+	results, err = s.ListReviewResultsByTimeRange(ctx, now.Add(-48*time.Hour), now.Add(-47*time.Hour))
+	if err != nil {
+		t.Fatalf("ListReviewResultsByTimeRange: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("want 0 results, got %d", len(results))
+	}
+}
+
 // TestMigration_PRNumber 验证迁移 13/14/15 成功执行，pr_number 列存在且可写入读取
 func TestMigration_PRNumber(t *testing.T) {
 	s := newTestStore(t)

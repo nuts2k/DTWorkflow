@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/robfig/cron/v3"
 )
 
 var validClaudeEfforts = map[string]bool{
@@ -238,6 +239,21 @@ func Validate(cfg *Config) error {
 			if !doublestar.ValidatePattern(pattern) {
 				errs = append(errs, fmt.Errorf("repos[%d].review.ignore_patterns[%d] 语法不合法: %q", i, j, pattern))
 			}
+		}
+	}
+
+	// daily_report 校验（仅 enabled=true 时）
+	if cfg.DailyReport.Enabled {
+		if _, cronErr := cron.ParseStandard(cfg.DailyReport.Cron); cronErr != nil {
+			errs = append(errs, fmt.Errorf("daily_report.cron 表达式无效: %w", cronErr))
+		}
+		if _, tzErr := time.LoadLocation(cfg.DailyReport.Timezone); tzErr != nil {
+			errs = append(errs, fmt.Errorf("daily_report.timezone 无效: %w", tzErr))
+		}
+		if strings.TrimSpace(cfg.DailyReport.FeishuWebhook) == "" {
+			errs = append(errs, fmt.Errorf("daily_report.feishu_webhook 启用每日报告时不能为空"))
+		} else if u, urlErr := url.Parse(cfg.DailyReport.FeishuWebhook); urlErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("daily_report.feishu_webhook 格式无效: %q", cfg.DailyReport.FeishuWebhook))
 		}
 	}
 

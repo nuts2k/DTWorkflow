@@ -466,6 +466,34 @@ func (s *SQLiteStore) ListReviewResults(ctx context.Context, repoFullName string
 	return results, nil
 }
 
+// ListReviewResultsByTimeRange 按时间范围查询所有仓库的评审结果
+func (s *SQLiteStore) ListReviewResultsByTimeRange(ctx context.Context, start, end time.Time) ([]*model.ReviewRecord, error) {
+	query := `SELECT ` + reviewResultColumns + `
+	FROM review_results
+	WHERE created_at >= ? AND created_at < ?
+	ORDER BY created_at DESC
+	LIMIT 2000`
+
+	rows, err := s.db.QueryContext(ctx, query, start.UTC().Format(time.DateTime), end.UTC().Format(time.DateTime))
+	if err != nil {
+		return nil, fmt.Errorf("按时间范围查询评审结果失败: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*model.ReviewRecord
+	for rows.Next() {
+		r, err := scanReviewRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("扫描评审结果失败: %w", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历评审结果失败: %w", err)
+	}
+	return results, nil
+}
+
 // scanReviewRecord 从单行结果扫描 ReviewRecord
 func scanReviewRecord(row rowScanner) (*model.ReviewRecord, error) {
 	var (

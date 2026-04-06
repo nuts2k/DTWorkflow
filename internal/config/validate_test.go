@@ -814,3 +814,77 @@ func TestValidate_UnknownChannelStillRejected(t *testing.T) {
 		t.Errorf("错误应包含 '仅支持'，得到: %v", err)
 	}
 }
+
+func TestValidate_DailyReport(t *testing.T) {
+	t.Run("disabled skips all checks", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.DailyReport = DailyReportConfig{Enabled: false}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("disabled daily_report should pass: %v", err)
+		}
+	})
+
+	t.Run("enabled requires feishu_webhook", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.DailyReport = DailyReportConfig{
+			Enabled:  true,
+			Cron:     "0 9 * * *",
+			Timezone: "Asia/Shanghai",
+		}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("expected error for missing feishu_webhook")
+		}
+		if !strings.Contains(err.Error(), "feishu_webhook") {
+			t.Errorf("error should mention feishu_webhook: %v", err)
+		}
+	})
+
+	t.Run("invalid cron expression", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.DailyReport = DailyReportConfig{
+			Enabled:       true,
+			Cron:          "not-a-cron",
+			Timezone:      "Asia/Shanghai",
+			FeishuWebhook: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+		}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("expected error for invalid cron")
+		}
+		if !strings.Contains(err.Error(), "cron") {
+			t.Errorf("error should mention cron: %v", err)
+		}
+	})
+
+	t.Run("invalid timezone", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.DailyReport = DailyReportConfig{
+			Enabled:       true,
+			Cron:          "0 9 * * *",
+			Timezone:      "Invalid/Zone",
+			FeishuWebhook: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+		}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("expected error for invalid timezone")
+		}
+		if !strings.Contains(err.Error(), "timezone") {
+			t.Errorf("error should mention timezone: %v", err)
+		}
+	})
+
+	t.Run("valid full config", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.DailyReport = DailyReportConfig{
+			Enabled:       true,
+			Cron:          "0 9 * * *",
+			Timezone:      "Asia/Shanghai",
+			FeishuWebhook: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+			FeishuSecret:  "sec123",
+		}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("valid config should pass: %v", err)
+		}
+	})
+}

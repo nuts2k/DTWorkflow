@@ -22,6 +22,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/report"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
@@ -667,8 +668,44 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	mux.Handle(queue.AsynqTypeFixIssue, processor)
 	mux.Handle(queue.AsynqTypeGenTests, processor)
 
+	// M2.7: 每日报告 Handler 装配
+	var dailyReportHandler *report.DailyReportHandler
+	if cfg.AppCfg != nil && cfg.AppCfg.DailyReport.Enabled {
+		drCfg := cfg.AppCfg.DailyReport
+		reportSender, reportErr := report.NewReportFeishuSender(drCfg.FeishuWebhook, drCfg.FeishuSecret)
+		if reportErr != nil {
+			return fmt.Errorf("初始化每日报告飞书发送器失败: %w", reportErr)
+		}
+		reportCollector := report.NewReviewStatCollector(deps.Store)
+		reportGen := report.NewReportGenerator(reportCollector, reportSender, drCfg.Timezone, drCfg.SkipEmpty)
+		dailyReportHandler = report.NewDailyReportHandler(deps.Store, reportGen)
+		mux.Handle(queue.AsynqTypeGenDailyReport, dailyReportHandler)
+	}
+
 	if err := deps.AsynqServer.Start(mux); err != nil {
 		return fmt.Errorf("启动 asynq Server 失败: %w", err)
+	}
+
+	// M2.7: 启动每日报告 Scheduler
+	var reportScheduler *asynq.Scheduler
+	if dailyReportHandler != nil {
+		drCfg := cfg.AppCfg.DailyReport
+		loc, _ := time.LoadLocation(drCfg.Timezone) // 已在 Validate 校验
+		redisOpt := asynq.RedisClientOpt{Addr: cfg.RedisAddr, Password: cfg.RedisPassword, DB: cfg.RedisDB}
+		reportScheduler = asynq.NewScheduler(redisOpt, &asynq.SchedulerOpts{
+			Location: loc,
+		})
+		entryID, schedErr := reportScheduler.Register(drCfg.Cron, asynq.NewTask(queue.AsynqTypeGenDailyReport, nil))
+		if schedErr != nil {
+			return fmt.Errorf("注册每日报告定时任务失败: %w", schedErr)
+		}
+		slog.Info("每日报告定时任务已注册", "cron", drCfg.Cron, "timezone", drCfg.Timezone, "entry_id", entryID)
+
+		go func() {
+			if runErr := reportScheduler.Run(); runErr != nil {
+				slog.Error("每日报告 Scheduler 异常退出", "error", runErr)
+			}
+		}()
 	}
 
 	// 启动 Recovery Goroutine
@@ -712,6 +749,12 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 
 	// 等待 stopCh 关闭 -> 分层关闭
 	<-stopCh
+
+	// M2.7: 关闭 Scheduler（在 gracefulShutdown 之前，确保不再入队新任务）
+	if reportScheduler != nil {
+		reportScheduler.Shutdown()
+		slog.Info("每日报告 Scheduler 已关闭")
+	}
 
 	slog.Info("收到关闭信号，开始分层关闭...")
 	return gracefulShutdown(server, deps, recoveryCancel, gcCancel)

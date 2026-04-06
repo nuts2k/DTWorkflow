@@ -82,6 +82,10 @@ func (m *mockTaskStore) HasNewerReviewTask(_ context.Context, _ string, _ int64,
 	return false, nil
 }
 
+func (m *mockTaskStore) ListReviewResultsByTimeRange(_ context.Context, _, _ time.Time) ([]*model.ReviewRecord, error) {
+	return nil, nil
+}
+
 type stubTaskEnqueuer struct {
 	asynqID     string
 	enqueueErr  error
