@@ -2,9 +2,12 @@ package report
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -12,13 +15,14 @@ import (
 
 // mockTaskStore 模拟 TaskStore 接口
 type mockTaskStore struct {
-	created []*model.TaskRecord
-	updated []*model.TaskRecord
+	created   []*model.TaskRecord
+	updated   []*model.TaskRecord
+	createErr error
 }
 
 func (m *mockTaskStore) CreateTask(_ context.Context, record *model.TaskRecord) error {
 	m.created = append(m.created, record)
-	return nil
+	return m.createErr
 }
 
 func (m *mockTaskStore) UpdateTask(_ context.Context, record *model.TaskRecord) error {
@@ -59,6 +63,12 @@ func TestDailyReportHandler_Success(t *testing.T) {
 	if store.created[0].TaskType != model.TaskTypeGenDailyReport {
 		t.Errorf("task type = %v, want %v", store.created[0].TaskType, model.TaskTypeGenDailyReport)
 	}
+	if !strings.HasPrefix(store.created[0].ID, "daily-report-") {
+		t.Fatalf("task id should have daily-report prefix, got %q", store.created[0].ID)
+	}
+	if _, err := uuid.Parse(strings.TrimPrefix(store.created[0].ID, "daily-report-")); err != nil {
+		t.Fatalf("task id suffix should be uuid: %v", err)
+	}
 
 	if len(store.updated) != 1 {
 		t.Fatalf("expected 1 updated task, got %d", len(store.updated))
@@ -88,5 +98,23 @@ func TestDailyReportHandler_GeneratorError(t *testing.T) {
 	}
 	if store.updated[0].Error == "" {
 		t.Error("task error should be set")
+	}
+}
+
+func TestDailyReportHandler_CreateTaskErrorSkipsUpdate(t *testing.T) {
+	store := &mockTaskStore{createErr: errors.New("duplicate task id")}
+	gen := &mockGenerator{}
+	handler := NewDailyReportHandler(store, gen)
+
+	task := asynq.NewTask("dtworkflow:gen_daily_report", nil)
+	err := handler.ProcessTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("ProcessTask: %v", err)
+	}
+	if !gen.called {
+		t.Fatal("generator.Generate was not called")
+	}
+	if len(store.updated) != 0 {
+		t.Fatalf("expected no UpdateTask after CreateTask failure, got %d", len(store.updated))
 	}
 }

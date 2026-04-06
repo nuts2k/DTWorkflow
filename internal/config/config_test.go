@@ -223,6 +223,46 @@ func TestManager_Load_DefaultsAndEnvWithoutConfigFile(t *testing.T) {
 	}
 }
 
+func TestManager_Load_DailyReportEnvOnly(t *testing.T) {
+	t.Setenv("DTWORKFLOW_REDIS_ADDR", "envonly:6379")
+	t.Setenv("DTWORKFLOW_WEBHOOK_SECRET", "test-secret")
+	t.Setenv("DTWORKFLOW_NOTIFY_CHANNELS_GITEA_ENABLED", "true")
+	t.Setenv("DTWORKFLOW_GITEA_URL", "http://gitea:3000")
+	t.Setenv("DTWORKFLOW_GITEA_TOKEN", "test-token")
+	t.Setenv("DTWORKFLOW_CLAUDE_API_KEY", "test-api-key")
+	t.Setenv("DTWORKFLOW_DAILY_REPORT_ENABLED", "true")
+	t.Setenv("DTWORKFLOW_DAILY_REPORT_CRON", "0 9 * * *")
+	t.Setenv("DTWORKFLOW_DAILY_REPORT_TIMEZONE", "Asia/Shanghai")
+	t.Setenv("DTWORKFLOW_DAILY_REPORT_FEISHU_WEBHOOK", "https://open.feishu.cn/open-apis/bot/v2/hook/xxx")
+	t.Setenv("DTWORKFLOW_DAILY_REPORT_FEISHU_SECRET", "sec-env")
+
+	m, err := NewManager(
+		WithDefaults(),
+		WithEnvPrefix("DTWORKFLOW"),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := m.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	cfg := m.Get()
+	if cfg == nil {
+		t.Fatalf("Get returned nil config")
+	}
+	if !cfg.DailyReport.Enabled {
+		t.Fatal("daily_report.enabled should be true")
+	}
+	if cfg.DailyReport.FeishuWebhook != "https://open.feishu.cn/open-apis/bot/v2/hook/xxx" {
+		t.Fatalf("daily_report.feishu_webhook got %q", cfg.DailyReport.FeishuWebhook)
+	}
+	if cfg.DailyReport.FeishuSecret != "sec-env" {
+		t.Fatalf("daily_report.feishu_secret got %q", cfg.DailyReport.FeishuSecret)
+	}
+}
+
 func TestWorkerTimeoutsAndStreamMonitor_Parse(t *testing.T) {
 	t.Parallel()
 

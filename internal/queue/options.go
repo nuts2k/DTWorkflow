@@ -40,6 +40,8 @@ func defaultTaskTimeout(taskType model.TaskType) time.Duration {
 		return 30 * time.Minute
 	case model.TaskTypeGenTests:
 		return 20 * time.Minute
+	case model.TaskTypeGenDailyReport:
+		return 10 * time.Minute
 	default:
 		return 10 * time.Minute
 	}

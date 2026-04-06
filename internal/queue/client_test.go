@@ -40,6 +40,7 @@ func TestTaskTypeToAsynq(t *testing.T) {
 		{model.TaskTypeReviewPR, AsynqTypeReviewPR},
 		{model.TaskTypeFixIssue, AsynqTypeFixIssue},
 		{model.TaskTypeGenTests, AsynqTypeGenTests},
+		{model.TaskTypeGenDailyReport, AsynqTypeGenDailyReport},
 		{"unknown_type", "unknown_type"}, // 未知类型原样返回
 	}
 	for _, tt := range tests {

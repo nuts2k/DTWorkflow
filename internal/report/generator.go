@@ -34,14 +34,7 @@ func (g *ReportGenerator) Generate(ctx context.Context) error {
 		return fmt.Errorf("加载时区 %q 失败: %w", g.timezone, err)
 	}
 
-	// 计算"昨天"和"前天"的时间窗口（按配置时区）
-	now := time.Now().In(loc)
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	yesterdayStart := todayStart.Add(-24 * time.Hour)
-	dayBeforeStart := yesterdayStart.Add(-24 * time.Hour)
-
-	yesterdayRange := TimeRange{Start: yesterdayStart, End: todayStart}
-	dayBeforeRange := TimeRange{Start: dayBeforeStart, End: yesterdayStart}
+	yesterdayRange, dayBeforeRange := reportRanges(time.Now().In(loc), loc)
 
 	// 收集昨天的统计
 	stats, err := g.collector.Collect(ctx, yesterdayRange)
@@ -73,4 +66,13 @@ func (g *ReportGenerator) Generate(ctx context.Context) error {
 
 	g.logger.InfoContext(ctx, "每日报告发送成功", "date", stats.Date, "review_count", stats.Total.ReviewCount)
 	return nil
+}
+
+func reportRanges(now time.Time, loc *time.Location) (TimeRange, TimeRange) {
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+	dayBeforeStart := todayStart.AddDate(0, 0, -2)
+
+	return TimeRange{Start: yesterdayStart, End: todayStart},
+		TimeRange{Start: dayBeforeStart, End: yesterdayStart}
 }

@@ -15,15 +15,15 @@ import (
 //
 // 说明：本任务实现配置校验与仓库级覆盖（仅 notify 覆盖 + review 结构预留）。
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Gitea    GiteaConfig    `mapstructure:"gitea"`
-	Claude   ClaudeConfig   `mapstructure:"claude"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Log      LogConfig      `mapstructure:"log"`
-	Worker   WorkerConfig   `mapstructure:"worker"`
-	Webhook  WebhookConfig  `mapstructure:"webhook"`
-	Notify   NotifyConfig   `mapstructure:"notify"`
+	Server      ServerConfig      `mapstructure:"server"`
+	Gitea       GiteaConfig       `mapstructure:"gitea"`
+	Claude      ClaudeConfig      `mapstructure:"claude"`
+	Redis       RedisConfig       `mapstructure:"redis"`
+	Database    DatabaseConfig    `mapstructure:"database"`
+	Log         LogConfig         `mapstructure:"log"`
+	Worker      WorkerConfig      `mapstructure:"worker"`
+	Webhook     WebhookConfig     `mapstructure:"webhook"`
+	Notify      NotifyConfig      `mapstructure:"notify"`
 	Review      ReviewOverride    `mapstructure:"review"`
 	DailyReport DailyReportConfig `mapstructure:"daily_report"`
 	Repos       []RepoConfig      `mapstructure:"repos"`
@@ -254,6 +254,8 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("daily_report.cron", "0 9 * * *")
 		m.v.SetDefault("daily_report.timezone", "Asia/Shanghai")
 		m.v.SetDefault("daily_report.skip_empty", false)
+		m.v.SetDefault("daily_report.feishu_webhook", "")
+		m.v.SetDefault("daily_report.feishu_secret", "")
 
 		return nil
 	}

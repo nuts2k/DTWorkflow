@@ -17,6 +17,7 @@ func TestTaskTimeout(t *testing.T) {
 			{model.TaskTypeReviewPR, 10 * time.Minute},
 			{model.TaskTypeFixIssue, 30 * time.Minute},
 			{model.TaskTypeGenTests, 20 * time.Minute},
+			{model.TaskTypeGenDailyReport, 10 * time.Minute},
 			{"unknown", 10 * time.Minute}, // 未知类型返回默认值
 		}
 		for _, tt := range tests {
@@ -40,6 +41,7 @@ func TestTaskTimeout(t *testing.T) {
 			{model.TaskTypeReviewPR, 5 * time.Minute},
 			{model.TaskTypeFixIssue, 45 * time.Minute},
 			{model.TaskTypeGenTests, 25 * time.Minute},
+			{model.TaskTypeGenDailyReport, 10 * time.Minute},
 			{"unknown", 10 * time.Minute}, // 未知类型仍回退默认值
 		}
 		for _, tt := range tests {

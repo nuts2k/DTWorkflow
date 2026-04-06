@@ -695,7 +695,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		reportScheduler = asynq.NewScheduler(redisOpt, &asynq.SchedulerOpts{
 			Location: loc,
 		})
-		entryID, schedErr := reportScheduler.Register(drCfg.Cron, asynq.NewTask(queue.AsynqTypeGenDailyReport, nil))
+		entryID, schedErr := reportScheduler.Register(drCfg.Cron, newDailyReportTask())
 		if schedErr != nil {
 			return fmt.Errorf("注册每日报告定时任务失败: %w", schedErr)
 		}

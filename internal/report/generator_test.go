@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // mockCardSender 模拟 CardSender
@@ -80,5 +81,49 @@ func TestReportGenerator_Generate_SenderError(t *testing.T) {
 	err := gen.Generate(context.Background())
 	if err == nil {
 		t.Fatal("expected error from sender")
+	}
+}
+
+func TestReportRanges_AsiaShanghaiCalendarBoundaries(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+
+	yesterday, dayBefore := reportRanges(time.Date(2026, 4, 6, 9, 30, 0, 0, loc), loc)
+
+	if got, want := yesterday.Start, time.Date(2026, 4, 5, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("yesterday.Start = %v, want %v", got, want)
+	}
+	if got, want := yesterday.End, time.Date(2026, 4, 6, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("yesterday.End = %v, want %v", got, want)
+	}
+	if got, want := dayBefore.Start, time.Date(2026, 4, 4, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("dayBefore.Start = %v, want %v", got, want)
+	}
+	if got, want := dayBefore.End, time.Date(2026, 4, 5, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("dayBefore.End = %v, want %v", got, want)
+	}
+}
+
+func TestReportRanges_DSTUsesCalendarMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+
+	yesterday, dayBefore := reportRanges(time.Date(2026, 3, 9, 12, 0, 0, 0, loc), loc)
+
+	if got, want := yesterday.Start, time.Date(2026, 3, 8, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("yesterday.Start = %v, want %v", got, want)
+	}
+	if got, want := yesterday.End, time.Date(2026, 3, 9, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("yesterday.End = %v, want %v", got, want)
+	}
+	if got, want := dayBefore.Start, time.Date(2026, 3, 7, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("dayBefore.Start = %v, want %v", got, want)
+	}
+	if got, want := dayBefore.End, time.Date(2026, 3, 8, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("dayBefore.End = %v, want %v", got, want)
 	}
 }

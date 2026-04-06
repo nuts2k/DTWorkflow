@@ -1372,6 +1372,15 @@ func TestSQLiteStore_ListReviewResultsByTimeRange(t *testing.T) {
 		t.Errorf("want 1 result for today, got %d", len(results))
 	}
 
+	// 查询当天中午窗口，凌晨数据不应被错误包含
+	results, err = s.ListReviewResultsByTimeRange(ctx, now.Add(12*time.Hour), now.Add(13*time.Hour))
+	if err != nil {
+		t.Fatalf("ListReviewResultsByTimeRange(midday): %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("want 0 results for midday window, got %d", len(results))
+	}
+
 	// 空时间窗口
 	results, err = s.ListReviewResultsByTimeRange(ctx, now.Add(-48*time.Hour), now.Add(-47*time.Hour))
 	if err != nil {

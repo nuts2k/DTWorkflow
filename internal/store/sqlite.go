@@ -470,11 +470,11 @@ func (s *SQLiteStore) ListReviewResults(ctx context.Context, repoFullName string
 func (s *SQLiteStore) ListReviewResultsByTimeRange(ctx context.Context, start, end time.Time) ([]*model.ReviewRecord, error) {
 	query := `SELECT ` + reviewResultColumns + `
 	FROM review_results
-	WHERE created_at >= ? AND created_at < ?
+	WHERE julianday(created_at) >= julianday(?) AND julianday(created_at) < julianday(?)
 	ORDER BY created_at DESC
 	LIMIT 2000`
 
-	rows, err := s.db.QueryContext(ctx, query, start.UTC().Format(time.DateTime), end.UTC().Format(time.DateTime))
+	rows, err := s.db.QueryContext(ctx, query, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, fmt.Errorf("按时间范围查询评审结果失败: %w", err)
 	}

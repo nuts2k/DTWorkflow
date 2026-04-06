@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -44,7 +45,7 @@ func NewDailyReportHandler(store TaskStore, generator Generator) *DailyReportHan
 
 // ProcessTask 实现 asynq.Handler 接口
 func (h *DailyReportHandler) ProcessTask(ctx context.Context, _ *asynq.Task) error {
-	taskID := fmt.Sprintf("daily-report-%s", time.Now().UTC().Format("20060102-150405"))
+	taskID := fmt.Sprintf("daily-report-%s", uuid.NewString())
 	h.logger.InfoContext(ctx, "开始生成每日报告", "task_id", taskID)
 
 	// 1. 创建 TaskRecord
@@ -57,7 +58,9 @@ func (h *DailyReportHandler) ProcessTask(ctx context.Context, _ *asynq.Task) err
 		UpdatedAt: now,
 		StartedAt: &now,
 	}
+	created := true
 	if err := h.store.CreateTask(ctx, record); err != nil {
+		created = false
 		h.logger.WarnContext(ctx, "创建每日报告任务记录失败", "error", err)
 		// 不阻塞执行
 	}
@@ -75,8 +78,10 @@ func (h *DailyReportHandler) ProcessTask(ctx context.Context, _ *asynq.Task) err
 	} else {
 		record.Status = model.TaskStatusSucceeded
 	}
-	if updateErr := h.store.UpdateTask(ctx, record); updateErr != nil {
-		h.logger.WarnContext(ctx, "更新每日报告任务状态失败", "error", updateErr)
+	if created {
+		if updateErr := h.store.UpdateTask(ctx, record); updateErr != nil {
+			h.logger.WarnContext(ctx, "更新每日报告任务状态失败", "error", updateErr)
+		}
 	}
 
 	if err != nil {
