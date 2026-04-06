@@ -287,22 +287,22 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 #### M2.7 每日评审统计报告
 > 说明：每日定时通过飞书通知发送前一天的 PR 评审统计摘要。初期聚焦 PR 评审维度，架构预留扩展到 Issue 修复、测试生成等统计维度。
-- [ ] 定时调度机制（asynq periodic task，cron 表达式可配置，默认每天 09:00）
-- [ ] 前日评审数据聚合（基于 `review_results` + `tasks` 表按时间窗口查���）
-  - [ ] 基础统计：评审总数、成功次数、失败次数、需修改（Request Changes）次数
-  - [ ] 严重程度分布：CRITICAL / ERROR / WARNING / INFO 各计数
-  - [ ] 关键 PR 高亮：评审次数最多的 PR（重新评审触发最多）、issue 数量最多的 PR
-  - [ ] 仓库维度分组（多仓库场景下按仓库拆分统计）
-- [ ] 飞书统计摘要卡片格式化（复用 M2.6 卡片能力，新设计统计专用布局）
-  - [ ] 卡片内容：日期 + 统计表格 + 关键 PR 链接 + 趋势指示（较前日变化）
-- [ ] 配置段 `daily_report`
-  - [ ] `enabled`：启用开关
-  - [ ] `cron`：cron 表达式（默认 `0 9 * * *`）
-  - [ ] `timezone`：时区（默认 `Asia/Shanghai`）
-  - [ ] `feishu_webhook_url` / `feishu_secret`：独立 Webhook 配置（与实时通知可发不同群）
-- [ ] 可扩展统计收集器架构：接口化设计，未来可插拔新增 fix_issue / gen_tests 等维度
-- [ ] 空数据处理：前日无评审任务时发送简短"无评审活动"通知或跳过（可配置）
-- [ ] 示例配置 `dtworkflow.example.yaml` 补充 `daily_report` 配置示例
+- [x] 定时调度机制（asynq periodic task，cron 表达式可配置，默认每天 09:00）
+- [x] 前日评审数据聚合（基于 `review_results` + `tasks` 表按时间窗口查���）
+  - [x] 基础统计：评审总数、成功次数、失败次数、需修改（Request Changes）次数
+  - [x] 严重程度分布：CRITICAL / ERROR / WARNING / INFO 各计数
+  - [x] 关键 PR 高亮：评审次数最多的 PR（重新评审触发最多）、issue 数量最多的 PR
+  - [x] 仓库维度分组（多仓库场景下按仓库拆分统计）
+- [x] 飞书统计摘要卡片格式化（复用 M2.6 卡片能力，新设计统计专用布局）
+  - [x] 卡片内容：日期 + 统计表格 + 关键 PR 链接 + 趋势指示（较前日变化）
+- [x] 配置段 `daily_report`
+  - [x] `enabled`：启用开关
+  - [x] `cron`：cron 表达式（默认 `0 9 * * *`）
+  - [x] `timezone`：时区（默认 `Asia/Shanghai`）
+  - [x] `feishu_webhook` / `feishu_secret`：独立 Webhook 配置（与实时通知可发不同群）
+- [x] 可扩展统计收集器架构：接口化设计，未来可插拔新增 fix_issue / gen_tests 等维度
+- [x] 空数据处理：前日无评审任务时发送简短"无评审活动"通知或跳过（可配置）
+- [x] 示例配置 `dtworkflow.example.yaml` 补充 `daily_report` 配置示例
 
 ### 交付物
 - 完整可用的 PR 自动评审功能
