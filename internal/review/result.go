@@ -26,9 +26,20 @@ func (r CLIResponse) EffectiveCostUSD() float64 {
 }
 
 // IsExecutionError 判断 CLI 响应是否表示执行错误。
-// 同时检查 is_error 标志和 type 字段（type != "result" 视为错误）。
+// 同时检查 is_error 标志和 type 字段。
+// 注意：开启 stream_monitor 时，tryExtractResultCLIJSON 会将流事件
+// {"type":"result","subtype":"success"} 转换为 {"type":"success"}，
+// 因此 "success" 也必须视为正常类型。
 func (r CLIResponse) IsExecutionError() bool {
-	return r.IsError || (r.Type != "" && r.Type != "result")
+	if r.IsError {
+		return true
+	}
+	switch r.Type {
+	case "", "result", "success":
+		return false
+	default:
+		return true
+	}
 }
 
 // ReviewResult 是 Service.Execute 的返回值

@@ -485,6 +485,29 @@ func TestParseResult_TotalCostUSD(t *testing.T) {
 	}
 }
 
+func TestParseResult_StreamJsonSuccess(t *testing.T) {
+	// 流式监控路径下 tryExtractResultCLIJSON 将 type="result"+subtype="success"
+	// 转换为 type="success"，parseResult 不应将其视为错误
+	inner := `{"summary":"looks good","verdict":"approve","issues":[]}`
+	output := fmt.Sprintf(`{"type":"success","is_error":false,"total_cost_usd":0.03,"duration_ms":12000,"num_turns":1,"result":%q,"session_id":"stream-sess"}`, inner)
+
+	svc := &Service{}
+	result := svc.parseResult(output)
+
+	if result.ParseError != nil {
+		t.Fatalf("流式 success 不应产生解析错误，实际: %v", result.ParseError)
+	}
+	if result.CLIMeta == nil || result.CLIMeta.IsError {
+		t.Fatal("CLIMeta.IsError 应为 false")
+	}
+	if result.Review == nil {
+		t.Fatal("Review 应被成功解析")
+	}
+	if result.Review.Verdict != VerdictApprove {
+		t.Errorf("Verdict = %q, want %q", result.Review.Verdict, VerdictApprove)
+	}
+}
+
 func TestExtractJSON(t *testing.T) {
 	tests := []struct {
 		name  string
