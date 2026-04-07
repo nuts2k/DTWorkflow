@@ -327,6 +327,57 @@ func TestParseResult_CLIError(t *testing.T) {
 	}
 }
 
+func TestParseResult_ErrorDuringExecution(t *testing.T) {
+	// 复现 type=error_during_execution 但 is_error=false 的场景
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	cliJSON := `{
+		"type": "error_during_execution",
+		"is_error": false,
+		"total_cost_usd": 0,
+		"duration_ms": 35351,
+		"duration_api_ms": 34993,
+		"num_turns": 1,
+		"session_id": "ea9734bb-78bc-4596-a3a2-420a5ea756f7"
+	}`
+
+	result := svc.parseResult(cliJSON)
+	if result.ParseError == nil {
+		t.Fatal("error_during_execution 响应应返回 ParseError")
+	}
+	if result.CLIMeta == nil {
+		t.Fatal("CLIMeta 应被填充")
+	}
+	if !result.CLIMeta.IsError {
+		t.Error("CLIMeta.IsError 应为 true（type 不是 result）")
+	}
+	if result.Analysis != nil {
+		t.Error("Analysis 应为 nil")
+	}
+}
+
+func TestParseResult_TotalCostUSD(t *testing.T) {
+	// 验证新版 CLI 的 total_cost_usd 字段能正确映射
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	cliJSON := `{
+		"type": "result",
+		"subtype": "success",
+		"is_error": false,
+		"total_cost_usd": 0.05,
+		"duration_ms": 1000,
+		"num_turns": 1,
+		"result": "{\"info_sufficient\":true,\"root_cause\":{\"file\":\"a.go\",\"line\":1,\"description\":\"test\"},\"analysis\":\"ok\",\"fix_suggestion\":\"fix\",\"confidence\":\"high\",\"related_files\":[]}",
+		"session_id": "sess-cost"
+	}`
+
+	result := svc.parseResult(cliJSON)
+	if result.ParseError != nil {
+		t.Fatalf("预期无解析错误，实际: %v", result.ParseError)
+	}
+	if result.CLIMeta.CostUSD != 0.05 {
+		t.Errorf("CostUSD = %f, want 0.05", result.CLIMeta.CostUSD)
+	}
+}
+
 func TestParseResult_InnerJSONFail(t *testing.T) {
 	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
 	cliJSON := `{

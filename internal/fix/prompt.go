@@ -102,12 +102,26 @@ type CLIResponse struct {
 	Type          string  `json:"type"`
 	Subtype       string  `json:"subtype"`
 	CostUSD       float64 `json:"cost_usd"`
+	TotalCostUSD  float64 `json:"total_cost_usd"` // CLI 新版本使用此字段
 	DurationMs    int64   `json:"duration_ms"`
 	DurationAPIMs int64   `json:"duration_api_ms"`
 	IsError       bool    `json:"is_error"`
 	NumTurns      int     `json:"num_turns"`
 	Result        string  `json:"result"`
 	SessionID     string  `json:"session_id"`
+}
+
+// EffectiveCostUSD 返回有效的费用值，兼容新旧 CLI 字段。
+func (r CLIResponse) EffectiveCostUSD() float64 {
+	if r.TotalCostUSD > 0 {
+		return r.TotalCostUSD
+	}
+	return r.CostUSD
+}
+
+// IsExecutionError 判断 CLI 响应是否表示执行错误。
+func (r CLIResponse) IsExecutionError() bool {
+	return r.IsError || (r.Type != "" && r.Type != "result")
 }
 
 // buildPrompt 按四段式构造分析 prompt

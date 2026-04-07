@@ -194,16 +194,16 @@ func (s *Service) parseResult(output string) *ReviewResult {
 		return result
 	}
 	result.CLIMeta = &model.CLIMeta{
-		CostUSD:    cliResp.CostUSD,
+		CostUSD:    cliResp.EffectiveCostUSD(),
 		DurationMs: cliResp.DurationMs,
-		IsError:    cliResp.IsError,
+		IsError:    cliResp.IsExecutionError(),
 		NumTurns:   cliResp.NumTurns,
 		SessionID:  cliResp.SessionID,
 	}
 
-	// CLI 报告执行错误
-	if cliResp.IsError {
-		result.ParseError = fmt.Errorf("Claude CLI 报告错误: subtype=%s", cliResp.Subtype)
+	// CLI 报告执行错误（同时检查 is_error 标志和 type 字段）
+	if cliResp.IsExecutionError() {
+		result.ParseError = fmt.Errorf("Claude CLI 报告错误: type=%s, subtype=%s", cliResp.Type, cliResp.Subtype)
 		return result
 	}
 

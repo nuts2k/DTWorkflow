@@ -164,15 +164,15 @@ func (s *Service) parseResult(output string) *FixResult {
 		return result
 	}
 	result.CLIMeta = &model.CLIMeta{
-		CostUSD:    cliResp.CostUSD,
+		CostUSD:    cliResp.EffectiveCostUSD(),
 		DurationMs: cliResp.DurationMs,
-		IsError:    cliResp.IsError,
+		IsError:    cliResp.IsExecutionError(),
 		NumTurns:   cliResp.NumTurns,
 		SessionID:  cliResp.SessionID,
 	}
 
-	if cliResp.IsError {
-		result.ParseError = fmt.Errorf("Claude CLI 报告错误: subtype=%s", cliResp.Subtype)
+	if cliResp.IsExecutionError() {
+		result.ParseError = fmt.Errorf("Claude CLI 报告错误: type=%s, subtype=%s", cliResp.Type, cliResp.Subtype)
 		return result
 	}
 

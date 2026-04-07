@@ -440,6 +440,51 @@ func TestParseResult_CLIError(t *testing.T) {
 	}
 }
 
+func TestParseResult_ErrorDuringExecution(t *testing.T) {
+	// 复现 PR #69 故障：type=error_during_execution 但 is_error=false
+	output := `{
+		"type": "error_during_execution",
+		"is_error": false,
+		"total_cost_usd": 0,
+		"duration_ms": 35351,
+		"duration_api_ms": 34993,
+		"num_turns": 1,
+		"session_id": "ea9734bb-78bc-4596-a3a2-420a5ea756f7"
+	}`
+
+	svc := &Service{}
+	result := svc.parseResult(output)
+
+	if result.ParseError == nil {
+		t.Fatal("error_during_execution 响应应返回 ParseError")
+	}
+	if result.CLIMeta == nil {
+		t.Fatal("CLIMeta 应被填充")
+	}
+	if !result.CLIMeta.IsError {
+		t.Error("CLIMeta.IsError 应为 true（type 不是 result）")
+	}
+	if result.Review != nil {
+		t.Error("Review 应为 nil")
+	}
+}
+
+func TestParseResult_TotalCostUSD(t *testing.T) {
+	// 验证新版 CLI 的 total_cost_usd 字段能正确映射到 CostUSD
+	inner := `{"summary":"ok","verdict":"comment","issues":[]}`
+	output := fmt.Sprintf(`{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.05,"result":%q}`, inner)
+
+	svc := &Service{}
+	result := svc.parseResult(output)
+
+	if result.ParseError != nil {
+		t.Fatalf("预期无解析错误，实际: %v", result.ParseError)
+	}
+	if result.CLIMeta.CostUSD != 0.05 {
+		t.Errorf("CostUSD = %f, want 0.05", result.CLIMeta.CostUSD)
+	}
+}
+
 func TestExtractJSON(t *testing.T) {
 	tests := []struct {
 		name  string
