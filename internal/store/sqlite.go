@@ -498,6 +498,7 @@ func (s *SQLiteStore) ListReviewResultsByTimeRange(ctx context.Context, start, e
 func scanReviewRecord(row rowScanner) (*model.ReviewRecord, error) {
 	var (
 		r              model.ReviewRecord
+		taskID         sql.NullString
 		issuesJSON     sql.NullString
 		writebackError sql.NullString
 		parseFailed    int
@@ -505,7 +506,7 @@ func scanReviewRecord(row rowScanner) (*model.ReviewRecord, error) {
 	)
 
 	err := row.Scan(
-		&r.ID, &r.TaskID, &r.RepoFullName, &r.PRNumber, &r.HeadSHA,
+		&r.ID, &taskID, &r.RepoFullName, &r.PRNumber, &r.HeadSHA,
 		&r.Verdict, &r.Summary, &issuesJSON,
 		&r.IssueCount, &r.CriticalCount, &r.ErrorCount, &r.WarningCount, &r.InfoCount,
 		&r.CostUSD, &r.DurationMs, &r.GiteaReviewID,
@@ -516,6 +517,9 @@ func scanReviewRecord(row rowScanner) (*model.ReviewRecord, error) {
 	}
 
 	r.ParseFailed = parseFailed != 0
+	if taskID.Valid {
+		r.TaskID = taskID.String
+	}
 	if issuesJSON.Valid {
 		r.IssuesJSON = issuesJSON.String
 	}
