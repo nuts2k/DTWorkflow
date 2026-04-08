@@ -91,50 +91,6 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
-// 编译时检查 *configAdapter 实现 fix.FixConfigProvider 接口
-var _ fix.FixConfigProvider = (*configAdapter)(nil)
-
-// configAdapter 将 config.Manager 适配为 review.ConfigProvider 接口
-type configAdapter struct {
-	mgr *config.Manager
-}
-
-func (a *configAdapter) ResolveReviewConfig(repoFullName string) config.ReviewOverride {
-	cfg := a.mgr.Get()
-	if cfg == nil {
-		return config.ReviewOverride{}
-	}
-	return cfg.ResolveReviewConfig(repoFullName)
-}
-
-// IsReviewEnabled 实现 queue.ReviewEnabledChecker 接口
-func (a *configAdapter) IsReviewEnabled(repoFullName string) bool {
-	cfg := a.mgr.Get()
-	if cfg == nil {
-		return true // 配置未加载时默认启用
-	}
-	override := cfg.ResolveReviewConfig(repoFullName)
-	return override.Enabled == nil || *override.Enabled
-}
-
-// GetClaudeModel 实现 fix.FixConfigProvider 接口
-func (a *configAdapter) GetClaudeModel() string {
-	cfg := a.mgr.Get()
-	if cfg == nil {
-		return ""
-	}
-	return cfg.Claude.Model
-}
-
-// GetClaudeEffort 实现 fix.FixConfigProvider 接口
-func (a *configAdapter) GetClaudeEffort() string {
-	cfg := a.mgr.Get()
-	if cfg == nil {
-		return ""
-	}
-	return cfg.Claude.Effort
-}
-
 // runServe 是 Cobra 命令入口：从统一配置入口构造运行时快照后，委托给 runServeWithConfig。
 func runServe(cmd *cobra.Command, args []string) error {
 	var cfg serveConfig
