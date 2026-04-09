@@ -36,11 +36,12 @@ type giteaPullRequestEventPayload struct {
 }
 
 type giteaIssuePayload struct {
-	Number  int64  `json:"number"`
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	HTMLURL string `json:"html_url"`
-	State   string `json:"state"`
+	Number  int64              `json:"number"`
+	Title   string             `json:"title"`
+	Body    string             `json:"body"`
+	HTMLURL string             `json:"html_url"`
+	State   string             `json:"state"`
+	Labels  []giteaLabelPayload `json:"labels"` // Gitea 1.21+: label_updated 事件中标签在此字段
 }
 
 type giteaLabelPayload struct {

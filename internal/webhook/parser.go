@@ -71,17 +71,30 @@ func (p *Parser) parseIssue(deliveryID string, body []byte) (Event, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, ErrInvalidPayload
 	}
-	if payload.Action != "labeled" && payload.Action != "unlabeled" {
+
+	// 标准化 action：Gitea 1.21+ 使用 label_updated/label_cleared，
+	// 早期版本和 GitHub 使用 labeled/unlabeled。
+	action := normalizeIssueLabelAction(payload.Action)
+	if action == "" {
 		return nil, ErrUnsupportedAction
 	}
-	if payload.Issue.Number == 0 || payload.Repository.FullName == "" || payload.Label.Name == "" {
+
+	// 提取标签名：优先使用顶层 label 字段（早期版本），
+	// 回退到 issue.labels 中查找 auto-fix（Gitea 1.21+ label_updated）。
+	labelRef, isAutoFix := extractLabel(payload)
+
+	if payload.Issue.Number == 0 || payload.Repository.FullName == "" {
 		return nil, ErrInvalidPayload
 	}
-	isAutoFix := isAutoFixLabel(payload.Label.Name)
+	// 早期版本要求 label.name 非空；Gitea 1.21+ label_cleared 可以没有 label
+	if action == "labeled" && labelRef.Name == "" {
+		return nil, ErrInvalidPayload
+	}
+
 	return IssueLabelEvent{
 		DeliveryID: deliveryID,
 		EventType:  "issues",
-		Action:     payload.Action,
+		Action:     action,
 		Repository: RepositoryRef{
 			Owner:         payload.Repository.Owner.Login,
 			Name:          payload.Repository.Name,
@@ -96,15 +109,50 @@ func (p *Parser) parseIssue(deliveryID string, body []byte) (Event, error) {
 			HTMLURL: payload.Issue.HTMLURL,
 			State:   payload.Issue.State,
 		},
-		Label: LabelRef{Name: payload.Label.Name, Color: payload.Label.Color},
+		Label:  labelRef,
 		Sender: UserRef{
 			Login:    payload.Sender.Login,
 			FullName: payload.Sender.FullName,
 		},
 		AutoFixChanged: isAutoFix,
-		AutoFixAdded:   isAutoFix && payload.Action == "labeled",
-		AutoFixRemoved: isAutoFix && payload.Action == "unlabeled",
+		AutoFixAdded:   isAutoFix && action == "labeled",
+		AutoFixRemoved: isAutoFix && action == "unlabeled",
 	}, nil
+}
+
+// normalizeIssueLabelAction 将 Gitea 1.21+ 的 action 映射到标准名称。
+// 返回空字符串表示不支持的 action。
+func normalizeIssueLabelAction(action string) string {
+	switch action {
+	case "labeled", "label_updated":
+		return "labeled"
+	case "unlabeled", "label_cleared":
+		return "unlabeled"
+	default:
+		return ""
+	}
+}
+
+// extractLabel 从 payload 中提取标签信息。
+// 优先使用顶层 label 字段（早期版本），回退到 issue.labels（Gitea 1.21+）。
+func extractLabel(payload giteaIssueEventPayload) (LabelRef, bool) {
+	// 早期版本：顶层 label 字段
+	if payload.Label.Name != "" {
+		isAutoFix := isAutoFixLabel(payload.Label.Name)
+		return LabelRef{Name: payload.Label.Name, Color: payload.Label.Color}, isAutoFix
+	}
+	// Gitea 1.21+: label_updated 时标签在 issue.labels 中
+	for _, l := range payload.Issue.Labels {
+		if isAutoFixLabel(l.Name) {
+			return LabelRef{Name: l.Name, Color: l.Color}, true
+		}
+	}
+	// label_cleared 或无 auto-fix 标签
+	if len(payload.Issue.Labels) > 0 {
+		first := payload.Issue.Labels[0]
+		return LabelRef{Name: first.Name, Color: first.Color}, false
+	}
+	return LabelRef{}, false
 }
 
 func isAutoFixLabel(name string) bool {

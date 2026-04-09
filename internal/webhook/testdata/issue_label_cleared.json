@@ -1,0 +1,20 @@
+{
+  "action": "label_cleared",
+  "number": 10,
+  "repository": {
+    "full_name": "owner/repo",
+    "owner": {"login": "owner"},
+    "name": "repo",
+    "clone_url": "https://gitea.example.com/owner/repo.git",
+    "default_branch": "main"
+  },
+  "issue": {
+    "number": 10,
+    "title": "Bug report",
+    "body": "Issue body",
+    "html_url": "https://gitea.example.com/owner/repo/issues/10",
+    "state": "open",
+    "labels": []
+  },
+  "sender": {"login": "alice", "full_name": "Alice"}
+}
