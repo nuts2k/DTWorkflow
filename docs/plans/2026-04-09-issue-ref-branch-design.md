@@ -18,14 +18,14 @@ Gitea Issue 有 `ref` 字段，用户可以在 Issue 右侧边栏指定关联的
 
 - **不回退到 default_branch**：避免基于错误分支产生误导性分析
 - **回写评论提醒用户设置 ref**：简洁明了，不列分支列表（多分支场景下列表无意义）
-- **ref 指向不存在的分支时同样打回**：和空值处理一致，宁可打回也不给错误结果
+- **ref 指向不存在的分支或 tag 时同样打回**：和空值处理一致，宁可打回也不给错误结果
 
 ### 检查位置：`internal/fix/service.go` 的 `Execute` 方法
 
 选择在 Service 层而非 EnqueueHandler 层判断，理由：
 1. `Service` 已有 `IssueClient` 依赖，天然能回写评论，不需要给 EnqueueHandler 引入新依赖
 2. ref 检查是"能不能执行分析"的业务判断，属于 fix 模块职责
-3. 消耗极小（一次 Gitea API 调用，无容器开销）
+3. 消耗极小（最多两次 Gitea API 调用，无容器开销）
 
 ## 数据流改造
 
@@ -85,7 +85,7 @@ Execute(ctx, payload)
   1. 前置校验：IssueNumber > 0
   2. Issue 状态校验：must be open
   3. ref 空值检查：payload.IssueRef == "" → 评论 + ErrMissingIssueRef
-  4. ref 有效性检查：GetBranch 404 → 评论 + ErrInvalidIssueRef
+  4. ref 有效性检查：GetBranch 404 → GetTag 404 → 评论 + ErrInvalidIssueRef
   5. 采集上下文
   6. 构造 prompt（含分支信息）+ 容器执行
   7. 解析结果
@@ -96,18 +96,27 @@ Execute(ctx, payload)
 
 `internal/fix/result.go`：
 ```go
-ErrMissingIssueRef = errors.New("Issue 未设置关联分支")
-ErrInvalidIssueRef = errors.New("Issue 关联的分支不存在")
+ErrMissingIssueRef = errors.New("Issue 未设置关联分支或 tag")
+ErrInvalidIssueRef = errors.New("Issue 关联的分支或 tag 不存在")
 ```
 
 两者均为非重试类错误，Processor 层据此跳过重试，直接标记任务完成（同 `ErrIssueNotOpen` 模式）。
 
-### 新增接口方法
+### 新增接口
 
-`IssueClient` 接口扩展（或新建 `BranchClient` 窄接口）：
+新建 `RefClient` 窄接口（与 `IssueClient` 平行，保持接口分离）：
 ```go
-GetBranch(ctx context.Context, owner, repo, branch string) (*Branch, *Response, error)
+// RefClient 窄接口，仅暴露 ref 有效性验证所需的 Gitea API。
+type RefClient interface {
+	GetBranch(ctx context.Context, owner, repo, branch string) (*Branch, *Response, error)
+	GetTag(ctx context.Context, owner, repo, tag string) (*Tag, *Response, error)
+}
 ```
+
+`Service` struct 新增 `refClient RefClient` 字段，配套 `WithRefClient(c RefClient) ServiceOption`。
+`*gitea.Client` 已实现 `GetBranch`（`repos.go`），需新增 `GetTag` 方法和 `Tag` 类型。
+
+ref 有效性验证策略：先调 `GetBranch`，若 404 再调 `GetTag`，两者均 404 时才判定无效。
 
 ### 评论模板
 
@@ -115,14 +124,14 @@ GetBranch(ctx context.Context, owner, repo, branch string) (*Branch, *Response, 
 ```markdown
 ⚠️ 该 Issue 未设置关联分支，无法确定分析目标。
 
-请在 Issue 右侧边栏「Ref」处指定关联的分支或 tag，然后重新添加 `auto-fix` 标签以触发分析。
+请在 Issue 右侧边栏「Ref」处指定目标分支或 tag，然后重新添加 `auto-fix` 标签以触发分析。
 ```
 
-**ref 指向的分支不存在时：**
+**ref 指向的分支或 tag 不存在时：**
 ```markdown
-⚠️ 该 Issue 关联的分支 `xxx` 不存在，无法执行分析。
+⚠️ 该 Issue 关联的 ref `xxx` 不存在（已检查分支和 tag），无法执行分析。
 
-请在 Issue 右侧边栏「Ref」处修正关联的分支或 tag，然后重新添加 `auto-fix` 标签以触发分析。
+请在 Issue 右侧边栏「Ref」处修正目标分支或 tag，然后重新添加 `auto-fix` 标签以触发分析。
 ```
 
 ## 涉及文件清单
@@ -134,8 +143,11 @@ GetBranch(ctx context.Context, owner, repo, branch string) (*Branch, *Response, 
 | `internal/webhook/parser.go` | 修改：`parseIssue` 填充 `Ref` |
 | `internal/model/task.go` | 修改：`TaskPayload` 新增 `IssueRef` |
 | `internal/queue/enqueue.go` | 修改：填充 `IssueRef` |
+| `internal/queue/processor.go` | 修改：新增 `ErrMissingIssueRef`/`ErrInvalidIssueRef` 跳过重试分支 |
+| `internal/gitea/types.go` | 修改：`Issue` 新增 `Ref` 字段；新增 `Tag` 类型 |
+| `internal/gitea/repos.go` | 修改：新增 `GetTag` 方法 |
 | `internal/fix/result.go` | 修改：新增两个 sentinel error |
-| `internal/fix/service.go` | 修改：`Execute` 新增 ref 检查 + 评论回写 |
+| `internal/fix/service.go` | 修改：新增 `RefClient` 接口、`WithRefClient` option、`Execute` ref 检查 + 评论回写 |
 | `internal/fix/prompt.go` | 修改：`buildPrompt` 注入分支信息 |
 | `internal/worker/container.go` | 修改：`fix_issue` 环境变量和 prompt |
 | `build/docker/entrypoint.sh` | 修改：`fix_issue` case checkout 逻辑 |
