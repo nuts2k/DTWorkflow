@@ -55,7 +55,7 @@ IssueRef string `json:"issue_ref,omitempty"`
 ```bash
 fix_issue)
     if [ -n "${ISSUE_REF:-}" ]; then
-        log "checkout 到关联分支: ${ISSUE_REF}"
+        log "checkout 到关联 ref: ${ISSUE_REF}"
         git fetch origin "${ISSUE_REF}" >&2 2>&1
         git checkout FETCH_HEAD >&2 2>&1
     fi
@@ -66,14 +66,14 @@ Service 层已保证 ref 非空且有效，entrypoint.sh 不处理异常。
 
 ### 分析 Prompt
 
-`internal/fix/prompt.go` — `buildPrompt` 任务上下文中注入分支信息：
+`internal/fix/prompt.go` — `buildPrompt` 任务上下文中注入 ref 信息：
 ```
-当前代码基于分支：feature/user-auth
+当前代码基于 ref：feature/user-auth
 ```
 
-`internal/worker/container.go` — `fix_issue` 的 prompt 补充分支信息：
+`internal/worker/container.go` — `fix_issue` 的 prompt 补充 ref 信息：
 ```
-The repository has been cloned and branch 'feature/user-auth' is checked out.
+The repository has been cloned and ref 'feature/user-auth' is checked out.
 ```
 
 ## ref 空值与有效性检查
