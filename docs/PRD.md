@@ -130,6 +130,7 @@ dtworkflow gen-tests --repo myrepo --module service
 
 - **Docker 容器**：每个任务在独立容器中执行，预装 Claude Code CLI、Git、Java/Node.js 工具链
 - **Git Worktree**：容器内使用 worktree 切换到目标分支，避免完整 clone 的开销
+- **Ref 关联**：Issue 修复任务支持通过 `ISSUE_REF` 环境变量指定代码基线（分支或 tag），entrypoint 自动 checkout 到该 ref，确保分析和修复在正确的代码版本上进行
 - **资源限制**：每个容器设置 CPU/内存上限，防止单任务耗尽宿主机资源
 
 ### 2.4 技术选型
@@ -206,6 +207,7 @@ dtworkflow gen-tests --repo myrepo --module service
 
 1. **信息采集**
    - 读取 Issue 标题、描述、评论
+   - 读取 Issue 关联的 Ref（分支或 tag），作为代码基线；Ref 缺失或无效时自动在 Issue 中回复提醒用户设置
    - 如果信息不足（无错误日志、无复现步骤），自动在 Issue 中回复追问，并暂停等待补充
    - 关联已有的类似 Issue（同仓库内）
 
@@ -215,7 +217,7 @@ dtworkflow gen-tests --repo myrepo --module service
    - 输出根因分析报告（定位到文件、方法、行号级别）
 
 3. **修复生成**
-   - 基于根因分析，在新分支上生成修复代码
+   - 基于根因分析，在 Issue 指定的 Ref 上创建修复分支并生成修复代码
    - 修复代码需通过现有测试（如有）
    - 生成修复说明，解释改动原因
 

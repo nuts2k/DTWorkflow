@@ -49,6 +49,7 @@ https://dtworkflow.example.com/webhooks/gitea
 - 支持动作：
   - `labeled`
   - `unlabeled`
+- 说明：Issue 事件中的 `ref` 字段由 Gitea 自动提供（对应 Issue 右侧边栏的"Ref"字段），DTWorkflow 会自动解析并校验该 Ref 是否为有效分支或 tag，无需在 Webhook 配置中额外设置
 
 建议至少订阅：
 - Pull Request 事件

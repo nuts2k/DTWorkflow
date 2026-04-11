@@ -108,6 +108,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] Claude Code CLI 非交互模式验证（`claude -p` 在容器内运行）
 - [x] API Key 安全注入（环境变量 / Docker secrets）
 - [x] 安全加固：entrypoint.sh clone 阶段结束后清除 `GITEA_URL` / `REPO_CLONE_URL`，确保 Claude Code 执行阶段不可读取克隆凭证
+- [x] Issue 修复 Ref 支持：entrypoint.sh 在 `ISSUE_REF` 环境变量非空时自动 `git fetch origin <ref>` 并 `checkout FETCH_HEAD`，确保容器内代码基线正确
 
 #### M1.7 通知框架
 - [x] 通知接口定义（Go interface，策略模式）
@@ -345,6 +346,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 3. **Git 凭证管理（credential helper 缓存）**：entrypoint.sh 在 clone 前配置 `git config --global credential.helper store`，clone 过程自动写入 `.git-credentials` 文件；clone 完成后照常清除 `GITEA_URL` / `REPO_CLONE_URL` 环境变量。凭证仅对 git 命令可用，不像环境变量对所有进程可见，攻击面更小。（仅第二轮 M3.4 需要，第一轮容器无需 push 权限。）
 4. **信息充分性判断（MVP 简化）**：不实现自动监听 Issue 新评论恢复分析的状态机。Claude 直接在分析 prompt 中判断信息是否充分，不充分时在 Issue 评论中报告"信息不足"并列出需补充内容；用户补充后移除再添加 `auto-fix` 标签即可重新触发。后续可平滑升级为自动监听恢复，无架构返工。
 5. **修复 PR 自动评审（天然复用）**：`fix.Service` 通过 Gitea API 创建 PR 后，Gitea 发出 PR created Webhook，Phase 2 评审流程自然触发。auto-fix PR 与人工 PR 完全一视同仁，不做特殊处理。不存在无限循环风险（评审只产生 comment，不会再触发 fix）。无需额外代码。
+6. **Ref 关联机制（分支/tag 基线选择）**：Issue 的 Ref 字段（Gitea 右侧边栏）用于指定代码基线。Ref 为空时回复提醒用户设置；Ref 无效（分支和 tag 均不存在）时回复错误提醒；两者均为确定性失败，跳过重试。Ref 有效时，容器 `ISSUE_REF` 环境变量注入 + entrypoint checkout，prompt 注入 ref 上下文信息。优先使用 Gitea API 返回的最新 `Issue.Ref`，fallback 到入队时 payload 快照值。
 
 ### 已有基础设施（Phase 1/2 已搭建）
 
@@ -374,7 +376,8 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 通过 Gitea API 采集 Issue 富上下文：Issue 详情（标题、描述、状态）、评论（单页最多 50 条）、标签列表
 - [x] Issue 上下文结构体定义（`IssueContext`），包含纯原始数据（Issue 详情、评论、标签），智能提取由 M3.2 Claude 分析完成
 - [x] Issue 状态检查：Issue 已关闭时返回 `ErrIssueNotOpen`（类似 review 的 `ErrPRNotOpen`）
-- [x] 单元测试（7 个用例）覆盖校验、状态检查、API 错误、正常路径、评论截断
+- [x] Ref 有效性校验：`RefClient` 窄接口（`GetBranch`/`GetTag`），`validateRef` 先查分支再查 tag，均不存在返回 `ErrInvalidIssueRef`；为空返回 `ErrMissingIssueRef`。两种错误均在 Issue 评论中给出友好提醒，Processor 层标记为 SkipRetry
+- [x] 单元测试覆盖校验、状态检查、API 错误、正常路径、评论截断、ref 校验（空/无效/分支有效/tag 有效/评论回写失败可重试）
 - 注：M3.1 的 fix_issue 任务仍走 `pool.Run()` 默认路径，`fix.Service` 尚未接管 Processor 路由（避免上下文采集阶段任务空跑成功）。M3.2 已激活路由，fix_issue 任务现在走 `fixService.Execute` 路径。
 
 ##### M3.2 分析 Prompt 工程与容器执行
@@ -394,6 +397,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 容器只读模式执行，安全约束同 Phase 2（ReadonlyRootfs + `--disallowedTools` + READ-ONLY 约束文本）
 - [x] 双层 JSON 解析（同 Phase 2）：CLI 信封（`CLIResponse`）→ 内层分析结果（`AnalysisOutput`）
 - [ ] 技术栈检测复用（可选）：根据仓库文件结构检测技术栈，为分析 prompt 提供上下文
+- [x] Ref 信息注入：prompt 中追加"当前代码基于 ref: xxx"上下文，容器启动信息包含 ref checkout 状态
 - [x] Claude 模型与推理强度可配置（复用 `claude.model` / `claude.effort` 配置体系）
 
 ##### M3.3 分析结果解析与 Issue 评论回写
@@ -408,6 +412,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] **降级场景**：Claude 输出解析失败时，将原始输出包裹在动态 fence 代码块中发布（同 Phase 2 降级策略）
 - [x] 分析结果持久化到数据库（暂不做；TaskRecord.result 已保存原始输出，Issue 评论本身即持久化）
 - [x] 错误处理与降级链：用户至少能看到一条评论；回写失败触发任务重试（与 review 有意不对称）
+- [x] Ref 校验评论回写：ref 为空时发送"请设置 Ref"提醒；ref 无效时发送"该 ref 对应的分支和 tag 均不存在"提醒；提醒评论回写失败时返回可重试错误（非 sentinel），asynq 自动重试
 - [x] 安全防护：Markdown 转义（含反引号和 # 号）+ 动态 fence 代码块包裹 + 长度截断 + 内部错误不泄露
 - [x] 单元测试覆盖（formatter_test.go 12 个 + service_test.go 回写相关 5 个 + processor_test.go adaptFixResult 5 个）
 
@@ -484,6 +489,9 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 **第一轮**：
 - 创建一个描述完整的 bug Issue → 添加 `auto-fix` 标签 → 自动分析 → Issue 收到根因分析评论（定位到文件/方法/行号 + 原因分析 + 修复建议）
 - 创建一个描述不足的 Issue → 添加标签 → Issue 收到追问评论（列出需补充的信息）
+- 创建 Issue 但未设置 Ref → 添加 `auto-fix` 标签 → Issue 收到友好提醒评论（告知用户如何设置 Ref）
+- 创建 Issue 并设置 Ref 为不存在的分支/tag → 添加标签 → Issue 收到错误提醒（该 Ref 不存在）
+- 创建 Issue 并设置 Ref 为有效分支或 tag → 添加标签 → 自动分析基于该 Ref 的代码执行
 - 同一 Issue 重复添加标签不重复触发（幂等性，已有基础设施保障）
 
 **M3.3.1**：
