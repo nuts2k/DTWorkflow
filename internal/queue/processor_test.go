@@ -1970,3 +1970,46 @@ func TestProcessTask_FixIssue_InvalidRef_SkipsRetry(t *testing.T) {
 		t.Errorf("状态应为 failed，实际: %s", updated.Status)
 	}
 }
+
+func TestProcessTask_FixIssue_RefHintCommentFailure_Retries(t *testing.T) {
+	s := newMockStore()
+	commentErr := errors.New("Gitea API 500")
+	fixExec := &mockFixExecutor{
+		err: fmt.Errorf("Issue #10: 回写 ref 缺失提示失败: %w", commentErr),
+	}
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0}}
+	notifier := &stubNotifier{}
+	p := NewProcessor(pool, s, notifier, slog.Default(), WithFixService(fixExec))
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "delivery-ref-comment-failed",
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  10,
+	}
+	task := buildAsynqTask(t, payload)
+	record := &model.TaskRecord{
+		ID:         "task-ref-comment-failed",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		DeliveryID: payload.DeliveryID,
+	}
+	seedRecord(s, record)
+
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("应返回错误")
+	}
+	if errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("评论回写失败不应 SkipRetry，实际: %v", err)
+	}
+	updated := s.tasks["task-ref-comment-failed"]
+	if updated.Status != model.TaskStatusRetrying && updated.Status != model.TaskStatusFailed {
+		t.Fatalf("状态应为 retrying 或 failed，实际: %s", updated.Status)
+	}
+	if !strings.Contains(updated.Error, "回写 ref 缺失提示失败") {
+		t.Fatalf("错误应保留评论回写失败信息，实际: %q", updated.Error)
+	}
+}

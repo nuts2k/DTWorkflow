@@ -107,20 +107,29 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 		return nil, fmt.Errorf("Issue #%d 状态为 %s: %w", issueNum, issue.State, ErrIssueNotOpen)
 	}
 
+	effectiveRef := issue.Ref
+	if effectiveRef == "" {
+		effectiveRef = payload.IssueRef
+	}
+
 	// 3. ref 空值检查
-	if payload.IssueRef == "" {
-		s.commentRefMissing(ctx, owner, repo, issueNum)
+	if effectiveRef == "" {
+		if err := s.commentRefMissing(ctx, owner, repo, issueNum); err != nil {
+			return nil, fmt.Errorf("Issue #%d: 回写 ref 缺失提示失败: %w", issueNum, err)
+		}
 		return nil, fmt.Errorf("Issue #%d: %w", issueNum, ErrMissingIssueRef)
 	}
 
 	// 4. ref 有效性检查
 	if s.refClient != nil {
-		if err := s.validateRef(ctx, owner, repo, payload.IssueRef); err != nil {
+		if err := s.validateRef(ctx, owner, repo, effectiveRef); err != nil {
 			if errors.Is(err, ErrInvalidIssueRef) {
-				s.commentRefInvalid(ctx, owner, repo, issueNum, payload.IssueRef)
-				return nil, fmt.Errorf("Issue #%d ref=%q: %w", issueNum, payload.IssueRef, ErrInvalidIssueRef)
+				if commentErr := s.commentRefInvalid(ctx, owner, repo, issueNum, effectiveRef); commentErr != nil {
+					return nil, fmt.Errorf("Issue #%d ref=%q: 回写 ref 无效提示失败: %w", issueNum, effectiveRef, commentErr)
+				}
+				return nil, fmt.Errorf("Issue #%d ref=%q: %w", issueNum, effectiveRef, ErrInvalidIssueRef)
 			}
-			return nil, fmt.Errorf("验证 ref %q 失败: %w", payload.IssueRef, err)
+			return nil, fmt.Errorf("验证 ref %q 失败: %w", effectiveRef, err)
 		}
 	}
 
@@ -135,7 +144,8 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 		"comments", len(issueCtx.Comments),
 		"labels", len(issue.Labels),
 	)
-	issueCtx.Ref = payload.IssueRef
+	issueCtx.Ref = effectiveRef
+	payload.IssueRef = effectiveRef
 
 	// 6. 构造 prompt + 容器执行
 	prompt := s.buildPrompt(issueCtx)
@@ -259,20 +269,24 @@ func (s *Service) validateRef(ctx context.Context, owner, repo, ref string) erro
 	return ErrInvalidIssueRef
 }
 
-func (s *Service) commentRefMissing(ctx context.Context, owner, repo string, issueNum int64) {
+func (s *Service) commentRefMissing(ctx context.Context, owner, repo string, issueNum int64) error {
 	body := "⚠️ 该 Issue 未设置关联分支，无法确定分析目标。\n\n请在 Issue 右侧边栏「Ref」处指定目标分支或 tag，然后重新添加 `auto-fix` 标签以触发分析。"
 	if _, _, err := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
 		gitea.CreateIssueCommentOption{Body: body}); err != nil {
 		s.logger.ErrorContext(ctx, "回写 ref 缺失评论失败",
 			"issue", issueNum, "error", err)
+		return err
 	}
+	return nil
 }
 
-func (s *Service) commentRefInvalid(ctx context.Context, owner, repo string, issueNum int64, ref string) {
+func (s *Service) commentRefInvalid(ctx context.Context, owner, repo string, issueNum int64, ref string) error {
 	body := fmt.Sprintf("⚠️ 该 Issue 关联的 ref `%s` 不存在（已检查分支和 tag），无法执行分析。\n\n请在 Issue 右侧边栏「Ref」处修正目标分支或 tag，然后重新添加 `auto-fix` 标签以触发分析。", ref)
 	if _, _, err := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
 		gitea.CreateIssueCommentOption{Body: body}); err != nil {
 		s.logger.ErrorContext(ctx, "回写 ref 无效评论失败",
 			"issue", issueNum, "error", err)
+		return err
 	}
+	return nil
 }
