@@ -202,3 +202,38 @@ func TestGetFileContent_NotFound(t *testing.T) {
 		t.Errorf("期望 IsNotFound 为 true，实际错误: %v", err)
 	}
 }
+
+func TestGetTag(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/tags/v1.0.0", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "GET")
+		testHeader(t, r, "Authorization", "token test-token")
+		writeJSON(w, loadFixture(t, "tag.json"))
+	})
+
+	tag, _, err := client.GetTag(context.Background(), "owner", "repo", "v1.0.0")
+	if err != nil {
+		t.Fatalf("GetTag 返回错误: %v", err)
+	}
+	if tag.Name != "v1.0.0" {
+		t.Errorf("Name = %q, 期望 %q", tag.Name, "v1.0.0")
+	}
+}
+
+func TestGetTag_NotFound(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/tags/notexist", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, []byte(`{"message":"not found"}`))
+	})
+
+	_, _, err := client.GetTag(context.Background(), "owner", "repo", "notexist")
+	if err == nil {
+		t.Fatal("期望返回错误，但没有")
+	}
+	if !IsNotFound(err) {
+		t.Errorf("期望 IsNotFound 为 true，实际错误: %v", err)
+	}
+}

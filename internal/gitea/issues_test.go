@@ -82,6 +82,9 @@ func TestGetIssue(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("StatusCode = %d, 期望 200", resp.StatusCode)
 	}
+	if issue.Ref != "feature/user-auth" {
+		t.Errorf("Issue.Ref = %q, 期望 %q", issue.Ref, "feature/user-auth")
+	}
 }
 
 func TestGetIssue_NotFound(t *testing.T) {

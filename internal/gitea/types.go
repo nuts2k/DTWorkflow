@@ -36,6 +36,14 @@ type Commit struct {
 	URL string `json:"url"`
 }
 
+// Tag 表示 Gitea tag
+type Tag struct {
+	Name    string  `json:"name"`
+	ID      string  `json:"id"`
+	Message string  `json:"message"`
+	Commit  *Commit `json:"commit"`
+}
+
 // Label 表示 Issue/PR 标签
 type Label struct {
 	ID    int64  `json:"id"`
@@ -108,6 +116,7 @@ type Issue struct {
 	Title     string    `json:"title"`
 	Body      string    `json:"body"`
 	State     string    `json:"state"`
+	Ref       string    `json:"ref"`
 	HTMLURL   string    `json:"html_url"`
 	User      *User     `json:"user"`
 	Labels    []*Label  `json:"labels"`

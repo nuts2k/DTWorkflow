@@ -1,0 +1,9 @@
+{
+  "name": "v1.0.0",
+  "message": "Release v1.0.0",
+  "id": "abc123def456",
+  "commit": {
+    "id": "abc123",
+    "url": "https://gitea.example.com/owner/repo/commit/abc123"
+  }
+}

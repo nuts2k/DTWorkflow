@@ -41,6 +41,24 @@ func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Br
 	return &result, resp, nil
 }
 
+// GetTag 获取 tag 信息
+// GET /api/v1/repos/{owner}/{repo}/tags/{tag}
+func (c *Client) GetTag(ctx context.Context, owner, repo, tag string) (*Tag, *Response, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/tags/%s",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(tag))
+	req, err := c.newRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var result Tag
+	resp, err := c.doRequest(req, &result)
+	if err != nil {
+		return nil, resp, err
+	}
+	return &result, resp, nil
+}
+
 // CreateBranch 创建分支
 // POST /api/v1/repos/{owner}/{repo}/branches
 func (c *Client) CreateBranch(ctx context.Context, owner, repo string, opts CreateBranchOption) (*Branch, *Response, error) {
