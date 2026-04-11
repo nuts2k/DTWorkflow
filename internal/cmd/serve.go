@@ -209,6 +209,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 			deps.Pool,
 			fix.WithServiceLogger(slog.Default()),
 			fix.WithConfigProvider(cfgAdapter),
+			fix.WithRefClient(deps.GiteaClient),
 		)
 		processorOpts = append(processorOpts, queue.WithFixService(fixSvc))
 	}

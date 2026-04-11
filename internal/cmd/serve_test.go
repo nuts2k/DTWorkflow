@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,9 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
@@ -296,6 +300,90 @@ func TestServe_RequiresWebhookSecret(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "webhook-secret") {
 		t.Fatalf("error = %v, want message containing webhook-secret", err)
+	}
+}
+
+// fakeFixServiceClient 同时实现 fix.IssueClient 和 fix.RefClient
+type fakeFixServiceClient struct {
+	getIssue      func(ctx context.Context, owner, repo string, index int64) (*gitea.Issue, *gitea.Response, error)
+	listComments  func(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error)
+	createComment func(ctx context.Context, owner, repo string, index int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error)
+	getBranch     func(ctx context.Context, owner, repo, branch string) (*gitea.Branch, *gitea.Response, error)
+	getTag        func(ctx context.Context, owner, repo, tag string) (*gitea.Tag, *gitea.Response, error)
+}
+
+func (f *fakeFixServiceClient) GetIssue(ctx context.Context, owner, repo string, index int64) (*gitea.Issue, *gitea.Response, error) {
+	return f.getIssue(ctx, owner, repo, index)
+}
+
+func (f *fakeFixServiceClient) ListIssueComments(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+	return f.listComments(ctx, owner, repo, index, opts)
+}
+
+func (f *fakeFixServiceClient) CreateIssueComment(ctx context.Context, owner, repo string, index int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+	if f.createComment != nil {
+		return f.createComment(ctx, owner, repo, index, opts)
+	}
+	return &gitea.Comment{ID: 1}, nil, nil
+}
+
+func (f *fakeFixServiceClient) GetBranch(ctx context.Context, owner, repo, branch string) (*gitea.Branch, *gitea.Response, error) {
+	return f.getBranch(ctx, owner, repo, branch)
+}
+
+func (f *fakeFixServiceClient) GetTag(ctx context.Context, owner, repo, tag string) (*gitea.Tag, *gitea.Response, error) {
+	return f.getTag(ctx, owner, repo, tag)
+}
+
+// fakeFixPool 满足 fix.FixPoolRunner 接口
+type fakeFixPool struct{}
+
+func (f *fakeFixPool) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
+	return &worker.ExecutionResult{ExitCode: 0, Output: "{}"}, nil
+}
+
+func TestNewFixService_InjectsRefClient(t *testing.T) {
+	// 构造一个 fake client，同时实现 IssueClient + RefClient
+	fake := &fakeFixServiceClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 10, State: "open"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		getBranch: func(_ context.Context, _, _, _ string) (*gitea.Branch, *gitea.Response, error) {
+			return nil, nil, &gitea.ErrorResponse{StatusCode: 404, Message: "not found"}
+		},
+		getTag: func(_ context.Context, _, _, _ string) (*gitea.Tag, *gitea.Response, error) {
+			return nil, nil, &gitea.ErrorResponse{StatusCode: 404, Message: "not found"}
+		},
+	}
+
+	// 构造 fix.Service，模拟 serve.go 的装配方式
+	pool := &fakeFixPool{}
+	svc := fix.NewService(
+		fake,
+		pool,
+		fix.WithRefClient(fake),
+	)
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  10,
+		IssueTitle:   "test",
+		IssueRef:     "bad-ref",
+		DeliveryID:   "test-delivery",
+	}
+
+	_, err := svc.Execute(context.Background(), payload)
+	if err == nil {
+		t.Fatal("应返回错误（ref 校验失败）")
+	}
+	if !errors.Is(err, fix.ErrInvalidIssueRef) {
+		t.Fatalf("错误应为 ErrInvalidIssueRef，实际: %v", err)
 	}
 }
 
