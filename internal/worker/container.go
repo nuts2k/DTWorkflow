@@ -78,6 +78,9 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 			fmt.Sprintf("ISSUE_NUMBER=%d", payload.IssueNumber),
 			fmt.Sprintf("ISSUE_TITLE=%s", sanitizeEnvValue(payload.IssueTitle)),
 		)
+		if payload.IssueRef != "" {
+			env = append(env, fmt.Sprintf("ISSUE_REF=%s", sanitizeEnvValue(payload.IssueRef)))
+		}
 	case model.TaskTypeGenTests:
 		if payload.Module != "" {
 			env = append(env, fmt.Sprintf("MODULE=%s", sanitizeEnvValue(payload.Module)))
@@ -134,15 +137,22 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 			),
 		}
 	case model.TaskTypeFixIssue:
+		repoInfo := "The repository has been cloned to the current directory."
+		if payload.IssueRef != "" {
+			repoInfo = fmt.Sprintf(
+				"The repository has been cloned and ref '%s' is checked out.",
+				sanitizePromptInput(payload.IssueRef, 200))
+		}
 		return []string{
 			"claude", "-p",
 			fmt.Sprintf(
 				"Fix issue #%d (%s) in repository %s. "+
-					"The repository has been cloned to the current directory. "+
+					"%s "+
 					"Analyze the issue, explore the codebase, implement a fix, and commit the changes.",
 				payload.IssueNumber,
 				sanitizePromptInput(payload.IssueTitle, 500),
 				sanitizePromptInput(payload.RepoFullName, 200),
+				repoInfo,
 			),
 		}
 	case model.TaskTypeGenTests:

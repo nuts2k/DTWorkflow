@@ -464,3 +464,71 @@ func envSliceToMap(env []string) map[string]string {
 	}
 	return result
 }
+
+func TestBuildContainerEnv_FixIssueWithRef(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		IssueNumber:  10,
+		IssueTitle:   "Bug in login",
+		IssueRef:     "feature/user-auth",
+	}
+
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	if envMap["ISSUE_REF"] != "feature/user-auth" {
+		t.Errorf("ISSUE_REF = %q, 期望 %q", envMap["ISSUE_REF"], "feature/user-auth")
+	}
+}
+
+func TestBuildContainerEnv_FixIssueWithoutRef(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		IssueNumber:  10,
+		IssueTitle:   "Bug in login",
+		IssueRef:     "",
+	}
+
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	if _, ok := envMap["ISSUE_REF"]; ok {
+		t.Error("ref 为空时不应包含 ISSUE_REF")
+	}
+}
+
+func TestBuildContainerCmd_FixIssueWithRef(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  10,
+		IssueTitle:   "Bug",
+		IssueRef:     "feature/auth",
+	}
+
+	cmd := buildContainerCmd(payload)
+	prompt := strings.Join(cmd, " ")
+	if !strings.Contains(prompt, "ref 'feature/auth' is checked out") {
+		t.Errorf("prompt 应包含 ref checkout 信息，实际: %s", prompt)
+	}
+}
