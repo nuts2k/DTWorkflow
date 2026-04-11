@@ -244,6 +244,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if errors.Is(runErr, fix.ErrIssueNotOpen) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, "Issue 不处于 open 状态，跳过分析")
 		}
+		if errors.Is(runErr, fix.ErrMissingIssueRef) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, "Issue 未设置关联分支，跳过分析")
+		}
+		if errors.Is(runErr, fix.ErrInvalidIssueRef) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, "Issue 关联的 ref 不存在，跳过分析")
+		}
 		// 根据 shouldRetry 判断是否还有剩余重试机会：
 		// - 有剩余重试：设为 retrying，asynq 将自动安排下次重试
 		// - 无剩余重试或无法获取重试信息：设为 failed

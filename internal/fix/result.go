@@ -10,6 +10,14 @@ import (
 // Processor 层据此跳过重试（同 review.ErrPRNotOpen 模式）。
 var ErrIssueNotOpen = errors.New("Issue 不处于 open 状态")
 
+// ErrMissingIssueRef Issue 未设置关联分支或 tag 时返回此错误，
+// Processor 层据此跳过重试（同 ErrIssueNotOpen 模式）。
+var ErrMissingIssueRef = errors.New("Issue 未设置关联分支或 tag")
+
+// ErrInvalidIssueRef Issue 关联的分支或 tag 不存在时返回此错误，
+// Processor 层据此跳过重试（同 ErrIssueNotOpen 模式）。
+var ErrInvalidIssueRef = errors.New("Issue 关联的分支或 tag 不存在")
+
 // AnalysisOutput Issue 分析输出 JSON schema
 type AnalysisOutput struct {
 	InfoSufficient bool       `json:"info_sufficient"`

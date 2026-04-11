@@ -1889,3 +1889,84 @@ func TestProcessTask_FixIssue_WithoutService(t *testing.T) {
 		t.Errorf("pool.Run 应被调用 1 次，实际 %d 次", pool.calls)
 	}
 }
+
+func TestProcessTask_FixIssue_MissingRef_SkipsRetry(t *testing.T) {
+	s := newMockStore()
+	fixExec := &mockFixExecutor{
+		err: fmt.Errorf("Issue #10: %w", fix.ErrMissingIssueRef),
+	}
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0}}
+	notifier := &stubNotifier{}
+	p := NewProcessor(pool, s, notifier, slog.Default(), WithFixService(fixExec))
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "delivery-miss-ref",
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  10,
+	}
+	task := buildAsynqTask(t, payload)
+	record := &model.TaskRecord{
+		ID:         "task-miss-ref",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		DeliveryID: "delivery-miss-ref",
+	}
+	seedRecord(s, record)
+
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("应返回 SkipRetry 错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+	if !strings.Contains(err.Error(), "跳过分析") {
+		t.Errorf("错误信息应包含'跳过分析'，实际: %v", err)
+	}
+	updated := s.tasks["task-miss-ref"]
+	if updated.Status != model.TaskStatusFailed {
+		t.Errorf("状态应为 failed，实际: %s", updated.Status)
+	}
+}
+
+func TestProcessTask_FixIssue_InvalidRef_SkipsRetry(t *testing.T) {
+	s := newMockStore()
+	fixExec := &mockFixExecutor{
+		err: fmt.Errorf("Issue #10 ref=bad: %w", fix.ErrInvalidIssueRef),
+	}
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0}}
+	notifier := &stubNotifier{}
+	p := NewProcessor(pool, s, notifier, slog.Default(), WithFixService(fixExec))
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "delivery-bad-ref",
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  10,
+	}
+	task := buildAsynqTask(t, payload)
+	record := &model.TaskRecord{
+		ID:         "task-bad-ref",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		DeliveryID: "delivery-bad-ref",
+	}
+	seedRecord(s, record)
+
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("应返回 SkipRetry 错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+	updated := s.tasks["task-bad-ref"]
+	if updated.Status != model.TaskStatusFailed {
+		t.Errorf("状态应为 failed，实际: %s", updated.Status)
+	}
+}

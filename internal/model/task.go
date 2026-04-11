@@ -89,6 +89,7 @@ type TaskPayload struct {
 	// Issue 修复定位
 	IssueNumber int64  `json:"issue_number,omitempty"`
 	IssueTitle  string `json:"issue_title,omitempty"`
+	IssueRef    string `json:"issue_ref,omitempty"`
 
 	// 测试生成定位
 	Module string `json:"module,omitempty"`

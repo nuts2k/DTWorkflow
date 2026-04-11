@@ -153,6 +153,7 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 		CloneURL:     event.Repository.CloneURL,
 		IssueNumber:  event.Issue.Number,
 		IssueTitle:   event.Issue.Title,
+		IssueRef:     event.Issue.Ref,
 	}
 
 	if payload.RepoFullName == "" || payload.CloneURL == "" {
