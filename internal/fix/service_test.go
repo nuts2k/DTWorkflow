@@ -52,6 +52,31 @@ func (m *mockFixPoolRunner) RunWithCommandAndStdin(_ context.Context, _ model.Ta
 	return m.result, m.err
 }
 
+// --- mockRefClient ---
+
+type mockRefClient struct {
+	getBranch func(ctx context.Context, owner, repo, branch string) (*gitea.Branch, *gitea.Response, error)
+	getTag    func(ctx context.Context, owner, repo, tag string) (*gitea.Tag, *gitea.Response, error)
+}
+
+func (m *mockRefClient) GetBranch(ctx context.Context, owner, repo, branch string) (*gitea.Branch, *gitea.Response, error) {
+	if m.getBranch != nil {
+		return m.getBranch(ctx, owner, repo, branch)
+	}
+	return &gitea.Branch{Name: branch}, nil, nil
+}
+
+func (m *mockRefClient) GetTag(ctx context.Context, owner, repo, tag string) (*gitea.Tag, *gitea.Response, error) {
+	if m.getTag != nil {
+		return m.getTag(ctx, owner, repo, tag)
+	}
+	return &gitea.Tag{Name: tag}, nil, nil
+}
+
+func notFoundErr() error {
+	return &gitea.ErrorResponse{StatusCode: 404, Message: "not found"}
+}
+
 func defaultPool() *mockFixPoolRunner {
 	return &mockFixPoolRunner{
 		result: &worker.ExecutionResult{ExitCode: 0, Output: "{}"},
@@ -79,6 +104,7 @@ func fixPayload() model.TaskPayload {
 		RepoFullName: "owner/repo",
 		IssueNumber:  10,
 		IssueTitle:   "test bug",
+		IssueRef:     "main",
 		DeliveryID:   "test-delivery",
 	}
 }
@@ -770,5 +796,165 @@ func TestExecute_ContainerNilResult(t *testing.T) {
 	}
 	if result.RawOutput != "" {
 		t.Errorf("nil result 时 RawOutput 应为空，实际: %q", result.RawOutput)
+	}
+}
+
+// --- ref 校验测试用例 ---
+
+func TestExecute_MissingIssueRef(t *testing.T) {
+	var commentBody string
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return openIssue(10), nil, nil
+			},
+			createComment: func(_ context.Context, _, _ string, _ int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+				commentBody = opts.Body
+				return &gitea.Comment{ID: 1}, nil, nil
+			},
+		},
+		defaultPool(),
+		WithRefClient(&mockRefClient{}),
+	)
+
+	payload := fixPayload()
+	payload.IssueRef = "" // 空 ref
+
+	_, err := svc.Execute(context.Background(), payload)
+	if err == nil {
+		t.Fatal("预期返回错误")
+	}
+	if !errors.Is(err, ErrMissingIssueRef) {
+		t.Errorf("预期 ErrMissingIssueRef，实际: %v", err)
+	}
+	if !strings.Contains(commentBody, "未设置关联分支") {
+		t.Errorf("评论应包含提醒文案，实际: %q", commentBody)
+	}
+}
+
+func TestExecute_InvalidIssueRef(t *testing.T) {
+	var commentBody string
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return openIssue(10), nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+			createComment: func(_ context.Context, _, _ string, _ int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+				commentBody = opts.Body
+				return &gitea.Comment{ID: 1}, nil, nil
+			},
+		},
+		defaultPool(),
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, _ string) (*gitea.Branch, *gitea.Response, error) {
+				return nil, nil, notFoundErr()
+			},
+			getTag: func(_ context.Context, _, _, _ string) (*gitea.Tag, *gitea.Response, error) {
+				return nil, nil, notFoundErr()
+			},
+		}),
+	)
+
+	payload := fixPayload()
+	payload.IssueRef = "nonexistent-branch"
+
+	_, err := svc.Execute(context.Background(), payload)
+	if err == nil {
+		t.Fatal("预期返回错误")
+	}
+	if !errors.Is(err, ErrInvalidIssueRef) {
+		t.Errorf("预期 ErrInvalidIssueRef，实际: %v", err)
+	}
+	if !strings.Contains(commentBody, "nonexistent-branch") {
+		t.Errorf("评论应包含 ref 名称，实际: %q", commentBody)
+	}
+}
+
+func TestExecute_RefValidAsBranch(t *testing.T) {
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return openIssue(10), nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+		},
+		defaultPool(),
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, _ string) (*gitea.Branch, *gitea.Response, error) {
+				return &gitea.Branch{Name: "feature/ok"}, nil, nil
+			},
+		}),
+	)
+
+	payload := fixPayload()
+	payload.IssueRef = "feature/ok"
+
+	result, err := svc.Execute(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("有效分支不应报错，实际: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+}
+
+func TestExecute_RefValidAsTag(t *testing.T) {
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return openIssue(10), nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+		},
+		defaultPool(),
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, _ string) (*gitea.Branch, *gitea.Response, error) {
+				return nil, nil, notFoundErr() // 分支不存在
+			},
+			getTag: func(_ context.Context, _, _, _ string) (*gitea.Tag, *gitea.Response, error) {
+				return &gitea.Tag{Name: "v1.0.0"}, nil, nil // 但 tag 存在
+			},
+		}),
+	)
+
+	payload := fixPayload()
+	payload.IssueRef = "v1.0.0"
+
+	result, err := svc.Execute(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("有效 tag 不应报错，实际: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+}
+
+func TestExecute_RefCommentWritebackFailure_StillReturnsError(t *testing.T) {
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return openIssue(10), nil, nil
+			},
+			createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, fmt.Errorf("Gitea API 500")
+			},
+		},
+		defaultPool(),
+		WithRefClient(&mockRefClient{}),
+	)
+
+	payload := fixPayload()
+	payload.IssueRef = ""
+
+	_, err := svc.Execute(context.Background(), payload)
+	if !errors.Is(err, ErrMissingIssueRef) {
+		t.Errorf("即使评论回写失败，也应返回 ErrMissingIssueRef，实际: %v", err)
 	}
 }
