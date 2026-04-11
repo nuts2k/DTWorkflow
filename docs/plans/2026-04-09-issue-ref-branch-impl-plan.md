@@ -12,12 +12,14 @@
 
 ---
 
-### Task 1: Gitea Tag 类型 + GetTag 方法
+### Task 1: Gitea Tag 类型 + Issue.Ref 字段 + GetTag 方法
 
 **Files:**
-- Modify: `internal/gitea/types.go:27-37` — 在 `Branch` 后新增 `Tag` 类型
+- Modify: `internal/gitea/types.go:27-37` — `Issue` 新增 `Ref` 字段；在 `Branch` 后新增 `Tag` 类型
 - Modify: `internal/gitea/repos.go` — 新增 `GetTag` 方法
 - Create: `internal/gitea/testdata/tag.json` — 测试夹具
+- Modify: `internal/gitea/testdata/issue.json` — 补充 `ref` 字段夹具
+- Modify: `internal/gitea/issues_test.go` — 验证 `GetIssue` 能解析 `Ref`
 - Modify: `internal/gitea/repos_test.go` — 新增 `TestGetTag`、`TestGetTag_NotFound`
 
 **Step 1: 创建测试夹具**
@@ -36,7 +38,23 @@
 }
 ```
 
-**Step 2: 写失败测试**
+**Step 2: 先把现有 Issue 夹具补齐 Ref，并写解析断言**
+
+修改 `internal/gitea/testdata/issue.json`，在 `state` 后添加：
+
+```json
+"ref": "feature/user-auth",
+```
+
+修改 `internal/gitea/issues_test.go` 中的 `TestGetIssue`，在现有断言后追加：
+
+```go
+	if issue.Ref != "feature/user-auth" {
+		t.Errorf("Issue.Ref = %q, 期望 %q", issue.Ref, "feature/user-auth")
+	}
+```
+
+**Step 3: 写失败测试**
 
 在 `internal/gitea/repos_test.go` 末尾追加：
 
@@ -77,14 +95,22 @@ func TestGetTag_NotFound(t *testing.T) {
 }
 ```
 
-**Step 3: 运行测试确认编译失败**
+**Step 4: 运行测试确认编译失败**
 
-Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./internal/gitea/ -run "TestGetTag" -v -count=1`
-Expected: 编译失败 — `client.GetTag` undefined, `Tag` undefined
+Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./internal/gitea/ -run "Test(GetIssue|GetTag)" -v -count=1`
+Expected: 编译失败 — `client.GetTag` undefined, `Tag` undefined，且 `issue.Ref` 相关断言尚无法通过
 
-**Step 4: 添加 Tag 类型**
+**Step 5: 添加 Issue.Ref 字段和 Tag 类型**
 
-在 `internal/gitea/types.go` 的 `Branch` 结构体之后（约 L37）新增：
+修改 `internal/gitea/types.go`：
+
+1. 在 `Issue` 结构体中 `State` 之后新增：
+
+```go
+	Ref      string    `json:"ref"`
+```
+
+2. 在 `Branch` 结构体之后（约 L37）新增：
 
 ```go
 // Tag 表示 Gitea tag
@@ -96,7 +122,7 @@ type Tag struct {
 }
 ```
 
-**Step 5: 添加 GetTag 方法**
+**Step 6: 添加 GetTag 方法**
 
 在 `internal/gitea/repos.go` 的 `GetBranch` 方法之后新增：
 
@@ -120,16 +146,21 @@ func (c *Client) GetTag(ctx context.Context, owner, repo, tag string) (*Tag, *Re
 }
 ```
 
-**Step 6: 运行测试确认通过**
+**Step 7: 运行测试确认通过**
 
-Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./internal/gitea/ -run "TestGetTag" -v -count=1`
+Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./internal/gitea/ -run "Test(GetIssue|GetTag)" -v -count=1`
 Expected: PASS
 
-**Step 7: 提交**
+**Step 8: 运行全部 gitea 测试确认无回归**
+
+Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./internal/gitea/ -v -count=1`
+Expected: 全部 PASS
+
+**Step 9: 提交**
 
 ```bash
-git add internal/gitea/types.go internal/gitea/repos.go internal/gitea/repos_test.go internal/gitea/testdata/tag.json
-git commit -m "feat(gitea): 新增 Tag 类型和 GetTag 方法"
+git add internal/gitea/types.go internal/gitea/repos.go internal/gitea/repos_test.go internal/gitea/issues_test.go internal/gitea/testdata/tag.json internal/gitea/testdata/issue.json
+git commit -m "feat(gitea): 新增 Issue.Ref 字段、Tag 类型和 GetTag 方法"
 ```
 
 ---
@@ -327,6 +358,8 @@ var ErrInvalidIssueRef = errors.New("Issue 关联的分支或 tag 不存在")
 
 **Step 2: 写失败测试**
 
+注意：不要只断言 `record.Status == failed`。在当前 Processor 实现里，没有 asynq 重试上下文时，普通错误路径也可能落到 `failed`；只有断言返回错误包含 `asynq.SkipRetry`，才能证明“确定性失败、跳过重试”这层语义真的生效。
+
 在 `internal/queue/processor_test.go` 中新增：
 
 ```go
@@ -359,6 +392,9 @@ func TestProcessTask_FixIssue_MissingRef_SkipsRetry(t *testing.T) {
 	err := p.ProcessTask(context.Background(), task)
 	if err == nil {
 		t.Fatal("应返回 SkipRetry 错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
 	}
 	if !strings.Contains(err.Error(), "跳过分析") {
 		t.Errorf("错误信息应包含'跳过分析'，实际: %v", err)
@@ -399,6 +435,9 @@ func TestProcessTask_FixIssue_InvalidRef_SkipsRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("应返回 SkipRetry 错误")
 	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
 	updated := s.tasks["task-bad-ref"]
 	if updated.Status != model.TaskStatusFailed {
 		t.Errorf("状态应为 failed，实际: %s", updated.Status)
@@ -409,7 +448,7 @@ func TestProcessTask_FixIssue_InvalidRef_SkipsRetry(t *testing.T) {
 **Step 3: 运行测试确认失败**
 
 Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./internal/queue/ -run "TestProcessTask_FixIssue_(Missing|Invalid)Ref" -v -count=1`
-Expected: FAIL — 状态不是 `failed`（当前走通用错误路径，标记为 retrying/failed 取决于 asynq context）
+Expected: FAIL — 当前走通用错误路径，返回错误不包含 `asynq.SkipRetry`
 
 **Step 4: 在 Processor 添加跳过重试分支**
 
@@ -1032,12 +1071,105 @@ git commit -m "feat(worker): fix_issue 容器新增 ISSUE_REF 环境变量和 pr
 
 ---
 
-### Task 8: Entrypoint checkout 逻辑
+### Task 8: Entrypoint checkout 逻辑 + 行为测试
 
 **Files:**
+- Modify: `build/docker/entrypoint.sh` — 抽出可覆盖的 `REPO_DIR`，并在 `fix_issue` case 添加 ref checkout
+- Create: `build/docker/entrypoint_test.sh` — 使用 fake git 验证 `ISSUE_REF` 有/无时的行为
 - Modify: `build/docker/entrypoint.sh:81-83` — `fix_issue` case 添加 ref checkout
 
-**Step 1: 修改 entrypoint.sh**
+**Step 1: 先做最小可测试性改造，不改变生产默认行为**
+
+将 `build/docker/entrypoint.sh` 中：
+
+```bash
+REPO_DIR="/workspace/repo"
+```
+
+改为：
+
+```bash
+REPO_DIR="${REPO_DIR:-/workspace/repo}"
+```
+
+说明：默认行为保持不变；仅允许测试脚本把仓库目录重定向到临时目录，避免本机不可写 `/workspace` 时无法做行为测试。
+
+**Step 2: 先写失败的行为测试脚本**
+
+创建 `build/docker/entrypoint_test.sh`，核心思路：
+
+- 使用 `mktemp -d` 创建临时目录
+- 在临时目录下放置 fake `git` 可执行文件，通过 `PATH` 覆盖真实 git
+- fake git 将每次调用追加到 `${GIT_LOG}`，并对 `clone` / `fetch` / `checkout` / `rev-parse` / `log` 返回最小可运行输出
+- 通过设置 `REPO_DIR="$tmpdir/repo"`，让 entrypoint 在临时目录中工作
+
+测试脚本至少覆盖两个用例：
+
+1. `TASK_TYPE=fix_issue` 且 `ISSUE_REF=feature/auth`
+   期望日志中出现：
+   - `git fetch origin feature/auth`
+   - `git checkout FETCH_HEAD`
+
+2. `TASK_TYPE=fix_issue` 且 `ISSUE_REF` 为空
+   期望日志中：
+   - 不出现 `git fetch origin`
+   - 不出现 `git checkout FETCH_HEAD`
+
+脚本骨架示例：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="/Users/kelin/Workspace/DTWorkflow"
+ENTRYPOINT="${ROOT}/build/docker/entrypoint.sh"
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "${TMPDIR}"' EXIT
+
+mkdir -p "${TMPDIR}/fakebin" "${TMPDIR}/home"
+
+cat > "${TMPDIR}/fakebin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "git $*" >> "${GIT_LOG:?}"
+case "${1:-}" in
+  clone)
+    mkdir -p "${@: -1}/.git"
+    ;;
+  fetch|checkout|remote|config)
+    ;;
+  rev-parse)
+    echo "abc123"
+    ;;
+  log)
+    echo "abc123 test"
+    ;;
+esac
+EOF
+chmod +x "${TMPDIR}/fakebin/git"
+
+run_case() {
+  local issue_ref="$1"
+  : > "${TMPDIR}/git.log"
+  PATH="${TMPDIR}/fakebin:${PATH}" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${TMPDIR}/repo" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="fix_issue" \
+  ISSUE_REF="${issue_ref}" \
+  bash "${ENTRYPOINT}" true >/dev/null 2>&1
+  cat "${TMPDIR}/git.log"
+}
+```
+
+**Step 3: 运行行为测试确认失败**
+
+Run: `bash /Users/kelin/Workspace/DTWorkflow/build/docker/entrypoint_test.sh`
+Expected: FAIL — 当前 `fix_issue` 路径尚未执行 `fetch + checkout`
+
+**Step 4: 修改 entrypoint.sh**
 
 将 `build/docker/entrypoint.sh` 中 `fix_issue)` case（约 L81-83）从：
 
@@ -1059,15 +1191,20 @@ git commit -m "feat(worker): fix_issue 容器新增 ISSUE_REF 环境变量和 pr
         ;;
 ```
 
-**Step 2: 语法验证**
+**Step 5: 语法验证**
 
 Run: `bash -n /Users/kelin/Workspace/DTWorkflow/build/docker/entrypoint.sh`
 Expected: 无输出（语法正确）
 
-**Step 3: 提交**
+**Step 6: 再次运行行为测试，确认通过**
+
+Run: `bash /Users/kelin/Workspace/DTWorkflow/build/docker/entrypoint_test.sh`
+Expected: PASS
+
+**Step 7: 提交**
 
 ```bash
-git add build/docker/entrypoint.sh
+git add build/docker/entrypoint.sh build/docker/entrypoint_test.sh
 git commit -m "feat(docker): fix_issue 入口脚本支持 checkout 到 ISSUE_REF"
 ```
 
@@ -1076,9 +1213,36 @@ git commit -m "feat(docker): fix_issue 入口脚本支持 checkout 到 ISSUE_REF
 ### Task 9: Serve.go 装配布线
 
 **Files:**
-- Modify: `internal/cmd/serve.go:207-212` — `fix.NewService` 新增 `WithRefClient`
+- Modify: `internal/cmd/serve.go` — 抽取 fix service 装配 helper，并在 `fix.NewService` 中注入 `WithRefClient`
+- Modify: `internal/cmd/serve_test.go` — 新增装配测试，验证运行时 wiring 确实启用了 ref 校验
 
-**Step 1: 修改装配代码**
+**Step 1: 先写失败测试，验证不是“仅编译通过”，而是真正接上了 RefClient**
+
+在 `internal/cmd/serve_test.go` 中新增一个装配级单元测试。建议先把 `fix.NewService(...)` 那段装配提取成 helper，例如：
+
+```go
+func newFixService(client fixServiceClient, pool fix.FixPoolRunner, cfgProv fix.FixConfigProvider, logger *slog.Logger) *fix.Service
+```
+
+其中 `fixServiceClient` 是 `fix.IssueClient + fix.RefClient` 的组合接口。
+
+测试思路：
+
+- 构造一个 fake client，同时实现 `GetIssue` / `ListIssueComments` / `CreateIssueComment` / `GetBranch` / `GetTag`
+- `GetIssue` 返回 open issue
+- `GetBranch` 和 `GetTag` 都返回 404
+- 通过 helper 构造 fix service
+- 调用 `Execute`，传入 `IssueRef="bad-ref"`
+- 断言返回 `fix.ErrInvalidIssueRef`
+
+若 `WithRefClient` 未接入，测试会误走成功路径或进入容器执行，因此这是一个真正能卡住 wiring 漏接的测试。
+
+**Step 2: 运行测试确认失败**
+
+Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./internal/cmd/ -run "TestNewFixService_InjectsRefClient" -v -count=1`
+Expected: FAIL — 当前装配尚未把 `deps.GiteaClient` 同时作为 `RefClient` 注入 fix service
+
+**Step 3: 修改装配代码**
 
 修改 `internal/cmd/serve.go:207-212`，在 `fix.NewService` 调用中添加 `WithRefClient`：
 
@@ -1089,18 +1253,25 @@ git commit -m "feat(docker): fix_issue 入口脚本支持 checkout 到 ISSUE_REF
 			fix.WithServiceLogger(slog.Default()),
 			fix.WithConfigProvider(cfgAdapter),
 			fix.WithRefClient(deps.GiteaClient),
-		)
+	)
 ```
 
-**Step 2: 编译验证**
+如为便于测试抽取了 helper，要求 `runServeWithConfig` 与测试共享同一段装配逻辑，避免测试和生产代码各写一份。
+
+**Step 4: 运行测试确认通过**
+
+Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./internal/cmd/ -run "TestNewFixService_InjectsRefClient" -v -count=1`
+Expected: PASS
+
+**Step 5: 编译验证**
 
 Run: `cd /Users/kelin/Workspace/DTWorkflow && go build ./...`
 Expected: 编译成功
 
-**Step 3: 提交**
+**Step 6: 提交**
 
 ```bash
-git add internal/cmd/serve.go
+git add internal/cmd/serve.go internal/cmd/serve_test.go
 git commit -m "feat(cmd): serve 装配 fix.Service 时注入 RefClient"
 ```
 
@@ -1113,19 +1284,57 @@ git commit -m "feat(cmd): serve 装配 fix.Service 时注入 RefClient"
 Run: `cd /Users/kelin/Workspace/DTWorkflow && go build ./...`
 Expected: 编译成功
 
-**Step 2: 全量单元测试**
+**Step 2: 运行关键链路回归矩阵（先于全量测试）**
+
+按“数据进入系统后的流向”依次执行以下验证：
+
+```bash
+cd /Users/kelin/Workspace/DTWorkflow
+go test ./internal/gitea/ -run "Test(GetIssue|GetTag)" -v -count=1
+go test ./internal/webhook/ -run "TestParser_ParseIssueRef" -v -count=1
+go test ./internal/queue/ -run "TestProcessTask_FixIssue_(Missing|Invalid)Ref" -v -count=1
+go test ./internal/fix/ -run "TestExecute_(MissingIssueRef|InvalidIssueRef|RefValid|RefComment)" -v -count=1
+go test ./internal/worker/ -run "TestBuildContainer(Env|Cmd)_FixIssue" -v -count=1
+go test ./internal/cmd/ -run "TestNewFixService_InjectsRefClient" -v -count=1
+bash ./build/docker/entrypoint_test.sh
+```
+
+Expected:
+
+- `Issue.ref` 能从 Gitea API / webhook payload 被正确解析
+- `IssueRef` 能进入队列 payload
+- `ErrMissingIssueRef` / `ErrInvalidIssueRef` 会返回 `asynq.SkipRetry`
+- fix prompt、容器环境变量和 CLI prompt 都携带 ref 信息
+- `serve` 装配已注入 `RefClient`
+- entrypoint 在 `ISSUE_REF` 非空时会执行 `fetch + checkout`
+
+**Step 3: 全量单元测试**
 
 Run: `cd /Users/kelin/Workspace/DTWorkflow && go test ./... -count=1`
 Expected: 全部 PASS
 
-**Step 3: 静态检查**
+**Step 4: 静态检查**
 
 Run: `cd /Users/kelin/Workspace/DTWorkflow && golangci-lint run ./...`
 Expected: 无新增 lint 错误
 
-**Step 4: 检视变更文件清单**
+**Step 5: 检视变更文件清单（不要依赖固定 commit 数）**
 
-Run: `git diff --stat HEAD~9`
+Run:
+
+```bash
+cd /Users/kelin/Workspace/DTWorkflow
+git diff --stat -- \
+  internal/gitea \
+  internal/webhook \
+  internal/model \
+  internal/queue \
+  internal/fix \
+  internal/worker \
+  internal/cmd \
+  build/docker
+```
+
 Expected: 涉及文件与设计文档一致：
 
 | 文件 | 变更类型 |
@@ -1133,6 +1342,8 @@ Expected: 涉及文件与设计文档一致：
 | `internal/gitea/types.go` | 修改：新增 `Tag` 类型 |
 | `internal/gitea/repos.go` | 修改：新增 `GetTag` 方法 |
 | `internal/gitea/testdata/tag.json` | 新增：测试夹具 |
+| `internal/gitea/testdata/issue.json` | 修改：补充 `ref` 测试夹具 |
+| `internal/gitea/issues_test.go` | 修改：验证 `GetIssue` 解析 `Ref` |
 | `internal/gitea/repos_test.go` | 修改：新增测试 |
 | `internal/webhook/gitea_types.go` | 修改：`giteaIssuePayload` 新增 `Ref` |
 | `internal/webhook/event.go` | 修改：`IssueRef` 新增 `Ref` |
@@ -1152,4 +1363,6 @@ Expected: 涉及文件与设计文档一致：
 | `internal/worker/container.go` | 修改：环境变量 + prompt |
 | `internal/worker/container_test.go` | 修改：新增测试 |
 | `build/docker/entrypoint.sh` | 修改：checkout 逻辑 |
+| `build/docker/entrypoint_test.sh` | 新增：entrypoint 行为测试 |
 | `internal/cmd/serve.go` | 修改：装配 `WithRefClient` |
+| `internal/cmd/serve_test.go` | 修改：验证 fix service 注入了 `RefClient` |
