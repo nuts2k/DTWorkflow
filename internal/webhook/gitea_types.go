@@ -41,6 +41,7 @@ type giteaIssuePayload struct {
 	Body    string             `json:"body"`
 	HTMLURL string             `json:"html_url"`
 	State   string             `json:"state"`
+	Ref     string             `json:"ref"`
 	Labels  []giteaLabelPayload `json:"labels"` // Gitea 1.21+: label_updated 事件中标签在此字段
 }
 

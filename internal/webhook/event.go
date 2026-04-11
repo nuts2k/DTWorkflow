@@ -41,6 +41,7 @@ type IssueRef struct {
 	Body    string
 	HTMLURL string
 	State   string
+	Ref     string
 }
 
 type PullRequestEvent struct {

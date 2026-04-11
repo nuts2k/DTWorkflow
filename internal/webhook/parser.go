@@ -108,6 +108,7 @@ func (p *Parser) parseIssue(deliveryID string, body []byte) (Event, error) {
 			Body:    payload.Issue.Body,
 			HTMLURL: payload.Issue.HTMLURL,
 			State:   payload.Issue.State,
+			Ref:     payload.Issue.Ref,
 		},
 		Label:  labelRef,
 		Sender: UserRef{

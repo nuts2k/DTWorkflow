@@ -122,3 +122,35 @@ func TestParser_ParseIssueLabelCleared(t *testing.T) {
 		t.Fatalf("AutoFixChanged = true, want false (no label info in label_cleared)")
 	}
 }
+
+func TestParser_ParseIssueRef(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("testdata", "issue_labeled_auto_fix.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	parser := NewParser()
+	event, err := parser.Parse("issues", "delivery-ref", body)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	issueEvent := event.(IssueLabelEvent)
+	if issueEvent.Issue.Ref != "feature/user-auth" {
+		t.Errorf("Issue.Ref = %q, want %q", issueEvent.Issue.Ref, "feature/user-auth")
+	}
+}
+
+func TestParser_ParseIssueRefEmpty(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("testdata", "issue_labeled_other.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	parser := NewParser()
+	event, err := parser.Parse("issues", "delivery-ref-empty", body)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	issueEvent := event.(IssueLabelEvent)
+	if issueEvent.Issue.Ref != "" {
+		t.Errorf("Issue.Ref = %q, want empty", issueEvent.Issue.Ref)
+	}
+}

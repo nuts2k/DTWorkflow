@@ -10,7 +10,8 @@
     "title": "Bug report",
     "body": "Issue body",
     "html_url": "https://gitea.example.com/owner/repo/issues/7",
-    "state": "open"
+    "state": "open",
+    "ref": "feature/user-auth"
   },
   "label": {"name": "auto-fix", "color": "ff0000"},
   "sender": {"login": "bob", "full_name": "Bob"}
