@@ -36,7 +36,7 @@ REST="${REPO_CLONE_URL#*://}"
 AUTH_URL="${PROTO}://token:${GITEA_TOKEN}@${REST}"
 
 # Clone 仓库到工作目录
-REPO_DIR="/workspace/repo"
+REPO_DIR="${REPO_DIR:-/workspace/repo}"
 log "正在 clone 仓库: ${REPO_CLONE_URL} -> ${REPO_DIR}"
 # 过滤 git 输出中可能包含的 token（认证失败时 git 可能回显完整 URL）
 # 所有 git 输出重定向到 stderr，保持 stdout 纯净（供 Claude CLI JSON 输出使用）
@@ -79,7 +79,11 @@ case "${TASK_TYPE:-}" in
         fi
         ;;
     fix_issue)
-        log "Issue 修复任务，使用默认分支"
+        if [ -n "${ISSUE_REF:-}" ]; then
+            log "checkout 到关联 ref: ${ISSUE_REF}"
+            git fetch origin "${ISSUE_REF}" >&2 2>&1
+            git checkout FETCH_HEAD >&2 2>&1
+        fi
         ;;
     gen_tests)
         log "测试生成任务，使用默认分支"
