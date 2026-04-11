@@ -144,6 +144,9 @@ func (s *Service) buildPrompt(issueCtx *IssueContext) string {
 
 	// 2. 任务上下文
 	b.WriteString(fmt.Sprintf("你正在分析仓库中的 Issue #%d。\n", issueCtx.Issue.Number))
+	if issueCtx.Ref != "" {
+		b.WriteString(fmt.Sprintf("当前代码基于 ref：%s\n", issueCtx.Ref))
+	}
 	b.WriteString(fmt.Sprintf("Issue 标题：%s\n", issueCtx.Issue.Title))
 	if issueCtx.Issue.Body != "" {
 		b.WriteString(fmt.Sprintf("Issue 描述：\n%s\n", truncate(issueCtx.Issue.Body, 5000)))

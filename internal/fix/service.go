@@ -135,6 +135,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 		"comments", len(issueCtx.Comments),
 		"labels", len(issue.Labels),
 	)
+	issueCtx.Ref = payload.IssueRef
 
 	// 6. 构造 prompt + 容器执行
 	prompt := s.buildPrompt(issueCtx)

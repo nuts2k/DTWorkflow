@@ -6,4 +6,5 @@ import "otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 type IssueContext struct {
 	Issue    *gitea.Issue     // Issue 详情（标题、描述、状态、标签）
 	Comments []*gitea.Comment // Issue 评论列表（单页，最多 50 条）
+	Ref      string           // Issue 关联的分支或 tag
 }

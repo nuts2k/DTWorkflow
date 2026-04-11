@@ -286,3 +286,34 @@ func TestTruncate(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildPrompt_ContainsRef(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	issueCtx := &IssueContext{
+		Issue: &gitea.Issue{
+			Number: 10,
+			Title:  "test bug",
+			Body:   "something broken",
+		},
+		Ref: "feature/user-auth",
+	}
+	prompt := svc.buildPrompt(issueCtx)
+	if !strings.Contains(prompt, "当前代码基于 ref：feature/user-auth") {
+		t.Errorf("prompt 应包含 ref 信息，实际:\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_NoRefOmitted(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	issueCtx := &IssueContext{
+		Issue: &gitea.Issue{
+			Number: 10,
+			Title:  "test bug",
+		},
+		Ref: "",
+	}
+	prompt := svc.buildPrompt(issueCtx)
+	if strings.Contains(prompt, "当前代码基于 ref") {
+		t.Errorf("ref 为空时不应出现 ref 信息，实际:\n%s", prompt)
+	}
+}
