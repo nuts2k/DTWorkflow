@@ -1073,6 +1073,28 @@ func TestNormalizeIssues_StandardFields_NoOverwrite(t *testing.T) {
 	}
 }
 
+func TestNormalizeIssues_TitleSkippedWhenMessageExists(t *testing.T) {
+	// Claude 同时返回标准 message 和非标准 title 时，title 不应拼接到已有 message 前
+	rawJSON := `{
+		"issues": [
+			{
+				"severity": "ERROR",
+				"message": "接口未校验用户权限",
+				"title": "权限校验缺失"
+			}
+		]
+	}`
+	issues := []ReviewIssue{
+		{Severity: "ERROR", Message: "接口未校验用户权限"},
+	}
+
+	normalizeIssues(rawJSON, issues)
+
+	if issues[0].Message != "接口未校验用户权限" {
+		t.Errorf("有标准 message 时 title 不应拼接，实际: %q", issues[0].Message)
+	}
+}
+
 func TestNormalizeIssues_FallbackToSuggestion(t *testing.T) {
 	// message 和 detail 均为空时，用 suggestion 兜底
 	rawJSON := `{

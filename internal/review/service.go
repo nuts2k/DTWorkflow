@@ -247,7 +247,8 @@ func normalizeIssues(rawJSON string, issues []ReviewIssue) {
 			if issues[i].File == "" {
 				issues[i].File = locFile
 			}
-			if issues[i].Line <= 0 && locLine > 0 && (issues[i].File == "" || locFile == "" || issues[i].File == locFile) {
+			// 仅当 location 中的文件与已有 file 一致时才补充行号
+			if issues[i].Line <= 0 && locLine > 0 && issues[i].File == locFile {
 				issues[i].Line = locLine
 			}
 		}
@@ -261,12 +262,16 @@ func normalizeIssues(rawJSON string, issues []ReviewIssue) {
 			}
 		}
 
-		// title → 作为 message 前缀，保持纯文本，避免在 unmapped 列表中打断 Markdown 列表结构
+		// title → 作为 message 前缀（仅当原始 JSON 中无标准 message 字段时）
+		// 避免 Claude 同时返回 message + title 时重复拼接
 		if title, _ := raw["title"].(string); title != "" {
-			if issues[i].Message != "" {
-				issues[i].Message = title + "： " + issues[i].Message
-			} else {
-				issues[i].Message = title
+			_, hasStdMessage := raw["message"].(string)
+			if !hasStdMessage {
+				if issues[i].Message != "" {
+					issues[i].Message = title + "： " + issues[i].Message
+				} else {
+					issues[i].Message = title
+				}
 			}
 		}
 
