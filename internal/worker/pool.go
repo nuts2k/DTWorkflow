@@ -3,6 +3,7 @@ package worker
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,11 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
+
+// ErrActivityTimeout 容器 stdout 流活跃度超时，stream monitor 判定容器卡住后取消执行。
+// 与 context.Canceled 语义不同：ErrActivityTimeout 是可重试的暂时性故障，
+// 而 context.Canceled 表示任务被主动取消（如同一 PR 的新评审取代旧评审）。
+var ErrActivityTimeout = errors.New("容器活跃度超时")
 
 // stdinWriteTimeout stdin 数据写入超时，防止容器未读 stdin 导致 goroutine 永久阻塞
 const stdinWriteTimeout = 30 * time.Second
@@ -270,6 +276,14 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 		} else {
 			output = p.fetchContainerLogs(ctx, containerID, waitErr, exitCode)
 		}
+
+		// 活跃度超时：替换 context.Canceled 为 ErrActivityTimeout，
+		// 使上层 Processor 能区分"被新任务取代"（context.Canceled）和
+		// "stream monitor 超时"（ErrActivityTimeout，可重试）
+		if waitErr != nil && errors.Is(context.Cause(monitorCtx), ErrActivityTimeout) {
+			waitErr = fmt.Errorf("容器活跃度超时 (%s 无新事件): %w",
+				p.config.StreamMonitor.ActivityTimeout, ErrActivityTimeout)
+		}
 	} else {
 		// === 旧路径（开关关闭时保持原有逻辑不变）===
 		waitTimeout := p.config.Timeouts.Lookup(payload.TaskType)
@@ -441,7 +455,7 @@ func (p *Pool) streamMonitorLoop(
 			p.logger.WarnContext(ctx, "容器活跃度超时，判定卡住",
 				slog.String("container_id", containerID),
 				slog.Duration("threshold", p.config.StreamMonitor.ActivityTimeout))
-			cancel(fmt.Errorf("活跃度超时: %s 无新事件", p.config.StreamMonitor.ActivityTimeout))
+			cancel(ErrActivityTimeout)
 			return
 		case line, ok := <-lineCh:
 			if !ok {
