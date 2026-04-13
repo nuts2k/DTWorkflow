@@ -35,6 +35,9 @@ type TaskNotifier interface {
 // ReviewExecutor 窄接口，解耦 review 包
 type ReviewExecutor interface {
 	Execute(ctx context.Context, payload model.TaskPayload) (*review.ReviewResult, error)
+	// WriteDegraded 在重试耗尽后发送降级评论（原始输出作为 COMMENT）。
+	// 仅在 Execute 因 ErrParseFailure 失败且所有重试用完时调用。
+	WriteDegraded(ctx context.Context, payload model.TaskPayload, result *review.ReviewResult) error
 }
 
 // FixExecutor 窄接口，解耦 fix 包。
@@ -249,6 +252,13 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		}
 		if errors.Is(runErr, fix.ErrInvalidIssueRef) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, "Issue 关联的 ref 不存在，跳过分析")
+		}
+		// 解析失败且重试耗尽：发送降级评论，让用户至少能在 PR 上看到原始输出
+		if errors.Is(runErr, review.ErrParseFailure) && !shouldRetry(ctx) && reviewResult != nil {
+			if wbErr := p.reviewService.WriteDegraded(ctx, payload, reviewResult); wbErr != nil {
+				p.logger.ErrorContext(ctx, "解析失败降级回写失败",
+					"task_id", taskID, "error", wbErr)
+			}
 		}
 		// 根据 shouldRetry 判断是否还有剩余重试机会：
 		// - 有剩余重试：设为 retrying，asynq 将自动安排下次重试

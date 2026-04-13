@@ -147,6 +147,14 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 	result := s.parseResult(execResult.Output)
 	result.RawOutput = execResult.Output
 
+	// 7.5 解析失败：跳过回写，返回错误触发重试。
+	// 重试耗尽后由 processor 调用 WriteDegraded 发送降级评论。
+	if result.ParseError != nil {
+		s.logger.WarnContext(ctx, "评审结果解析失败，将触发重试",
+			"pr", prNum, "parse_error", result.ParseError)
+		return result, fmt.Errorf("%w: %v", ErrParseFailure, result.ParseError)
+	}
+
 	// 8. 回写评审结果到 Gitea（writer 非 nil 时执行）
 	if s.writer != nil {
 		headSHA := ""
@@ -332,4 +340,35 @@ func (s *Service) resolveConfig(repoFullName string) ReviewConfig {
 	}
 
 	return cfg
+}
+
+// WriteDegraded 在重试耗尽后发送降级评论（原始输出作为 COMMENT）。
+// 仅在 Execute 因 ErrParseFailure 失败且所有重试用完时由 processor 调用。
+// writer 为 nil 时直接返回 nil（与 Execute 行为一致）。
+func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload, result *ReviewResult) error {
+	if s.writer == nil || result == nil {
+		return nil
+	}
+
+	cfg := s.resolveConfig(payload.RepoFullName)
+	input := WritebackInput{
+		TaskID:            payload.TaskID,
+		Owner:             payload.RepoOwner,
+		Repo:              payload.RepoName,
+		PRNumber:          payload.PRNumber,
+		Result:            result,
+		TaskCreatedAt:     payload.CreatedAt,
+		SupersededCount:   payload.SupersededCount,
+		PreviousHeadSHA:   payload.PreviousHeadSHA,
+		SeverityThreshold: cfg.Severity,
+		IgnorePatterns:    cfg.IgnorePatterns,
+	}
+	// HeadSHA 留空：Gitea 使用最新 commit，降级场景可接受
+	_, err := s.writer.Write(ctx, input)
+	if errors.Is(err, ErrStaleReview) {
+		s.logger.InfoContext(ctx, "降级回写时评审已过时，跳过",
+			"pr", payload.PRNumber, "task_id", payload.TaskID)
+		return nil
+	}
+	return err
 }

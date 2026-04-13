@@ -52,6 +52,10 @@ func (m *mockReviewExecutor) Execute(_ context.Context, _ model.TaskPayload) (*r
 	return m.result, m.err
 }
 
+func (m *mockReviewExecutor) WriteDegraded(_ context.Context, _ model.TaskPayload, _ *review.ReviewResult) error {
+	return nil
+}
+
 type mockFixExecutor struct {
 	result *fix.FixResult
 	err    error
