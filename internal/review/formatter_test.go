@@ -158,6 +158,22 @@ func TestFormatCommentBody_Format(t *testing.T) {
 	}
 }
 
+func TestFormatCommentBody_EmptyCategory(t *testing.T) {
+	issue := ReviewIssue{
+		Severity: "ERROR",
+		Message:  "缺少分类时也应保持格式正常",
+	}
+
+	body := formatCommentBody(issue)
+
+	if !strings.HasPrefix(body, "**ERROR**\n\n") {
+		t.Errorf("空 category 时头部格式错误，body=%q", body)
+	}
+	if strings.Contains(body, "| ") {
+		t.Errorf("空 category 时不应包含悬空分隔符，body=%q", body)
+	}
+}
+
 // TestFormatCommentBody_Truncated 行级评论 body 超长截断
 func TestFormatCommentBody_Truncated(t *testing.T) {
 	longMsg := strings.Repeat("Y", 9000)
@@ -198,6 +214,21 @@ func TestFormatReviewBody_TableEscape(t *testing.T) {
 	// escapeMarkdown 不转义 |，所以 | 保持原样
 	if !strings.Contains(body, "err|nil") {
 		t.Error("message 中的 | 应保持原样")
+	}
+}
+
+func TestFormatReviewBody_UnmappedTitleDetailStaysSingleBullet(t *testing.T) {
+	unmapped := []ReviewIssue{
+		{
+			Severity: "ERROR",
+			Message:  "权限校验缺失： 接口未校验用户权限",
+		},
+	}
+
+	body := formatReviewBody(FormatOptions{Unmapped: unmapped, ParseFailed: false, DurationSec: 1, CostUSD: 0})
+
+	if !strings.Contains(body, "- **ERROR**: 权限校验缺失： 接口未校验用户权限") {
+		t.Errorf("unmapped issue 应保持单条 bullet，body=%s", body)
 	}
 }
 

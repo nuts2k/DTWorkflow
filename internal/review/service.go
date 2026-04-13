@@ -242,9 +242,13 @@ func normalizeIssues(rawJSON string, issues []ReviewIssue) {
 		raw := parsed.Issues[i]
 
 		// location → file + line（取第一个 file:line 对）
-		if issues[i].File == "" {
-			if loc, _ := raw["location"].(string); loc != "" {
-				issues[i].File, issues[i].Line = parseLocation(loc)
+		if loc, _ := raw["location"].(string); loc != "" && (issues[i].File == "" || issues[i].Line <= 0) {
+			locFile, locLine := parseLocation(loc)
+			if issues[i].File == "" {
+				issues[i].File = locFile
+			}
+			if issues[i].Line <= 0 && locLine > 0 && (issues[i].File == "" || locFile == "" || issues[i].File == locFile) {
+				issues[i].Line = locLine
 			}
 		}
 
@@ -257,10 +261,10 @@ func normalizeIssues(rawJSON string, issues []ReviewIssue) {
 			}
 		}
 
-		// title → 作为 message 前缀（加粗标题 + 详细描述）
+		// title → 作为 message 前缀，保持纯文本，避免在 unmapped 列表中打断 Markdown 列表结构
 		if title, _ := raw["title"].(string); title != "" {
 			if issues[i].Message != "" {
-				issues[i].Message = "**" + title + "**\n\n" + issues[i].Message
+				issues[i].Message = title + "： " + issues[i].Message
 			} else {
 				issues[i].Message = title
 			}

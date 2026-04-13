@@ -192,7 +192,11 @@ func formatReviewBody(opts FormatOptions) string {
 // 格式：**severity** | category\n\nmessage\n\n> 建议：suggestion
 func formatCommentBody(issue ReviewIssue) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**%s** | %s\n\n", issue.Severity, issue.Category))
+	header := fmt.Sprintf("**%s**", issue.Severity)
+	if issue.Category != "" {
+		header += fmt.Sprintf(" | %s", issue.Category)
+	}
+	sb.WriteString(header + "\n\n")
 	sb.WriteString(escapeMarkdown(issue.Message))
 	if issue.Suggestion != "" {
 		sb.WriteString(fmt.Sprintf("\n\n> 建议：%s", escapeMarkdown(issue.Suggestion)))

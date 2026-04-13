@@ -1014,8 +1014,35 @@ func TestNormalizeIssues_LocationTitleDetail(t *testing.T) {
 	if !strings.Contains(issues[0].Message, "接口未校验用户权限") {
 		t.Errorf("Message 应包含 detail，实际: %q", issues[0].Message)
 	}
+	if strings.Contains(issues[0].Message, "\n\n") {
+		t.Errorf("Message 不应包含空行，实际: %q", issues[0].Message)
+	}
 	if issues[0].Suggestion != "添加权限校验" {
 		t.Errorf("Suggestion = %q, want %q", issues[0].Suggestion, "添加权限校验")
+	}
+}
+
+func TestNormalizeIssues_LocationComplementsExistingFile(t *testing.T) {
+	rawJSON := `{
+		"issues": [
+			{
+				"file": "src/Service.java",
+				"location": "src/Service.java:62",
+				"severity": "ERROR"
+			}
+		]
+	}`
+	issues := []ReviewIssue{
+		{File: "src/Service.java", Severity: "ERROR"},
+	}
+
+	normalizeIssues(rawJSON, issues)
+
+	if issues[0].File != "src/Service.java" {
+		t.Errorf("File = %q, want %q", issues[0].File, "src/Service.java")
+	}
+	if issues[0].Line != 62 {
+		t.Errorf("Line = %d, want %d", issues[0].Line, 62)
 	}
 }
 
