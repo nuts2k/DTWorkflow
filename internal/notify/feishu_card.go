@@ -27,6 +27,14 @@ func FormatFeishuCard(msg Message) (map[string]any, error) {
 	if issueSummary := msg.Metadata[MetaKeyIssueSummary]; issueSummary != "" {
 		mdParts = append(mdParts, fmt.Sprintf("**发现问题**: %s", issueSummary))
 	}
+	if retryCount := msg.Metadata[MetaKeyRetryCount]; retryCount != "" {
+		maxRetry := msg.Metadata[MetaKeyMaxRetry]
+		if maxRetry != "" {
+			mdParts = append(mdParts, fmt.Sprintf("**重试**: 第 %s 次 / 共 %s 次", retryCount, maxRetry))
+		} else {
+			mdParts = append(mdParts, fmt.Sprintf("**重试**: 第 %s 次", retryCount))
+		}
+	}
 
 	if msg.Body != "" {
 		mdParts = append(mdParts, msg.Body)
@@ -84,8 +92,12 @@ func resolveHeaderStyle(msg Message) (title, color string) {
 		default:
 			return "PR 评审完成", "green"
 		}
+	case EventPRReviewRetrying:
+		return "PR 评审重试中", "orange"
+	case EventIssueFixRetrying:
+		return "Issue 修复重试中", "orange"
 	case EventSystemError:
-		return "PR 评审失败", "red"
+		return "任务失败", "red"
 	default:
 		return msg.Title, "blue"
 	}
@@ -109,8 +121,10 @@ func resolveButtonStyle(msg Message) (text, btnType string) {
 		return "查看 PR", "default"
 	case EventPRReviewDone:
 		return "查看评审详情", "primary"
+	case EventPRReviewRetrying, EventIssueFixRetrying:
+		return "查看详情", "default"
 	case EventSystemError:
-		return "查看 PR", "danger"
+		return "查看详情", "danger"
 	default:
 		return "查看详情", "default"
 	}

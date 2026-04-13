@@ -469,7 +469,10 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 	if record == nil {
 		return notify.Message{}, false
 	}
-	if record.Status != model.TaskStatusSucceeded && record.Status != model.TaskStatusFailed {
+	switch record.Status {
+	case model.TaskStatusSucceeded, model.TaskStatusFailed, model.TaskStatusRetrying:
+		// 这三种状态都需要发送通知
+	default:
 		return notify.Message{}, false
 	}
 
@@ -478,7 +481,13 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		return notify.Message{}, false
 	}
 
-	body := fmt.Sprintf("任务 %s 执行完成\n\n仓库：%s\n任务类型：%s\n状态：%s", record.ID, payload.RepoFullName, payload.TaskType, record.Status)
+	// 构建通知正文
+	var body string
+	if record.Status == model.TaskStatusRetrying {
+		body = fmt.Sprintf("任务执行失败，即将重试\n\n仓库：%s\n任务类型：%s", payload.RepoFullName, payload.TaskType)
+	} else {
+		body = fmt.Sprintf("任务 %s 执行完成\n\n仓库：%s\n任务类型：%s\n状态：%s", record.ID, payload.RepoFullName, payload.TaskType, record.Status)
+	}
 	if record.Error != "" {
 		body += fmt.Sprintf("\n错误：%s", record.Error)
 	}
@@ -493,8 +502,13 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 			metadata[notify.MetaKeyVerdict] = string(reviewResult.Review.Verdict)
 			metadata[notify.MetaKeyIssueSummary] = formatIssueSummary(reviewResult.Review.Issues)
 		}
+		if record.Status == model.TaskStatusRetrying {
+			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
+			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
+		}
 		target := buildPRTarget(payload)
-		if record.Status == model.TaskStatusSucceeded {
+		switch record.Status {
+		case model.TaskStatusSucceeded:
 			return notify.Message{
 				EventType: notify.EventPRReviewDone,
 				Severity:  notify.SeverityInfo,
@@ -503,45 +517,73 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 				Body:      body,
 				Metadata:  metadata,
 			}, true
+		case model.TaskStatusRetrying:
+			return notify.Message{
+				EventType: notify.EventPRReviewRetrying,
+				Severity:  notify.SeverityWarning,
+				Target:    target,
+				Title:     "PR 自动评审重试中",
+				Body:      body,
+				Metadata:  metadata,
+			}, true
+		default: // failed
+			return notify.Message{
+				EventType: notify.EventSystemError,
+				Severity:  notify.SeverityWarning,
+				Target:    target,
+				Title:     "PR 自动评审任务失败",
+				Body:      body,
+				Metadata:  metadata,
+			}, true
 		}
-		return notify.Message{
-			EventType: notify.EventSystemError,
-			Severity:  notify.SeverityWarning,
-			Target:    target,
-			Title:     "PR 自动评审任务失败",
-			Body:      body,
-			Metadata:  metadata,
-		}, true
 	case model.TaskTypeFixIssue:
 		if payload.IssueNumber <= 0 {
 			return notify.Message{}, false
 		}
-		if record.Status == model.TaskStatusSucceeded {
+		issueTarget := notify.Target{
+			Owner:  payload.RepoOwner,
+			Repo:   payload.RepoName,
+			Number: payload.IssueNumber,
+			IsPR:   false,
+		}
+		metadata := map[string]string{}
+		if p.giteaBaseURL != "" {
+			metadata[notify.MetaKeyIssueURL] = fmt.Sprintf("%s/%s/%s/issues/%d",
+				p.giteaBaseURL, payload.RepoOwner, payload.RepoName, payload.IssueNumber)
+		}
+		if record.Status == model.TaskStatusRetrying {
+			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
+			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
+		}
+		switch record.Status {
+		case model.TaskStatusSucceeded:
 			return notify.Message{
 				EventType: notify.EventFixIssueDone,
 				Severity:  notify.SeverityInfo,
-				Target: notify.Target{
-					Owner:  payload.RepoOwner,
-					Repo:   payload.RepoName,
-					Number: payload.IssueNumber,
-					IsPR:   false,
-				},
-				Title: "Issue 自动修复任务完成",
-				Body:  body,
+				Target:    issueTarget,
+				Title:     "Issue 自动修复任务完成",
+				Body:      body,
+				Metadata:  metadata,
+			}, true
+		case model.TaskStatusRetrying:
+			return notify.Message{
+				EventType: notify.EventIssueFixRetrying,
+				Severity:  notify.SeverityWarning,
+				Target:    issueTarget,
+				Title:     "Issue 自动修复重试中",
+				Body:      body,
+				Metadata:  metadata,
+			}, true
+		default: // failed
+			return notify.Message{
+				EventType: notify.EventSystemError,
+				Severity:  notify.SeverityWarning,
+				Target:    issueTarget,
+				Title:     "Issue 自动修复任务失败",
+				Body:      body,
+				Metadata:  metadata,
 			}, true
 		}
-		return notify.Message{
-			EventType: notify.EventSystemError,
-			Severity:  notify.SeverityWarning,
-			Target: notify.Target{
-				Owner:  payload.RepoOwner,
-				Repo:   payload.RepoName,
-				Number: payload.IssueNumber,
-				IsPR:   false,
-			},
-			Title: "Issue 自动修复任务失败",
-			Body:  body,
-		}, true
 	default:
 		return notify.Message{}, false
 	}

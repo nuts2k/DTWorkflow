@@ -652,13 +652,14 @@ func TestProcessTask_InvalidTarget_NoNotification(t *testing.T) {
 	}
 }
 
-func TestProcessTask_Retrying_NoNotification(t *testing.T) {
+func TestProcessTask_Retrying_SendsNotification(t *testing.T) {
 	s := newMockStore()
 	notifier := &stubNotifier{}
 	record := &model.TaskRecord{
-		ID:       "proc-task-retrying-no-notify",
+		ID:       "proc-task-retrying-notify",
 		TaskType: model.TaskTypeReviewPR,
 		Status:   model.TaskStatusRetrying,
+		MaxRetry: 3,
 		Payload: model.TaskPayload{
 			TaskType:     model.TaskTypeReviewPR,
 			RepoOwner:    "org",
@@ -669,8 +670,18 @@ func TestProcessTask_Retrying_NoNotification(t *testing.T) {
 	}
 	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default())
 	p.sendCompletionNotification(context.Background(), record, nil)
-	if len(notifier.messages) != 0 {
-		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+	msg := notifier.messages[0]
+	if msg.EventType != notify.EventPRReviewRetrying {
+		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventPRReviewRetrying)
+	}
+	if msg.Metadata[notify.MetaKeyRetryCount] == "" {
+		t.Error("metadata should contain retry_count")
+	}
+	if msg.Metadata[notify.MetaKeyMaxRetry] == "" {
+		t.Error("metadata should contain max_retry")
 	}
 }
 

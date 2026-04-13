@@ -14,7 +14,9 @@ const (
 	EventFixPRCreated      EventType = "fix.pr.created"
 	EventE2ETestFailed     EventType = "e2e.test.failed"
 	EventPRReviewStarted   EventType = "pr.review.started"
+	EventPRReviewRetrying  EventType = "pr.review.retrying"
 	EventIssueFixStarted   EventType = "issue.fix.started"
+	EventIssueFixRetrying  EventType = "issue.fix.retrying"
 	EventSystemError       EventType = "system.error"
 )
 
@@ -25,6 +27,8 @@ const (
 	MetaKeyIssueURL     = "issue_url"
 	MetaKeyVerdict      = "verdict"
 	MetaKeyIssueSummary = "issue_summary"
+	MetaKeyRetryCount   = "retry_count"
+	MetaKeyMaxRetry     = "max_retry"
 )
 
 // Severity 通知紧急程度
