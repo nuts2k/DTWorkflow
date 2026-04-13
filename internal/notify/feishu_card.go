@@ -96,10 +96,6 @@ func resolveHeaderStyle(msg Message) (title, color string) {
 		default:
 			return "PR 评审完成", "green"
 		}
-	case EventPRReviewRetrying:
-		return "PR 评审重试中", "orange"
-	case EventIssueFixRetrying:
-		return "Issue 修复重试中", "orange"
 	case EventSystemError:
 		if msg.Title != "" {
 			return msg.Title, "red"
@@ -132,8 +128,6 @@ func resolveButtonStyle(msg Message) (text, btnType string) {
 		return "查看 PR", "default"
 	case EventPRReviewDone:
 		return "查看评审详情", "primary"
-	case EventPRReviewRetrying, EventIssueFixRetrying:
-		return "查看详情", "default"
 	case EventSystemError:
 		return "查看详情", "danger"
 	default:

@@ -13,10 +13,8 @@ const (
 	EventFixIssueDone      EventType = "fix.issue.done"
 	EventFixPRCreated      EventType = "fix.pr.created"
 	EventE2ETestFailed     EventType = "e2e.test.failed"
-	EventPRReviewStarted   EventType = "pr.review.started"
-	EventPRReviewRetrying  EventType = "pr.review.retrying"
-	EventIssueFixStarted   EventType = "issue.fix.started"
-	EventIssueFixRetrying  EventType = "issue.fix.retrying"
+	EventPRReviewStarted EventType = "pr.review.started"
+	EventIssueFixStarted EventType = "issue.fix.started"
 	EventSystemError       EventType = "system.error"
 )
 
