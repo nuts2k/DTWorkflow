@@ -505,6 +505,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		if record.Status == model.TaskStatusRetrying {
 			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
 			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
+			metadata[notify.MetaKeyTaskStatus] = string(record.Status)
 		}
 		target := buildPRTarget(payload)
 		switch record.Status {
@@ -519,7 +520,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 			}, true
 		case model.TaskStatusRetrying:
 			return notify.Message{
-				EventType: notify.EventPRReviewRetrying,
+				EventType: notify.EventSystemError,
 				Severity:  notify.SeverityWarning,
 				Target:    target,
 				Title:     "PR 自动评审重试中",
@@ -554,6 +555,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		if record.Status == model.TaskStatusRetrying {
 			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
 			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
+			metadata[notify.MetaKeyTaskStatus] = string(record.Status)
 		}
 		switch record.Status {
 		case model.TaskStatusSucceeded:
@@ -567,7 +569,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 			}, true
 		case model.TaskStatusRetrying:
 			return notify.Message{
-				EventType: notify.EventIssueFixRetrying,
+				EventType: notify.EventSystemError,
 				Severity:  notify.SeverityWarning,
 				Target:    issueTarget,
 				Title:     "Issue 自动修复重试中",

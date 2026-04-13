@@ -674,14 +674,17 @@ func TestProcessTask_Retrying_SendsNotification(t *testing.T) {
 		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
 	}
 	msg := notifier.messages[0]
-	if msg.EventType != notify.EventPRReviewRetrying {
-		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventPRReviewRetrying)
+	if msg.EventType != notify.EventSystemError {
+		t.Errorf("event type = %q, want %q", msg.EventType, notify.EventSystemError)
 	}
 	if msg.Metadata[notify.MetaKeyRetryCount] == "" {
 		t.Error("metadata should contain retry_count")
 	}
 	if msg.Metadata[notify.MetaKeyMaxRetry] == "" {
 		t.Error("metadata should contain max_retry")
+	}
+	if msg.Metadata[notify.MetaKeyTaskStatus] != string(model.TaskStatusRetrying) {
+		t.Errorf("task_status = %q, want %q", msg.Metadata[notify.MetaKeyTaskStatus], model.TaskStatusRetrying)
 	}
 }
 

@@ -29,6 +29,7 @@ const (
 	MetaKeyIssueSummary = "issue_summary"
 	MetaKeyRetryCount   = "retry_count"
 	MetaKeyMaxRetry     = "max_retry"
+	MetaKeyTaskStatus   = "task_status"
 )
 
 // Severity 通知紧急程度

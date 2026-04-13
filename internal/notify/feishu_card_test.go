@@ -113,6 +113,41 @@ func TestFormatFeishuCard_SystemError(t *testing.T) {
 	if header["template"] != "red" {
 		t.Errorf("template = %v, want red (error)", header["template"])
 	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "PR 自动评审任务失败" {
+		t.Errorf("title = %q, want %q", title["content"], "PR 自动评审任务失败")
+	}
+}
+
+func TestFormatFeishuCard_SystemErrorRetrying(t *testing.T) {
+	msg := Message{
+		EventType: EventSystemError,
+		Severity:  SeverityWarning,
+		Target:    Target{Owner: "org", Repo: "repo", Number: 42, IsPR: true},
+		Title:     "PR 自动评审重试中",
+		Body:      "任务执行失败，即将重试",
+		Metadata: map[string]string{
+			MetaKeyPRURL:      "https://gitea.example.com/org/repo/pulls/42",
+			MetaKeyTaskStatus: "retrying",
+			MetaKeyRetryCount: "2",
+			MetaKeyMaxRetry:   "3",
+		},
+	}
+
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "orange" {
+		t.Errorf("template = %v, want orange (retrying)", header["template"])
+	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "PR 自动评审重试中" {
+		t.Errorf("title = %q, want %q", title["content"], "PR 自动评审重试中")
+	}
 }
 
 func TestFormatFeishuCard_NoMetadata_Degrades(t *testing.T) {

@@ -81,6 +81,10 @@ func FormatFeishuCard(msg Message) (map[string]any, error) {
 
 // resolveHeaderStyle 根据消息事件类型和元数据推断卡片标题与主题色。
 func resolveHeaderStyle(msg Message) (title, color string) {
+	if isRetryingMessage(msg) {
+		return msg.Title, "orange"
+	}
+
 	switch msg.EventType {
 	case EventPRReviewStarted:
 		return "PR 评审开始", "blue"
@@ -97,6 +101,9 @@ func resolveHeaderStyle(msg Message) (title, color string) {
 	case EventIssueFixRetrying:
 		return "Issue 修复重试中", "orange"
 	case EventSystemError:
+		if msg.Title != "" {
+			return msg.Title, "red"
+		}
 		return "任务失败", "red"
 	default:
 		return msg.Title, "blue"
@@ -116,6 +123,10 @@ func resolveButtonURL(msg Message) string {
 
 // resolveButtonStyle 根据事件类型返回按钮文案和样式。
 func resolveButtonStyle(msg Message) (text, btnType string) {
+	if isRetryingMessage(msg) {
+		return "查看详情", "default"
+	}
+
 	switch msg.EventType {
 	case EventPRReviewStarted:
 		return "查看 PR", "default"
@@ -128,4 +139,8 @@ func resolveButtonStyle(msg Message) (text, btnType string) {
 	default:
 		return "查看详情", "default"
 	}
+}
+
+func isRetryingMessage(msg Message) bool {
+	return msg.Metadata != nil && msg.Metadata[MetaKeyTaskStatus] == "retrying"
 }
