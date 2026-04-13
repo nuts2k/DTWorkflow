@@ -256,6 +256,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		// 解析失败且重试耗尽：发送降级评论，让用户至少能在 PR 上看到原始输出
 		if errors.Is(runErr, review.ErrParseFailure) && !shouldRetry(ctx) && reviewResult != nil {
 			if wbErr := p.reviewService.WriteDegraded(ctx, payload, reviewResult); wbErr != nil {
+				if errors.Is(wbErr, review.ErrStaleReview) {
+					return p.markTaskCancelled(ctx, record, "评审已过时，被更新的任务取代")
+				}
 				p.logger.ErrorContext(ctx, "解析失败降级回写失败",
 					"task_id", taskID, "error", wbErr)
 			}
@@ -269,6 +272,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			record.Status = model.TaskStatusFailed
 		}
 		record.Error = runErr.Error()
+		if result != nil {
+			record.Result = result.Output
+		}
 		retryCount, _ := asynq.GetRetryCount(ctx)
 		maxRetry, _ := asynq.GetMaxRetry(ctx)
 		p.logger.ErrorContext(ctx, "任务执行失败",

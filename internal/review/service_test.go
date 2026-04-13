@@ -302,6 +302,42 @@ func TestExecute_WritebackDegradedPreservesReviewIDAndError(t *testing.T) {
 	}
 }
 
+func TestExecute_ParseFailure_ReturnsErrParseFailure(t *testing.T) {
+	svc := newService(
+		&mockPRClient{
+			getPR: func(_ context.Context, _, _ string, _ int64) (*gitea.PullRequest, *gitea.Response, error) {
+				return openPR(1), nil, nil
+			},
+			listFiles: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+				return noFiles(), nil, nil
+			},
+		},
+		&mockReviewPool{
+			runWithCommandAndStdin: func(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
+				return &worker.ExecutionResult{
+					Output:   `{"type":"result","subtype":"success","is_error":false,"result":"not-a-valid-json-object"}`,
+					ExitCode: 0,
+				}, nil
+			},
+		},
+		config.ReviewOverride{},
+	)
+
+	result, err := svc.Execute(context.Background(), testPayload())
+	if !errors.Is(err, ErrParseFailure) {
+		t.Fatalf("解析失败应返回 ErrParseFailure，实际: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+	if result.ParseError == nil {
+		t.Fatal("ParseError 不应为 nil")
+	}
+	if result.RawOutput == "" {
+		t.Fatal("RawOutput 不应为空")
+	}
+}
+
 func TestExecute_StaleWriteback_ReturnsErrStaleReview(t *testing.T) {
 	svc := NewService(
 		&mockPRClient{
@@ -338,6 +374,34 @@ func TestExecute_StaleWriteback_ReturnsErrStaleReview(t *testing.T) {
 	}
 	if result.WritebackError != nil {
 		t.Fatalf("stale writeback 不应被记录为普通 WritebackError，实际: %v", result.WritebackError)
+	}
+}
+
+func TestWriteDegraded_StaleWriteback_ReturnsErrStaleReview(t *testing.T) {
+	svc := NewService(
+		&mockPRClient{
+			getPR: func(_ context.Context, _, _ string, _ int64) (*gitea.PullRequest, *gitea.Response, error) {
+				pr := openPR(1)
+				pr.Head = &gitea.PRBranch{SHA: "head-sha"}
+				return pr, nil, nil
+			},
+			listFiles: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+				return noFiles(), nil, nil
+			},
+		},
+		&mockReviewPool{},
+		&mockConfigProvider{override: config.ReviewOverride{}},
+		WithWriter(NewWriter(&stubWritebackClient{reviewID: 42}, nil, &mockStaleChecker{hasNewer: true}, nil)),
+	)
+
+	payload := testPayload()
+	payload.CreatedAt = time.Now().Add(-time.Minute)
+	err := svc.WriteDegraded(context.Background(), payload, &ReviewResult{
+		RawOutput:  "raw output",
+		ParseError: errors.New("parse failed"),
+	})
+	if !errors.Is(err, ErrStaleReview) {
+		t.Fatalf("降级回写 stale 应返回 ErrStaleReview，实际: %v", err)
 	}
 }
 

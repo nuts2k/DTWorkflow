@@ -345,6 +345,7 @@ func (s *Service) resolveConfig(repoFullName string) ReviewConfig {
 // WriteDegraded 在重试耗尽后发送降级评论（原始输出作为 COMMENT）。
 // 仅在 Execute 因 ErrParseFailure 失败且所有重试用完时由 processor 调用。
 // writer 为 nil 时直接返回 nil（与 Execute 行为一致）。
+// 若评审已过时，返回 ErrStaleReview 交由 processor 统一标记为 cancelled。
 func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload, result *ReviewResult) error {
 	if s.writer == nil || result == nil {
 		return nil
@@ -365,10 +366,5 @@ func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload, 
 	}
 	// HeadSHA 留空：Gitea 使用最新 commit，降级场景可接受
 	_, err := s.writer.Write(ctx, input)
-	if errors.Is(err, ErrStaleReview) {
-		s.logger.InfoContext(ctx, "降级回写时评审已过时，跳过",
-			"pr", payload.PRNumber, "task_id", payload.TaskID)
-		return nil
-	}
 	return err
 }

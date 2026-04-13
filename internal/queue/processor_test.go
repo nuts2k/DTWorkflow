@@ -42,9 +42,11 @@ func (s *stubNotifier) Send(_ context.Context, msg notify.Message) error {
 }
 
 type mockReviewExecutor struct {
-	result *review.ReviewResult
-	err    error
-	calls  int
+	result             *review.ReviewResult
+	err                error
+	writeDegradedErr   error
+	calls              int
+	writeDegradedCalls int
 }
 
 func (m *mockReviewExecutor) Execute(_ context.Context, _ model.TaskPayload) (*review.ReviewResult, error) {
@@ -53,7 +55,8 @@ func (m *mockReviewExecutor) Execute(_ context.Context, _ model.TaskPayload) (*r
 }
 
 func (m *mockReviewExecutor) WriteDegraded(_ context.Context, _ model.TaskPayload, _ *review.ReviewResult) error {
-	return nil
+	m.writeDegradedCalls++
+	return m.writeDegradedErr
 }
 
 type mockFixExecutor struct {
@@ -1199,6 +1202,114 @@ func TestProcessTask_RetryingStatus(t *testing.T) {
 	// 无 asynq 重试上下文时 shouldRetry 返回 false，应标记为 failed
 	if got.Status != model.TaskStatusFailed {
 		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+}
+
+func TestProcessTask_ReviewParseFailure_PersistsRawOutputAndWritesDegraded(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-parse-failed",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     10,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-parse-failed",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	reviewExec := &mockReviewExecutor{
+		result: &review.ReviewResult{
+			RawOutput:  "raw review output",
+			ParseError: errors.New("inner json invalid"),
+		},
+		err: fmt.Errorf("%w: inner json invalid", review.ErrParseFailure),
+	}
+
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithReviewService(reviewExec))
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("解析失败应返回错误")
+	}
+	if errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("解析失败不应 SkipRetry，实际: %v", err)
+	}
+	if reviewExec.writeDegradedCalls != 1 {
+		t.Fatalf("WriteDegraded 调用次数 = %d, want 1", reviewExec.writeDegradedCalls)
+	}
+
+	got := s.tasks["proc-task-review-parse-failed"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if got.Result != "raw review output" {
+		t.Fatalf("result = %q, want %q", got.Result, "raw review output")
+	}
+	if !strings.Contains(got.Error, review.ErrParseFailure.Error()) {
+		t.Fatalf("error = %q，应包含 %q", got.Error, review.ErrParseFailure.Error())
+	}
+}
+
+func TestProcessTask_ReviewParseFailure_DegradedStaleMarksCancelled(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-review-parse-stale",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     11,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-review-parse-stale",
+		TaskType:   model.TaskTypeReviewPR,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	reviewExec := &mockReviewExecutor{
+		result: &review.ReviewResult{
+			RawOutput:  "raw review output",
+			ParseError: errors.New("inner json invalid"),
+		},
+		err:              fmt.Errorf("%w: inner json invalid", review.ErrParseFailure),
+		writeDegradedErr: review.ErrStaleReview,
+	}
+
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithReviewService(reviewExec))
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("stale 降级回写应返回错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("stale 降级回写应包含 SkipRetry，实际: %v", err)
+	}
+	if reviewExec.writeDegradedCalls != 1 {
+		t.Fatalf("WriteDegraded 调用次数 = %d, want 1", reviewExec.writeDegradedCalls)
+	}
+
+	got := s.tasks["proc-task-review-parse-stale"]
+	if got.Status != model.TaskStatusCancelled {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusCancelled)
+	}
+	if !strings.Contains(got.Error, "评审已过时，被更新的任务取代") {
+		t.Fatalf("error = %q，应包含过时取消原因", got.Error)
 	}
 }
 
