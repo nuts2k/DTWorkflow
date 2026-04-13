@@ -952,3 +952,170 @@ func TestResolveConfig_EmptySeverityAndPatterns(t *testing.T) {
 		t.Errorf("空配置时 IgnorePatterns 应为空，实际: %v", cfg.IgnorePatterns)
 	}
 }
+
+func TestParseLocation(t *testing.T) {
+	tests := []struct {
+		name     string
+		loc      string
+		wantFile string
+		wantLine int
+	}{
+		{"file:line", "path/File.java:42", "path/File.java", 42},
+		{"多位置取第一个", "path/A.java:10; path/B.java:20", "path/A.java", 10},
+		{"仅文件名无行号", "path/File.java", "path/File.java", 0},
+		{"空字符串", "", "", 0},
+		{"行号为零", "path/File.java:0", "path/File.java", 0},
+		{"行号非数字", "path/File.java:abc", "path/File.java:abc", 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			file, line := parseLocation(tc.loc)
+			if file != tc.wantFile {
+				t.Errorf("file = %q, want %q", file, tc.wantFile)
+			}
+			if line != tc.wantLine {
+				t.Errorf("line = %d, want %d", line, tc.wantLine)
+			}
+		})
+	}
+}
+
+func TestNormalizeIssues_LocationTitleDetail(t *testing.T) {
+	// 模拟 Claude 使用 location/title/detail 替代 file/category/message 的情况
+	rawJSON := `{
+		"summary": "test",
+		"verdict": "request_changes",
+		"issues": [
+			{
+				"severity": "ERROR",
+				"location": "src/Service.java:62; src/Other.java:100",
+				"title": "权限校验缺失",
+				"detail": "接口未校验用户权限",
+				"suggestion": "添加权限校验"
+			}
+		]
+	}`
+	// json.Unmarshal 会填充已知字段（severity、suggestion），normalizeIssues 补充未知字段
+	issues := []ReviewIssue{
+		{Severity: "ERROR", Suggestion: "添加权限校验"},
+	}
+
+	normalizeIssues(rawJSON, issues)
+
+	if issues[0].File != "src/Service.java" {
+		t.Errorf("File = %q, want %q", issues[0].File, "src/Service.java")
+	}
+	if issues[0].Line != 62 {
+		t.Errorf("Line = %d, want %d", issues[0].Line, 62)
+	}
+	if !strings.Contains(issues[0].Message, "权限校验缺失") {
+		t.Errorf("Message 应包含 title，实际: %q", issues[0].Message)
+	}
+	if !strings.Contains(issues[0].Message, "接口未校验用户权限") {
+		t.Errorf("Message 应包含 detail，实际: %q", issues[0].Message)
+	}
+	if issues[0].Suggestion != "添加权限校验" {
+		t.Errorf("Suggestion = %q, want %q", issues[0].Suggestion, "添加权限校验")
+	}
+}
+
+func TestNormalizeIssues_StandardFields_NoOverwrite(t *testing.T) {
+	// 当标准字段已有值时，不应被覆盖
+	rawJSON := `{
+		"issues": [
+			{
+				"file": "main.go",
+				"line": 10,
+				"severity": "WARNING",
+				"category": "logic",
+				"message": "原始消息"
+			}
+		]
+	}`
+	issues := []ReviewIssue{
+		{File: "main.go", Line: 10, Severity: "WARNING", Category: "logic", Message: "原始消息"},
+	}
+
+	normalizeIssues(rawJSON, issues)
+
+	if issues[0].File != "main.go" {
+		t.Errorf("File 不应被覆盖, got %q", issues[0].File)
+	}
+	if issues[0].Message != "原始消息" {
+		t.Errorf("Message 不应被覆盖, got %q", issues[0].Message)
+	}
+}
+
+func TestNormalizeIssues_FallbackToSuggestion(t *testing.T) {
+	// message 和 detail 均为空时，用 suggestion 兜底
+	rawJSON := `{
+		"issues": [
+			{
+				"severity": "ERROR",
+				"suggestion": "兜底建议内容"
+			}
+		]
+	}`
+	issues := []ReviewIssue{
+		{Severity: "ERROR", Suggestion: "兜底建议内容"},
+	}
+
+	normalizeIssues(rawJSON, issues)
+
+	if issues[0].Message != "兜底建议内容" {
+		t.Errorf("Message 应回退到 suggestion，实际: %q", issues[0].Message)
+	}
+	if issues[0].Suggestion != "" {
+		t.Errorf("回退后 Suggestion 应清空，实际: %q", issues[0].Suggestion)
+	}
+}
+
+func TestNormalizeIssues_Description(t *testing.T) {
+	// Claude 使用 description 替代 message
+	rawJSON := `{
+		"issues": [
+			{
+				"severity": "WARNING",
+				"description": "描述性文字"
+			}
+		]
+	}`
+	issues := []ReviewIssue{
+		{Severity: "WARNING"},
+	}
+
+	normalizeIssues(rawJSON, issues)
+
+	if issues[0].Message != "描述性文字" {
+		t.Errorf("Message = %q, want %q", issues[0].Message, "描述性文字")
+	}
+}
+
+func TestParseResult_NormalizeIssues_Integration(t *testing.T) {
+	// 端到端：Claude 返回 location/title/detail，parseResult 应正确规范化
+	inner := `{"summary":"found issues","verdict":"request_changes","issues":[{"severity":"ERROR","location":"src/App.java:42","title":"SQL注入","detail":"拼接SQL存在注入风险","suggestion":"使用参数化查询"}]}`
+	outer := fmt.Sprintf(`{"type":"result","subtype":"success","is_error":false,"cost_usd":0.01,"duration_ms":1000,"num_turns":1,"result":%q,"session_id":"sess-1"}`, inner)
+
+	svc := &Service{}
+	result := svc.parseResult(outer)
+
+	if result.ParseError != nil {
+		t.Fatalf("预期无解析错误，实际: %v", result.ParseError)
+	}
+	if result.Review == nil || len(result.Review.Issues) != 1 {
+		t.Fatal("应有 1 个 issue")
+	}
+	issue := result.Review.Issues[0]
+	if issue.File != "src/App.java" {
+		t.Errorf("File = %q, want %q", issue.File, "src/App.java")
+	}
+	if issue.Line != 42 {
+		t.Errorf("Line = %d, want %d", issue.Line, 42)
+	}
+	if !strings.Contains(issue.Message, "SQL注入") {
+		t.Errorf("Message 应包含 title，实际: %q", issue.Message)
+	}
+	if !strings.Contains(issue.Message, "拼接SQL存在注入风险") {
+		t.Errorf("Message 应包含 detail，实际: %q", issue.Message)
+	}
+}

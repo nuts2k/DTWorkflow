@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
@@ -216,7 +218,80 @@ func (s *Service) parseResult(output string) *ReviewResult {
 		return result
 	}
 	result.Review = &review
+	// Claude 可能使用 location/title/detail 等替代字段名，规范化到标准 ReviewIssue 字段
+	normalizeIssues(jsonText, review.Issues)
 	return result
+}
+
+// normalizeIssues 对 Claude 返回的 issues 做字段名规范化。
+// Claude 有时使用 location/title/detail 替代 file+line/category/message，
+// 导致标准 json.Unmarshal 无法映射这些字段。此函数从原始 JSON 中
+// 提取替代字段并补充到 ReviewIssue 中。
+func normalizeIssues(rawJSON string, issues []ReviewIssue) {
+	var parsed struct {
+		Issues []map[string]any `json:"issues"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil || len(parsed.Issues) == 0 {
+		return
+	}
+
+	for i := range issues {
+		if i >= len(parsed.Issues) {
+			break
+		}
+		raw := parsed.Issues[i]
+
+		// location → file + line（取第一个 file:line 对）
+		if issues[i].File == "" {
+			if loc, _ := raw["location"].(string); loc != "" {
+				issues[i].File, issues[i].Line = parseLocation(loc)
+			}
+		}
+
+		// detail / description → message
+		if issues[i].Message == "" {
+			if v, _ := raw["detail"].(string); v != "" {
+				issues[i].Message = v
+			} else if v, _ := raw["description"].(string); v != "" {
+				issues[i].Message = v
+			}
+		}
+
+		// title → 作为 message 前缀（加粗标题 + 详细描述）
+		if title, _ := raw["title"].(string); title != "" {
+			if issues[i].Message != "" {
+				issues[i].Message = "**" + title + "**\n\n" + issues[i].Message
+			} else {
+				issues[i].Message = title
+			}
+		}
+
+		// 最终兜底：message 仍为空时用 suggestion 填充
+		if issues[i].Message == "" && issues[i].Suggestion != "" {
+			issues[i].Message = issues[i].Suggestion
+			issues[i].Suggestion = ""
+		}
+	}
+}
+
+// parseLocation 从 Claude 返回的 location 字符串中提取第一个 file:line。
+// location 格式可能是：
+//   - "path/to/File.java:42"
+//   - "path/to/File.java:42; path/to/Other.java:10"（多位置分号分隔）
+//   - "path/to/File.java"（无行号）
+func parseLocation(loc string) (file string, line int) {
+	// 取第一个分号前的部分
+	if idx := strings.Index(loc, ";"); idx >= 0 {
+		loc = strings.TrimSpace(loc[:idx])
+	}
+	// 尝试分离 file:line
+	if lastColon := strings.LastIndex(loc, ":"); lastColon > 0 {
+		lineStr := loc[lastColon+1:]
+		if n, err := strconv.Atoi(strings.TrimSpace(lineStr)); err == nil {
+			return loc[:lastColon], n
+		}
+	}
+	return loc, 0
 }
 
 // resolveConfig 从 ConfigProvider 获取配置并转换为内部 ReviewConfig

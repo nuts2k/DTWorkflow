@@ -148,13 +148,31 @@ func formatReviewBody(opts FormatOptions) string {
 		sb.WriteString("### 其他发现（未关联到 diff 行）\n")
 		for _, issue := range sorted {
 			msg := truncateString(issue.Message, messageMaxLen)
-			loc := fmt.Sprintf("%s:%d", issue.File, issue.Line)
-			sb.WriteString(fmt.Sprintf("- **%s** `%s` (%s): %s\n",
-				issue.Severity,
-				escapeTableCell(loc),
-				escapeTableCell(issue.Category),
-				escapeMarkdown(msg),
-			))
+			// 构造位置标注：忽略空文件名和零行号
+			var loc string
+			switch {
+			case issue.File != "" && issue.Line > 0:
+				loc = fmt.Sprintf("`%s:%d`", issue.File, issue.Line)
+			case issue.File != "":
+				loc = fmt.Sprintf("`%s`", issue.File)
+			default:
+				loc = ""
+			}
+			// 构造单行：**SEVERITY** [loc] [(category)] message
+			var parts []string
+			parts = append(parts, fmt.Sprintf("**%s**", issue.Severity))
+			if loc != "" {
+				parts = append(parts, loc)
+			}
+			if issue.Category != "" {
+				parts = append(parts, fmt.Sprintf("(%s)", escapeTableCell(issue.Category)))
+			}
+			header := strings.Join(parts, " ")
+			if msg != "" {
+				sb.WriteString(fmt.Sprintf("- %s: %s\n", header, escapeMarkdown(msg)))
+			} else {
+				sb.WriteString(fmt.Sprintf("- %s\n", header))
+			}
 		}
 		sb.WriteString("\n")
 	}
