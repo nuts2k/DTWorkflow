@@ -4,7 +4,16 @@
 
 ## 待处理
 
-暂无。
+### TD-002: 三个 Issue 相关通知事件已定义但未使用
+
+- **位置**: `internal/notify/notifier.go`
+- **问题**: 以下事件类型已定义常量但无生产代码触发：
+  - `EventIssueAnalysisDone` (`issue.analysis.done`)
+  - `EventIssueNeedInfo` (`issue.need_info`)
+  - `EventFixPRCreated` (`fix.pr.created`)
+- **风险**: 如后续启用这些事件，需同步更新远程服务器 `dtworkflow.yaml` 的飞书路由规则，否则飞书不会收到通知（与 issue #95 同类问题）
+- **建议**: 启用新事件时，同步更新 `configs/` 下的配置模板和部署文档
+- **记录时间**: 2026-04-14
 
 ---
 
