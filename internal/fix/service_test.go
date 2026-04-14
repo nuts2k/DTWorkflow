@@ -1039,3 +1039,90 @@ func TestExecute_RefCommentWritebackFailure_StillReturnsError(t *testing.T) {
 		t.Errorf("错误应包含评论回写失败信息，实际: %v", err)
 	}
 }
+
+func TestStripRefPrefix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"refs/heads/main", "main"},
+		{"refs/heads/feature/user-auth", "feature/user-auth"},
+		{"refs/tags/v1.0.0", "v1.0.0"},
+		{"refs/tags/release/2.0", "release/2.0"},
+		{"main", "main"},
+		{"feature/dev", "feature/dev"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := stripRefPrefix(tt.input)
+		if got != tt.want {
+			t.Errorf("stripRefPrefix(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestExecute_RefsHeadsPrefix_ValidatesCorrectly(t *testing.T) {
+	var queriedBranch string
+	pool := defaultPool()
+	issue := openIssue(10)
+	issue.Ref = "refs/heads/main"
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+		},
+		pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				queriedBranch = branch
+				return &gitea.Branch{Name: branch}, nil, nil
+			},
+		}),
+	)
+
+	payload := fixPayload()
+	_, _ = svc.Execute(context.Background(), payload)
+
+	if queriedBranch != "main" {
+		t.Errorf("validateRef 应剥离 refs/heads/ 前缀，实际查询分支名: %q", queriedBranch)
+	}
+}
+
+func TestExecute_RefsTagsPrefix_ValidatesCorrectly(t *testing.T) {
+	var queriedTag string
+	issue := openIssue(10)
+	issue.Ref = "refs/tags/v1.0.0"
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+		},
+		defaultPool(),
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, _ string) (*gitea.Branch, *gitea.Response, error) {
+				return nil, nil, notFoundErr()
+			},
+			getTag: func(_ context.Context, _, _, tag string) (*gitea.Tag, *gitea.Response, error) {
+				queriedTag = tag
+				return &gitea.Tag{Name: tag}, nil, nil
+			},
+		}),
+	)
+
+	payload := fixPayload()
+	_, _ = svc.Execute(context.Background(), payload)
+
+	if queriedTag != "v1.0.0" {
+		t.Errorf("validateRef 应剥离 refs/tags/ 前缀，实际查询 tag 名: %q", queriedTag)
+	}
+}

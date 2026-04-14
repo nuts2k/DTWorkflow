@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -250,21 +251,34 @@ func (s *Service) collectContext(ctx context.Context, owner, repo string, issue 
 	}, nil
 }
 
+// stripRefPrefix 剥离 Gitea Issue.Ref 返回的完整 refspec 前缀，
+// 返回裸分支名或 tag 名，供 REST API 查询使用。
+func stripRefPrefix(ref string) string {
+	if after, ok := strings.CutPrefix(ref, "refs/heads/"); ok {
+		return after
+	}
+	if after, ok := strings.CutPrefix(ref, "refs/tags/"); ok {
+		return after
+	}
+	return ref
+}
+
 // validateRef 验证 Issue 关联的 ref 是否存在（先检查分支，再检查 tag）。
 func (s *Service) validateRef(ctx context.Context, owner, repo, ref string) error {
-	_, _, err := s.refClient.GetBranch(ctx, owner, repo, ref)
+	bare := stripRefPrefix(ref)
+	_, _, err := s.refClient.GetBranch(ctx, owner, repo, bare)
 	if err == nil {
 		return nil
 	}
 	if !gitea.IsNotFound(err) {
-		return fmt.Errorf("检查分支 %q 失败: %w", ref, err)
+		return fmt.Errorf("检查分支 %q 失败: %w", bare, err)
 	}
-	_, _, err = s.refClient.GetTag(ctx, owner, repo, ref)
+	_, _, err = s.refClient.GetTag(ctx, owner, repo, bare)
 	if err == nil {
 		return nil
 	}
 	if !gitea.IsNotFound(err) {
-		return fmt.Errorf("检查 tag %q 失败: %w", ref, err)
+		return fmt.Errorf("检查 tag %q 失败: %w", bare, err)
 	}
 	return ErrInvalidIssueRef
 }
