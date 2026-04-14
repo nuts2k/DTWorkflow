@@ -225,6 +225,8 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
   - [x] 外键约束（task_id REFERENCES tasks ON DELETE SET NULL）+ task_id 索引 + (repo, pr) 复合索引
 - [x] 错误处理与降级链
   - [x] 三级降级：正常→diff 失败→parse 失败，每级都向用户交付有价值的信息
+  - [x] 解析失败显式重试：`ErrParseFailure` 哨兵错误，`Execute` 在 parseResult 后新增步骤 7.5——解析失败时直接返回该错误触发 asynq 重试，重试耗尽后由 Processor 调用 `WriteDegraded` 发送降级评论（原始输出包裹代码块）
+  - [x] `parseLocation` 支持多位置字符串（分号分隔），取第一个有效 file:line；`description`/`title` 字段兜底填充 `message`，空 file/line 在 formatter 中优雅处理
   - [x] 回写失败不导致任务失败（WritebackError 独立记录）
   - [x] Store 持久化失败仅日志告警，不影响回写
 - [x] 安全加固（审核修复）
@@ -271,8 +273,10 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > 详细设计见 `docs/plans/2026-04-01-m2.6-feishu-notification-design.md`。
 - [x] 飞书自定义机器人（Webhook）通知渠道实现（`FeishuNotifier`）
   - [x] Webhook POST + 可选 HMAC-SHA256 签名校验
-  - [x] 飞书交互卡片格式化（`feishu_card.go`：蓝色-进行中 / 绿色-成功 / 橙色-需修改 / 红色-失败）
-  - [x] 消息内容：评审结论 + 关键 issue 统计摘要 + PR 跳转链接按钮
+  - [x] 飞书交互卡片格式化（`feishu_card.go`：蓝色-进行中 / 绿色-成功 / 橙色-需修改或重试中 / 红色-失败）
+  - [x] 消息内容：评审结论 + 关键 issue 统计摘要 + 重试次数（重试场景）+ 通知时间 + 耗时（仅成功）+ PR 跳转链接按钮
+  - [x] 通知时间与耗时字段（`MetaKeyNotifyTime` / `MetaKeyDuration`）：所有通知注入 notify_time，成功通知额外注入当次尝试耗时；时区统一 Asia/Shanghai
+  - [x] 重试信息字段（`MetaKeyRetryCount` / `MetaKeyMaxRetry` / `MetaKeyTaskStatus`）：重试场景卡片显示"第 N 次 / 共 M 次"，主题色强制橙色
 - [x] 双通知时机
   - [x] 任务开始时发送"评审开始"通知（新增 `EventPRReviewStarted`）
   - [x] 任务完成时发送状态同步通知（复用现有 `sendCompletionNotification`，补充 Metadata）
@@ -376,7 +380,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 通过 Gitea API 采集 Issue 富上下文：Issue 详情（标题、描述、状态）、评论（单页最多 50 条）、标签列表
 - [x] Issue 上下文结构体定义（`IssueContext`），包含纯原始数据（Issue 详情、评论、标签），智能提取由 M3.2 Claude 分析完成
 - [x] Issue 状态检查：Issue 已关闭时返回 `ErrIssueNotOpen`（类似 review 的 `ErrPRNotOpen`）
-- [x] Ref 有效性校验：`RefClient` 窄接口（`GetBranch`/`GetTag`），`validateRef` 先查分支再查 tag，均不存在返回 `ErrInvalidIssueRef`；为空返回 `ErrMissingIssueRef`。两种错误均在 Issue 评论中给出友好提醒，Processor 层标记为 SkipRetry
+- [x] Ref 有效性校验：`RefClient` 窄接口（`GetBranch`/`GetTag`），`validateRef` 先调用 `stripRefPrefix` 剥离 Gitea 返回的 `refs/heads/` / `refs/tags/` 前缀后再查询 API（先查分支再查 tag），均不存在返回 `ErrInvalidIssueRef`；为空返回 `ErrMissingIssueRef`。两种错误均在 Issue 评论中给出友好提醒，Processor 层标记为 SkipRetry
 - [x] 单元测试覆盖校验、状态检查、API 错误、正常路径、评论截断、ref 校验（空/无效/分支有效/tag 有效/评论回写失败可重试）
 - 注：M3.1 的 fix_issue 任务仍走 `pool.Run()` 默认路径，`fix.Service` 尚未接管 Processor 路由（避免上下文采集阶段任务空跑成功）。M3.2 已激活路由，fix_issue 任务现在走 `fixService.Execute` 路径。
 
