@@ -2222,3 +2222,182 @@ func TestBuildStartMessage_FixIssue_HasNotifyTime(t *testing.T) {
 		t.Error("FixIssue 开始通知应包含 notify_time")
 	}
 }
+
+func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	startedAt := time.Now().Add(-32 * time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:       "time-succeeded",
+		TaskType: model.TaskTypeReviewPR,
+		Status:   model.TaskStatusSucceeded,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			PRNumber:     42,
+		},
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+
+	notifyTime := msg.Metadata[notify.MetaKeyNotifyTime]
+	if notifyTime == "" {
+		t.Error("succeeded 通知应包含 notify_time")
+	}
+	if _, err := time.Parse("2006-01-02 15:04:05", notifyTime); err != nil {
+		t.Errorf("notify_time 格式错误: %q", notifyTime)
+	}
+
+	duration := msg.Metadata[notify.MetaKeyDuration]
+	if duration == "" {
+		t.Error("succeeded 通知应包含 duration")
+	}
+	if duration != "32s" {
+		t.Errorf("duration = %q, want %q", duration, "32s")
+	}
+}
+
+func TestBuildNotificationMessage_Failed_HasNotifyTimeNoDuration(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	startedAt := time.Now().Add(-10 * time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:       "time-failed",
+		TaskType: model.TaskTypeReviewPR,
+		Status:   model.TaskStatusFailed,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			PRNumber:     42,
+		},
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+
+	if msg.Metadata[notify.MetaKeyNotifyTime] == "" {
+		t.Error("failed 通知应包含 notify_time")
+	}
+	if msg.Metadata[notify.MetaKeyDuration] != "" {
+		t.Errorf("failed 通知不应包含 duration，got %q", msg.Metadata[notify.MetaKeyDuration])
+	}
+}
+
+func TestBuildNotificationMessage_Retrying_HasNotifyTimeNoDuration(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	startedAt := time.Now().Add(-5 * time.Second)
+	record := &model.TaskRecord{
+		ID:       "time-retrying",
+		TaskType: model.TaskTypeReviewPR,
+		Status:   model.TaskStatusRetrying,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			PRNumber:     42,
+		},
+		RetryCount: 1,
+		MaxRetry:   3,
+		StartedAt:  &startedAt,
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+
+	if msg.Metadata[notify.MetaKeyNotifyTime] == "" {
+		t.Error("retrying 通知应包含 notify_time")
+	}
+	if msg.Metadata[notify.MetaKeyDuration] != "" {
+		t.Errorf("retrying 通知不应包含 duration（CompletedAt 为 nil），got %q", msg.Metadata[notify.MetaKeyDuration])
+	}
+}
+
+func TestBuildNotificationMessage_FixIssue_Succeeded_HasDuration(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	startedAt := time.Now().Add(-1*time.Minute - 30*time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:       "time-fix-succeeded",
+		TaskType: model.TaskTypeFixIssue,
+		Status:   model.TaskStatusSucceeded,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeFixIssue,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			IssueNumber:  10,
+		},
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+
+	if msg.Metadata[notify.MetaKeyNotifyTime] == "" {
+		t.Error("FixIssue succeeded 通知应包含 notify_time")
+	}
+	if msg.Metadata[notify.MetaKeyDuration] == "" {
+		t.Error("FixIssue succeeded 通知应包含 duration")
+	}
+}
+
+func TestBuildNotificationMessage_FixIssue_Failed_NoDuration(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	startedAt := time.Now().Add(-10 * time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:       "time-fix-failed",
+		TaskType: model.TaskTypeFixIssue,
+		Status:   model.TaskStatusFailed,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeFixIssue,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			IssueNumber:  10,
+		},
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+
+	if msg.Metadata[notify.MetaKeyNotifyTime] == "" {
+		t.Error("FixIssue failed 通知应包含 notify_time")
+	}
+	if msg.Metadata[notify.MetaKeyDuration] != "" {
+		t.Errorf("FixIssue failed 通知不应包含 duration，got %q", msg.Metadata[notify.MetaKeyDuration])
+	}
+}

@@ -526,6 +526,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		body += fmt.Sprintf("\n错误：%s", record.Error)
 	}
 
+	var msg notify.Message
 	switch payload.TaskType {
 	case model.TaskTypeReviewPR:
 		if payload.PRNumber <= 0 {
@@ -544,32 +545,32 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		target := buildPRTarget(payload)
 		switch record.Status {
 		case model.TaskStatusSucceeded:
-			return notify.Message{
+			msg = notify.Message{
 				EventType: notify.EventPRReviewDone,
 				Severity:  notify.SeverityInfo,
 				Target:    target,
 				Title:     "PR 自动评审任务完成",
 				Body:      body,
 				Metadata:  metadata,
-			}, true
+			}
 		case model.TaskStatusRetrying:
-			return notify.Message{
+			msg = notify.Message{
 				EventType: notify.EventSystemError,
 				Severity:  notify.SeverityWarning,
 				Target:    target,
 				Title:     "PR 自动评审重试中",
 				Body:      body,
 				Metadata:  metadata,
-			}, true
+			}
 		default: // failed
-			return notify.Message{
+			msg = notify.Message{
 				EventType: notify.EventSystemError,
 				Severity:  notify.SeverityWarning,
 				Target:    target,
 				Title:     "PR 自动评审任务失败",
 				Body:      body,
 				Metadata:  metadata,
-			}, true
+			}
 		}
 	case model.TaskTypeFixIssue:
 		if payload.IssueNumber <= 0 {
@@ -593,36 +594,48 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		}
 		switch record.Status {
 		case model.TaskStatusSucceeded:
-			return notify.Message{
+			msg = notify.Message{
 				EventType: notify.EventFixIssueDone,
 				Severity:  notify.SeverityInfo,
 				Target:    issueTarget,
 				Title:     "Issue 自动修复任务完成",
 				Body:      body,
 				Metadata:  metadata,
-			}, true
+			}
 		case model.TaskStatusRetrying:
-			return notify.Message{
+			msg = notify.Message{
 				EventType: notify.EventSystemError,
 				Severity:  notify.SeverityWarning,
 				Target:    issueTarget,
 				Title:     "Issue 自动修复重试中",
 				Body:      body,
 				Metadata:  metadata,
-			}, true
+			}
 		default: // failed
-			return notify.Message{
+			msg = notify.Message{
 				EventType: notify.EventSystemError,
 				Severity:  notify.SeverityWarning,
 				Target:    issueTarget,
 				Title:     "Issue 自动修复任务失败",
 				Body:      body,
 				Metadata:  metadata,
-			}, true
+			}
 		}
 	default:
 		return notify.Message{}, false
 	}
+
+	// 公共路径：统一注入通知时间和耗时
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	msg.Metadata[notify.MetaKeyNotifyTime] = formatNotifyTime()
+	if record.Status == model.TaskStatusSucceeded &&
+		record.StartedAt != nil && record.CompletedAt != nil {
+		msg.Metadata[notify.MetaKeyDuration] = formatDuration(
+			record.CompletedAt.Sub(*record.StartedAt))
+	}
+	return msg, true
 }
 
 // adaptFixResult 将 fix.FixResult 适配为 worker.ExecutionResult。
