@@ -16,7 +16,7 @@ func TestCommandsRegistered(t *testing.T) {
 		}
 	}
 
-	topLevel := []string{"version", "review-pr", "fix-issue", "gen-tests", "task", "serve"}
+	topLevel := []string{"version", "task", "serve"}
 	for _, name := range topLevel {
 		if !registered[name] {
 			t.Errorf("命令 %q 未注册到 root", name)
@@ -39,104 +39,6 @@ func TestTaskSubcommands(t *testing.T) {
 		if !subcommands[name] {
 			t.Errorf("task 子命令 %q 未注册", name)
 		}
-	}
-}
-
-// TestReviewPR_MissingRepo 验证 review-pr 缺少 --repo 时返回错误
-func TestReviewPR_MissingRepo(t *testing.T) {
-	// 保存并恢复全局状态
-	oldRepo := reviewRepo
-	oldPR := reviewPR
-	defer func() {
-		reviewRepo = oldRepo
-		reviewPR = oldPR
-	}()
-
-	reviewRepo = ""
-	reviewPR = 0
-
-	resetRootFlagsForTest(t)
-	cfgPath := writeTestConfigFile(t, "")
-
-	rootCmd.SetArgs([]string{"--config", cfgPath, "review-pr"})
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Error("缺少 --repo 应返回错误")
-	}
-}
-
-// TestReviewPR_MissingPR 验证 review-pr 缺少 --pr 时返回错误
-func TestReviewPR_MissingPR(t *testing.T) {
-	oldRepo := reviewRepo
-	oldPR := reviewPR
-	defer func() {
-		reviewRepo = oldRepo
-		reviewPR = oldPR
-	}()
-
-	resetRootFlagsForTest(t)
-	cfgPath := writeTestConfigFile(t, "")
-
-	rootCmd.SetArgs([]string{"--config", cfgPath, "review-pr", "--repo", "myrepo"})
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Error("缺少 --pr 应返回错误")
-	}
-}
-
-// TestReviewPR_Stub 验证 review-pr 参数齐全时返回"未实现"错误
-func TestReviewPR_Stub(t *testing.T) {
-	oldRepo := reviewRepo
-	oldPR := reviewPR
-	defer func() {
-		reviewRepo = oldRepo
-		reviewPR = oldPR
-	}()
-
-	resetRootFlagsForTest(t)
-	cfgPath := writeTestConfigFile(t, "")
-
-	rootCmd.SetArgs([]string{"--config", cfgPath, "review-pr", "--repo", "myrepo", "--pr", "42"})
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Error("空壳命令应返回错误")
-	}
-	if ExitCode(err) != 1 {
-		t.Errorf("退出码应为 1, got %d", ExitCode(err))
-	}
-}
-
-// TestFixIssue_MissingParams 验证 fix-issue 参数校验
-func TestFixIssue_MissingParams(t *testing.T) {
-	oldRepo := fixRepo
-	oldIssue := fixIssue
-	defer func() {
-		fixRepo = oldRepo
-		fixIssue = oldIssue
-	}()
-
-	resetRootFlagsForTest(t)
-	cfgPath := writeTestConfigFile(t, "")
-
-	rootCmd.SetArgs([]string{"--config", cfgPath, "fix-issue"})
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Error("缺少参数应返回错误")
-	}
-}
-
-// TestGenTests_MissingRepo 验证 gen-tests 缺少 --repo 时返回错误
-func TestGenTests_MissingRepo(t *testing.T) {
-	oldRepo := genTestsRepo
-	defer func() { genTestsRepo = oldRepo }()
-
-	resetRootFlagsForTest(t)
-	cfgPath := writeTestConfigFile(t, "")
-
-	rootCmd.SetArgs([]string{"--config", cfgPath, "gen-tests"})
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Error("缺少 --repo 应返回错误")
 	}
 }
 
