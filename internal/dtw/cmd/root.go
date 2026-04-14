@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -71,5 +74,7 @@ func init() {
 }
 
 func Execute() error {
-	return rootCmd.Execute()
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return rootCmd.ExecuteContext(ctx)
 }

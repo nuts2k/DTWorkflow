@@ -55,7 +55,7 @@ func SaveHostsConfig(path string, cfg *HostsConfig) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// ResolveServer 解析最终目标服务器，优先级：env > flag > active
+// ResolveServer 解析最终目标服务器，优先级：flag > env > active
 func (c *HostsConfig) ResolveServer(flagServer string) (ServerConfig, error) {
 	if flagServer != "" {
 		srv, ok := c.Servers[flagServer]

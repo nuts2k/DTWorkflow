@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // Client 是 DTWorkflow 服务端的 HTTP 客户端
@@ -21,7 +22,7 @@ func NewClient(baseURL, token string) *Client {
 	return &Client{
 		baseURL:    baseURL,
 		token:      token,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

@@ -22,9 +22,10 @@ var authCmd = &cobra.Command{
 // --- login ---
 
 var (
-	loginName  string
-	loginURL   string
-	loginToken string
+	loginName       string
+	loginURL        string
+	loginToken      string
+	loginTokenStdin bool
 )
 
 var loginCmd = &cobra.Command{
@@ -44,6 +45,15 @@ var loginCmd = &cobra.Command{
 		}
 
 		name, url, token := loginName, loginURL, loginToken
+
+		// --token-stdin: 从 stdin 读取 token（优先于 --token）
+		if loginTokenStdin {
+			scanner := bufio.NewScanner(os.Stdin)
+			scanner.Scan()
+			token = strings.TrimSpace(scanner.Text())
+		} else if loginToken != "" {
+			fmt.Fprintln(os.Stderr, "警告: --token 通过命令行传入，token 可能暴露在进程列表中，建议使用 --token-stdin 或交互式输入")
+		}
 
 		// 交互式输入缺失字段
 		if name == "" || url == "" || token == "" {
@@ -230,7 +240,8 @@ var switchCmd = &cobra.Command{
 func init() {
 	loginCmd.Flags().StringVar(&loginName, "name", "", "服务器名称")
 	loginCmd.Flags().StringVar(&loginURL, "url", "", "服务器 URL")
-	loginCmd.Flags().StringVar(&loginToken, "token", "", "API Token")
+	loginCmd.Flags().StringVar(&loginToken, "token", "", "API Token（不推荐，会暴露在进程列表中）")
+	loginCmd.Flags().BoolVar(&loginTokenStdin, "token-stdin", false, "从标准输入读取 Token（推荐用于脚本/CI）")
 
 	authCmd.AddCommand(loginCmd)
 	authCmd.AddCommand(logoutCmd)

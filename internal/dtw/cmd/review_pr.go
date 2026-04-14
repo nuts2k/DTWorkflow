@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -34,7 +33,7 @@ var reviewPRCmd = &cobra.Command{
 		}
 
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/review-pr", owner, repo)
-		if err := client.Do(context.Background(), "POST", path, body, &result); err != nil {
+		if err := client.Do(cmd.Context(), "POST", path, body, &result); err != nil {
 			return fmt.Errorf("提交评审失败: %w", err)
 		}
 
@@ -55,7 +54,7 @@ var reviewPRCmd = &cobra.Command{
 		if !flagJSON {
 			printer.PrintHuman("等待任务完成...")
 		}
-		status, err := dtw.WaitForTask(context.Background(), client, result.TaskID, opts)
+		status, err := dtw.WaitForTask(cmd.Context(), client, result.TaskID, opts)
 		if err != nil {
 			return fmt.Errorf("等待任务失败: %w", err)
 		}

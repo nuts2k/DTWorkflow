@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -45,7 +44,7 @@ var taskListCmd = &cobra.Command{
 		}
 
 		var result dtw.TaskListResponse
-		if err := client.Do(context.Background(), "GET", path, nil, &result); err != nil {
+		if err := client.Do(cmd.Context(), "GET", path, nil, &result); err != nil {
 			return fmt.Errorf("查询任务列表失败: %w", err)
 		}
 
@@ -80,7 +79,7 @@ var taskStatusCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var task dtw.TaskStatus
-		if err := client.Do(context.Background(), "GET", "/api/v1/tasks/"+args[0], nil, &task); err != nil {
+		if err := client.Do(cmd.Context(), "GET", "/api/v1/tasks/"+args[0], nil, &task); err != nil {
 			return fmt.Errorf("查询任务失败: %w", err)
 		}
 
@@ -129,7 +128,7 @@ var taskRetryCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var result map[string]any
-		if err := client.Do(context.Background(), "POST", "/api/v1/tasks/"+args[0]+"/retry", nil, &result); err != nil {
+		if err := client.Do(cmd.Context(), "POST", "/api/v1/tasks/"+args[0]+"/retry", nil, &result); err != nil {
 			return fmt.Errorf("重试任务失败: %w", err)
 		}
 
