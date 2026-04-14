@@ -35,6 +35,12 @@ func FormatFeishuCard(msg Message) (map[string]any, error) {
 			mdParts = append(mdParts, fmt.Sprintf("**重试**: 第 %s 次", retryCount))
 		}
 	}
+	if notifyTime := msg.Metadata[MetaKeyNotifyTime]; notifyTime != "" {
+		mdParts = append(mdParts, fmt.Sprintf("**通知时间**: %s", notifyTime))
+	}
+	if duration := msg.Metadata[MetaKeyDuration]; duration != "" {
+		mdParts = append(mdParts, fmt.Sprintf("**耗时**: %s", duration))
+	}
 
 	if msg.Body != "" {
 		mdParts = append(mdParts, msg.Body)
