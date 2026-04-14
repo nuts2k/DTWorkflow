@@ -257,6 +257,23 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	// API Token 校验
+	identities := make(map[string]bool)
+	for i, tc := range cfg.API.Tokens {
+		if !strings.HasPrefix(tc.Token, "dtw_") {
+			errs = append(errs, fmt.Errorf("api.tokens[%d].token 必须以 dtw_ 开头", i))
+		} else if len(tc.Token) < 16 {
+			errs = append(errs, fmt.Errorf("api.tokens[%d].token 长度不能少于 16 字符", i))
+		}
+		if strings.TrimSpace(tc.Identity) == "" {
+			errs = append(errs, fmt.Errorf("api.tokens[%d].identity 不能为空", i))
+		} else if identities[tc.Identity] {
+			errs = append(errs, fmt.Errorf("api.tokens[%d].identity \"%s\" 重复", i, tc.Identity))
+		} else {
+			identities[tc.Identity] = true
+		}
+	}
+
 	if len(errs) > 0 {
 		return &ValidationError{Errors: errs}
 	}

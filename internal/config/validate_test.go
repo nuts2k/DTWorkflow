@@ -888,3 +888,41 @@ func TestValidate_DailyReport(t *testing.T) {
 		}
 	})
 }
+
+func TestValidate_APITokens(t *testing.T) {
+	tests := []struct {
+		name    string
+		tokens  []TokenConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{"空 tokens 列表合法", nil, false, ""},
+		{"合法 token", []TokenConfig{{Token: "dtw_a1b2c3d4e5f67890", Identity: "admin"}}, false, ""},
+		{"token 缺少 dtw_ 前缀", []TokenConfig{{Token: "a1b2c3d4e5f67890xx", Identity: "admin"}}, true, "dtw_"},
+		{"token 太短", []TokenConfig{{Token: "dtw_short", Identity: "admin"}}, true, "16"},
+		{"identity 为空", []TokenConfig{{Token: "dtw_a1b2c3d4e5f67890", Identity: ""}}, true, "identity"},
+		{"identity 重复", []TokenConfig{
+			{Token: "dtw_a1b2c3d4e5f67890", Identity: "admin"},
+			{Token: "dtw_x9y8z7w6v5u43210", Identity: "admin"},
+		}, true, "重复"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			cfg.API.Tokens = tt.tokens
+			err := Validate(cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("期望错误但未返回")
+				}
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Fatalf("错误消息 %q 不包含 %q", err.Error(), tt.errMsg)
+				}
+			} else {
+				if err != nil && strings.Contains(err.Error(), "api.tokens") {
+					t.Fatalf("不期望 API 相关错误: %v", err)
+				}
+			}
+		})
+	}
+}

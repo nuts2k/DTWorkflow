@@ -26,7 +26,17 @@ type Config struct {
 	Notify      NotifyConfig      `mapstructure:"notify"`
 	Review      ReviewOverride    `mapstructure:"review"`
 	DailyReport DailyReportConfig `mapstructure:"daily_report"`
+	API         APIConfig         `mapstructure:"api" yaml:"api"`
 	Repos       []RepoConfig      `mapstructure:"repos"`
+}
+
+type APIConfig struct {
+	Tokens []TokenConfig `mapstructure:"tokens" yaml:"tokens"`
+}
+
+type TokenConfig struct {
+	Token    string `mapstructure:"token" yaml:"token"`
+	Identity string `mapstructure:"identity" yaml:"identity"`
 }
 
 type ClaudeConfig struct {
@@ -365,6 +375,12 @@ func (c *Config) Clone() *Config {
 	}
 	if c.Review.Dimensions != nil {
 		clone.Review.Dimensions = append([]string(nil), c.Review.Dimensions...)
+	}
+
+	// 深拷贝 API.Tokens
+	if c.API.Tokens != nil {
+		clone.API.Tokens = make([]TokenConfig, len(c.API.Tokens))
+		copy(clone.API.Tokens, c.API.Tokens)
 	}
 
 	// 深拷贝 Repos
