@@ -427,22 +427,30 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > 独立二进制 `dtw`，类似 GitHub CLI（`gh`），可部署在任意客户端或服务器上，通过 HTTP API 远程操作 DTWorkflow 服务端。
 > 需同步扩展服务端 REST API 以支撑瘦客户端的全部功能。当前服务端仅有健康检查和 Webhook 端点，无业务 REST API。
 
+**说明**：2026-04-14 完成全部实施（含代码审核修复：HTTP 客户端超时、signal context 传播、`--token-stdin` 安全读取、注释修正）。
+
 **服务端 REST API 扩展**：
-- [ ] API 认证中间件（Bearer Token）
-- [ ] 任务管理 API：查询、列表、重试
-- [ ] PR 评审触发 API：手动触发指定仓库 PR 的评审
-- [ ] Issue 修复触发 API：手动触发指定仓库 Issue 的分析/修复
-- [ ] 服务状态与版本查询 API
-- [ ] API 版本化（`/api/v1/` 前缀）
+- [x] API 认证中间件（Bearer Token，constant-time compare 防时序攻击）
+- [x] 任务管理 API：查询、列表、重试（`RetryTask` 提取为 CLI/API 共用）
+- [x] PR 评审触发 API：手动触发指定仓库 PR 的评审（`EnqueueManualReview`）
+- [x] Issue 修复触发 API：手动触发指定仓库 Issue 的分析/修复（`EnqueueManualFix`）
+- [x] 服务状态与版本查询 API
+- [x] API 版本化（`/api/v1/` 前缀）
+- [x] `api.tokens` 配置结构与校验（前缀格式、最小长度、identity 唯一性）
+- [x] `triggered_by` 列（V17 迁移），区分 webhook / manual 触发来源
+- [x] 未配置 tokens 时 API 路由不注册，不影响 Webhook 功能
 
 **瘦客户端（`dtw` 二进制）**：
-- [ ] 独立二进制，同仓库 `cmd/dtw` 入口
-- [ ] 多服务器认证管理（`dtw auth login/logout/status/switch`），支持同时认证多个 DTWorkflow 实例并切换
-- [ ] 认证信息持久化（`~/.config/dtw/hosts.yml`）
-- [ ] 覆盖服务端 CLI 命令：`review-pr` / `fix-issue` / `task status/list/retry`
-- [ ] `--json` 结构化输出 + 人类可读默认格式（与 `dtworkflow` CLI 输出规范一致）
-- [ ] 服务器状态检查（`dtw status`）
-- [ ] 命令体系设计与 `dtworkflow` 保持一致，未来新增命令同步扩展
+- [x] 独立二进制，同仓库 `cmd/dtw` 入口 + Makefile 构建目标
+- [x] 多服务器认证管理（`dtw auth login/logout/status/switch`），支持同时认证多个 DTWorkflow 实例并切换
+- [x] 认证信息持久化（`~/.config/dtw/hosts.yml`，权限 0600）
+- [x] `--token-stdin` 安全读取 Token（推荐用于脚本/CI），`--token` 使用时输出安全警告
+- [x] 覆盖服务端 CLI 命令：`review-pr` / `fix-issue` / `task status/list/retry`
+- [x] `--json` 结构化输出 + 人类可读默认格式（与 `dtworkflow` CLI 输出规范一致）
+- [x] 服务器状态检查（`dtw status`）
+- [x] `--no-wait` 异步提交 + `WaitForTask` 轮询等待（可配超时）
+- [x] HTTP 客户端 30s 超时 + signal context 支持 Ctrl+C 取消
+- [x] 命令体系设计与 `dtworkflow` 保持一致，未来新增命令同步扩展
 
 ---
 

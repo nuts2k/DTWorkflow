@@ -76,7 +76,8 @@ worker:
 # 未配置 tokens 时 API 路由不注册，不影响 Webhook 功能。
 api:
   tokens:
-    # - token: "REPLACE_ME_API_TOKEN"   # Bearer Token（建议使用随机生成的长字符串）
+    # Token 格式要求：必须以 "dtw_" 开头，最少 16 个字符。identity 在所有 token 中必须唯一。
+    # - token: "dtw_xxxxxxxxxxxxxxxx"   # Bearer Token（建议使用 openssl rand -hex 32 生成）
     #   identity: "ci-bot"              # 身份标识（记录到 triggered_by 字段）
 
 # 通知配置（路由配置驱动）

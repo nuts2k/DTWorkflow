@@ -40,8 +40,12 @@ DTWorkflow —— 基于 Claude Code 的 Gitea 自动化工作流平台。功能
 ## 项目结构
 
 ```
-cmd/            # CLI 入口（Cobra 命令定义）
+cmd/
+  dtworkflow/   # 服务端 CLI 入口
+  dtw/          # 瘦客户端 CLI 入口（远程操作）
 internal/       # 内部包（不对外暴露）
+  api/          # REST API 层（handlers/middleware/router）
+  cmd/          # 服务端 Cobra 命令定义
   gitea/        # Gitea API 客户端
   worker/       # Docker Worker 池管理
   queue/        # 任务队列
@@ -49,6 +53,12 @@ internal/       # 内部包（不对外暴露）
   fix/          # Issue 修复逻辑
   notify/       # 通知框架
   config/       # 配置管理
+  dtw/          # dtw 客户端核心库（HTTP 客户端/配置/Wait 轮询/输出）
+    cmd/        # dtw Cobra 命令定义
+  store/        # SQLite 数据持久化
+  model/        # 共享数据模型
+  webhook/      # Webhook 事件解析
+  report/       # 报告生成
 pkg/            # 可复用的公共包
 docs/           # 项目文档（PRD、ROADMAP 等）
 configs/        # 配置文件模板
