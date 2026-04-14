@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -802,5 +803,162 @@ func TestHandlePullRequest_CreateTaskFailed_DoesNotCancelOldTask(t *testing.T) {
 	}
 	if len(canceller.deleteCalls) != 0 {
 		t.Errorf("deleteCalls = %v, want empty", canceller.deleteCalls)
+	}
+}
+
+func TestEnqueueManualReview(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-manual-review"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     42,
+		PRTitle:      "test PR",
+		HeadSHA:      "abc123",
+	}
+
+	taskID, err := h.EnqueueManualReview(context.Background(), payload, "manual:admin")
+	if err != nil {
+		t.Fatalf("EnqueueManualReview error: %v", err)
+	}
+	if taskID == "" {
+		t.Fatal("返回的 taskID 不应为空")
+	}
+
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+
+	for _, record := range s.tasks {
+		if record.TaskType != model.TaskTypeReviewPR {
+			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeReviewPR)
+		}
+		if record.TriggeredBy != "manual:admin" {
+			t.Errorf("triggered_by = %q, want %q", record.TriggeredBy, "manual:admin")
+		}
+		if !strings.HasPrefix(record.DeliveryID, "manual-") {
+			t.Errorf("delivery_id = %q, want prefix 'manual-'", record.DeliveryID)
+		}
+		if record.Priority != model.PriorityHigh {
+			t.Errorf("priority = %q, want %q", record.Priority, model.PriorityHigh)
+		}
+	}
+}
+
+func TestEnqueueManualFix(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-manual-fix"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		IssueNumber:  10,
+		IssueTitle:   "bug report",
+	}
+
+	taskID, err := h.EnqueueManualFix(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("EnqueueManualFix error: %v", err)
+	}
+	if taskID == "" {
+		t.Fatal("返回的 taskID 不应为空")
+	}
+
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+
+	for _, record := range s.tasks {
+		if record.TaskType != model.TaskTypeFixIssue {
+			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeFixIssue)
+		}
+		if record.TriggeredBy != "manual:ci-bot" {
+			t.Errorf("triggered_by = %q, want %q", record.TriggeredBy, "manual:ci-bot")
+		}
+		if !strings.HasPrefix(record.DeliveryID, "manual-") {
+			t.Errorf("delivery_id = %q, want prefix 'manual-'", record.DeliveryID)
+		}
+		if record.Priority != model.PriorityNormal {
+			t.Errorf("priority = %q, want %q", record.Priority, model.PriorityNormal)
+		}
+	}
+}
+
+func TestGenerateManualDeliveryID(t *testing.T) {
+	id1 := generateManualDeliveryID()
+	id2 := generateManualDeliveryID()
+
+	if !strings.HasPrefix(id1, "manual-") {
+		t.Errorf("id1 = %q, want prefix 'manual-'", id1)
+	}
+	if id1 == id2 {
+		t.Errorf("两次生成的 delivery ID 相同: %q", id1)
+	}
+}
+
+func TestEnqueueManualReview_WithSuperseded(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-manual-new"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	// 预置旧的活跃任务
+	oldTask := &model.TaskRecord{
+		ID:           "old-manual-task",
+		AsynqID:      "asynq-old-manual",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Payload:      model.TaskPayload{HeadSHA: "oldsha"},
+	}
+	s.tasks[oldTask.ID] = oldTask
+	s.activePRTasks = []*model.TaskRecord{oldTask}
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     42,
+		HeadSHA:      "newsha",
+	}
+
+	taskID, err := h.EnqueueManualReview(context.Background(), payload, "manual:admin")
+	if err != nil {
+		t.Fatalf("EnqueueManualReview error: %v", err)
+	}
+	if taskID == "" {
+		t.Fatal("返回的 taskID 不应为空")
+	}
+
+	// 旧任务应被取消
+	if s.tasks[oldTask.ID].Status != model.TaskStatusCancelled {
+		t.Errorf("旧任务状态 = %q, want %q", s.tasks[oldTask.ID].Status, model.TaskStatusCancelled)
+	}
+
+	// 新任务的 payload 应包含 superseded 信息
+	var newRecord *model.TaskRecord
+	for id, r := range s.tasks {
+		if id != oldTask.ID {
+			newRecord = r
+		}
+	}
+	if newRecord == nil {
+		t.Fatal("未找到新建的任务记录")
+	}
+	if newRecord.Payload.SupersededCount != 1 {
+		t.Errorf("SupersededCount = %d, want 1", newRecord.Payload.SupersededCount)
+	}
+	if newRecord.Payload.PreviousHeadSHA != "oldsha" {
+		t.Errorf("PreviousHeadSHA = %q, want %q", newRecord.Payload.PreviousHeadSHA, "oldsha")
 	}
 }

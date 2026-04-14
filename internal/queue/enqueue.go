@@ -345,3 +345,62 @@ func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayl
 
 	return nil
 }
+
+// EnqueueManualReview 手动触发 PR 评审入队。
+// payload 由 API handler 组装（含完整 PR 信息），triggeredBy 格式为 "manual:{identity}"。
+func (h *EnqueueHandler) EnqueueManualReview(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+	payload.TaskType = model.TaskTypeReviewPR
+	payload.DeliveryID = generateManualDeliveryID()
+
+	// Cancel-and-Replace：查找同一 PR 的活跃旧任务
+	activeTasks, superseded := h.listActivePRTasks(ctx, payload.RepoFullName, payload.PRNumber)
+	payload.SupersededCount = superseded.Count
+	payload.PreviousHeadSHA = superseded.LastHeadSHA
+
+	record := &model.TaskRecord{
+		TaskType:     model.TaskTypeReviewPR,
+		Priority:     model.PriorityHigh,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		DeliveryID:   payload.DeliveryID,
+		TriggeredBy:  triggeredBy,
+	}
+
+	if err := h.enqueueTask(ctx, payload, record); err != nil {
+		return "", err
+	}
+	h.cancelTasks(ctx, activeTasks)
+
+	h.logger.InfoContext(ctx, "手动 PR 评审任务已入队",
+		"task_id", record.ID, "repo", payload.RepoFullName,
+		"pr", payload.PRNumber, "triggered_by", triggeredBy)
+	return record.ID, nil
+}
+
+// EnqueueManualFix 手动触发 Issue 修复入队。
+func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+	payload.TaskType = model.TaskTypeFixIssue
+	payload.DeliveryID = generateManualDeliveryID()
+
+	record := &model.TaskRecord{
+		TaskType:     model.TaskTypeFixIssue,
+		Priority:     model.PriorityNormal,
+		RepoFullName: payload.RepoFullName,
+		DeliveryID:   payload.DeliveryID,
+		TriggeredBy:  triggeredBy,
+	}
+
+	if err := h.enqueueTask(ctx, payload, record); err != nil {
+		return "", err
+	}
+
+	h.logger.InfoContext(ctx, "手动 Issue 修复任务已入队",
+		"task_id", record.ID, "repo", payload.RepoFullName,
+		"issue", payload.IssueNumber, "triggered_by", triggeredBy)
+	return record.ID, nil
+}
+
+// generateManualDeliveryID 生成手动触发的合成 delivery ID
+func generateManualDeliveryID() string {
+	return fmt.Sprintf("manual-%d-%s", time.Now().UnixMilli(), uuid.New().String()[:8])
+}
