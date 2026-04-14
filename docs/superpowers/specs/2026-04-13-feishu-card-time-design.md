@@ -45,9 +45,40 @@ func formatDuration(d time.Duration) string {
 
 时区使用 `time.FixedZone` 而非 `time.LoadLocation`，避免依赖宿主机 tzdata（Docker 精简镜像可能不含时区数据库）。
 
-**buildStartMessage**：在 switch 语句**之后**（返回前的公共路径），为所有任务类型（`TaskTypeReviewPR`、`TaskTypeFixIssue`）的 metadata 统一追加 `MetaKeyNotifyTime`。注意当前两个 TaskType 分支各自独立构建 `metadata := map[string]string{}`，时间注入必须在两个分支都覆盖到，或提取到 switch 之后的公共路径。
+**buildStartMessage**：当前两个 TaskType 分支各自直接 `return`（ReviewPR 使用 `buildPRMetadata()`、FixIssue 手动构建 `map[string]string{}`），switch 之后没有公共代码路径。需要**小幅重构**：将各分支改为赋值给 `var msg notify.Message` 而非直接 return，switch 结束后在公共路径统一注入 `MetaKeyNotifyTime` 再返回：
 
-**buildNotificationMessage**：同理，在各 TaskType 分支构建完 metadata 后、返回 Message 前的公共路径，统一追加 `MetaKeyNotifyTime`。仅当 `record.Status == succeeded` 且 `StartedAt`、`CompletedAt` 均非 nil 时，计算 `CompletedAt.Sub(*StartedAt)` 并写入 `MetaKeyDuration`。`retrying` 状态不设置 `CompletedAt`（参见 `processor.go:317`），自然被排除。
+```go
+func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message, bool) {
+    // ... 校验 ...
+    var msg notify.Message
+    switch payload.TaskType {
+    case model.TaskTypeReviewPR:
+        msg = notify.Message{...} // 保持现有构建逻辑
+    case model.TaskTypeFixIssue:
+        msg = notify.Message{...}
+    default:
+        return notify.Message{}, false
+    }
+    // 公共路径：统一注入通知时间
+    msg.Metadata[notify.MetaKeyNotifyTime] = formatNotifyTime()
+    return msg, true
+}
+```
+
+**buildNotificationMessage**：同样存在上述问题——嵌套 switch（TaskType → Status）共有 6 个直接 return 点，无公共路径。采用相同重构策略：各分支赋值给 `var msg notify.Message`，switch 结束后统一注入时间字段：
+
+```go
+// 公共路径：统一注入通知时间和耗时
+msg.Metadata[notify.MetaKeyNotifyTime] = formatNotifyTime()
+if record.Status == model.TaskStatusSucceeded &&
+    record.StartedAt != nil && record.CompletedAt != nil {
+    msg.Metadata[notify.MetaKeyDuration] = formatDuration(
+        record.CompletedAt.Sub(*record.StartedAt))
+}
+return msg, true
+```
+
+**时序前提**：`sendCompletionNotification` 在 `ProcessTask` 中的调用位置确保 `StartedAt`（状态变为 running 时设置）和 `CompletedAt`（达到 succeeded/failed 最终状态时设置）均已赋值。`handleSkipRetryFailure` 路径同理——调用时 `StartedAt` 已在 running 阶段设置，`CompletedAt` 在该函数内设置。`retrying` 状态不设置 `CompletedAt`（见 `ProcessTask` 中 `if record.Status == TaskStatusSucceeded || record.Status == TaskStatusFailed` 条件），因此 duration 自然被排除。
 
 ### 消费端：feishu_card.go
 
@@ -97,7 +128,7 @@ if duration := msg.Metadata[MetaKeyDuration]; duration != "" {
 | 文件 | 变更内容 |
 |------|----------|
 | `internal/notify/notifier.go` | +2 MetaKey 常量 |
-| `internal/queue/processor.go` | +2 辅助函数（`formatNotifyTime`、`formatDuration`），修改 `buildStartMessage` 和 `buildNotificationMessage` |
+| `internal/queue/processor.go` | +2 辅助函数（`formatNotifyTime`、`formatDuration`），重构 `buildStartMessage` 和 `buildNotificationMessage`（各分支改赋值+公共路径注入时间字段） |
 | `internal/notify/feishu_card.go` | +6 行渲染逻辑 |
 | `internal/notify/feishu_card_test.go` | 更新现有用例 + 新增用例 |
 | `internal/queue/processor_test.go` | 新增用例 |
