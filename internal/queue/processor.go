@@ -19,7 +19,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
-var shanghaiZone = time.FixedZone("CST", 8*3600)
+var shanghaiZone = time.FixedZone("Asia/Shanghai", 8*3600)
 
 func formatNotifyTime() string {
 	return time.Now().In(shanghaiZone).Format("2006-01-02 15:04:05")
