@@ -1392,6 +1392,26 @@ func TestSQLiteStore_ListReviewResultsByTimeRange(t *testing.T) {
 	}
 }
 
+func TestTaskTriggeredBy(t *testing.T) {
+	s := newTestStore(t)
+	record := newTestRecord("triggered-by-test", "delivery-tb-001", model.TaskTypeReviewPR)
+	record.TriggeredBy = "manual:admin"
+	if err := s.CreateTask(context.Background(), record); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	got, err := s.GetTask(context.Background(), "triggered-by-test")
+	if err != nil {
+		t.Fatalf("GetTask 失败: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetTask 返回 nil，期望找到记录")
+	}
+	if got.TriggeredBy != "manual:admin" {
+		t.Errorf("TriggeredBy 不匹配: got %q, want %q", got.TriggeredBy, "manual:admin")
+	}
+}
+
 // TestMigration_PRNumber 验证迁移 13/14/15 成功执行，pr_number 列存在且可写入读取
 func TestMigration_PRNumber(t *testing.T) {
 	s := newTestStore(t)

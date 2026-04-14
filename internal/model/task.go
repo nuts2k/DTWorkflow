@@ -116,6 +116,7 @@ type TaskRecord struct {
 	MaxRetry     int          `json:"max_retry"`
 	WorkerID     string       `json:"worker_id,omitempty"`
 	DeliveryID   string       `json:"delivery_id,omitempty"`
+	TriggeredBy  string       `json:"triggered_by,omitempty"` // "webhook" / "manual:{identity}"
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
 	StartedAt    *time.Time   `json:"started_at,omitempty"`

@@ -153,6 +153,11 @@ var migrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_tasks_repo_pr ON tasks(repo_full_name, pr_number, task_type, status);
 		`,
 	},
+	// M3.3: tasks 表新增 triggered_by 列
+	{
+		Version: 17,
+		SQL:     `ALTER TABLE tasks ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'webhook'`,
+	},
 }
 
 // RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本

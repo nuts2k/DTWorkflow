@@ -23,7 +23,7 @@ var _ Store = (*SQLiteStore)(nil)
 // taskColumns 是 tasks 表的 SELECT 列列表，统一在各查询中使用
 const taskColumns = `id, asynq_id, task_type, status, priority, payload, repo_full_name, pr_number,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
-		created_at, updated_at, started_at, completed_at`
+		created_at, updated_at, started_at, completed_at, triggered_by`
 
 // SQLiteStore 基于 SQLite 的任务持久化实现
 type SQLiteStore struct {
@@ -110,8 +110,8 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) 
 	const query = `INSERT INTO tasks (
 		id, asynq_id, task_type, status, priority, payload, repo_full_name, pr_number,
 		result, error, retry_count, max_retry, worker_id, delivery_id,
-		created_at, updated_at, started_at, completed_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		created_at, updated_at, started_at, completed_at, triggered_by
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.ExecContext(ctx, query,
 		record.ID,
@@ -132,6 +132,7 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, record *model.TaskRecord) 
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		timeToNullString(record.StartedAt),
 		timeToNullString(record.CompletedAt),
+		record.TriggeredBy,
 	)
 	if err != nil {
 		return fmt.Errorf("插入任务记录失败: %w", err)
@@ -185,7 +186,7 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 		asynq_id = ?, task_type = ?, status = ?, priority = ?, payload = ?,
 		repo_full_name = ?, pr_number = ?, result = ?, error = ?, retry_count = ?, max_retry = ?,
 		worker_id = ?, delivery_id = ?, updated_at = ?,
-		started_at = ?, completed_at = ?
+		started_at = ?, completed_at = ?, triggered_by = ?
 	WHERE id = ?`
 
 	result, err := s.db.ExecContext(ctx, query,
@@ -205,6 +206,7 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, record *model.TaskRecord) 
 		record.UpdatedAt.Format(time.RFC3339Nano),
 		timeToNullString(record.StartedAt),
 		timeToNullString(record.CompletedAt),
+		record.TriggeredBy,
 		record.ID,
 	)
 	if err != nil {
@@ -572,6 +574,7 @@ func scanTaskRecord(row rowScanner) (*model.TaskRecord, error) {
 		&r.Result, &r.Error, &r.RetryCount, &r.MaxRetry,
 		&r.WorkerID, &r.DeliveryID,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
+		&r.TriggeredBy,
 	)
 	if err != nil {
 		return nil, err
