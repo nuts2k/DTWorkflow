@@ -2,12 +2,12 @@
 
 ## 背景
 
-当前飞书卡片通知不包含时间信息，用户无法从通知中直观判断事件发生时间和任务耗时。本次变更为所有飞书卡片通知增加"通知时间"字段，并为评审成功完成通知增加"耗时"字段。
+当前飞书卡片通知不包含时间信息，用户无法从通知中直观判断事件发生时间和任务耗时。本次变更为所有飞书卡片通知增加"通知时间"字段，并为成功完成通知增加"耗时"字段。这里的耗时定义为当前单次尝试的执行时长。
 
 ## 需求
 
 1. **通知时间**：所有飞书卡片通知（开始、成功、失败、重试）均显示通知发送时间
-2. **耗时**：仅评审成功（succeeded）的完成通知显示任务耗时
+2. **耗时**：成功（succeeded）的完成通知显示当前单次尝试耗时，覆盖 PR 评审与 FixIssue
 3. **时区**：统一使用 Asia/Shanghai (UTC+8)
 4. **时间格式**：`2006-01-02 15:04:05`（绝对时间，精确到秒）
 5. **耗时格式**：Go 标准库 `time.Duration.Truncate(time.Second).String()`（如 `32s`、`2m30s`、`1h5m30s`）
@@ -24,7 +24,7 @@
 
 ```go
 MetaKeyNotifyTime = "notify_time"  // 通知发送时间
-MetaKeyDuration   = "duration"     // 任务耗时（仅 succeeded）
+MetaKeyDuration   = "duration"     // 当前单次尝试耗时（仅 succeeded）
 ```
 
 ### 生产端：processor.go
@@ -68,7 +68,7 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 **buildNotificationMessage**：同样存在上述问题——嵌套 switch（TaskType → Status）共有 6 个直接 return 点，无公共路径。采用相同重构策略：各分支赋值给 `var msg notify.Message`，switch 结束后统一注入时间字段：
 
 ```go
-// 公共路径：统一注入通知时间和耗时
+// 公共路径：统一注入通知时间和单次尝试耗时
 msg.Metadata[notify.MetaKeyNotifyTime] = formatNotifyTime()
 if record.Status == model.TaskStatusSucceeded &&
     record.StartedAt != nil && record.CompletedAt != nil {
@@ -78,7 +78,7 @@ if record.Status == model.TaskStatusSucceeded &&
 return msg, true
 ```
 
-**时序前提**：`sendCompletionNotification` 在 `ProcessTask` 中的调用位置确保 `StartedAt`（状态变为 running 时设置）和 `CompletedAt`（达到 succeeded/failed 最终状态时设置）均已赋值。`handleSkipRetryFailure` 路径同理——调用时 `StartedAt` 已在 running 阶段设置，`CompletedAt` 在该函数内设置。`retrying` 状态不设置 `CompletedAt`（见 `ProcessTask` 中 `if record.Status == TaskStatusSucceeded || record.Status == TaskStatusFailed` 条件），因此 duration 自然被排除。
+**时序前提**：`sendCompletionNotification` 在 `ProcessTask` 中的调用位置确保 `StartedAt`（状态变为 running 时设置）和 `CompletedAt`（达到 succeeded/failed 最终状态时设置）均已赋值。`handleSkipRetryFailure` 路径同理——调用时 `StartedAt` 已在 running 阶段设置，`CompletedAt` 在该函数内设置。`retrying` 状态不设置 `CompletedAt`（见 `ProcessTask` 中 `if record.Status == TaskStatusSucceeded || record.Status == TaskStatusFailed` 条件），因此 duration 自然被排除。由于 `StartedAt` 会在每次进入 running 时刷新，`duration` 表示当前单次尝试耗时；若任务经历重试后成功，卡片展示的是最后一次 attempt 的执行时长。
 
 ### 消费端：feishu_card.go
 
@@ -138,7 +138,7 @@ if duration := msg.Metadata[MetaKeyDuration]; duration != "" {
 ### feishu_card_test.go
 
 - 更新现有测试：Metadata 中加入 `MetaKeyNotifyTime`，验证渲染输出包含通知时间
-- 新增：succeeded 完成通知包含耗时字段
+- 新增：succeeded 完成通知包含耗时字段（当前单次尝试耗时）
 - 新增：failed 完成通知不包含耗时字段
 - 新增：开始通知包含通知时间但不包含耗时
 
@@ -153,3 +153,4 @@ FixIssue 场景：
 - `buildStartMessage` 返回 FixIssue 开始通知包含 `notify_time`
 - `buildNotificationMessage` 返回 FixIssue 成功通知包含 `notify_time` + `duration`
 - `buildNotificationMessage` 返回 FixIssue 失败通知包含 `notify_time` 但不含 `duration`
+- `formatNotifyTime` 生成的时间需要锁定为 Asia/Shanghai，而不只是格式正确

@@ -2143,17 +2143,26 @@ func TestProcessTask_FixIssue_RefHintCommentFailure_Retries(t *testing.T) {
 	}
 }
 
+const notifyTimeLayout = "2006-01-02 15:04:05"
+
+func assertNotifyTimeInShanghai(t *testing.T, got, before, after string) {
+	t.Helper()
+	if len(got) != 19 {
+		t.Errorf("notify_time = %q, length = %d, want 19", got, len(got))
+	}
+	if _, err := time.ParseInLocation(notifyTimeLayout, got, shanghaiZone); err != nil {
+		t.Errorf("notify_time = %q, 无法按 Asia/Shanghai 解析: %v", got, err)
+	}
+	if got != before && got != after {
+		t.Errorf("notify_time = %q, want Asia/Shanghai time between %q and %q", got, before, after)
+	}
+}
+
 func TestFormatNotifyTime(t *testing.T) {
+	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	result := formatNotifyTime()
-	// 格式应为 "2006-01-02 15:04:05"（19 字符）
-	if len(result) != 19 {
-		t.Errorf("formatNotifyTime() = %q, length = %d, want 19", result, len(result))
-	}
-	// 验证可被反向解析（格式正确性）
-	_, err := time.Parse("2006-01-02 15:04:05", result)
-	if err != nil {
-		t.Errorf("formatNotifyTime() = %q, 无法解析: %v", result, err)
-	}
+	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
+	assertNotifyTimeInShanghai(t, result, before, after)
 }
 
 func TestFormatDuration(t *testing.T) {
@@ -2187,7 +2196,9 @@ func TestBuildStartMessage_ReviewPR_HasNotifyTime(t *testing.T) {
 		PRNumber:     42,
 	}
 
+	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	msg, ok := p.buildStartMessage(payload)
+	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildStartMessage 应返回 true")
 	}
@@ -2195,10 +2206,7 @@ func TestBuildStartMessage_ReviewPR_HasNotifyTime(t *testing.T) {
 	if notifyTime == "" {
 		t.Error("开始通知应包含 notify_time")
 	}
-	// 格式校验
-	if _, err := time.Parse("2006-01-02 15:04:05", notifyTime); err != nil {
-		t.Errorf("notify_time 格式错误: %q, error: %v", notifyTime, err)
-	}
+	assertNotifyTimeInShanghai(t, notifyTime, before, after)
 }
 
 func TestBuildStartMessage_FixIssue_HasNotifyTime(t *testing.T) {
@@ -2213,7 +2221,9 @@ func TestBuildStartMessage_FixIssue_HasNotifyTime(t *testing.T) {
 		IssueNumber:  10,
 	}
 
+	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	msg, ok := p.buildStartMessage(payload)
+	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildStartMessage 应返回 true")
 	}
@@ -2221,6 +2231,7 @@ func TestBuildStartMessage_FixIssue_HasNotifyTime(t *testing.T) {
 	if notifyTime == "" {
 		t.Error("FixIssue 开始通知应包含 notify_time")
 	}
+	assertNotifyTimeInShanghai(t, notifyTime, before, after)
 }
 
 func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.T) {
@@ -2244,7 +2255,9 @@ func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.
 		CompletedAt: &completedAt,
 	}
 
+	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	msg, ok := p.buildNotificationMessage(record, nil)
+	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -2253,9 +2266,7 @@ func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.
 	if notifyTime == "" {
 		t.Error("succeeded 通知应包含 notify_time")
 	}
-	if _, err := time.Parse("2006-01-02 15:04:05", notifyTime); err != nil {
-		t.Errorf("notify_time 格式错误: %q", notifyTime)
-	}
+	assertNotifyTimeInShanghai(t, notifyTime, before, after)
 
 	duration := msg.Metadata[notify.MetaKeyDuration]
 	if duration == "" {
@@ -2287,14 +2298,18 @@ func TestBuildNotificationMessage_Failed_HasNotifyTimeNoDuration(t *testing.T) {
 		CompletedAt: &completedAt,
 	}
 
+	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	msg, ok := p.buildNotificationMessage(record, nil)
+	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
 
-	if msg.Metadata[notify.MetaKeyNotifyTime] == "" {
+	notifyTime := msg.Metadata[notify.MetaKeyNotifyTime]
+	if notifyTime == "" {
 		t.Error("failed 通知应包含 notify_time")
 	}
+	assertNotifyTimeInShanghai(t, notifyTime, before, after)
 	if msg.Metadata[notify.MetaKeyDuration] != "" {
 		t.Errorf("failed 通知不应包含 duration，got %q", msg.Metadata[notify.MetaKeyDuration])
 	}
@@ -2321,14 +2336,18 @@ func TestBuildNotificationMessage_Retrying_HasNotifyTimeNoDuration(t *testing.T)
 		StartedAt:  &startedAt,
 	}
 
+	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	msg, ok := p.buildNotificationMessage(record, nil)
+	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
 
-	if msg.Metadata[notify.MetaKeyNotifyTime] == "" {
+	notifyTime := msg.Metadata[notify.MetaKeyNotifyTime]
+	if notifyTime == "" {
 		t.Error("retrying 通知应包含 notify_time")
 	}
+	assertNotifyTimeInShanghai(t, notifyTime, before, after)
 	if msg.Metadata[notify.MetaKeyDuration] != "" {
 		t.Errorf("retrying 通知不应包含 duration（CompletedAt 为 nil），got %q", msg.Metadata[notify.MetaKeyDuration])
 	}
@@ -2355,14 +2374,18 @@ func TestBuildNotificationMessage_FixIssue_Succeeded_HasDuration(t *testing.T) {
 		CompletedAt: &completedAt,
 	}
 
+	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	msg, ok := p.buildNotificationMessage(record, nil)
+	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
 
-	if msg.Metadata[notify.MetaKeyNotifyTime] == "" {
+	notifyTime := msg.Metadata[notify.MetaKeyNotifyTime]
+	if notifyTime == "" {
 		t.Error("FixIssue succeeded 通知应包含 notify_time")
 	}
+	assertNotifyTimeInShanghai(t, notifyTime, before, after)
 	if msg.Metadata[notify.MetaKeyDuration] == "" {
 		t.Error("FixIssue succeeded 通知应包含 duration")
 	}
@@ -2389,14 +2412,18 @@ func TestBuildNotificationMessage_FixIssue_Failed_NoDuration(t *testing.T) {
 		CompletedAt: &completedAt,
 	}
 
+	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	msg, ok := p.buildNotificationMessage(record, nil)
+	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
 
-	if msg.Metadata[notify.MetaKeyNotifyTime] == "" {
+	notifyTime := msg.Metadata[notify.MetaKeyNotifyTime]
+	if notifyTime == "" {
 		t.Error("FixIssue failed 通知应包含 notify_time")
 	}
+	assertNotifyTimeInShanghai(t, notifyTime, before, after)
 	if msg.Metadata[notify.MetaKeyDuration] != "" {
 		t.Errorf("FixIssue failed 通知不应包含 duration，got %q", msg.Metadata[notify.MetaKeyDuration])
 	}

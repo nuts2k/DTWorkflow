@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为所有飞书卡片通知增加"通知时间"字段，为评审成功完成通知增加"耗时"字段。
+**Goal:** 为所有飞书卡片通知增加"通知时间"字段，为成功完成通知增加"耗时"字段；耗时定义为当前单次尝试的执行时长。
 
-**Architecture:** 沿用现有 Metadata 模式，新增 `MetaKeyNotifyTime` 和 `MetaKeyDuration` 两个常量。processor 在公共路径统一注入时间元数据，feishu_card 消费并渲染。不改动 Message 结构体，不影响 Gitea 等其他通知渠道。
+**Architecture:** 沿用现有 Metadata 模式，新增 `MetaKeyNotifyTime` 和 `MetaKeyDuration` 两个常量。processor 在公共路径统一注入时间元数据，feishu_card 消费并渲染。`duration` 表示当前单次尝试耗时，适用于 PR Review 与 FixIssue 的成功完成通知。不改动 Message 结构体，不影响 Gitea 等其他通知渠道。
 
 **Tech Stack:** Go, time 标准库, time.FixedZone（避免 tzdata 依赖）
 
@@ -35,7 +35,7 @@
 
 ```go
 MetaKeyNotifyTime = "notify_time" // 通知发送时间
-MetaKeyDuration   = "duration"    // 任务耗时（仅 succeeded）
+MetaKeyDuration   = "duration"    // 当前单次尝试耗时（仅 succeeded）
 ```
 
 - [ ] **Step 2: 运行编译验证**
@@ -64,15 +64,11 @@ git commit -m "feat(notify): 新增 MetaKeyNotifyTime 和 MetaKeyDuration 常量
 
 ```go
 func TestFormatNotifyTime(t *testing.T) {
+	before := time.Now().In(shanghaiZone).Format("2006-01-02 15:04:05")
 	result := formatNotifyTime()
-	// 格式应为 "2006-01-02 15:04:05"（19 字符）
-	if len(result) != 19 {
-		t.Errorf("formatNotifyTime() = %q, length = %d, want 19", result, len(result))
-	}
-	// 验证可被反向解析（格式正确性）
-	_, err := time.Parse("2006-01-02 15:04:05", result)
-	if err != nil {
-		t.Errorf("formatNotifyTime() = %q, 无法解析: %v", result, err)
+	after := time.Now().In(shanghaiZone).Format("2006-01-02 15:04:05")
+	if result != before && result != after {
+		t.Errorf("formatNotifyTime() = %q, want Asia/Shanghai time between %q and %q", result, before, after)
 	}
 }
 
@@ -120,7 +116,7 @@ func formatDuration(d time.Duration) string {
 - [ ] **Step 4: 运行测试验证通过**
 
 Run: `cd /Users/kelin/Work/DTWorkflow && go test ./internal/queue/ -run "TestFormatNotifyTime|TestFormatDuration" -v`
-Expected: PASS
+Expected: PASS，且测试能锁定 Asia/Shanghai，而不只是格式正确
 
 - [ ] **Step 5: 提交**
 
