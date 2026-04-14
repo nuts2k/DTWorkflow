@@ -61,6 +61,13 @@ configs/        # 配置文件模板
 - **精确定位**（已知文件名、函数名、字符串）→ 用 Grep / Glob
 - 并行读取多个文件时无需等待，直接同时发起所有 Read 调用
 
+## 测试服务器
+
+- SSH Host 别名：`companytest`（对应 `~/.ssh/config` 中的 Host 条目）
+- 连接命令：`ssh companytest`
+- 本机可创建 `deploy/local.env`（已被 `.gitignore` 排除）覆盖默认 Host，参考 `deploy/local.env.example`
+- 部署目录：`/opt/dtworkflow`
+
 ## 编码规范
 
 - 遵循 Go 官方代码规范和 Effective Go
