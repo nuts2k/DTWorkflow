@@ -433,19 +433,20 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 		return notify.Message{}, false
 	}
 
+	var msg notify.Message
 	switch payload.TaskType {
 	case model.TaskTypeReviewPR:
 		if payload.PRNumber <= 0 {
 			return notify.Message{}, false
 		}
-		return notify.Message{
+		msg = notify.Message{
 			EventType: notify.EventPRReviewStarted,
 			Severity:  notify.SeverityInfo,
 			Target:    buildPRTarget(payload),
 			Title:     "PR 自动评审开始",
 			Body:      fmt.Sprintf("正在评审 PR #%d\n\n仓库：%s", payload.PRNumber, payload.RepoFullName),
 			Metadata:  p.buildPRMetadata(payload),
-		}, true
+		}
 	case model.TaskTypeFixIssue:
 		if payload.IssueNumber <= 0 {
 			return notify.Message{}, false
@@ -455,7 +456,7 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 			metadata[notify.MetaKeyIssueURL] = fmt.Sprintf("%s/%s/%s/issues/%d",
 				p.giteaBaseURL, payload.RepoOwner, payload.RepoName, payload.IssueNumber)
 		}
-		return notify.Message{
+		msg = notify.Message{
 			EventType: notify.EventIssueFixStarted,
 			Severity:  notify.SeverityInfo,
 			Target: notify.Target{
@@ -467,10 +468,17 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 			Title:    "Issue 自动分析开始",
 			Body:     fmt.Sprintf("正在分析 Issue #%d\n\n仓库：%s", payload.IssueNumber, payload.RepoFullName),
 			Metadata: metadata,
-		}, true
+		}
 	default:
 		return notify.Message{}, false
 	}
+
+	// 公共路径：统一注入通知时间
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	msg.Metadata[notify.MetaKeyNotifyTime] = formatNotifyTime()
+	return msg, true
 }
 
 // sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知

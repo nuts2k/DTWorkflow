@@ -2174,3 +2174,51 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildStartMessage_ReviewPR_HasNotifyTime(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+	}
+
+	msg, ok := p.buildStartMessage(payload)
+	if !ok {
+		t.Fatal("buildStartMessage 应返回 true")
+	}
+	notifyTime := msg.Metadata[notify.MetaKeyNotifyTime]
+	if notifyTime == "" {
+		t.Error("开始通知应包含 notify_time")
+	}
+	// 格式校验
+	if _, err := time.Parse("2006-01-02 15:04:05", notifyTime); err != nil {
+		t.Errorf("notify_time 格式错误: %q, error: %v", notifyTime, err)
+	}
+}
+
+func TestBuildStartMessage_FixIssue_HasNotifyTime(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  10,
+	}
+
+	msg, ok := p.buildStartMessage(payload)
+	if !ok {
+		t.Fatal("buildStartMessage 应返回 true")
+	}
+	notifyTime := msg.Metadata[notify.MetaKeyNotifyTime]
+	if notifyTime == "" {
+		t.Error("FixIssue 开始通知应包含 notify_time")
+	}
+}
