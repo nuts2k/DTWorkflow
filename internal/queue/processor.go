@@ -19,6 +19,16 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
+var shanghaiZone = time.FixedZone("CST", 8*3600)
+
+func formatNotifyTime() string {
+	return time.Now().In(shanghaiZone).Format("2006-01-02 15:04:05")
+}
+
+func formatDuration(d time.Duration) string {
+	return d.Truncate(time.Second).String()
+}
+
 // 编译时检查 *Processor 实现 asynq.Handler 接口
 var _ asynq.Handler = (*Processor)(nil)
 

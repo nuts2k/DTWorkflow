@@ -2142,3 +2142,35 @@ func TestProcessTask_FixIssue_RefHintCommentFailure_Retries(t *testing.T) {
 		t.Fatalf("错误应保留评论回写失败信息，实际: %q", updated.Error)
 	}
 }
+
+func TestFormatNotifyTime(t *testing.T) {
+	result := formatNotifyTime()
+	// 格式应为 "2006-01-02 15:04:05"（19 字符）
+	if len(result) != 19 {
+		t.Errorf("formatNotifyTime() = %q, length = %d, want 19", result, len(result))
+	}
+	// 验证可被反向解析（格式正确性）
+	_, err := time.Parse("2006-01-02 15:04:05", result)
+	if err != nil {
+		t.Errorf("formatNotifyTime() = %q, 无法解析: %v", result, err)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		input time.Duration
+		want  string
+	}{
+		{32 * time.Second, "32s"},
+		{2*time.Minute + 30*time.Second, "2m30s"},
+		{1*time.Hour + 5*time.Minute + 30*time.Second, "1h5m30s"},
+		{500 * time.Millisecond, "0s"},
+		{0, "0s"},
+	}
+	for _, tc := range tests {
+		got := formatDuration(tc.input)
+		if got != tc.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
