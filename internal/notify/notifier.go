@@ -28,6 +28,8 @@ const (
 	MetaKeyRetryCount   = "retry_count"
 	MetaKeyMaxRetry     = "max_retry"
 	MetaKeyTaskStatus   = "task_status"
+	MetaKeyNotifyTime   = "notify_time" // 通知发送时间
+	MetaKeyDuration     = "duration"    // 任务耗时（仅 succeeded）
 )
 
 // Severity 通知紧急程度
