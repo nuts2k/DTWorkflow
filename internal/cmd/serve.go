@@ -15,6 +15,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/spf13/cobra"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/api"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
@@ -185,6 +186,23 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	webhook.RegisterRoutes(router, webhook.Config{
 		Secret:  cfg.WebhookSecret,
 		Handler: deps.Handler,
+	})
+
+	// 注册 REST API 路由（Bearer Token 认证）
+	var apiTokens []config.TokenConfig
+	if cfg.AppCfg != nil {
+		apiTokens = cfg.AppCfg.API.Tokens
+	}
+	api.RegisterRoutes(router, api.Dependencies{
+		Store:          deps.Store,
+		QueueClient:    deps.QueueClient,
+		Pool:           deps.Pool,
+		EnqueueHandler: deps.EnqueueHandler,
+		GiteaClient:    deps.GiteaClient,
+		Tokens:         apiTokens,
+		Version:        version,
+		StartTime:      time.Now(),
+		Logger:         slog.Default(),
 	})
 
 	// 启动 asynq Processor（消费端）

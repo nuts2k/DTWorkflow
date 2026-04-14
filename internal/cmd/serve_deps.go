@@ -28,6 +28,7 @@ type ServiceDeps struct {
 	Recovery           *queue.RecoveryLoop
 	GC                 *worker.GarbageCollector
 	Handler            webhook.Handler
+	EnqueueHandler     *queue.EnqueueHandler // 具体类型，供 API trigger handlers 使用
 	Notifier           queue.TaskNotifier
 	GiteaConfigured    bool
 	NotifierEnabled    bool
@@ -205,6 +206,7 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 		Recovery:           recovery,
 		GC:                 gc,
 		Handler:            handler,
+		EnqueueHandler:     handler,
 		Notifier:           notifier,
 		GiteaConfigured:    giteaConfigured,
 		NotifierEnabled:    notifier != nil,
