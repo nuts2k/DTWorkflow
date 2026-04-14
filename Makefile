@@ -8,8 +8,11 @@ BUILD_TIME  := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS     := -X '$(MODULE)/internal/cmd.version=$(VERSION)' \
                -X '$(MODULE)/internal/cmd.gitCommit=$(GIT_COMMIT)' \
                -X '$(MODULE)/internal/cmd.buildTime=$(BUILD_TIME)'
+DTW_LDFLAGS := -X '$(MODULE)/internal/dtw/cmd.dtwVersion=$(VERSION)' \
+               -X '$(MODULE)/internal/dtw/cmd.dtwCommit=$(GIT_COMMIT)' \
+               -X '$(MODULE)/internal/dtw/cmd.dtwBuildTime=$(BUILD_TIME)'
 
-.PHONY: build build-linux install lint test fmt clean dev-up dev-down docker-build release deploy rollback help
+.PHONY: build build-linux build-dtw build-dtw-linux build-all install lint test fmt clean dev-up dev-down docker-build release deploy rollback help
 
 ## build: 构建本平台二进制到 bin/
 build:
@@ -22,6 +25,17 @@ install:
 ## build-linux: 交叉编译 Linux amd64 二进制
 build-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME)-linux-amd64 ./cmd/dtworkflow
+
+## build-dtw: 构建 dtw 瘦客户端到 bin/
+build-dtw:
+	CGO_ENABLED=0 go build -ldflags "$(DTW_LDFLAGS)" -o bin/dtw ./cmd/dtw
+
+## build-dtw-linux: 交叉编译 dtw Linux amd64
+build-dtw-linux:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(DTW_LDFLAGS)" -o bin/dtw-linux-amd64 ./cmd/dtw
+
+## build-all: 构建所有二进制
+build-all: build build-dtw
 
 ## lint: 运行 golangci-lint 静态检查
 lint:
