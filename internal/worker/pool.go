@@ -584,7 +584,8 @@ var containerSeq atomic.Int64
 func buildContainerName(payload model.TaskPayload) string {
 	id := payload.DeliveryID
 	if id == "" {
-		id = fmt.Sprintf("%d-%d", time.Now().UnixNano(), containerSeq.Add(1))
+		// 备用 ID 需在 20 字符预算内保留递增序号，避免截断后丢失唯一性。
+		id = fmt.Sprintf("%x-%x", time.Now().UnixMilli(), containerSeq.Add(1))
 	}
 	// 仅保留字母数字和连字符，截断到合理长度
 	safe := sanitizeName(id)
