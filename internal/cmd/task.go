@@ -76,42 +76,7 @@ func applyTaskConfigFromManager(mgr *config.Manager, applyDBPath bool, applyRedi
 }
 
 func retryTask(ctx context.Context, s store.Store, q taskEnqueuer, id string) (*model.TaskRecord, string, error) {
-	record, err := s.GetTask(ctx, id)
-	if err != nil {
-		return nil, "", fmt.Errorf("查询任务失败: %w", err)
-	}
-	if record == nil {
-		return nil, "", fmt.Errorf("任务 %s 不存在", id)
-	}
-	if record.Status != model.TaskStatusFailed && record.Status != model.TaskStatusCancelled {
-		return nil, "", fmt.Errorf("任务 %s 状态为 %s，只有 failed 或 cancelled 状态的任务可以重试", id, record.Status)
-	}
-	if !record.Payload.TaskType.IsValid() {
-		return nil, "", fmt.Errorf("任务 %s 的 TaskType 非法: %s", id, record.Payload.TaskType)
-	}
-
-	taskID := buildRetryTaskID(record.DeliveryID, record.TaskType)
-	asynqID, err := q.Enqueue(ctx, record.Payload, queue.EnqueueOptions{Priority: record.Priority, TaskID: taskID})
-	message := "任务已重新入队"
-	if errors.Is(err, asynq.ErrTaskIDConflict) {
-		asynqID = taskID
-		message = "任务已在队列中，状态已同步为 queued"
-	} else if err != nil {
-		return nil, "", fmt.Errorf("任务重新入队失败: %w", err)
-	}
-
-	record.RetryCount = 0
-	record.Error = ""
-	record.StartedAt = nil
-	record.CompletedAt = nil
-	record.WorkerID = ""
-	record.Status = model.TaskStatusQueued
-	record.AsynqID = asynqID
-	record.UpdatedAt = time.Now()
-	if err := s.UpdateTask(ctx, record); err != nil {
-		return nil, "", fmt.Errorf("任务可能已重新入队，但状态同步失败: %w", err)
-	}
-	return record, message, nil
+	return queue.RetryTask(ctx, s, q, id)
 }
 
 var taskCmd = &cobra.Command{

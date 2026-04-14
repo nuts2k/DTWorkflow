@@ -38,13 +38,12 @@ var reviewPRCmd = &cobra.Command{
 			return fmt.Errorf("提交评审失败: %w", err)
 		}
 
-		printer.PrintHuman("评审任务已创建: %s", result.TaskID)
-
 		if reviewNoWait {
-			if flagJSON {
-				return printer.PrintJSON(result)
-			}
-			return nil
+			return printer.Print(fmt.Sprintf("评审任务已创建: %s", result.TaskID), result)
+		}
+
+		if !flagJSON {
+			printer.PrintHuman("评审任务已创建: %s", result.TaskID)
 		}
 
 		// 等待任务完成
@@ -53,7 +52,9 @@ var reviewPRCmd = &cobra.Command{
 			opts.Timeout = reviewTimeout
 		}
 
-		printer.PrintHuman("等待任务完成...")
+		if !flagJSON {
+			printer.PrintHuman("等待任务完成...")
+		}
 		status, err := dtw.WaitForTask(context.Background(), client, result.TaskID, opts)
 		if err != nil {
 			return fmt.Errorf("等待任务失败: %w", err)

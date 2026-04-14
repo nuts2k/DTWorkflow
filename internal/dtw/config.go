@@ -57,16 +57,21 @@ func SaveHostsConfig(path string, cfg *HostsConfig) error {
 
 // ResolveServer 解析最终目标服务器，优先级：env > flag > active
 func (c *HostsConfig) ResolveServer(flagServer string) (ServerConfig, error) {
+	if flagServer != "" {
+		srv, ok := c.Servers[flagServer]
+		if !ok {
+			return ServerConfig{}, fmt.Errorf("服务器 %q 未配置，请运行 dtw auth login", flagServer)
+		}
+		return srv, nil
+	}
+
 	envURL := os.Getenv("DTW_SERVER_URL")
 	envToken := os.Getenv("DTW_TOKEN")
 	if envURL != "" && envToken != "" {
 		return ServerConfig{URL: envURL, Token: envToken}, nil
 	}
 
-	name := flagServer
-	if name == "" {
-		name = c.Active
-	}
+	name := c.Active
 	if name == "" {
 		return ServerConfig{}, fmt.Errorf("未指定目标服务器，请运行 dtw auth login 或使用 --server")
 	}

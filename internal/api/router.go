@@ -17,6 +17,7 @@ import (
 type Dependencies struct {
 	Store          store.Store
 	QueueClient    *queue.Client
+	Enqueuer       queue.Enqueuer
 	Pool           *worker.Pool
 	EnqueueHandler *queue.EnqueueHandler
 	GiteaClient    *gitea.Client

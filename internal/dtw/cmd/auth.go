@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -34,10 +35,9 @@ var loginCmd = &cobra.Command{
 			configPath = dtw.DefaultConfigPath()
 		}
 
-		// 加载或创建空配置
-		cfg, err := dtw.LoadHostsConfig(configPath)
+		cfg, err := loadOrInitHostsConfig(configPath)
 		if err != nil {
-			cfg = &dtw.HostsConfig{Servers: make(map[string]dtw.ServerConfig)}
+			return fmt.Errorf("加载配置失败: %w", err)
 		}
 		if cfg.Servers == nil {
 			cfg.Servers = make(map[string]dtw.ServerConfig)
@@ -96,6 +96,17 @@ var loginCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+func loadOrInitHostsConfig(path string) (*dtw.HostsConfig, error) {
+	cfg, err := dtw.LoadHostsConfig(path)
+	if err == nil {
+		return cfg, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return &dtw.HostsConfig{Servers: make(map[string]dtw.ServerConfig)}, nil
+	}
+	return nil, err
 }
 
 // --- logout ---

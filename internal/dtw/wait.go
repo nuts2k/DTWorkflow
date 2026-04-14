@@ -6,6 +6,26 @@ import (
 	"time"
 )
 
+// TaskSummary 表示任务列表中的公共字段。
+type TaskSummary struct {
+	ID          string    `json:"id"`
+	Type        string    `json:"type"`
+	Status      string    `json:"status"`
+	Repo        string    `json:"repo"`
+	PRNumber    int64     `json:"pr_number,omitempty"`
+	IssueNumber int64     `json:"issue_number,omitempty"`
+	TriggeredBy string    `json:"triggered_by,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+}
+
+// TaskListResponse 表示任务列表响应。
+type TaskListResponse struct {
+	Tasks  []TaskSummary `json:"tasks"`
+	Limit  int           `json:"limit"`
+	Offset int           `json:"offset"`
+}
+
 // WaitOptions 控制轮询行为
 type WaitOptions struct {
 	Timeout       time.Duration
@@ -27,10 +47,19 @@ func DefaultWaitOptions() WaitOptions {
 
 // TaskStatus 表示服务端任务状态
 type TaskStatus struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Result string `json:"result,omitempty"`
-	Error  string `json:"error_message,omitempty"`
+	ID          string     `json:"id"`
+	Type        string     `json:"type"`
+	Status      string     `json:"status"`
+	Repo        string     `json:"repo"`
+	PRNumber    int64      `json:"pr_number,omitempty"`
+	IssueNumber int64      `json:"issue_number,omitempty"`
+	TriggeredBy string     `json:"triggered_by,omitempty"`
+	Result      string     `json:"result,omitempty"`
+	Error       string     `json:"error_message,omitempty"`
+	CreatedAt   time.Time  `json:"created_at,omitempty"`
+	UpdatedAt   time.Time  `json:"updated_at,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 func isTerminal(status string) bool {

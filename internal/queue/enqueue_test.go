@@ -110,6 +110,29 @@ func (m *mockStore) FindActivePRTasks(_ context.Context, _ string, _ int64, _ mo
 	return m.activePRTasks, nil
 }
 
+func (m *mockStore) FindActiveIssueTasks(_ context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) ([]*model.TaskRecord, error) {
+	if m.findActivePRTasksErr != nil {
+		return nil, m.findActivePRTasksErr
+	}
+	var tasks []*model.TaskRecord
+	for _, task := range m.tasks {
+		if task.RepoFullName != repoFullName {
+			continue
+		}
+		if task.TaskType != taskType {
+			continue
+		}
+		if task.Status != model.TaskStatusPending && task.Status != model.TaskStatusQueued && task.Status != model.TaskStatusRunning {
+			continue
+		}
+		if task.Payload.IssueNumber != issueNumber {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
+}
+
 func (m *mockStore) HasNewerReviewTask(_ context.Context, _ string, _ int64, _ time.Time) (bool, error) {
 	return false, nil
 }
@@ -888,6 +911,82 @@ func TestEnqueueManualFix(t *testing.T) {
 		if record.Priority != model.PriorityNormal {
 			t.Errorf("priority = %q, want %q", record.Priority, model.PriorityNormal)
 		}
+	}
+}
+
+func TestEnqueueManualFix_CancelsSupersededTasks(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-manual-fix-new"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	oldTask := &model.TaskRecord{
+		ID:           "old-fix-task",
+		AsynqID:      "asynq-old-fix",
+		TaskType:     model.TaskTypeFixIssue,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityNormal,
+		RepoFullName: "org/repo",
+		Payload:      model.TaskPayload{IssueNumber: 10},
+	}
+	s.tasks[oldTask.ID] = oldTask
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		IssueNumber:  10,
+		IssueTitle:   "bug report",
+	}
+
+	taskID, err := h.EnqueueManualFix(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("EnqueueManualFix error: %v", err)
+	}
+	if taskID == "" {
+		t.Fatal("返回的 taskID 不应为空")
+	}
+	if s.tasks[oldTask.ID].Status != model.TaskStatusCancelled {
+		t.Errorf("旧任务状态 = %q, want %q", s.tasks[oldTask.ID].Status, model.TaskStatusCancelled)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-old-fix" {
+		t.Errorf("deleteCalls = %v, want [asynq-old-fix]", canceller.deleteCalls)
+	}
+}
+
+func TestHandleIssueLabel_CancelsSupersededFixTasks(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-webhook-fix"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	oldTask := &model.TaskRecord{
+		ID:           "old-webhook-fix",
+		AsynqID:      "asynq-webhook-old-fix",
+		TaskType:     model.TaskTypeFixIssue,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityNormal,
+		RepoFullName: "org/repo",
+		Payload:      model.TaskPayload{IssueNumber: 33},
+	}
+	s.tasks[oldTask.ID] = oldTask
+
+	event := webhook.IssueLabelEvent{
+		DeliveryID:   "delivery-fix-superseded",
+		AutoFixAdded: true,
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:        webhook.IssueRef{Number: 33, Title: "bug report"},
+	}
+
+	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
+		t.Fatalf("HandleIssueLabel error: %v", err)
+	}
+	if s.tasks[oldTask.ID].Status != model.TaskStatusCancelled {
+		t.Errorf("旧任务状态 = %q, want %q", s.tasks[oldTask.ID].Status, model.TaskStatusCancelled)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-webhook-old-fix" {
+		t.Errorf("deleteCalls = %v, want [asynq-webhook-old-fix]", canceller.deleteCalls)
 	}
 }
 

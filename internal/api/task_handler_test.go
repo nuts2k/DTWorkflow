@@ -16,6 +16,7 @@ func seedTask(s *mockStore, id string, taskType model.TaskType, status model.Tas
 		ID:           id,
 		TaskType:     taskType,
 		Status:       status,
+		Payload:      model.TaskPayload{TaskType: taskType},
 		RepoFullName: repo,
 		TriggeredBy:  "webhook",
 		CreatedAt:    time.Now(),
@@ -35,7 +36,7 @@ func TestListTasks_Empty(t *testing.T) {
 	}
 
 	data := parseData(t, w)
-	items := data["items"].([]any)
+	items := data["tasks"].([]any)
 	if len(items) != 0 {
 		t.Errorf("期望空列表，实际 %d 条", len(items))
 	}
@@ -58,7 +59,7 @@ func TestListTasks_WithFilters(t *testing.T) {
 	}
 
 	data := parseData(t, w)
-	items := data["items"].([]any)
+	items := data["tasks"].([]any)
 	if len(items) != 2 {
 		t.Errorf("期望 2 条 failed 任务，实际 %d", len(items))
 	}
@@ -104,8 +105,8 @@ func TestGetTask_Found(t *testing.T) {
 	if data["id"] != "task-123" {
 		t.Errorf("期望 id = \"task-123\"，实际 %v", data["id"])
 	}
-	if data["task_type"] != string(model.TaskTypeReviewPR) {
-		t.Errorf("期望 task_type = %q，实际 %v", model.TaskTypeReviewPR, data["task_type"])
+	if data["type"] != string(model.TaskTypeReviewPR) {
+		t.Errorf("期望 type = %q，实际 %v", model.TaskTypeReviewPR, data["type"])
 	}
 }
 
@@ -135,14 +136,17 @@ func TestRetryTask_Success(t *testing.T) {
 
 	// 验证任务已重置为 pending
 	record, _ := s.GetTask(context.Background(), "task-fail")
-	if record.Status != model.TaskStatusPending {
-		t.Errorf("期望状态 pending，实际 %s", record.Status)
+	if record.Status != model.TaskStatusQueued {
+		t.Errorf("期望状态 queued，实际 %s", record.Status)
 	}
 	if record.Error != "" {
 		t.Errorf("期望 error 被清空，实际 %q", record.Error)
 	}
 	if record.RetryCount != 0 {
 		t.Errorf("期望 retry_count = 0，实际 %d", record.RetryCount)
+	}
+	if record.AsynqID != "mock-asynq-id" {
+		t.Errorf("期望 asynq_id = mock-asynq-id，实际 %q", record.AsynqID)
 	}
 }
 
@@ -181,6 +185,34 @@ func TestRetryTask_Conflict_RunningStatus(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("期望 409，实际 %d", w.Code)
+	}
+}
+
+func TestGetTask_FailedTaskIncludesErrorMessage(t *testing.T) {
+	s := newMockStore()
+	_ = s.CreateTask(context.Background(), &model.TaskRecord{
+		ID:           "task-failed",
+		TaskType:     model.TaskTypeFixIssue,
+		Status:       model.TaskStatusFailed,
+		Payload:      model.TaskPayload{TaskType: model.TaskTypeFixIssue, IssueNumber: 15},
+		RepoFullName: "org/repo",
+		Error:        "boom",
+		TriggeredBy:  "manual:admin",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	})
+
+	r, w := setupTestRouter(t, s)
+	req := authedRequest("GET", "/api/v1/tasks/task-failed", "")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d", w.Code)
+	}
+
+	data := parseData(t, w)
+	if data["error_message"] != "boom" {
+		t.Errorf("期望 error_message = boom，实际 %v", data["error_message"])
 	}
 }
 

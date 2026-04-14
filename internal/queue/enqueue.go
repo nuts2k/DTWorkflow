@@ -167,9 +167,12 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 		DeliveryID:   event.DeliveryID,
 	}
 
+	activeTasks := h.listActiveIssueTasks(ctx, event.Repository.FullName, event.Issue.Number, model.TaskTypeFixIssue)
+
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
 		return err
 	}
+	h.cancelTasks(ctx, activeTasks)
 
 	if record.Status == model.TaskStatusQueued {
 		h.logger.InfoContext(ctx, "Issue 修复任务已入队",
@@ -226,6 +229,17 @@ func (h *EnqueueHandler) listActivePRTasks(ctx context.Context, repoFullName str
 		}
 	}
 	return tasks, info
+}
+
+// listActiveIssueTasks 查找同一 Issue 的活跃任务。
+func (h *EnqueueHandler) listActiveIssueTasks(ctx context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) []*model.TaskRecord {
+	tasks, err := h.store.FindActiveIssueTasks(ctx, repoFullName, issueNumber, taskType)
+	if err != nil {
+		h.logger.WarnContext(ctx, "查找活跃 Issue 任务失败，跳过取消",
+			"repo", repoFullName, "issue", issueNumber, "error", err)
+		return nil
+	}
+	return tasks
 }
 
 // cancelTasks 在 replacement 已持久化后，逐个取消旧任务（best-effort）。
@@ -382,6 +396,8 @@ func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.Tas
 	payload.TaskType = model.TaskTypeFixIssue
 	payload.DeliveryID = generateManualDeliveryID()
 
+	activeTasks := h.listActiveIssueTasks(ctx, payload.RepoFullName, payload.IssueNumber, model.TaskTypeFixIssue)
+
 	record := &model.TaskRecord{
 		TaskType:     model.TaskTypeFixIssue,
 		Priority:     model.PriorityNormal,
@@ -393,6 +409,7 @@ func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.Tas
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
 		return "", err
 	}
+	h.cancelTasks(ctx, activeTasks)
 
 	h.logger.InfoContext(ctx, "手动 Issue 修复任务已入队",
 		"task_id", record.ID, "repo", payload.RepoFullName,

@@ -662,6 +662,38 @@ func (s *SQLiteStore) FindActivePRTasks(ctx context.Context, repoFullName string
 	return records, nil
 }
 
+// FindActiveIssueTasks 查找同一 Issue 的活跃任务（pending/queued/running）。
+func (s *SQLiteStore) FindActiveIssueTasks(ctx context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) ([]*model.TaskRecord, error) {
+	query := `SELECT ` + taskColumns + `
+	FROM tasks
+	WHERE repo_full_name = ?
+	  AND task_type = ?
+	  AND status IN (?, ?, ?)
+	ORDER BY created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, query, repoFullName, string(taskType),
+		string(model.TaskStatusPending), string(model.TaskStatusQueued), string(model.TaskStatusRunning))
+	if err != nil {
+		return nil, fmt.Errorf("查找活跃 Issue 任务失败: %w", err)
+	}
+	defer rows.Close()
+
+	var records []*model.TaskRecord
+	for rows.Next() {
+		record, err := scanTaskRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("扫描活跃 Issue 任务失败: %w", err)
+		}
+		if record.Payload.IssueNumber == issueNumber {
+			records = append(records, record)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历活跃 Issue 任务失败: %w", err)
+	}
+	return records, nil
+}
+
 // HasNewerReviewTask 检查是否存在比指定时间更新的同 PR 非终态评审任务
 func (s *SQLiteStore) HasNewerReviewTask(ctx context.Context, repoFullName string, prNumber int64, afterCreatedAt time.Time) (bool, error) {
 	query := `SELECT EXISTS(

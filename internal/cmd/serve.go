@@ -196,6 +196,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	api.RegisterRoutes(router, api.Dependencies{
 		Store:          deps.Store,
 		QueueClient:    deps.QueueClient,
+		Enqueuer:       deps.QueueClient,
 		Pool:           deps.Pool,
 		EnqueueHandler: deps.EnqueueHandler,
 		GiteaClient:    deps.GiteaClient,

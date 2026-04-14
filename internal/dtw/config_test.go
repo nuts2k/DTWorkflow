@@ -116,7 +116,7 @@ func TestResolveServer_EnvOverride(t *testing.T) {
 		},
 	}
 
-	srv, err := cfg.ResolveServer("prod")
+	srv, err := cfg.ResolveServer("")
 	if err != nil {
 		t.Fatalf("ResolveServer 失败: %v", err)
 	}
@@ -125,6 +125,30 @@ func TestResolveServer_EnvOverride(t *testing.T) {
 	}
 	if srv.Token != "env-token" {
 		t.Errorf("Token = %q，期望 env-token", srv.Token)
+	}
+}
+
+func TestResolveServer_FlagBeatsEnv(t *testing.T) {
+	t.Setenv("DTW_SERVER_URL", "https://env.example.com")
+	t.Setenv("DTW_TOKEN", "env-token")
+
+	cfg := &HostsConfig{
+		Active: "prod",
+		Servers: map[string]ServerConfig{
+			"prod": {URL: "https://prod.example.com", Token: "tp"},
+			"dev":  {URL: "https://dev.example.com", Token: "td"},
+		},
+	}
+
+	srv, err := cfg.ResolveServer("dev")
+	if err != nil {
+		t.Fatalf("ResolveServer 失败: %v", err)
+	}
+	if srv.URL != "https://dev.example.com" {
+		t.Errorf("URL = %q，期望 dev URL", srv.URL)
+	}
+	if srv.Token != "td" {
+		t.Errorf("Token = %q，期望 td", srv.Token)
 	}
 }
 

@@ -48,6 +48,7 @@ func setupTestRouter(t *testing.T, s store.Store) (*gin.Engine, *httptest.Respon
 	r := gin.New()
 	deps := Dependencies{
 		Store:     s,
+		Enqueuer:  &mockEnqueuer{},
 		Tokens:    testTokens(),
 		Version:   "test-v1",
 		StartTime: time.Now(),
@@ -139,6 +140,10 @@ func (m *mockStore) PurgeTasks(_ context.Context, _ time.Duration, _ model.TaskS
 }
 
 func (m *mockStore) FindActivePRTasks(_ context.Context, _ string, _ int64, _ model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
+func (m *mockStore) FindActiveIssueTasks(_ context.Context, _ string, _ int64, _ model.TaskType) ([]*model.TaskRecord, error) {
 	return nil, nil
 }
 

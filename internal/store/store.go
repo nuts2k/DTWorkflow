@@ -44,6 +44,10 @@ type Store interface {
 	// 返回按 created_at 升序排列的任务列表（最旧的在前）
 	FindActivePRTasks(ctx context.Context, repoFullName string, prNumber int64, taskType model.TaskType) ([]*model.TaskRecord, error)
 
+	// FindActiveIssueTasks 查找同一 Issue 的活跃任务（pending/queued/running）
+	// 返回按 created_at 升序排列的任务列表（最旧的在前）
+	FindActiveIssueTasks(ctx context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) ([]*model.TaskRecord, error)
+
 	// HasNewerReviewTask 检查是否存在比指定时间更新的同 PR 评审任务
 	// 用于回写前的 staleness 检查
 	HasNewerReviewTask(ctx context.Context, repoFullName string, prNumber int64, afterCreatedAt time.Time) (bool, error)

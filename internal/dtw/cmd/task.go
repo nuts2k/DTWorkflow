@@ -3,6 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +20,7 @@ var taskCmd = &cobra.Command{
 // --- task list ---
 
 var (
+	taskListRepo   string
 	taskListStatus string
 	taskListLimit  int
 )
@@ -25,32 +29,44 @@ var taskListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "列出任务",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := "/api/v1/tasks"
-		sep := "?"
+		query := url.Values{}
+		if taskListRepo != "" {
+			query.Set("repo", taskListRepo)
+		}
 		if taskListStatus != "" {
-			path += sep + "status=" + taskListStatus
-			sep = "&"
+			query.Set("status", taskListStatus)
 		}
 		if taskListLimit > 0 {
-			path += fmt.Sprintf("%slimit=%d", sep, taskListLimit)
+			query.Set("limit", strconv.Itoa(taskListLimit))
+		}
+		path := "/api/v1/tasks"
+		if encoded := query.Encode(); encoded != "" {
+			path += "?" + encoded
 		}
 
-		var tasks []dtw.TaskStatus
-		if err := client.Do(context.Background(), "GET", path, nil, &tasks); err != nil {
+		var result dtw.TaskListResponse
+		if err := client.Do(context.Background(), "GET", path, nil, &result); err != nil {
 			return fmt.Errorf("查询任务列表失败: %w", err)
 		}
 
 		if flagJSON {
-			return printer.PrintJSON(tasks)
+			return printer.PrintJSON(result)
 		}
 
-		if len(tasks) == 0 {
+		if len(result.Tasks) == 0 {
 			printer.PrintHuman("暂无任务")
 			return nil
 		}
 
-		for _, t := range tasks {
-			printer.PrintHuman("%-36s  %-12s  %s", t.ID, t.Status, t.Result)
+		for _, task := range result.Tasks {
+			target := ""
+			if task.PRNumber > 0 {
+				target = fmt.Sprintf("PR #%d", task.PRNumber)
+			} else if task.IssueNumber > 0 {
+				target = fmt.Sprintf("Issue #%d", task.IssueNumber)
+			}
+			printer.PrintHuman("%-36s  %-10s  %-12s  %-24s  %s",
+				task.ID, task.Type, task.Status, task.Repo, target)
 		}
 		return nil
 	},
@@ -73,12 +89,33 @@ var taskStatusCmd = &cobra.Command{
 		}
 
 		printer.PrintHuman("ID:     %s", task.ID)
+		if task.Type != "" {
+			printer.PrintHuman("类型:   %s", task.Type)
+		}
 		printer.PrintHuman("状态:   %s", task.Status)
+		if task.Repo != "" {
+			printer.PrintHuman("仓库:   %s", task.Repo)
+		}
+		if task.PRNumber > 0 {
+			printer.PrintHuman("PR:     #%d", task.PRNumber)
+		}
+		if task.IssueNumber > 0 {
+			printer.PrintHuman("Issue:  #%d", task.IssueNumber)
+		}
+		if task.TriggeredBy != "" {
+			printer.PrintHuman("触发:   %s", task.TriggeredBy)
+		}
 		if task.Result != "" {
 			printer.PrintHuman("结果:   %s", task.Result)
 		}
 		if task.Error != "" {
 			printer.PrintHuman("错误:   %s", task.Error)
+		}
+		if !task.CreatedAt.IsZero() {
+			printer.PrintHuman("创建:   %s", task.CreatedAt.Local().Format(time.DateTime))
+		}
+		if !task.UpdatedAt.IsZero() {
+			printer.PrintHuman("更新:   %s", task.UpdatedAt.Local().Format(time.DateTime))
 		}
 		return nil
 	},
@@ -101,6 +138,7 @@ var taskRetryCmd = &cobra.Command{
 }
 
 func init() {
+	taskListCmd.Flags().StringVar(&taskListRepo, "repo", "", "按仓库过滤（owner/repo）")
 	taskListCmd.Flags().StringVar(&taskListStatus, "status", "", "按状态过滤（pending/running/succeeded/failed）")
 	taskListCmd.Flags().IntVar(&taskListLimit, "limit", 0, "限制返回数量")
 
