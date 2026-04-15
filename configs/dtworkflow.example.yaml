@@ -141,6 +141,12 @@ repos:
     #   - repo: "acme/demo"
     #     events: ["pr.review.done", "pr.review.started", "system.error"]
     #     channels: ["gitea", "feishu"]
+      # 仓库级飞书 Webhook 覆盖（可选）
+      # 配置后该仓库的飞书通知将发送到独立的飞书群，未配置时使用全局飞书配置。
+      # 前提：全局 notify.channels.feishu 已启用。
+      # feishu:
+      #   webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/repo-xxx"
+      #   secret: "repo-secret"  # 可选，无 secret 时不做签名校验
     review:
       # 仓库级评审配置覆盖语义：非空/非 nil 时覆盖全局对应字段。
       # severity 为空字符串时继承全局；ignore_patterns 为空切片 [] 时表示显式清空。
