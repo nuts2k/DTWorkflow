@@ -129,6 +129,12 @@ type RouteConfig struct {
 	Channels []string `mapstructure:"channels"`
 }
 
+// FeishuOverride 仓库级飞书 Webhook 覆盖配置。
+type FeishuOverride struct {
+	WebhookURL string `mapstructure:"webhook_url"`
+	Secret     string `mapstructure:"secret"`
+}
+
 // Manager 配置管理器，封装 Viper 的加载、校验与当前配置获取。
 //
 // 说明：

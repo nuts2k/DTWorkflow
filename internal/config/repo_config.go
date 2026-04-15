@@ -9,7 +9,8 @@ type RepoConfig struct {
 
 // NotifyOverride 仓库级通知配置覆盖。
 type NotifyOverride struct {
-	Routes []RouteConfig `mapstructure:"routes"`
+	Routes []RouteConfig  `mapstructure:"routes"`
+	Feishu *FeishuOverride `mapstructure:"feishu"`
 }
 
 // ReviewOverride 评审配置覆盖（结构预留；本轮仅实现最小合并规则）。
