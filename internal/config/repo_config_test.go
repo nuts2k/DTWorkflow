@@ -225,3 +225,75 @@ func TestResolveReviewConfig_ModelEffort(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveFeishuOverride(t *testing.T) {
+	t.Run("nil config 返回 nil", func(t *testing.T) {
+		var c *Config
+		if got := c.ResolveFeishuOverride("any/repo"); got != nil {
+			t.Errorf("nil config 应返回 nil，得到: %+v", got)
+		}
+	})
+
+	t.Run("无匹配仓库返回 nil", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "other/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{WebhookURL: "https://example.com/hook"}},
+		}}
+		if got := cfg.ResolveFeishuOverride("acme/repo"); got != nil {
+			t.Errorf("不匹配 repo 应返回 nil，得到: %+v", got)
+		}
+	})
+
+	t.Run("匹配仓库但 Notify 为 nil 返回 nil", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{Name: "acme/repo", Notify: nil}}
+		if got := cfg.ResolveFeishuOverride("acme/repo"); got != nil {
+			t.Errorf("nil Notify 应返回 nil，得到: %+v", got)
+		}
+	})
+
+	t.Run("匹配仓库但 Feishu 为 nil 返回 nil", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Notify: &NotifyOverride{Routes: []RouteConfig{{Repo: "*"}}},
+		}}
+		if got := cfg.ResolveFeishuOverride("acme/repo"); got != nil {
+			t.Errorf("nil Feishu 应返回 nil，得到: %+v", got)
+		}
+	})
+
+	t.Run("匹配仓库有 Feishu 覆盖时返回覆盖", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name: "acme/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{
+				WebhookURL: "https://example.com/hook/repo",
+				Secret:     "repo-secret",
+			}},
+		}}
+		got := cfg.ResolveFeishuOverride("acme/repo")
+		if got == nil {
+			t.Fatal("有覆盖时不应返回 nil")
+		}
+		if got.WebhookURL != "https://example.com/hook/repo" {
+			t.Errorf("WebhookURL = %q, want %q", got.WebhookURL, "https://example.com/hook/repo")
+		}
+		if got.Secret != "repo-secret" {
+			t.Errorf("Secret = %q, want %q", got.Secret, "repo-secret")
+		}
+	})
+
+	t.Run("多仓库匹配返回第一个", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{
+			{Name: "acme/repo", Notify: &NotifyOverride{Feishu: &FeishuOverride{WebhookURL: "https://first"}}},
+			{Name: "acme/repo", Notify: &NotifyOverride{Feishu: &FeishuOverride{WebhookURL: "https://second"}}},
+		}
+		got := cfg.ResolveFeishuOverride("acme/repo")
+		if got == nil || got.WebhookURL != "https://first" {
+			t.Errorf("重复 repo 应返回第一个匹配项，得到: %+v", got)
+		}
+	})
+}

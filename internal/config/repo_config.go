@@ -58,6 +58,20 @@ func (c *Config) ResolveNotifyRoutes(repoFullName string) []RouteConfig {
 	return c.Notify.Routes
 }
 
+// ResolveFeishuOverride 返回指定仓库的飞书配置覆盖。
+// 返回 nil 表示使用全局配置。
+func (c *Config) ResolveFeishuOverride(repoFullName string) *FeishuOverride {
+	if c == nil {
+		return nil
+	}
+	for _, repo := range c.Repos {
+		if repo.Name == repoFullName && repo.Notify != nil && repo.Notify.Feishu != nil {
+			return repo.Notify.Feishu
+		}
+	}
+	return nil
+}
+
 // ResolveReviewConfig 解析指定仓库的最终评审配置（全局 + 仓库覆盖合并）。
 //
 // 说明：本轮仅做结构预留与最小合并逻辑，后续再扩展字段语义与校验。
