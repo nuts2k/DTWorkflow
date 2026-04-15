@@ -376,3 +376,66 @@ func TestExampleConfig_Loadable(t *testing.T) {
 		t.Fatalf("notify.default_channel should not be empty")
 	}
 }
+
+func TestClone_FeishuOverrideDeepCopy(t *testing.T) {
+	t.Parallel()
+
+	original := &Config{
+		Server:  ServerConfig{Port: 8080},
+		Gitea:   GiteaConfig{URL: "http://gitea:3000", Token: "test-token"},
+		Claude:  ClaudeConfig{APIKey: "test-api-key"},
+		Redis:   RedisConfig{Addr: "localhost:6379"},
+		Webhook: WebhookConfig{Secret: "test-secret"},
+		Notify: NotifyConfig{
+			DefaultChannel: "gitea",
+			Channels:       map[string]ChannelConfig{"gitea": {Enabled: true}},
+		},
+		Repos: []RepoConfig{{
+			Name: "acme/repo",
+			Notify: &NotifyOverride{
+				Feishu: &FeishuOverride{
+					WebhookURL: "https://original.com/hook",
+					Secret:     "original-secret",
+				},
+			},
+		}},
+	}
+
+	cloned := original.Clone()
+
+	// 修改 clone 不应影响原始对象
+	cloned.Repos[0].Notify.Feishu.WebhookURL = "https://modified.com/hook"
+	cloned.Repos[0].Notify.Feishu.Secret = "modified-secret"
+
+	if original.Repos[0].Notify.Feishu.WebhookURL != "https://original.com/hook" {
+		t.Errorf("修改 clone 后原始 WebhookURL 被改变: %q", original.Repos[0].Notify.Feishu.WebhookURL)
+	}
+	if original.Repos[0].Notify.Feishu.Secret != "original-secret" {
+		t.Errorf("修改 clone 后原始 Secret 被改变: %q", original.Repos[0].Notify.Feishu.Secret)
+	}
+}
+
+func TestClone_FeishuOverrideNil(t *testing.T) {
+	t.Parallel()
+
+	original := &Config{
+		Server:  ServerConfig{Port: 8080},
+		Gitea:   GiteaConfig{URL: "http://gitea:3000", Token: "test-token"},
+		Claude:  ClaudeConfig{APIKey: "test-api-key"},
+		Redis:   RedisConfig{Addr: "localhost:6379"},
+		Webhook: WebhookConfig{Secret: "test-secret"},
+		Notify: NotifyConfig{
+			DefaultChannel: "gitea",
+			Channels:       map[string]ChannelConfig{"gitea": {Enabled: true}},
+		},
+		Repos: []RepoConfig{{
+			Name:   "acme/repo",
+			Notify: &NotifyOverride{Routes: []RouteConfig{{Repo: "*"}}},
+		}},
+	}
+
+	cloned := original.Clone()
+	if cloned.Repos[0].Notify.Feishu != nil {
+		t.Error("Feishu 为 nil 时 clone 也应为 nil")
+	}
+}

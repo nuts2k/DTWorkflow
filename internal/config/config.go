@@ -409,6 +409,10 @@ func (c *Config) Clone() *Config {
 						}
 					}
 				}
+				if repo.Notify.Feishu != nil {
+					feishuCopy := *repo.Notify.Feishu
+					notifyCopy.Feishu = &feishuCopy
+				}
 				clone.Repos[i].Notify = &notifyCopy
 			}
 			// 深拷贝 repo.Review
