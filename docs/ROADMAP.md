@@ -289,6 +289,15 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 预留应用机器人（App Bot）扩展空间（个人消息 / @用户 / 卡片回调）
 - [x] 本地开发环境对接飞书 Webhook 联调测试（2026-04-02 验证通过：蓝色"开始"卡片 + 绿色"完成"卡片均正常推送，HMAC-SHA256 签名校验通过）
 - [x] 远程测试服务器端到端测试（真实 Gitea PR 流程 → 飞书开始/完成双通知验证通过）
+- [x] 仓库级飞书 Webhook 覆盖（2026-04-15 实施）
+  - [x] `FeishuOverride` 结构体与 `NotifyOverride.Feishu` 字段
+  - [x] `ResolveFeishuOverride` 仓库级飞书覆盖解析（nil 时回退全局）
+  - [x] `Config.Clone()` 深拷贝补充 `FeishuOverride`
+  - [x] 配置校验：webhook_url 必填/格式合法/全局飞书已启用前提
+  - [x] `hasRepoNotifyOverride` 支持飞书覆盖检测
+  - [x] `newRouter` 注入仓库级 FeishuNotifier（无覆盖时使用全局）
+  - [x] 示例配置补充仓库级飞书覆盖注释
+  - [x] 详细设计见 `docs/superpowers/specs/2026-04-15-repo-feishu-override-design.md`
 
 #### M2.7 每日评审统计报告
 > 说明：每日定时通过飞书通知发送前一天的 PR 评审统计摘要。初期聚焦 PR 评审维度，架构预留扩展到 Issue 修复、测试生成等统计维度。
