@@ -459,6 +459,10 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > 引入容器写权限，需修改 entrypoint.sh 和容器安全配置。依赖第一轮分析能力验证后启动。
 
 ##### M3.4 容器写权限适配与修复执行
+- [ ] **两级镜像策略引入**（Phase 4 复用的基础设施）：
+  - 新建 `Dockerfile.worker-full`（执行镜像）：在现有分析镜像基础上叠加 JDK + Maven/Gradle
+  - 两级镜像共享 Node.js + Claude CLI 基础层，Docker 缓存友好
+  - Worker 池多镜像选择：根据任务类型自动选用分析镜像（review_pr、fix_issue 分析）或执行镜像（fix_issue 修复、gen_tests）
 - [ ] entrypoint.sh 适配 fix_issue 任务类型：
   - checkout 默认分支（非 PR 分支）
   - 配置 `git config --global credential.helper store`（clone 时自动缓存凭证）
@@ -521,48 +525,130 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 ## Phase 4：集中化测试（测试补全）
 
-**目标**：补全现有测试缺口，建立变更驱动的测试生成机制
+**目标**：建立 AI 驱动的测试生成机制，补全现有测试缺口，确保生成的测试通过运行验证后再提交
 
-**依赖**：Phase 1 完成
+**依赖**：M3.5 完成（容器写权限 + PR 创建能力 + 执行镜像）
+
+### 关键设计决策
+
+> 以下决策在 2026-04-15 brainstorming 中确认，指导后续设计与实施。
+
+1. **AI 原生测试缺口分析**：不依赖传统覆盖率工具（JaCoCo / Istanbul），由 Claude Code CLI 直接分析代码结构、现有测试文件和 Git 变更历史来识别测试缺口。优势：语义级分析（不只看行覆盖，而是评估边界条件和逻辑路径）、零基础设施依赖、跨语言统一。
+2. **测试必须验证通过**：生成的测试代码在容器内编译并运行，全部通过后才创建 PR。失败时 Claude 根据错误信息自动修正并重试。
+3. **两级镜像策略**（M3.4 引入，Phase 4 复用）：分析镜像（现有 `Dockerfile.worker`，Node.js + Claude Code CLI + Git）服务于 review_pr 和 fix_issue 分析；执行镜像（`Dockerfile.worker-full`，分析镜像 + JDK + Maven/Gradle）服务于 fix_issue 修复和 gen_tests。Worker 池根据任务类型选择镜像。
+4. **全栈项目支持**：Java 后端 + Vue 前端一体化仓库，执行镜像同时包含 JDK 和 Node.js，Claude 根据目标模块自动选择测试框架（JUnit 5 / Vitest）。
+5. **两轮迭代 + 调度外置**：第一轮（M4.1-M4.2）手动触发完整管线，验证核心能力；第二轮（M4.3）变更驱动，PR 合并后自动补测试。定时补全不纳入 Phase 4 范围，由外部调度器通过 REST API（`POST /api/v1/gen-tests`）触发，DTWorkflow 专注执行。
+
+### 已有基础设施
+
+以下能力已实现或将在前序 milestone 中实现，Phase 4 直接复用：
+
+**已实现**：
+- **任务类型**：`TaskTypeGenTests` 已定义，asynq 路由已注册（`internal/model/task.go`、`internal/queue/client.go`）
+- **容器命令**：`buildContainerCmd` 有基础 gen_tests prompt（`internal/worker/container.go`），M4.2 Processor 接管后该分支成为死代码（同 review/fix 的 Service 模式）
+- **超时配置**：`worker.timeouts.gen_tests` 已有配置结构（默认 20 分钟，含容器内重试时间）
+- **技术栈检测**：Phase 2 的 `TechStack` 位掩码，可复用于选择测试框架
+- **通知**：飞书 + Gitea 通知框架（Processor 需新增 gen_tests 通知 case，见 M4.2）
+
+**待实现（前序 milestone 交付）**：
+- **执行镜像**：M3.4 引入的 `Dockerfile.worker-full`（分析镜像 + JDK + Maven/Gradle）
+- **PR 创建**：M3.5 提供容器内 push + Gitea API 创建 PR 能力
 
 ### 里程碑
 
-#### M4.1 测试覆盖率分析
-- [ ] Java 项目：集成 JaCoCo 覆盖率报告解析
-- [ ] Vue 项目：集成 Istanbul/c8 覆盖率报告解析
-- [ ] 识别未覆盖的关键模块/方法（按业务重要性排序）
+---
 
-#### M4.2 测试用例生成
-- [ ] Java 单元测试生成（JUnit 5）
-  - [ ] Service 层测试（Mock 依赖）
-  - [ ] Controller 层测试（MockMvc）
-  - [ ] 工具类测试
-- [ ] Vue 单元测试生成（Vitest / Jest）
-  - [ ] 组件测试
-  - [ ] Composable / Store 测试
-  - [ ] 工具函数测试
-- [ ] 集成测试生成
-- [ ] 生成的测试必须能通过运行（编译正确、断言合理）
+#### 第一轮：手动触发测试生成（完整管线）
 
-#### M4.3 测试补全任务
-- [ ] 定时任务：周期性扫描覆盖率 → 生成缺失测试 → 创建 PR
-- [ ] 手动触发：通过 CLI / API 指定仓库/模块触发测试生成
-- [ ] PR 描述包含：新增覆盖的模块、测试策略说明
+> 通过 CLI / API 手动触发指定仓库/模块的测试生成。容器使用执行镜像（读写权限），Claude 分析代码缺口 → 生成测试 → 运行验证 → commit push，DTWorkflow 创建 PR。
 
-#### M4.4 变更驱动测试
-- [ ] 监听 PR 合并事件
-- [ ] 分析合并的代码变更
-- [ ] 判断是否有对应测试覆盖
-- [ ] 缺失时自动生成测试并创建 PR
+##### M4.1 test.Service 骨架 + AI 原生测试缺口分析 + Prompt 工程
+- [ ] 新建 `internal/test` 包，架构仿照 `internal/review` 和 `internal/fix`（Service/Execute 模式）
+- [ ] 定义 `TestExecutor` 窄接口（M4.2 激活路由时使用）
+- [ ] AI 原生测试缺口分析设计：
+  - Claude 分析源代码目录结构与现有测试文件的映射关系
+  - 识别无测试覆盖的关键模块/类/方法
+  - 评估优先级：公共 API > 复杂业务逻辑 > 工具类
+  - 分析现有测试风格和模式（命名规范、Mock 框架、断言库），确保生成的测试风格一致
+- [ ] 测试生成 Prompt 工程：
+  - Java 单元测试生成指令（JUnit 5 + Mockito，覆盖 Service / Controller / 工具类）
+  - Vue 单元测试生成指令（Vitest，覆盖组件 / Composable / Store / 工具函数）
+  - 输出格式定义（结构化 JSON schema）：生成的文件列表、测试策略说明、每个测试的目标描述
+  - 验证指令：生成后运行 `mvn test` / `npm test`，失败时根据错误信息自动修正
+- [ ] 分析+生成输出 JSON schema（`TestGenOutput`），字段包括：
+  - `analysis`：测试缺口分析（未覆盖模块列表、优先级排序）
+  - `generated_files`（[]GeneratedFile）：生成的测试文件路径和描述
+  - `test_results`：测试运行结果（通过数 / 失败数 / 跳过数）
+  - `verification_passed`（bool）：所有测试是否通过
+  - `branch_name`：创建的分支名
+  - `commit_sha`：提交的 SHA
+- [ ] 手动触发入口（参照 M3.3.1 的 `review-pr` / `fix-issue` 模式）：
+  - `EnqueueManualGenTests` 函数（`internal/queue/enqueue.go`）
+  - REST API handler + 路由注册（`POST /api/v1/gen-tests`，`internal/api/`）
+  - 服务端 CLI 命令 `dtworkflow gen-tests --repo --module`（`internal/cmd/`）
+  - 瘦客户端命令 `dtw gen-tests --repo --module`（`internal/dtw/cmd/`），支持 `--no-wait` 异步提交
+- [ ] 配置扩展：`test_gen` 配置段，仓库级覆盖
+  - `enabled`：启用开关
+  - `module_scope`：模块范围限定
+  - `max_retry_rounds`：容器内自动修正最大轮次（默认 3）
+  - `test_framework`：测试框架覆盖（默认自动检测）
+
+##### M4.2 容器执行 + 测试验证 + PR 创建 + 通知
+- [ ] Processor 集成：ProcessorOption 注入 TestExecutor，gen_tests 任务分发到 test.Service
+- [ ] 容器执行流程（执行镜像，读写权限）：
+  - Clone 仓库 + checkout 目标分支
+  - Claude 分析测试缺口
+  - 生成测试代码文件
+  - 运行测试套件验证
+  - 容器内 prompt 级自动修正：测试失败时 Claude 在同一容器会话中根据错误信息修改测试代码并重新运行（最多 N 轮，`test_gen.max_retry_rounds` 可配置，默认 3）。注意：此为单次容器调用内的 prompt 重试，与 asynq 的跨容器重试是独立机制；需确保总耗时在 `worker.timeouts.gen_tests` 范围内
+  - 全部通过后创建分支（命名规范：`auto-test/{module}-{timestamp}`）+ commit + push
+- [ ] 双层 JSON 解析（同 Phase 2/3）：CLI 信封 → TestGenOutput
+- [ ] PR 创建（复用 M3.5 能力）：
+  - PR 标题：`test: 补充 {module} 测试用例`
+  - PR 描述模板：测试缺口分析摘要 + 生成的测试文件列表 + 测试运行结果 + 覆盖的模块/方法
+- [ ] 通知适配：Processor 的 `buildStartMessage` / `buildNotificationMessage` 新增 `TaskTypeGenTests` case 分支（当前仅 review_pr / fix_issue，gen_tests 落入 default 不发通知）
+- [ ] 通知内容（Gitea + 飞书）：测试生成开始/完成/失败通知
+- [ ] 验证失败处理：所有容器内重试耗尽后，在通知中报告失败原因（编译错误、断言失败等），区分基础设施故障（依赖下载失败、构建工具异常）与测试质量问题
+- [ ] 结果持久化到数据库（`test_gen_results` 表，字段设计在 M4.2 实施阶段详细定义，参考 `review_results` 表结构）
+- [ ] 单元测试覆盖
+
+---
+
+#### 第二轮：变更驱动测试
+
+> PR 合并后自动分析变更代码是否有对应测试覆盖，缺失时自动触发测试生成。
+
+##### M4.3 变更驱动测试生成
+- [ ] Webhook 扩展：新增 PR merged 事件处理（当前仅处理 opened / synchronized / reopened）
+- [ ] 变更范围分析：解析合并的 diff，识别变更的模块/类/方法
+- [ ] 测试覆盖判断：Claude 分析变更代码是否有对应测试覆盖（复用 M4.1 分析能力，范围缩小到变更文件）
+- [ ] 自动触发：覆盖不足时自动入队 gen_tests 任务（范围限定为变更相关模块）
+- [ ] 去重机制：检查是否已有针对同一模块的 pending gen_tests 任务
+- [ ] 可配置开关：仓库级 `test_gen.change_driven.enabled`
+- [ ] 单元测试覆盖
 
 ### 交付物
-- 测试覆盖率分析工具
-- Java / Vue 测试生成能力
-- 定时补全 + 变更驱动的测试生成流程
+
+**第一轮**：
+- 手动触发的测试生成能力（`internal/test` 包）
+- Java / Vue 测试生成 Prompt 模板
+- 测试验证 + 自动修正机制
+- 测试 PR 自动创建
+
+**第二轮**：
+- PR 合并后变更驱动的测试自动生成
+- Webhook PR merged 事件处理
 
 ### 验证标准
-- 指定一个测试覆盖率低的模块 → 自动生成测试 → 测试可运行通过 → 覆盖率提升
-- 合并一个无测试覆盖的 PR → 自动检测 → 生成对应测试 PR
+
+**第一轮**：
+- 手动触发 `dtw gen-tests --repo myrepo --module service` → 分析测试缺口 → 生成 JUnit 测试 → 容器内 `mvn test` 通过 → 自动创建 PR（含测试文件和运行结果）
+- Vue 模块同理：生成 Vitest 测试 → `npm test` 通过 → 创建 PR
+- 生成失败时收到通知，包含失败原因
+
+**第二轮**：
+- 合并一个无测试覆盖的 PR → 自动检测 → 自动生成对应测试 → 创建 PR
+- 已有充分测试覆盖的 PR 合并后不触发生成
 
 ---
 
@@ -616,12 +702,12 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 ```
 Phase 1 (基础设施)
   ├── Phase 2 (PR 评审)
-  ├── Phase 3 (Issue 修复) ──┐
-  ├── Phase 4 (测试补全)     │
+  ├── Phase 3 (Issue 修复) ──┬── Phase 4 (测试补全)
   └──────────────────────────┴── Phase 5 (E2E 测试)
 ```
 
-- Phase 2、3、4 在 Phase 1 完成后可并行启动（但建议按顺序，逐步交付价值）
+- Phase 2、3 在 Phase 1 完成后可并行启动（但建议按顺序，逐步交付价值）
+- Phase 4 依赖 Phase 3 M3.5（容器写权限 + PR 创建能力 + 执行镜像）
 - Phase 5 依赖 Phase 1 的基础设施和 Phase 3 的 Issue 自动创建能力
 
 ---
@@ -635,8 +721,9 @@ Phase 1 (基础设施)
 | Phase 3 第一轮 | Issue 分析与定位——只读模式，独立交付根因分析价值 | Phase 2 之后 |
 | Phase 3 M3.3.1 | 远程瘦客户端与 REST API——服务端 API 层 + `dtw` 瘦客户端 | 第一轮之后 |
 | Phase 2 M2.7 | 每日评审统计报告——定时飞书推送，运营可观测性 | Phase 3 第一轮之后或并行 |
-| Phase 3 第二轮 | Issue 自动修复与 PR 创建——引入写操作，需第一轮验证分析质量后启动 | M3.3.1 之后 |
-| Phase 4 | 测试补全——补足质量基础，为 Phase 5 做准备 | Phase 3 之后 |
+| Phase 3 第二轮 | Issue 自动修复与 PR 创建——引入写操作 + 执行镜像，需第一轮验证分析质量后启动 | M3.3.1 之后 |
+| Phase 4 第一轮 | 手动触发测试生成——复用执行镜像 + PR 创建能力 | Phase 3 第二轮之后 |
+| Phase 4 第二轮 | 变更驱动测试——PR 合并后自动补测试 | Phase 4 第一轮之后 |
 | Phase 5 | E2E 测试——最复杂，依赖前面所有基础 | 最后实施 |
 
 ---
@@ -651,3 +738,4 @@ Phase 1 (基础设施)
 - **Gitea Actions 集成**：将部分流程迁移到 Gitea Actions 中运行
 - **更多通知渠道**：企业微信 / 钉钉集成；飞书应用机器人升级（个人消息 / @用户 / 卡片回调，Webhook 模式已在 M2.6 实现）
 - **自适应评审**：根据历史评审数据自动调整评审严格度
+- **定时测试补全外置调度**：通过 DTWorkflow REST API（`/api/v1/gen-tests`）由外部调度器（如上层应用或 cron）触发周期性测试补全扫描，DTWorkflow 专注执行而非调度
