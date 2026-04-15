@@ -82,7 +82,7 @@ api:
 
 # 通知配置（路由配置驱动）
 # 说明：
-# - default_channel 必须配置且已启用（当前版本仅支持 gitea 渠道）。
+# - default_channel 必须配置且已启用（当前版本支持 gitea / feishu 渠道）。
 # - routes 用于按 repo / event 将通知发送到一个或多个渠道。
 notify:
   default_channel: "gitea"

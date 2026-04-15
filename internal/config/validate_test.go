@@ -750,6 +750,50 @@ func TestValidate_FeishuMissingWebhookURL(t *testing.T) {
 	}
 }
 
+func TestValidate_FeishuChannelAllowsRepoOverrideWithoutGlobalWebhook(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["feishu"] = ChannelConfig{
+		Enabled: true,
+		Options: map[string]string{},
+	}
+	cfg.Repos = []RepoConfig{{
+		Name: "acme/repo",
+		Notify: &NotifyOverride{
+			Routes: []RouteConfig{{Repo: "acme/repo", Channels: []string{"feishu"}}},
+			Feishu: &FeishuOverride{
+				WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
+			},
+		},
+	}}
+
+	err := Validate(cfg)
+	if err != nil {
+		t.Fatalf("仅仓库级飞书覆盖使用 feishu 时应允许缺少全局 webhook_url，但返回: %v", err)
+	}
+}
+
+func TestValidate_RepoFeishuRouteRequiresWebhookSource(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Notify.Channels["feishu"] = ChannelConfig{
+		Enabled: true,
+		Options: map[string]string{},
+	}
+	cfg.Repos = []RepoConfig{{
+		Name: "acme/repo",
+		Notify: &NotifyOverride{
+			Routes: []RouteConfig{{Repo: "acme/repo", Channels: []string{"feishu"}}},
+		},
+	}}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("仓库级 route 使用 feishu 且无全局/仓库 webhook 时应报错")
+	}
+	if !strings.Contains(err.Error(), "notify.channels.feishu.webhook_url") {
+		t.Errorf("错误应包含 notify.channels.feishu.webhook_url，得到: %v", err)
+	}
+}
+
 func TestValidate_FeishuInvalidWebhookURL(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.Notify.Channels["feishu"] = ChannelConfig{
@@ -1039,6 +1083,26 @@ func TestValidate_RepoFeishuOverride(t *testing.T) {
 		}}
 		if err := Validate(cfg); err != nil {
 			t.Fatalf("无 secret 应合法: %v", err)
+		}
+	})
+
+	t.Run("仅仓库级覆盖使用 feishu 时允许全局 webhook_url 为空", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Notify.Channels["feishu"] = ChannelConfig{
+			Enabled: true,
+			Options: map[string]string{},
+		}
+		cfg.Repos = []RepoConfig{{
+			Name: "acme/repo",
+			Notify: &NotifyOverride{
+				Routes: []RouteConfig{{Repo: "acme/repo", Channels: []string{"feishu"}}},
+				Feishu: &FeishuOverride{
+					WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
+				},
+			},
+		}}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("仅仓库级覆盖使用 feishu 时应允许缺少全局 webhook: %v", err)
 		}
 	})
 

@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
@@ -194,6 +196,53 @@ func TestBuildNotifier_FeishuOnlyConfig(t *testing.T) {
 	}
 }
 
+func TestBuildNotifier_RepoFeishuOverrideWithoutGlobalWebhook(t *testing.T) {
+	repoCalled := make(chan struct{}, 1)
+	repoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		repoCalled <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer repoServer.Close()
+
+	cfg := &config.Config{
+		Notify: config.NotifyConfig{
+			DefaultChannel: "",
+			Channels: map[string]config.ChannelConfig{
+				"feishu": {Enabled: true, Options: map[string]string{}},
+			},
+		},
+		Repos: []config.RepoConfig{{
+			Name: "acme/repo",
+			Notify: &config.NotifyOverride{
+				Routes: []config.RouteConfig{{Repo: "acme/repo", Events: []string{"*"}, Channels: []string{"feishu"}}},
+				Feishu: &config.FeishuOverride{WebhookURL: repoServer.URL},
+			},
+		}},
+	}
+
+	notifier, err := buildNotifier(cfg, nil)
+	if err != nil {
+		t.Fatalf("buildNotifier(repo override only) error: %v", err)
+	}
+	if notifier == nil {
+		t.Fatal("buildNotifier(repo override only) should return non-nil notifier")
+	}
+
+	err = notifier.Send(context.Background(), notify.Message{
+		EventType: notify.EventPRReviewDone,
+		Target:    notify.Target{Owner: "acme", Repo: "repo", Number: 1, IsPR: true},
+	})
+	if err != nil {
+		t.Fatalf("notifier.Send() error: %v", err)
+	}
+
+	select {
+	case <-repoCalled:
+	default:
+		t.Fatal("expected repo-specific feishu webhook to receive a request")
+	}
+}
+
 func TestConfigDrivenNotifier_ReusesGlobalRouterWithoutRepoOverride(t *testing.T) {
 	cfg := &config.Config{
 		Notify: config.NotifyConfig{
@@ -349,12 +398,31 @@ func TestHasRepoNotifyOverride_NeitherRoutesNorFeishu(t *testing.T) {
 	}
 }
 
-func TestConfigDrivenNotifier_RepoFeishuOverride_UsesRepoRouter(t *testing.T) {
+func TestConfigDrivenNotifier_RepoFeishuOverride_SendUsesRepoWebhook(t *testing.T) {
+	globalCalled := make(chan struct{}, 1)
+	globalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		globalCalled <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer globalServer.Close()
+
+	repoCalled := make(chan struct{}, 1)
+	repoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		repoCalled <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer repoServer.Close()
+
 	cfg := &config.Config{
 		Notify: config.NotifyConfig{
 			DefaultChannel: "feishu",
 			Channels: map[string]config.ChannelConfig{
-				"feishu": {Enabled: true},
+				"feishu": {
+					Enabled: true,
+					Options: map[string]string{
+						"webhook_url": globalServer.URL,
+					},
+				},
 			},
 			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"feishu"}}},
 		},
@@ -362,109 +430,65 @@ func TestConfigDrivenNotifier_RepoFeishuOverride_UsesRepoRouter(t *testing.T) {
 			Name: "acme/repo",
 			Notify: &config.NotifyOverride{
 				Feishu: &config.FeishuOverride{
-					WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo-specific",
+					WebhookURL: repoServer.URL,
 				},
 			},
 		}},
 	}
 
-	n := &configDrivenNotifier{
-		cfg:            cfg,
-		feishuNotifier: noopNotifier{name: "feishu"},
-		logger:         slog.Default(),
-	}
-
-	// 有仓库级飞书覆盖的仓库应该走 per-repo Router
-	r1, err := n.getRouter("acme/repo")
+	notifier, err := buildNotifier(cfg, nil)
 	if err != nil {
-		t.Fatalf("getRouter(acme/repo) error: %v", err)
+		t.Fatalf("buildNotifier(cfg, nil) error: %v", err)
+	}
+	if notifier == nil {
+		t.Fatal("buildNotifier(cfg, nil) should return non-nil notifier")
 	}
 
-	// 无覆盖的仓库应该走全局 Router
-	r2, err := n.getRouter("other/repo")
+	err = notifier.Send(context.Background(), notify.Message{
+		EventType: notify.EventPRReviewDone,
+		Target:    notify.Target{Owner: "acme", Repo: "repo", Number: 1, IsPR: true},
+	})
 	if err != nil {
-		t.Fatalf("getRouter(other/repo) error: %v", err)
+		t.Fatalf("notifier.Send() error: %v", err)
 	}
 
-	// 两者应该是不同的 Router 实例
-	if r1 == r2 {
-		t.Error("有飞书覆盖的仓库应使用独立 Router，但与全局 Router 相同")
+	select {
+	case <-repoCalled:
+	default:
+		t.Fatal("expected repo-specific feishu webhook to receive a request")
 	}
 
-	// per-repo Router 应被缓存
-	if len(n.routers) != 1 {
-		t.Errorf("override routers 数量 = %d, want 1", len(n.routers))
+	select {
+	case <-globalCalled:
+		t.Fatal("global feishu webhook should not be used when repo override exists")
+	default:
 	}
 }
 
-func TestConfigDrivenNotifier_RepoFeishuOverride_NoGlobalFeishu(t *testing.T) {
-	// 仅有仓库级飞书覆盖，全局无飞书 notifier
+func TestHasAnyRepoFeishuOverride(t *testing.T) {
 	cfg := &config.Config{
+		Repos: []config.RepoConfig{{
+			Name: "acme/repo",
+			Notify: &config.NotifyOverride{
+				Feishu: &config.FeishuOverride{WebhookURL: "https://example.com/hook"},
+			},
+		}},
+	}
+
+	if !hasAnyRepoFeishuOverride(cfg) {
+		t.Fatal("expected repo feishu override to be detected")
+	}
+
+	cfg = &config.Config{
 		Notify: config.NotifyConfig{
 			DefaultChannel: "gitea",
 			Channels: map[string]config.ChannelConfig{
-				"gitea":  {Enabled: true},
-				"feishu": {Enabled: true},
+				"feishu": {Enabled: true, Options: map[string]string{}},
 			},
-			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}},
 		},
-		Repos: []config.RepoConfig{{
-			Name: "acme/repo",
-			Notify: &config.NotifyOverride{
-				Feishu: &config.FeishuOverride{
-					WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
-				},
-			},
-		}},
 	}
 
-	n := &configDrivenNotifier{
-		cfg:           cfg,
-		giteaNotifier: noopNotifier{name: "gitea"},
-		logger:        slog.Default(),
-	}
-
-	router, err := n.getRouter("acme/repo")
-	if err != nil {
-		t.Fatalf("getRouter error: %v", err)
-	}
-	if router == nil {
-		t.Fatal("router 不应为 nil")
-	}
-}
-
-func TestConfigDrivenNotifier_RepoFeishuOverride_WithSecret(t *testing.T) {
-	cfg := &config.Config{
-		Notify: config.NotifyConfig{
-			DefaultChannel: "feishu",
-			Channels: map[string]config.ChannelConfig{
-				"feishu": {Enabled: true},
-			},
-			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"feishu"}}},
-		},
-		Repos: []config.RepoConfig{{
-			Name: "acme/repo",
-			Notify: &config.NotifyOverride{
-				Feishu: &config.FeishuOverride{
-					WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
-					Secret:     "repo-secret",
-				},
-			},
-		}},
-	}
-
-	n := &configDrivenNotifier{
-		cfg:            cfg,
-		feishuNotifier: noopNotifier{name: "feishu"},
-		logger:         slog.Default(),
-	}
-
-	// 有 secret 的仓库级覆盖也应正常构造
-	router, err := n.getRouter("acme/repo")
-	if err != nil {
-		t.Fatalf("getRouter error: %v", err)
-	}
-	if router == nil {
-		t.Fatal("router 不应为 nil")
+	if hasAnyRepoFeishuOverride(cfg) {
+		t.Fatal("expected no repo feishu override")
 	}
 }

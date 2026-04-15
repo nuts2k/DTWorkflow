@@ -30,6 +30,24 @@ var validNotifyChannels = map[string]bool{
 	"feishu": true,
 }
 
+func routeConfigsReferenceChannel(routes []RouteConfig, channel string) bool {
+	for _, route := range routes {
+		for _, chName := range route.Channels {
+			if chName == channel {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func usesGlobalFeishuChannel(cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	return cfg.Notify.DefaultChannel == "feishu" || routeConfigsReferenceChannel(cfg.Notify.Routes, "feishu")
+}
+
 // Validate 校验配置的完整性与合法性。
 func Validate(cfg *Config) error {
 	if cfg == nil {
@@ -122,7 +140,7 @@ func Validate(cfg *Config) error {
 		errs = append(errs, fmt.Errorf("log.format 不合法，可选值: text/json，当前值: %q", cfg.Log.Format))
 	}
 
-	// notify.default_channel 必须存在、enabled，且当前版本仅支持 gitea。
+	// notify.default_channel 必须存在、enabled，且当前版本仅支持白名单渠道。
 	if strings.TrimSpace(cfg.Notify.DefaultChannel) == "" {
 		errs = append(errs, fmt.Errorf("notify.default_channel 不能为空"))
 	} else {
@@ -135,7 +153,7 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	// notify.routes 引用的渠道必须已配置，且当前版本仅支持 gitea。
+	// notify.routes 引用的渠道必须已配置，且当前版本仅支持白名单渠道。
 	for i, route := range cfg.Notify.Routes {
 		for _, chName := range route.Channels {
 			if _, ok := cfg.Notify.Channels[chName]; !ok {
@@ -157,7 +175,7 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	// repos[].notify.routes 引用的渠道必须已配置，且当前版本仅支持 gitea。
+	// repos[].notify.routes 引用的渠道必须已配置，且当前版本仅支持白名单渠道。
 	for i, repo := range cfg.Repos {
 		if repo.Notify == nil {
 			continue
@@ -174,6 +192,9 @@ func Validate(cfg *Config) error {
 			}
 		}
 	}
+
+	feishuCfg, feishuConfigured := cfg.Notify.Channels["feishu"]
+	globalFeishuEnabled := feishuConfigured && feishuCfg.Enabled
 
 	// 仓库级飞书覆盖校验
 	for _, repo := range cfg.Repos {
@@ -197,17 +218,29 @@ func Validate(cfg *Config) error {
 		}
 
 		// 全局飞书渠道必须已启用
-		if feishuCfg, ok := cfg.Notify.Channels["feishu"]; !ok || !feishuCfg.Enabled {
+		if !globalFeishuEnabled {
 			errs = append(errs, fmt.Errorf(
 				"repos[%s].notify.feishu: 全局飞书渠道未启用，仓库级覆盖无效", repo.Name))
 		}
 	}
 
-	// 飞书渠道专属校验：启用时 webhook_url 必填且格式合法
-	if feishuCfg, ok := cfg.Notify.Channels["feishu"]; ok && feishuCfg.Enabled {
-		webhookURL := feishuCfg.Options[FeishuOptionWebhookURL]
-		if strings.TrimSpace(webhookURL) == "" {
-			errs = append(errs, fmt.Errorf("notify.channels.feishu 已启用但未配置 webhook_url"))
+	// 飞书渠道专属校验：
+	// 1) 仅当全局 default_channel / routes 实际会使用全局飞书时，才强制全局 webhook_url 必填
+	// 2) repo.notify.routes 若引用 feishu 且未配置 repo.notify.feishu，也必须提供全局 webhook_url
+	if globalFeishuEnabled {
+		webhookURL := strings.TrimSpace(feishuCfg.Options[FeishuOptionWebhookURL])
+		if webhookURL == "" {
+			if usesGlobalFeishuChannel(cfg) {
+				errs = append(errs, fmt.Errorf("notify.channels.feishu 已启用且被全局 default_channel/routes 使用，但未配置 webhook_url"))
+			}
+			for i, repo := range cfg.Repos {
+				if repo.Notify == nil || repo.Notify.Routes == nil || repo.Notify.Feishu != nil {
+					continue
+				}
+				if routeConfigsReferenceChannel(repo.Notify.Routes, "feishu") {
+					errs = append(errs, fmt.Errorf("repos[%d].notify.routes 引用了 feishu 渠道，但既未配置 repos[%d].notify.feishu，也未配置全局 notify.channels.feishu.webhook_url", i, i))
+				}
+			}
 		} else if u, err := url.Parse(webhookURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, fmt.Errorf("notify.channels.feishu.webhook_url 格式无效，需以 http:// 或 https:// 开头: %q", webhookURL))
 		}

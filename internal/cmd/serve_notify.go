@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
@@ -153,6 +154,18 @@ func (n *configDrivenNotifier) newRouter(repoFullName string) (*notify.Router, e
 	return router, nil
 }
 
+func hasAnyRepoFeishuOverride(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Notify != nil && repo.Notify.Feishu != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNotifier, error) {
 	if cfg == nil {
 		return nil, nil
@@ -162,8 +175,9 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 	feishuCfg, feishuEnabled := cfg.Notify.Channels["feishu"]
 	feishuEnabled = feishuEnabled && feishuCfg.Enabled
 	giteaEnabled = giteaEnabled && giteaCh.Enabled
+	repoFeishuOverrideEnabled := feishuEnabled && hasAnyRepoFeishuOverride(cfg)
 
-	if !giteaEnabled && !feishuEnabled {
+	if !giteaEnabled && !feishuEnabled && !repoFeishuOverrideEnabled {
 		return nil, nil
 	}
 
@@ -179,20 +193,22 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 	// 按配置构造飞书通知器（可选）
 	var feishuNotifier notify.Notifier
 	if feishuEnabled {
-		webhookURL := feishuCfg.Options[config.FeishuOptionWebhookURL]
-		var feishuOpts []notify.FeishuOption
-		if secret := feishuCfg.Options[config.FeishuOptionSecret]; secret != "" {
-			feishuOpts = append(feishuOpts, notify.WithFeishuSecret(secret))
+		webhookURL := strings.TrimSpace(feishuCfg.Options[config.FeishuOptionWebhookURL])
+		if webhookURL != "" {
+			var feishuOpts []notify.FeishuOption
+			if secret := feishuCfg.Options[config.FeishuOptionSecret]; secret != "" {
+				feishuOpts = append(feishuOpts, notify.WithFeishuSecret(secret))
+			}
+			feishuOpts = append(feishuOpts, notify.WithFeishuLogger(slog.Default()))
+			fn, err := notify.NewFeishuNotifier(webhookURL, feishuOpts...)
+			if err != nil {
+				return nil, fmt.Errorf("构造 FeishuNotifier 失败: %w", err)
+			}
+			feishuNotifier = fn
 		}
-		feishuOpts = append(feishuOpts, notify.WithFeishuLogger(slog.Default()))
-		fn, err := notify.NewFeishuNotifier(webhookURL, feishuOpts...)
-		if err != nil {
-			return nil, fmt.Errorf("构造 FeishuNotifier 失败: %w", err)
-		}
-		feishuNotifier = fn
 	}
 
-	if giteaNotifier == nil && feishuNotifier == nil {
+	if giteaNotifier == nil && feishuNotifier == nil && !repoFeishuOverrideEnabled {
 		return nil, nil
 	}
 
