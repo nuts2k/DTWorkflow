@@ -128,7 +128,21 @@ func (n *configDrivenNotifier) newRouter(repoFullName string) (*notify.Router, e
 	if n.giteaNotifier != nil {
 		opts = append(opts, notify.WithNotifier(n.giteaNotifier))
 	}
-	if n.feishuNotifier != nil {
+
+	// 仓库级飞书覆盖：构造专属 FeishuNotifier
+	if override := n.cfg.ResolveFeishuOverride(repoFullName); override != nil {
+		var feishuOpts []notify.FeishuOption
+		if override.Secret != "" {
+			feishuOpts = append(feishuOpts, notify.WithFeishuSecret(override.Secret))
+		}
+		feishuOpts = append(feishuOpts, notify.WithFeishuLogger(n.logger))
+		fn, err := notify.NewFeishuNotifier(override.WebhookURL, feishuOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("构造仓库 %s 飞书通知器失败: %w", repoFullName, err)
+		}
+		opts = append(opts, notify.WithNotifier(fn))
+	} else if n.feishuNotifier != nil {
+		// 无覆盖，使用全局
 		opts = append(opts, notify.WithNotifier(n.feishuNotifier))
 	}
 

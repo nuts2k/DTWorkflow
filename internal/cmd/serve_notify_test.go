@@ -348,3 +348,123 @@ func TestHasRepoNotifyOverride_NeitherRoutesNorFeishu(t *testing.T) {
 		t.Error("Routes 和 Feishu 都为 nil 时应返回 false")
 	}
 }
+
+func TestConfigDrivenNotifier_RepoFeishuOverride_UsesRepoRouter(t *testing.T) {
+	cfg := &config.Config{
+		Notify: config.NotifyConfig{
+			DefaultChannel: "feishu",
+			Channels: map[string]config.ChannelConfig{
+				"feishu": {Enabled: true},
+			},
+			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"feishu"}}},
+		},
+		Repos: []config.RepoConfig{{
+			Name: "acme/repo",
+			Notify: &config.NotifyOverride{
+				Feishu: &config.FeishuOverride{
+					WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo-specific",
+				},
+			},
+		}},
+	}
+
+	n := &configDrivenNotifier{
+		cfg:            cfg,
+		feishuNotifier: noopNotifier{name: "feishu"},
+		logger:         slog.Default(),
+	}
+
+	// 有仓库级飞书覆盖的仓库应该走 per-repo Router
+	r1, err := n.getRouter("acme/repo")
+	if err != nil {
+		t.Fatalf("getRouter(acme/repo) error: %v", err)
+	}
+
+	// 无覆盖的仓库应该走全局 Router
+	r2, err := n.getRouter("other/repo")
+	if err != nil {
+		t.Fatalf("getRouter(other/repo) error: %v", err)
+	}
+
+	// 两者应该是不同的 Router 实例
+	if r1 == r2 {
+		t.Error("有飞书覆盖的仓库应使用独立 Router，但与全局 Router 相同")
+	}
+
+	// per-repo Router 应被缓存
+	if len(n.routers) != 1 {
+		t.Errorf("override routers 数量 = %d, want 1", len(n.routers))
+	}
+}
+
+func TestConfigDrivenNotifier_RepoFeishuOverride_NoGlobalFeishu(t *testing.T) {
+	// 仅有仓库级飞书覆盖，全局无飞书 notifier
+	cfg := &config.Config{
+		Notify: config.NotifyConfig{
+			DefaultChannel: "gitea",
+			Channels: map[string]config.ChannelConfig{
+				"gitea":  {Enabled: true},
+				"feishu": {Enabled: true},
+			},
+			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}},
+		},
+		Repos: []config.RepoConfig{{
+			Name: "acme/repo",
+			Notify: &config.NotifyOverride{
+				Feishu: &config.FeishuOverride{
+					WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
+				},
+			},
+		}},
+	}
+
+	n := &configDrivenNotifier{
+		cfg:           cfg,
+		giteaNotifier: noopNotifier{name: "gitea"},
+		logger:        slog.Default(),
+	}
+
+	router, err := n.getRouter("acme/repo")
+	if err != nil {
+		t.Fatalf("getRouter error: %v", err)
+	}
+	if router == nil {
+		t.Fatal("router 不应为 nil")
+	}
+}
+
+func TestConfigDrivenNotifier_RepoFeishuOverride_WithSecret(t *testing.T) {
+	cfg := &config.Config{
+		Notify: config.NotifyConfig{
+			DefaultChannel: "feishu",
+			Channels: map[string]config.ChannelConfig{
+				"feishu": {Enabled: true},
+			},
+			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"feishu"}}},
+		},
+		Repos: []config.RepoConfig{{
+			Name: "acme/repo",
+			Notify: &config.NotifyOverride{
+				Feishu: &config.FeishuOverride{
+					WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
+					Secret:     "repo-secret",
+				},
+			},
+		}},
+	}
+
+	n := &configDrivenNotifier{
+		cfg:            cfg,
+		feishuNotifier: noopNotifier{name: "feishu"},
+		logger:         slog.Default(),
+	}
+
+	// 有 secret 的仓库级覆盖也应正常构造
+	router, err := n.getRouter("acme/repo")
+	if err != nil {
+		t.Fatalf("getRouter error: %v", err)
+	}
+	if router == nil {
+		t.Fatal("router 不应为 nil")
+	}
+}
