@@ -926,3 +926,138 @@ func TestValidate_APITokens(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_RepoFeishuOverride(t *testing.T) {
+	// 辅助函数：构造启用了全局飞书渠道的基础配置
+	feishuBaseConfig := func() *Config {
+		cfg := validBaseConfig()
+		cfg.Notify.Channels["feishu"] = ChannelConfig{
+			Enabled: true,
+			Options: map[string]string{
+				"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/global",
+			},
+		}
+		return cfg
+	}
+
+	t.Run("合法仓库级飞书覆盖通过", func(t *testing.T) {
+		cfg := feishuBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name: "acme/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{
+				WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
+				Secret:     "repo-secret",
+			}},
+		}}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("合法仓库级飞书覆盖应通过: %v", err)
+		}
+	})
+
+	t.Run("webhook_url 为空报错", func(t *testing.T) {
+		cfg := feishuBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{WebhookURL: ""}},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("空 webhook_url 应报错")
+		}
+		if !strings.Contains(err.Error(), "webhook_url") {
+			t.Errorf("错误应包含 webhook_url: %v", err)
+		}
+	})
+
+	t.Run("webhook_url 仅空白报错", func(t *testing.T) {
+		cfg := feishuBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{WebhookURL: "   "}},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仅空白 webhook_url 应报错")
+		}
+	})
+
+	t.Run("webhook_url 格式无效报错", func(t *testing.T) {
+		cfg := feishuBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{WebhookURL: "not-a-url"}},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("无效 webhook_url 格式应报错")
+		}
+		if !strings.Contains(err.Error(), "格式无效") {
+			t.Errorf("错误应包含 '格式无效': %v", err)
+		}
+	})
+
+	t.Run("全局飞书渠道未启用时报错", func(t *testing.T) {
+		cfg := validBaseConfig() // 全局无飞书渠道
+		cfg.Repos = []RepoConfig{{
+			Name: "acme/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{
+				WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
+			}},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("全局飞书未启用时仓库级覆盖应报错")
+		}
+		if !strings.Contains(err.Error(), "全局飞书渠道未启用") {
+			t.Errorf("错误应包含 '全局飞书渠道未启用': %v", err)
+		}
+	})
+
+	t.Run("全局飞书 disabled 时报错", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Notify.Channels["feishu"] = ChannelConfig{Enabled: false}
+		cfg.Repos = []RepoConfig{{
+			Name: "acme/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{
+				WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
+			}},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("全局飞书 disabled 时仓库级覆盖应报错")
+		}
+	})
+
+	t.Run("无 secret 合法（不强制）", func(t *testing.T) {
+		cfg := feishuBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name: "acme/repo",
+			Notify: &NotifyOverride{Feishu: &FeishuOverride{
+				WebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/repo",
+				Secret:     "",
+			}},
+		}}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("无 secret 应合法: %v", err)
+		}
+	})
+
+	t.Run("Feishu 为 nil 不校验", func(t *testing.T) {
+		cfg := feishuBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:   "acme/repo",
+			Notify: &NotifyOverride{Routes: []RouteConfig{{Repo: "*", Channels: []string{"gitea"}}}},
+		}}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("Feishu nil 不应校验: %v", err)
+		}
+	})
+
+	t.Run("Notify 为 nil 不校验", func(t *testing.T) {
+		cfg := feishuBaseConfig()
+		cfg.Repos = []RepoConfig{{Name: "acme/repo", Notify: nil}}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("Notify nil 不应校验: %v", err)
+		}
+	})
+}

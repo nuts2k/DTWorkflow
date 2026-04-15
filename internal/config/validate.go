@@ -175,6 +175,34 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	// 仓库级飞书覆盖校验
+	for _, repo := range cfg.Repos {
+		if repo.Notify == nil || repo.Notify.Feishu == nil {
+			continue
+		}
+		f := repo.Notify.Feishu
+
+		// webhook_url 必填
+		if strings.TrimSpace(f.WebhookURL) == "" {
+			errs = append(errs, fmt.Errorf(
+				"repos[%s].notify.feishu: webhook_url 不能为空", repo.Name))
+			continue
+		}
+
+		// webhook_url 格式校验
+		if u, err := url.Parse(f.WebhookURL); err != nil ||
+			(u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf(
+				"repos[%s].notify.feishu.webhook_url 格式无效", repo.Name))
+		}
+
+		// 全局飞书渠道必须已启用
+		if feishuCfg, ok := cfg.Notify.Channels["feishu"]; !ok || !feishuCfg.Enabled {
+			errs = append(errs, fmt.Errorf(
+				"repos[%s].notify.feishu: 全局飞书渠道未启用，仓库级覆盖无效", repo.Name))
+		}
+	}
+
 	// 飞书渠道专属校验：启用时 webhook_url 必填且格式合法
 	if feishuCfg, ok := cfg.Notify.Channels["feishu"]; ok && feishuCfg.Enabled {
 		webhookURL := feishuCfg.Options[FeishuOptionWebhookURL]
