@@ -301,3 +301,50 @@ func TestConfigDrivenNotifier_CachesOnlyRepoOverrides(t *testing.T) {
 		t.Fatal("expected globalRouter to remain nil when only override repo was requested")
 	}
 }
+
+func TestHasRepoNotifyOverride_FeishuOnly(t *testing.T) {
+	cfg := &config.Config{
+		Repos: []config.RepoConfig{{
+			Name: "acme/repo",
+			Notify: &config.NotifyOverride{
+				Feishu: &config.FeishuOverride{WebhookURL: "https://example.com/hook"},
+			},
+		}},
+	}
+	n := &configDrivenNotifier{cfg: cfg}
+
+	if !n.hasRepoNotifyOverride("acme/repo") {
+		t.Error("仅配置 Feishu 覆盖时应返回 true")
+	}
+}
+
+func TestHasRepoNotifyOverride_BothRoutesAndFeishu(t *testing.T) {
+	cfg := &config.Config{
+		Repos: []config.RepoConfig{{
+			Name: "acme/repo",
+			Notify: &config.NotifyOverride{
+				Routes: []config.RouteConfig{{Repo: "*"}},
+				Feishu: &config.FeishuOverride{WebhookURL: "https://example.com/hook"},
+			},
+		}},
+	}
+	n := &configDrivenNotifier{cfg: cfg}
+
+	if !n.hasRepoNotifyOverride("acme/repo") {
+		t.Error("Routes 和 Feishu 都配置时应返回 true")
+	}
+}
+
+func TestHasRepoNotifyOverride_NeitherRoutesNorFeishu(t *testing.T) {
+	cfg := &config.Config{
+		Repos: []config.RepoConfig{{
+			Name:   "acme/repo",
+			Notify: &config.NotifyOverride{},
+		}},
+	}
+	n := &configDrivenNotifier{cfg: cfg}
+
+	if n.hasRepoNotifyOverride("acme/repo") {
+		t.Error("Routes 和 Feishu 都为 nil 时应返回 false")
+	}
+}

@@ -108,7 +108,8 @@ func (n *configDrivenNotifier) hasRepoNotifyOverride(repoFullName string) bool {
 		return false
 	}
 	for _, repo := range n.cfg.Repos {
-		if repo.Name == repoFullName && repo.Notify != nil && repo.Notify.Routes != nil {
+		if repo.Name == repoFullName && repo.Notify != nil &&
+			(repo.Notify.Routes != nil || repo.Notify.Feishu != nil) {
 			return true
 		}
 	}
