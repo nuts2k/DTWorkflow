@@ -31,6 +31,13 @@ func TestConstants(t *testing.T) {
 	}
 }
 
+func TestTaskTypeToAsynq_AnalyzeIssue(t *testing.T) {
+	got := taskTypeToAsynq(model.TaskTypeAnalyzeIssue)
+	if got != AsynqTypeAnalyzeIssue {
+		t.Errorf("taskTypeToAsynq(AnalyzeIssue) = %q, 期望 %q", got, AsynqTypeAnalyzeIssue)
+	}
+}
+
 // TestTaskTypeToAsynq 验证 model.TaskType 到 asynq 任务类型的映射
 func TestTaskTypeToAsynq(t *testing.T) {
 	tests := []struct {
