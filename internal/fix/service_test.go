@@ -1055,6 +1055,82 @@ func TestExecute_RefCommentWritebackFailure_StillReturnsError(t *testing.T) {
 	}
 }
 
+// stubFixStaleChecker 返回预设的 TaskRecord
+type stubFixStaleChecker struct {
+	record *model.TaskRecord
+	err    error
+}
+
+func (s *stubFixStaleChecker) GetLatestAnalysisByIssue(_ context.Context, _ string, _ int64) (*model.TaskRecord, error) {
+	return s.record, s.err
+}
+
+func TestCheckPreviousAnalysis_NoPreviousAnalysis(t *testing.T) {
+	s := &Service{staleChecker: &stubFixStaleChecker{}, logger: slog.Default()}
+	sufficient, err := s.checkPreviousAnalysis(context.Background(), "o/r", 15)
+	if err != nil {
+		t.Fatalf("无前序分析应返回 nil error, got %v", err)
+	}
+	if !sufficient {
+		t.Error("无前序分析应视为充分（不阻拦，让 Claude 隐式分析）")
+	}
+}
+
+func TestCheckPreviousAnalysis_InfoInsufficient(t *testing.T) {
+	rawResult := `{"type":"result","result":"{\"info_sufficient\":false,\"missing_info\":[\"缺少堆栈\"],\"analysis\":\"x\",\"confidence\":\"low\"}"}`
+	rec := &model.TaskRecord{
+		ID:       "a-1",
+		TaskType: model.TaskTypeAnalyzeIssue,
+		Result:   rawResult,
+	}
+	s := &Service{staleChecker: &stubFixStaleChecker{record: rec}, logger: slog.Default()}
+	sufficient, err := s.checkPreviousAnalysis(context.Background(), "o/r", 15)
+	if err != nil {
+		t.Fatalf("error 应为 nil, got %v", err)
+	}
+	if sufficient {
+		t.Error("info_sufficient=false 应视为不充分（阻断）")
+	}
+}
+
+func TestCheckPreviousAnalysis_InfoSufficient(t *testing.T) {
+	rawResult := `{"type":"result","result":"{\"info_sufficient\":true,\"analysis\":\"x\",\"confidence\":\"high\"}"}`
+	rec := &model.TaskRecord{
+		ID:       "a-1",
+		TaskType: model.TaskTypeAnalyzeIssue,
+		Result:   rawResult,
+	}
+	s := &Service{staleChecker: &stubFixStaleChecker{record: rec}, logger: slog.Default()}
+	sufficient, err := s.checkPreviousAnalysis(context.Background(), "o/r", 15)
+	if err != nil || !sufficient {
+		t.Errorf("info_sufficient=true 时应放行: sufficient=%v err=%v", sufficient, err)
+	}
+}
+
+func TestCheckPreviousAnalysis_ParseError_FailOpen(t *testing.T) {
+	rec := &model.TaskRecord{
+		ID:       "a-1",
+		TaskType: model.TaskTypeAnalyzeIssue,
+		Result:   `不是 JSON`,
+	}
+	s := &Service{staleChecker: &stubFixStaleChecker{record: rec}, logger: slog.Default()}
+	sufficient, err := s.checkPreviousAnalysis(context.Background(), "o/r", 15)
+	if err != nil {
+		t.Fatalf("解析失败应 fail-open, got err %v", err)
+	}
+	if !sufficient {
+		t.Error("解析失败应放行（fail-open），不误阻断")
+	}
+}
+
+func TestCheckPreviousAnalysis_NoStaleCheckerInjected(t *testing.T) {
+	s := &Service{staleChecker: nil, logger: slog.Default()}
+	sufficient, err := s.checkPreviousAnalysis(context.Background(), "o/r", 15)
+	if err != nil || !sufficient {
+		t.Errorf("未注入 staleChecker 应放行: sufficient=%v err=%v", sufficient, err)
+	}
+}
+
 func TestService_ParseFixResult_Success(t *testing.T) {
 	envelope := `{"type":"result","subtype":"success","duration_ms":12000,"total_cost_usd":0.05,"is_error":false,"num_turns":8,"result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc123\",\"modified_files\":[\"a.java\"],\"test_results\":{\"passed\":5,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"x\",\"fix_approach\":\"y\"}","session_id":"s1"}`
 	s := &Service{}

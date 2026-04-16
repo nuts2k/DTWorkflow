@@ -371,6 +371,67 @@ func (s *Service) validateRef(ctx context.Context, owner, repo, ref string) (Ref
 	return RefKindUnknown, ErrInvalidIssueRef
 }
 
+// checkPreviousAnalysis M3.5: 查询最新 analyze_issue 结果，判断信息是否充分。
+// 返回 (true, nil) 表示可继续修复；(false, nil) 表示前序分析明确标记为信息不足。
+// 错误和解析失败一律 fail-open（返回 true），避免因辅助检查失败而阻断主流程。
+func (s *Service) checkPreviousAnalysis(ctx context.Context, repoFullName string, issueNumber int64) (bool, error) {
+	if s.staleChecker == nil {
+		return true, nil // 未注入时跳过检查
+	}
+	rec, err := s.staleChecker.GetLatestAnalysisByIssue(ctx, repoFullName, issueNumber)
+	if err != nil {
+		s.logger.WarnContext(ctx, "查询前序分析失败，fail-open 继续修复",
+			"repo", repoFullName, "issue", issueNumber, "error", err)
+		return true, nil
+	}
+	if rec == nil || rec.Result == "" {
+		return true, nil // 无前序分析，放行
+	}
+	// 解析 rec.Result：外层 CLI 信封 → 内层 AnalysisOutput
+	var cliResp CLIResponse
+	if err := json.Unmarshal([]byte(rec.Result), &cliResp); err != nil {
+		s.logger.WarnContext(ctx, "前序分析 CLI 信封解析失败，fail-open",
+			"task_id", rec.ID, "error", err)
+		return true, nil
+	}
+	if cliResp.IsExecutionError() {
+		return true, nil // 前序分析本身就失败，无有效结论，放行让 Claude 重新分析
+	}
+	var analysis AnalysisOutput
+	if err := json.Unmarshal([]byte(extractJSON(cliResp.Result)), &analysis); err != nil {
+		s.logger.WarnContext(ctx, "前序分析内层 JSON 解析失败，fail-open",
+			"task_id", rec.ID, "error", err)
+		return true, nil
+	}
+	if !analysis.InfoSufficient {
+		s.logger.InfoContext(ctx, "前序分析标记为信息不足，阻断修复",
+			"task_id", rec.ID, "missing_info", analysis.MissingInfo)
+		return false, nil
+	}
+	return true, nil
+}
+
+// latestMissingInfo 读取最新分析的 missing_info 列表，用于生成"信息不足"评论。
+// 解析失败时返回 nil。
+func (s *Service) latestMissingInfo(ctx context.Context, repoFullName string, issueNumber int64) []string {
+	if s.staleChecker == nil {
+		return nil
+	}
+	rec, err := s.staleChecker.GetLatestAnalysisByIssue(ctx, repoFullName, issueNumber)
+	if err != nil || rec == nil {
+		return nil
+	}
+	var cliResp CLIResponse
+	if err := json.Unmarshal([]byte(rec.Result), &cliResp); err != nil {
+		return nil
+	}
+	var analysis AnalysisOutput
+	if err := json.Unmarshal([]byte(extractJSON(cliResp.Result)), &analysis); err != nil {
+		return nil
+	}
+	return analysis.MissingInfo
+}
+
 func (s *Service) commentRefMissing(ctx context.Context, owner, repo string, issueNum int64) error {
 	body := "⚠️ 该 Issue 未设置关联分支，无法确定分析目标。\n\n请在 Issue 右侧边栏「Ref」处指定目标分支或 tag，然后重新添加 `auto-fix` 标签以触发分析。"
 	if _, _, err := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
