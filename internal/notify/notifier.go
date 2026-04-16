@@ -14,8 +14,10 @@ const (
 	EventFixPRCreated      EventType = "fix.pr.created"
 	EventE2ETestFailed     EventType = "e2e.test.failed"
 	EventPRReviewStarted EventType = "pr.review.started"
-	EventIssueFixStarted EventType = "issue.fix.started"
-	EventSystemError       EventType = "system.error"
+	EventIssueFixStarted    EventType = "issue.fix.started"
+	EventIssueAnalyzeStarted EventType = "issue.analyze.started"  // M3.4
+	EventIssueAnalyzeDone    EventType = "issue.analyze.done"     // M3.4
+	EventSystemError         EventType = "system.error"
 )
 
 // Metadata key 常量，用于 Message.Metadata 的键名，确保生产端和消费端类型安全。
