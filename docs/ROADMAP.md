@@ -352,14 +352,18 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 ### 关键设计决策
 
-> 以下决策在 2026-04-02 brainstorming 中确认，指导后续设计与实施。
+> 决策 1-6 在 2026-04-02 brainstorming 中确认；决策 7-10 在 2026-04-16 brainstorming 中确认（M3.4/M3.5 设计评审）。
 
 1. **两轮迭代策略**：第一轮（M3.1-M3.3）只做分析与定位，容器只读模式（安全模型同 Phase 2）；第二轮（M3.4-M3.5）才引入写操作（代码修改、push、PR 创建）。第一轮独立交付价值：根因分析报告本身即可帮助开发者快速定位和修复问题。
 2. **PR 创建策略（混合模式）**：容器内完成代码修改 + commit + `git push`（Claude Code 核心能力），容器外由 `fix.Service` 通过 Gitea API 创建 PR（结构化操作更可控：描述模板、Issue 关联、标签管理）。仅需保留 Git push 凭证，不需要给容器 Gitea API Token。
-3. **Git 凭证管理（credential helper 缓存）**：entrypoint.sh 在 clone 前配置 `git config --global credential.helper store`，clone 过程自动写入 `.git-credentials` 文件；clone 完成后照常清除 `GITEA_URL` / `REPO_CLONE_URL` 环境变量。凭证仅对 git 命令可用，不像环境变量对所有进程可见，攻击面更小。（仅第二轮 M3.4 需要，第一轮容器无需 push 权限。）
+3. **Git 凭证管理（credential helper cache）**：entrypoint.sh 修复模式使用 `credential.helper cache --timeout=3600`（内存模式，非文件持久化），clone 过程自动缓存凭证到 cache daemon；clone 完成后照常清除环境变量。已接受风险：Claude 拥有 Bash 执行能力，理论上可通过 `git credential fill` 从 cache daemon 提取凭证；缓解措施：建议为修复任务配置专用受限 Gitea Token（仅目标仓库 push 权限）。（仅第二轮 M3.4 需要，第一轮容器无需 push 权限。）
 4. **信息充分性判断（MVP 简化）**：不实现自动监听 Issue 新评论恢复分析的状态机。Claude 直接在分析 prompt 中判断信息是否充分，不充分时在 Issue 评论中报告"信息不足"并列出需补充内容；用户补充后移除再添加 `auto-fix` 标签即可重新触发。后续可平滑升级为自动监听恢复，无架构返工。
 5. **修复 PR 自动评审（天然复用）**：`fix.Service` 通过 Gitea API 创建 PR 后，Gitea 发出 PR created Webhook，Phase 2 评审流程自然触发。auto-fix PR 与人工 PR 完全一视同仁，不做特殊处理。不存在无限循环风险（评审只产生 comment，不会再触发 fix）。无需额外代码。
 6. **Ref 关联机制（分支/tag 基线选择）**：Issue 的 Ref 字段（Gitea 右侧边栏）用于指定代码基线。Ref 为空时回复提醒用户设置；Ref 无效（分支和 tag 均不存在）时回复错误提醒；两者均为确定性失败，跳过重试。Ref 有效时，容器 `ISSUE_REF` 环境变量注入 + entrypoint checkout，prompt 注入 ref 上下文信息。优先使用 Gitea API 返回的最新 `Issue.Ref`，fallback 到入队时 payload 快照值。
+7. **标签触发机制（两标签分离）**：`auto-fix` 标签触发分析（`TaskTypeAnalyzeIssue`），`fix-to-pr` 标签触发修复（`TaskTypeFixIssue`）。两标签并存时 `fix-to-pr` 优先。无前序分析时 Claude 在修复容器中隐式分析；前序分析"信息不足"时系统查 DB 前置检查并提醒用户。
+8. **TaskType 拆分**：将现有 `TaskTypeFixIssue`（实际做分析）拆分为 `TaskTypeAnalyzeIssue`（分析）+ `TaskTypeFixIssue`（修复），修正语义。镜像选择、超时配置、通知路由均以 TaskType 为路由依据。历史数据库记录不回填。
+9. **单容器全托管执行模型**：修复流程在一次容器调用中完成全部操作（分析→修复→测试→commit→push），不拆分为多容器步骤。Claude Code CLI 核心优势是自主探索和迭代，保持上下文连续性效率最高。
+10. **里程碑按层切分**：M3.4 = 纯基础设施（镜像、Pool、TaskType、entrypoint、Webhook），M3.5 = 纯业务逻辑（Prompt、容器执行、PR 创建、通知）。
 
 ### 已有基础设施（Phase 1/2 已搭建）
 
@@ -465,32 +469,82 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 #### 第二轮：自动修复与 PR 创建（后续迭代）
 
-> 引入容器写权限，需修改 entrypoint.sh 和容器安全配置。依赖第一轮分析能力验证后启动。
+> 引入容器写权限，按层切分为 M3.4（基础设施）和 M3.5（业务逻辑）。依赖第一轮分析能力验证后启动。
+> 详细设计见 `docs/superpowers/specs/2026-04-16-m3.4-m3.5-fix-execution-design.md`。
 
-##### M3.4 容器写权限适配与修复执行
-- [ ] **两级镜像策略引入**（Phase 4 复用的基础设施）：
-  - 新建 `Dockerfile.worker-full`（执行镜像）：在现有分析镜像基础上叠加 JDK + Maven/Gradle
-  - 两级镜像共享 Node.js + Claude CLI 基础层，Docker 缓存友好
-  - Worker 池多镜像选择：根据任务类型自动选用分析镜像（review_pr、fix_issue 分析）或执行镜像（fix_issue 修复、gen_tests）
-- [ ] entrypoint.sh 适配 fix_issue 任务类型：
-  - checkout 默认分支（非 PR 分支）
-  - 配置 `git config --global credential.helper store`（clone 时自动缓存凭证）
-  - clone 完成后照常清除环境变量（凭证已在 `.git-credentials` 文件中）
-- [ ] 修复 prompt 设计：基于第一轮分析结果，指导 Claude Code 执行修复
-  - 从默认分支创建修复分支（命名规范：`auto-fix/issue-{id}`）
-  - 修复代码 + 运行现有测试（如有）
-  - git commit（规范化 commit message）+ git push
-- [ ] 容器安全配置调整：仓库目录可写（tmpfs 已支持），评估是否需要放宽 `--disallowedTools` 限制
-- [ ] 修复输出 JSON schema 定义（分支名、commit SHA、修改文件列表、测试结果等）
+##### M3.4 修复基础设施层
+- [ ] **两级镜像策略**（Phase 4 复用的基础设施）：
+  - 新建 `build/Dockerfile.worker-full`（执行镜像）：在现有 worker 镜像基础上叠加 JDK 17 + Maven
+  - 两级镜像共享 Node.js + Claude CLI 基础层，Docker layer cache 友好
+  - Maven/Gradle 缓存目录重定向到 `/workspace`（2GB tmpfs），避免 `/tmp`（256MB）溢出
+  - Makefile 新增 `build-worker-full` 构建目标（依赖 `build-worker`）
+- [ ] **Pool 多镜像支持**：
+  - `PoolConfig` 新增 `ImageFull` 字段，`runContainer` 中 `resolveImage(taskType)` 按任务类型选择镜像
+  - 镜像映射：`review_pr` / `analyze_issue` → 轻量镜像；`fix_issue` / `gen_tests` → 执行镜像
+  - `ImageFull` 为空时向后兼容，所有任务用 `Image`
+  - 配置段 `worker.image_full`，`WorkerConfig` 结构体新增字段，`buildWorkerPoolConfigFromServeConfig` 传递
+- [ ] **TaskType 拆分**：
+  - 新增 `TaskTypeAnalyzeIssue = "analyze_issue"`，现有分析流程从 `fix_issue` 迁移
+  - `fix.Service.Execute` 入口按 `payload.TaskType` 路由：`analyze_issue` → 现有分析流程（`executeAnalysis`），`fix_issue` → 新修复流程（`executeFix`）
+  - `TaskTimeoutsConfig` 新增 `AnalyzeIssue` 字段（默认 15 分钟），`fix_issue` 调整为 30 分钟（含分析 + 修复 + 测试）
+  - `queue/client.go` 新增 `AsynqTypeAnalyzeIssue` 常量 + 路由注册
+  - `serve.go` asynq `ServeMux` 注册 `AsynqTypeAnalyzeIssue` handler
+  - `queue/processor.go` switch 新增 `TaskTypeAnalyzeIssue` → `fixService`（分析模式）
+- [ ] **entrypoint.sh 修复模式**：
+  - `fix_issue)` case：`credential.helper cache --timeout=3600`（内存模式）+ `git config user.name/email`（Bot 身份）+ Maven/Gradle 缓存重定向
+  - `analyze_issue)` case：搬自原 `fix_issue` 只读行为（Ref checkout，无凭证、无写权限）
+  - 环境变量照常清除（`GITEA_TOKEN` / `AUTH_URL` 等），不设 pre-commit hook / 不锁 push URL
+- [ ] **Webhook 标签路由扩展**：
+  - 新增 `isFixToPRLabel` 识别 `fix-to-pr` 标签（大小写不敏感）
+  - `IssueLabelEvent` 新增 `FixToPRAdded` 字段
+  - `HandleIssueLabel` 按标签分流入队：`auto-fix` → `analyze_issue`，`fix-to-pr` → `fix_issue`，后者优先
+  - 幂等检查按各自 TaskType 独立查询
+  - 并发修复同一 Issue：参照 M2.4 Cancel-and-Replace 机制
+- [ ] **通知事件拆分**：
+  - 新增 `EventIssueAnalyzeStarted` / `EventIssueAnalyzeDone`
+  - 现有 `EventIssueFixStarted` / `EventFixIssueDone` 语义修正为修复（非分析）
+  - `buildStartMessage` / `buildNotificationMessage` 新增 `TaskTypeAnalyzeIssue` case
+- [ ] `worker/container.go` `buildContainerEnv` / `buildContainerCmd` 新增 `analyze_issue` case
+- [ ] `dtw fix-issue` 命令新增 `--fix` flag 区分触发分析或修复
+- [ ] 示例配置 `dtworkflow.example.yaml` 补充 `worker.image_full` 和 `worker.timeouts.analyze_issue`
+- [ ] 现有 M3.1-M3.3 分析流程回归验证
 
-##### M3.5 PR 创建与 Issue 关联
-- [ ] fix.Service 在容器执行成功后，通过 Gitea API 创建 PR：
+##### M3.5 修复业务逻辑层
+- [ ] **修复 Prompt 设计**（stdin 传入，四段式）：
+  - 上下文段：仓库/Issue/Ref 信息 + 指示 Claude 阅读 Issue 评论参考前序分析
+  - 修复指令段：分析→修复→补充测试→运行测试（`mvn test` / `npm test`）→失败重试（最多 3 轮）→创建分支 `auto-fix/issue-{id}` + commit + push
+  - 约束段：不修改无关文件、不删除现有测试、commit message 格式 `fix: #{issue_id} {简述}`
+  - 输出格式段：FixOutput JSON schema
+  - 安全：不加 `--disallowedTools` Bash 限制（需运行测试），保留 prompt 层网络访问禁令，包含 `--output-format json`
+- [ ] **修复输出 JSON schema**（`FixOutput`）：
+  - `success` / `info_sufficient` / `missing_info` / `branch_name` / `commit_sha` / `modified_files` / `test_results` / `analysis` / `fix_approach`
+  - `TestResults`：`passed` / `failed` / `skipped` / `all_passed`
+  - 校验不变量：`success=true` 时 `branch_name` 和 `commit_sha` 必须非空
+- [ ] **fix.Service `executeFix` 流程**：
+  - 前置校验：Issue open + Ref 有效（区分分支 vs tag）
+  - "信息不足"前置检查：查 DB 最新 `analyze_issue` 结果，`info_sufficient=false` → Issue 评论提醒 + SkipRetry，不启动容器
+  - 采集 Issue 上下文（复用 `collectContext`）
+  - 构造修复 prompt + 容器执行（full image）
+  - 双层 JSON 解析：CLI 信封 → FixOutput
+  - 按结果分流处理
+  - 新增窄接口：`PRClient`（`CreatePullRequest`）、`FixStaleChecker`（`GetLatestAnalysisByIssue`），ServiceOption 注入
+  - `store/` 新增 `GetLatestAnalysisByIssue` 查询方法
+- [ ] **PR 创建**（Gitea API）：
+  - 触发条件：`success=true` + `branch_name` 非空
   - PR 标题：`fix: #{issue_id} {issue_title}`
-  - PR 描述模板：根因分析 + 修复方案 + 影响范围 + `fixes #{issue_id}`（自动关联）
-  - 必要时打标签（如 `auto-fix`）
-- [ ] Issue 评论通知：修复 PR 已创建，附 PR 链接
-- [ ] 修复失败处理：在 Issue 评论中报告失败原因和已尝试的修复方向
+  - PR 描述模板：关联 Issue（`fixes #{issue_id}`）+ 根因分析 + 修复方案 + 修改文件 + 测试结果
+  - Tag 作为 Ref 边界处理：Gitea API `Base` 不支持 tag，改用仓库默认分支，PR 描述中注明
+  - Issue 评论通知：修复 PR 已创建 + PR 链接 + 修改文件数
+- [ ] **失败处理**：
+  - Issue 已关闭 / Ref 无效 / Ref 缺失：同分析模式，Issue 评论提醒 + SkipRetry
+  - DB 前置检查"信息不足"：Issue 评论提醒补充信息 + SkipRetry
+  - 容器执行失败：Issue 评论报告错误 + 允许 asynq 重试
+  - Claude 返回 `info_sufficient=false` / `success=false`：Issue 评论 + SkipRetry
+  - Push 成功但 PR 创建失败：Issue 评论报告 + 允许重试
+  - 分支已存在（重试场景）：prompt 指示 `git push --force-with-lease`
+- [ ] **FixResult 扩展**：新增 `Fix *FixOutput` / `PRNumber` / `PRURL` 字段
 - [ ] 修复 PR 自动评审：无需额外代码，Gitea PR created Webhook 自然触发 Phase 2 评审流程
+- [ ] 通知适配：Processor 修复模式下飞书+Gitea 通知（开始/成功含 PR 链接/失败三场景）
 - [ ] 单元测试覆盖
 
 ### 交付物
@@ -504,10 +558,19 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - 服务端 REST API 层（`/api/v1/`，含认证、任务管理、评审/修复触发）
 - `dtw` 瘦客户端二进制（多服务器认证、远程命令执行）
 
-**第二轮**：
-- 完整的 Issue → 分析 → 修复 → PR 自动化流程
-- entrypoint.sh fix_issue 适配（credential helper + 默认分支 checkout）
-- 修复 PR 描述模板
+**第二轮 M3.4**：
+- 两级镜像体系（`Dockerfile.worker-full`：JDK + Maven + Node.js + Claude CLI）
+- Pool 多镜像选择（`PoolConfig.ImageFull` + `resolveImage`）
+- `TaskTypeAnalyzeIssue` 拆分 + 全链路迁移（webhook/queue/processor/notify/entrypoint/config/dtw）
+- entrypoint.sh 修复模式（credential cache + git identity + Maven 缓存重定向）
+- Webhook `fix-to-pr` 标签路由 + Cancel-and-Replace
+
+**第二轮 M3.5**：
+- 完整的 Issue → 修复 → 测试 → PR 自动化流程（`fix.Service.executeFix`）
+- 修复 Prompt 模板（四段式，含测试验证和重试指令）
+- PR 创建（Gitea API，含 Tag-as-Ref 处理）+ Issue 评论通知
+- 修复输出 JSON schema（`FixOutput` / `TestResults`）
+- "信息不足"前置检查 + 完整失败处理链
 
 ### 验证标准
 
@@ -525,9 +588,24 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - `dtw review-pr --repo myrepo --pr 42` 远程触发评审 → 服务端创建评审任务
 - 认证多个服务器 → `dtw auth switch` 切换 → 命令作用于切换后的服务器
 
-**第二轮**：
-- 创建一个描述完整的 bug Issue → 添加 `auto-fix` 标签 → 自动分析根因 → 自动创建修复 PR → PR 关联 Issue → Phase 2 自动评审修复 PR
-- 修复失败时 Issue 收到失败报告评论
+**第二轮 M3.4**：
+- `make build-worker-full` 成功构建执行镜像（含 JDK + Maven + Node.js + Claude CLI）
+- `PoolConfig.ImageFull` 配置后，`fix_issue` 任务使用执行镜像、`review_pr` / `analyze_issue` 使用轻量镜像
+- `auto-fix` 标签 → 入队 `analyze_issue` 任务；`fix-to-pr` 标签 → 入队 `fix_issue` 任务
+- `entrypoint.sh` fix_issue 模式：credential cache 已配置、git identity 已设置、可 commit + push
+- `entrypoint.sh` analyze_issue 模式：行为与原 fix_issue 一致（只读）
+- 现有 M3.1-M3.3 分析流程不受影响（回归验证）
+
+**第二轮 M3.5**：
+- `fix-to-pr` 标签触发 → Claude 在容器内分析 + 修复 + 测试 + push → `fix.Service` 创建 PR → Issue 收到 PR 链接评论
+- PR 描述包含根因分析、修复方案、修改文件列表、测试结果；PR 关联 Issue（`fixes #N`）
+- 修复 PR 自动进入 Phase 2 评审流程（Gitea Webhook 自然触发）
+- 无前序分析 → Claude 隐式分析后修复（不阻拦）
+- 前序分析"信息不足" → `fix-to-pr` 触发时 Issue 评论提醒 + 不启动容器
+- 修复失败 → Issue 评论报告失败原因
+- 分支已存在（重试场景）→ force-with-lease push → PR 正常创建
+- 飞书通知：修复开始/成功（含 PR 链接）/失败三场景
+- `dtw fix-issue --fix` 远程触发修复 → 服务端创建 fix_issue 任务
 - Java 和 Vue 仓库各验证一轮
 
 ---
