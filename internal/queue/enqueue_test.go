@@ -899,8 +899,8 @@ func TestEnqueueManualFix(t *testing.T) {
 	}
 
 	for _, record := range s.tasks {
-		if record.TaskType != model.TaskTypeFixIssue {
-			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeFixIssue)
+		if record.TaskType != model.TaskTypeAnalyzeIssue {
+			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeAnalyzeIssue)
 		}
 		if record.TriggeredBy != "manual:ci-bot" {
 			t.Errorf("triggered_by = %q, want %q", record.TriggeredBy, "manual:ci-bot")
@@ -923,7 +923,7 @@ func TestEnqueueManualFix_CancelsSupersededTasks(t *testing.T) {
 	oldTask := &model.TaskRecord{
 		ID:           "old-fix-task",
 		AsynqID:      "asynq-old-fix",
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     model.TaskTypeAnalyzeIssue, // M3.4: 默认类型已改为 analyze_issue
 		Status:       model.TaskStatusQueued,
 		Priority:     model.PriorityNormal,
 		RepoFullName: "org/repo",
