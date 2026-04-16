@@ -122,30 +122,39 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 	return nil
 }
 
-// HandleIssueLabel 处理 Issue 标签事件，仅在 AutoFixAdded 时创建修复任务。
+// HandleIssueLabel 处理 Issue 标签事件，按标签类型路由到不同任务。
+// M3.4: fix-to-pr 标签 → TaskTypeFixIssue；auto-fix 标签 → TaskTypeAnalyzeIssue。
+// fix-to-pr 优先级高于 auto-fix（同时存在时仅入队 fix_issue）。
 // 流程结构与 HandlePullRequest 类似，参见其注释了解未提取模板方法的原因。
 func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.IssueLabelEvent) error {
-	// 仅处理添加了 auto-fix 标签的事件
-	if !event.AutoFixAdded {
+	// M3.4: 双标签分流，fix-to-pr 优先于 auto-fix
+	var taskType model.TaskType
+	switch {
+	case event.FixToPRAdded:
+		taskType = model.TaskTypeFixIssue
+	case event.AutoFixAdded:
+		taskType = model.TaskTypeAnalyzeIssue
+	default:
 		return nil
 	}
 
-	// 幂等检查
-	existing, err := h.store.FindByDeliveryID(ctx, event.DeliveryID, model.TaskTypeFixIssue)
+	// 幂等检查（按各自 TaskType 独立查询）
+	existing, err := h.store.FindByDeliveryID(ctx, event.DeliveryID, taskType)
 	if err != nil {
 		return fmt.Errorf("幂等检查失败: %w", err)
 	}
 	if existing != nil {
-		h.logger.InfoContext(ctx, "Issue 修复任务已存在，跳过",
+		h.logger.InfoContext(ctx, "Issue 任务已存在，跳过",
 			"delivery_id", event.DeliveryID,
 			"task_id", existing.ID,
+			"task_type", taskType,
 			"status", existing.Status,
 		)
 		return nil
 	}
 
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     taskType,
 		DeliveryID:   event.DeliveryID,
 		RepoOwner:    event.Repository.Owner,
 		RepoName:     event.Repository.Name,
@@ -161,29 +170,35 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 	}
 
 	record := &model.TaskRecord{
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     taskType,
 		Priority:     model.PriorityNormal,
 		RepoFullName: event.Repository.FullName,
 		DeliveryID:   event.DeliveryID,
 	}
 
-	activeTasks := h.listActiveIssueTasks(ctx, event.Repository.FullName, event.Issue.Number, model.TaskTypeFixIssue)
+	activeTasks := h.listActiveIssueTasks(ctx, event.Repository.FullName, event.Issue.Number, taskType)
 
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
 		return err
 	}
 	h.cancelTasks(ctx, activeTasks)
 
+	taskTypeName := "Issue 分析"
+	if taskType == model.TaskTypeFixIssue {
+		taskTypeName = "Issue 修复"
+	}
 	if record.Status == model.TaskStatusQueued {
-		h.logger.InfoContext(ctx, "Issue 修复任务已入队",
+		h.logger.InfoContext(ctx, taskTypeName+"任务已入队",
 			"task_id", record.ID,
 			"asynq_id", record.AsynqID,
+			"task_type", taskType,
 			"repo", event.Repository.FullName,
 			"issue", event.Issue.Number,
 		)
 	} else {
-		h.logger.InfoContext(ctx, "Issue 修复任务已创建（pending），等待 RecoveryLoop 入队",
+		h.logger.InfoContext(ctx, taskTypeName+"任务已创建（pending），等待 RecoveryLoop 入队",
 			"task_id", record.ID,
+			"task_type", taskType,
 			"repo", event.Repository.FullName,
 			"issue", event.Issue.Number,
 		)

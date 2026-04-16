@@ -955,16 +955,18 @@ func TestEnqueueManualFix_CancelsSupersededTasks(t *testing.T) {
 	}
 }
 
-func TestHandleIssueLabel_CancelsSupersededFixTasks(t *testing.T) {
+// TestHandleIssueLabel_CancelsSupersededAnalyzeTasks M3.4: auto-fix 触发 analyze_issue，
+// 旧的同类型 analyze_issue 活跃任务应被取消。
+func TestHandleIssueLabel_CancelsSupersededAnalyzeTasks(t *testing.T) {
 	s := newMockStore()
 	canceller := &mockTaskCanceller{}
-	mc := &mockEnqueuer{enqueuedID: "asynq-webhook-fix"}
+	mc := &mockEnqueuer{enqueuedID: "asynq-webhook-analyze"}
 	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
 
 	oldTask := &model.TaskRecord{
-		ID:           "old-webhook-fix",
-		AsynqID:      "asynq-webhook-old-fix",
-		TaskType:     model.TaskTypeFixIssue,
+		ID:           "old-webhook-analyze",
+		AsynqID:      "asynq-webhook-old-analyze",
+		TaskType:     model.TaskTypeAnalyzeIssue,
 		Status:       model.TaskStatusQueued,
 		Priority:     model.PriorityNormal,
 		RepoFullName: "org/repo",
@@ -973,7 +975,7 @@ func TestHandleIssueLabel_CancelsSupersededFixTasks(t *testing.T) {
 	s.tasks[oldTask.ID] = oldTask
 
 	event := webhook.IssueLabelEvent{
-		DeliveryID:   "delivery-fix-superseded",
+		DeliveryID:   "delivery-analyze-superseded",
 		AutoFixAdded: true,
 		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		Issue:        webhook.IssueRef{Number: 33, Title: "bug report"},
@@ -985,8 +987,91 @@ func TestHandleIssueLabel_CancelsSupersededFixTasks(t *testing.T) {
 	if s.tasks[oldTask.ID].Status != model.TaskStatusCancelled {
 		t.Errorf("旧任务状态 = %q, want %q", s.tasks[oldTask.ID].Status, model.TaskStatusCancelled)
 	}
-	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-webhook-old-fix" {
-		t.Errorf("deleteCalls = %v, want [asynq-webhook-old-fix]", canceller.deleteCalls)
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-webhook-old-analyze" {
+		t.Errorf("deleteCalls = %v, want [asynq-webhook-old-analyze]", canceller.deleteCalls)
+	}
+}
+
+// TestHandleIssueLabel_FixToPRAdded M3.4: fix-to-pr 标签触发 TaskTypeFixIssue。
+func TestHandleIssueLabel_FixToPRAdded(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-fix-to-pr"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.IssueLabelEvent{
+		DeliveryID:  "delivery-fix-to-pr-1",
+		FixToPRAdded: true,
+		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:       webhook.IssueRef{Number: 20, Title: "feature request"},
+	}
+
+	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
+		t.Fatalf("HandleIssueLabel error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+	for _, record := range s.tasks {
+		if record.TaskType != model.TaskTypeFixIssue {
+			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeFixIssue)
+		}
+		if record.Status != model.TaskStatusQueued {
+			t.Errorf("task status = %q, want %q", record.Status, model.TaskStatusQueued)
+		}
+	}
+}
+
+// TestHandleIssueLabel_AutoFixAdded_RoutesToAnalyze M3.4: auto-fix 标签触发 TaskTypeAnalyzeIssue。
+func TestHandleIssueLabel_AutoFixAdded_RoutesToAnalyze(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-analyze"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.IssueLabelEvent{
+		DeliveryID:   "delivery-auto-fix-analyze-1",
+		AutoFixAdded: true,
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:        webhook.IssueRef{Number: 30, Title: "bug"},
+	}
+
+	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
+		t.Fatalf("HandleIssueLabel error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+	for _, record := range s.tasks {
+		if record.TaskType != model.TaskTypeAnalyzeIssue {
+			t.Errorf("task type = %q, want %q (M3.4: auto-fix 应路由到 analyze_issue)", record.TaskType, model.TaskTypeAnalyzeIssue)
+		}
+	}
+}
+
+// TestHandleIssueLabel_BothLabels_FixToPRPriority M3.4: 同时存在 fix-to-pr + auto-fix 时，
+// fix-to-pr 优先，仅入队 TaskTypeFixIssue。
+func TestHandleIssueLabel_BothLabels_FixToPRPriority(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-both-labels"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.IssueLabelEvent{
+		DeliveryID:   "delivery-both-labels-1",
+		FixToPRAdded: true,
+		AutoFixAdded: true,
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:        webhook.IssueRef{Number: 40, Title: "critical bug"},
+	}
+
+	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
+		t.Fatalf("HandleIssueLabel error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+	for _, record := range s.tasks {
+		if record.TaskType != model.TaskTypeFixIssue {
+			t.Errorf("task type = %q, want %q (fix-to-pr 优先级高于 auto-fix)", record.TaskType, model.TaskTypeFixIssue)
+		}
 	}
 }
 
