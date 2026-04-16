@@ -794,6 +794,35 @@ func TestPool_RunAfterShutdown(t *testing.T) {
 	}
 }
 
+// TestPool_ResolveImage 验证 resolveImage 按任务类型和 ImageFull 配置选择镜像
+func TestPool_ResolveImage(t *testing.T) {
+	tests := []struct {
+		name      string
+		imageFull string
+		taskType  model.TaskType
+		want      string
+	}{
+		{"review 用轻量镜像", "", model.TaskTypeReviewPR, "dtworkflow-worker:test"},
+		{"analyze 用轻量镜像", "", model.TaskTypeAnalyzeIssue, "dtworkflow-worker:test"},
+		{"fix 无 ImageFull 回退轻量", "", model.TaskTypeFixIssue, "dtworkflow-worker:test"},
+		{"fix 有 ImageFull 用执行镜像", "dtworkflow-worker-full:test", model.TaskTypeFixIssue, "dtworkflow-worker-full:test"},
+		{"gen_tests 有 ImageFull 用执行镜像", "dtworkflow-worker-full:test", model.TaskTypeGenTests, "dtworkflow-worker-full:test"},
+		{"analyze 有 ImageFull 仍用轻量", "dtworkflow-worker-full:test", model.TaskTypeAnalyzeIssue, "dtworkflow-worker:test"},
+		{"review 有 ImageFull 仍用轻量", "dtworkflow-worker-full:test", model.TaskTypeReviewPR, "dtworkflow-worker:test"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultPoolConfig()
+			cfg.ImageFull = tc.imageFull
+			p := mustNewPool(t, cfg, &mockDockerClient{})
+			got := p.resolveImage(tc.taskType)
+			if got != tc.want {
+				t.Errorf("resolveImage(%s) = %q, 期望 %q", tc.taskType, got, tc.want)
+			}
+		})
+	}
+}
+
 // --- 流式心跳监控测试 ---
 
 // stdcopyFrame 构造带 Docker stdcopy 8 字节 header 的数据帧。

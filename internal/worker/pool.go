@@ -134,6 +134,9 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 
 	start := time.Now()
 
+	// 根据任务类型选择合适的容器镜像
+	resolvedImage := p.resolveImage(payload.TaskType)
+
 	// 构建容器名称（使用 DeliveryID 或任务类型+时间戳确保唯一性）
 	containerName := buildContainerName(payload)
 
@@ -153,7 +156,7 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 
 	// 构建容器配置
 	containerCfg := &ContainerConfig{
-		Image:       p.config.Image,
+		Image:       resolvedImage,
 		Name:        containerName,
 		Env:         buildContainerEnv(p.config, payload),
 		Cmd:         cmd,
@@ -171,12 +174,12 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 	}
 
 	// 检查镜像是否存在
-	exists, err := p.docker.ImageExists(ctx, p.config.Image)
+	exists, err := p.docker.ImageExists(ctx, resolvedImage)
 	if err != nil {
-		return nil, fmt.Errorf("检查镜像 %s 失败: %w", p.config.Image, err)
+		return nil, fmt.Errorf("检查镜像 %s 失败: %w", resolvedImage, err)
 	}
 	if !exists {
-		return nil, fmt.Errorf("镜像 %s 不存在，请先构建或拉取", p.config.Image)
+		return nil, fmt.Errorf("镜像 %s 不存在，请先构建或拉取", resolvedImage)
 	}
 
 	// 创建容器
@@ -575,6 +578,18 @@ func (p *Pool) Stats() PoolStats {
 		Active:    int(p.active.Load()),
 		Completed: p.total.Load(),
 	}
+}
+
+// resolveImage 根据任务类型选择合适的容器镜像。
+// fix_issue 和 gen_tests 使用 ImageFull（如已配置），其余任务使用轻量 Image。
+func (p *Pool) resolveImage(taskType model.TaskType) string {
+	switch taskType {
+	case model.TaskTypeFixIssue, model.TaskTypeGenTests:
+		if p.config.ImageFull != "" {
+			return p.config.ImageFull
+		}
+	}
+	return p.config.Image
 }
 
 // containerSeq 包级别原子计数器，用于避免容器名称碰撞
