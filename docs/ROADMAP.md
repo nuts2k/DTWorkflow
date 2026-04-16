@@ -356,7 +356,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 1. **两轮迭代策略**：第一轮（M3.1-M3.3）只做分析与定位，容器只读模式（安全模型同 Phase 2）；第二轮（M3.4-M3.5）才引入写操作（代码修改、push、PR 创建）。第一轮独立交付价值：根因分析报告本身即可帮助开发者快速定位和修复问题。
 2. **PR 创建策略（混合模式）**：容器内完成代码修改 + commit + `git push`（Claude Code 核心能力），容器外由 `fix.Service` 通过 Gitea API 创建 PR（结构化操作更可控：描述模板、Issue 关联、标签管理）。仅需保留 Git push 凭证，不需要给容器 Gitea API Token。
-3. **Git 凭证管理（credential helper cache）**：entrypoint.sh 修复模式使用 `credential.helper cache --timeout=3600`（内存模式，非文件持久化），clone 过程自动缓存凭证到 cache daemon；clone 完成后照常清除环境变量。已接受风险：Claude 拥有 Bash 执行能力，理论上可通过 `git credential fill` 从 cache daemon 提取凭证；缓解措施：建议为修复任务配置专用受限 Gitea Token（仅目标仓库 push 权限）。（仅第二轮 M3.4 需要，第一轮容器无需 push 权限。）
+3. **Git 凭证管理（脱敏 origin + credential helper 脚本）**：entrypoint.sh 修复模式在 clone 完成后立即将 origin URL 重置为不含 token 的版本（`git remote set-url origin "${REPO_CLONE_URL}"`），避免凭证持久化到 `.git/config`；通过自定义 credential helper 脚本（`/tmp/.git-credential-helper`，权限 700）在每次 push 时按需注入 token，随容器销毁消失。prompt 层追加"禁止读凭证文件"约束。缓解措施：建议为修复任务配置专用受限 Gitea Token（仅目标仓库 push 权限）。（仅第二轮 M3.4 需要，第一轮容器无需 push 权限。）
 4. **信息充分性判断（MVP 简化）**：不实现自动监听 Issue 新评论恢复分析的状态机。Claude 直接在分析 prompt 中判断信息是否充分，不充分时在 Issue 评论中报告"信息不足"并列出需补充内容；用户补充后移除再添加 `auto-fix` 标签即可重新触发。后续可平滑升级为自动监听恢复，无架构返工。
 5. **修复 PR 自动评审（天然复用）**：`fix.Service` 通过 Gitea API 创建 PR 后，Gitea 发出 PR created Webhook，Phase 2 评审流程自然触发。auto-fix PR 与人工 PR 完全一视同仁，不做特殊处理。不存在无限循环风险（评审只产生 comment，不会再触发 fix）。无需额外代码。
 6. **Ref 关联机制（分支/tag 基线选择）**：Issue 的 Ref 字段（Gitea 右侧边栏）用于指定代码基线。Ref 为空时回复提醒用户设置；Ref 无效（分支和 tag 均不存在）时回复错误提醒；两者均为确定性失败，跳过重试。Ref 有效时，容器 `ISSUE_REF` 环境变量注入 + entrypoint checkout，prompt 注入 ref 上下文信息。优先使用 Gitea API 返回的最新 `Issue.Ref`，fallback 到入队时 payload 快照值。
@@ -491,9 +491,9 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
   - `serve.go` asynq `ServeMux` 注册 `AsynqTypeAnalyzeIssue` handler
   - `queue/processor.go` switch 新增 `TaskTypeAnalyzeIssue` → `fixService`（分析模式）
 - [x] **entrypoint.sh 修复模式**：
-  - `fix_issue)` case：`credential.helper cache --timeout=3600`（内存模式）+ `git config user.name/email`（Bot 身份）+ Maven/Gradle 缓存重定向
+  - `fix_issue)` case：脱敏 origin URL + 自定义 credential helper 脚本（按需注入 token，权限 700）+ `git config user.name/email`（Bot 身份）+ Maven/Gradle 缓存重定向
   - `analyze_issue)` case：搬自原 `fix_issue` 只读行为（Ref checkout，无凭证、无写权限）
-  - 环境变量照常清除（`GITEA_TOKEN` / `AUTH_URL` 等），不设 pre-commit hook / 不锁 push URL
+  - 环境变量照常清除（`GITEA_TOKEN` / `AUTH_URL` / `GITEA_URL` / `REPO_CLONE_URL`），不设 pre-commit hook / 不锁 push URL
 - [x] **Webhook 标签路由扩展**：
   - 新增 `isFixToPRLabel` 识别 `fix-to-pr` 标签（大小写不敏感）
   - `IssueLabelEvent` 新增 `FixToPRAdded` 字段
@@ -534,14 +534,16 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
   - PR 标题：`fix: #{issue_id} {issue_title}`
   - PR 描述模板：关联 Issue（`fixes #{issue_id}`）+ 根因分析 + 修复方案 + 修改文件 + 测试结果
   - Tag 作为 Ref 边界处理：Gitea API `Base` 不支持 tag，改用仓库默认分支，PR 描述中注明
+  - 幂等保护：`createFixPR` 先通过 `ListRepoPullRequests` 查询同 head 分支的 open PR，存在则复用（避免重试场景创建重复 PR / 重复评论 / 重复消耗 Claude 配额）
   - Issue 评论通知：修复 PR 已创建 + PR 链接 + 修改文件数
 - [x] **失败处理**：
   - Issue 已关闭 / Ref 无效 / Ref 缺失：同分析模式，Issue 评论提醒 + SkipRetry
   - DB 前置检查"信息不足"：Issue 评论提醒补充信息 + SkipRetry
   - 容器执行失败：Issue 评论报告错误 + 允许 asynq 重试
   - Claude 返回 `info_sufficient=false` / `success=false`：Issue 评论 + SkipRetry
-  - Push 成功但 PR 创建失败：Issue 评论报告 + 允许重试
+  - Push 成功但 PR 创建失败：Issue 评论报告 + 允许重试（重试时幂等检查复用已有 PR）
   - 分支已存在（重试场景）：prompt 指示 `git push --force-with-lease`
+  - 错误信息脱敏：`executeFix` 返回 error 不携带 ParseError 详情（可能含 Claude 原始输出），详情仅落结构化日志，防止 prompt-injection 内容泄露到飞书通知 / Issue 评论
 - [x] **FixResult 扩展**：新增 `Fix *FixOutput` / `PRNumber` / `PRURL` 字段
 - [x] 修复 PR 自动评审：无需额外代码，Gitea PR created Webhook 自然触发 Phase 2 评审流程
 - [x] 通知适配：Processor 修复模式下飞书+Gitea 通知（开始/成功含 PR 链接/失败三场景）
@@ -553,6 +555,9 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > `checkPreviousAnalysis` fail-open 前置检查、5 种 Issue 评论 formatter、
 > Processor 路由 `fix_issue` → `fixService` + `ErrInfoInsufficient`/`ErrFixFailed` SkipRetry、
 > 飞书卡片绿色修复成功 + PR 按钮、`serve.go` 装配 PRClient + FixStaleChecker。
+> 后续 2 个 fix 提交修复代码审查发现的 8 项缺陷：凭证泄露修复（脱敏 origin URL + credential helper 脚本）、
+> PR 创建幂等保护（ListRepoPullRequests 复用已有 PR）、错误信息脱敏（ParseError 不泄露到外部通知面）、
+> prompt 模板 `%[1]d` 渲染真实 Issue 编号、`json_extract` 查询统一、`errors.Join` 保留 sentinel 等。
 > 全量 16 包测试通过，`make build` + Linux amd64 交叉编译成功。
 
 ### 交付物

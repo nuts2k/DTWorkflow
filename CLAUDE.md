@@ -78,8 +78,10 @@ configs/        # 配置文件模板
   - CLI 触发：`./bin/dtw fix-issue --owner <owner> --repo <repo> --issue <N> --fix`
 - **两级镜像**：`analyze_issue` 用轻量镜像（只读），`fix_issue` 用执行镜像（`worker-full`，含 JDK + Maven）
 - **修复流程**：`fix.Service.executeFix` 12 步 — 前置校验 → 信息不足检查 → 采集上下文 → 构造 prompt → 容器执行 → 解析 FixOutput → 创建 PR → Issue 评论
-- **PR 创建**：容器内 Claude push 分支 `auto-fix/issue-{id}`，容器外 `fix.Service` 通过 Gitea API 创建 PR（`fixes #{id}` 关联 Issue）
+- **PR 创建**：容器内 Claude push 分支 `auto-fix/issue-{id}`，容器外 `fix.Service` 通过 Gitea API 创建 PR（`fixes #{id}` 关联 Issue）；幂等保护——重试时先查询同 head 分支的 open PR，存在则复用
 - **Tag-as-Ref**：Issue 关联 tag 时，PR Base 改用仓库默认分支，PR 描述中注明
+- **凭证安全**：entrypoint.sh 使用脱敏 origin URL + 自定义 credential helper 脚本（按需注入 token），不持久化凭证到 `.git/config`；prompt 追加"禁止读凭证文件"约束
+- **错误脱敏**：`executeFix` 返回的 error 不携带 ParseError 详情（可能含 Claude 原始输出），详情仅写结构化日志，防止 prompt-injection 内容泄露到飞书通知或 Issue 评论
 - **失败处理**：信息不足 / Claude 返回失败 → SkipRetry + Issue 评论；Push 成功但 PR 创建失败 → 允许重试
 
 ## 测试服务器
