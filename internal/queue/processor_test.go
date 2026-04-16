@@ -2018,20 +2018,26 @@ func TestProcessTask_FixIssue_WithoutService(t *testing.T) {
 	}
 }
 
-func TestProcessTask_FixIssue_WithService_StillUsesPoolRun(t *testing.T) {
+// TestProcessTask_FixIssue_WithService_StillUsesPoolRun 已被 Task 11 (M3.5) 反转：
+// fix_issue + fixService 注入后，应路由到 fixService.Execute，不再走 pool.Run。
+// 该测试重命名为 TestProcessTask_FixIssue_WithService_RoutesToFixService（见下）。
+
+// TestProcessor_RouteFixIssueToFixService 验证 fix_issue 任务在注入 fixService 后
+// 路由到 fixService.Execute，不再走 pool.Run（M3.5 Task 11）。
+func TestProcessor_RouteFixIssueToFixService(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{
 		TaskType:     model.TaskTypeFixIssue,
-		DeliveryID:   "dlv-fix-with-svc-uses-pool-1",
+		DeliveryID:   "dlv-fix-route-svc-1",
 		RepoOwner:    "org",
 		RepoName:     "repo",
 		RepoFullName: "org/repo",
-		IssueNumber:  5,
+		IssueNumber:  7,
 	}
 
 	now := time.Now()
 	record := &model.TaskRecord{
-		ID:         "proc-fix-with-svc-uses-pool-1",
+		ID:         "proc-fix-route-svc-1",
 		TaskType:   model.TaskTypeFixIssue,
 		Status:     model.TaskStatusQueued,
 		Payload:    payload,
@@ -2042,10 +2048,13 @@ func TestProcessTask_FixIssue_WithService_StillUsesPoolRun(t *testing.T) {
 	seedRecord(s, record)
 
 	fixExec := &mockFixExecutor{
-		result: &fix.FixResult{RawOutput: "should not be used"},
+		result: &fix.FixResult{
+			RawOutput: `{"type":"result","subtype":"success","is_error":false}`,
+			CLIMeta:   &model.CLIMeta{IsError: false, DurationMs: 5000},
+		},
 	}
 	pool := &mockPoolRunner{
-		result: &worker.ExecutionResult{ExitCode: 0, Output: "pool result"},
+		result: &worker.ExecutionResult{ExitCode: 0, Output: "should not be used"},
 	}
 
 	p := NewProcessor(pool, s, nil, slog.Default(), WithFixService(fixExec))
@@ -2054,11 +2063,104 @@ func TestProcessTask_FixIssue_WithService_StillUsesPoolRun(t *testing.T) {
 	if err := p.ProcessTask(context.Background(), task); err != nil {
 		t.Fatalf("ProcessTask error: %v", err)
 	}
-	if fixExec.calls != 0 {
-		t.Errorf("fixService.Execute 不应被调用，实际 %d 次", fixExec.calls)
+	if fixExec.calls != 1 {
+		t.Errorf("fixService.Execute 应被调用 1 次，实际 %d 次", fixExec.calls)
 	}
-	if pool.calls != 1 {
-		t.Errorf("pool.Run 应被调用 1 次，实际 %d 次", pool.calls)
+	if pool.calls != 0 {
+		t.Errorf("pool.Run 不应被调用，实际 %d 次", pool.calls)
+	}
+
+	got := s.tasks["proc-fix-route-svc-1"]
+	if got.Status != model.TaskStatusSucceeded {
+		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+}
+
+// TestProcessTask_FixIssue_InfoInsufficient_SkipsRetry 验证 fix_issue 收到
+// ErrInfoInsufficient 时返回 SkipRetry（M3.5 Task 11）。
+func TestProcessTask_FixIssue_InfoInsufficient_SkipsRetry(t *testing.T) {
+	s := newMockStore()
+	fixExec := &mockFixExecutor{
+		err: fmt.Errorf("Issue #7: %w", fix.ErrInfoInsufficient),
+	}
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0}}
+	notifier := &stubNotifier{}
+	p := NewProcessor(pool, s, notifier, slog.Default(), WithFixService(fixExec))
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "delivery-fix-info-insufficient",
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	task := buildAsynqTask(t, payload)
+	record := &model.TaskRecord{
+		ID:         "task-fix-info-insufficient",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		DeliveryID: payload.DeliveryID,
+	}
+	seedRecord(s, record)
+
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("应返回 SkipRetry 错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+	if !strings.Contains(err.Error(), "信息不足") {
+		t.Errorf("错误信息应包含'信息不足'，实际: %v", err)
+	}
+	updated := s.tasks["task-fix-info-insufficient"]
+	if updated.Status != model.TaskStatusFailed {
+		t.Errorf("状态应为 failed，实际: %s", updated.Status)
+	}
+}
+
+// TestProcessTask_FixIssue_FixFailed_SkipsRetry 验证 fix_issue 收到
+// ErrFixFailed 时返回 SkipRetry（M3.5 Task 11）。
+func TestProcessTask_FixIssue_FixFailed_SkipsRetry(t *testing.T) {
+	s := newMockStore()
+	fixExec := &mockFixExecutor{
+		err: fmt.Errorf("Issue #7: %w", fix.ErrFixFailed),
+	}
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0}}
+	notifier := &stubNotifier{}
+	p := NewProcessor(pool, s, notifier, slog.Default(), WithFixService(fixExec))
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "delivery-fix-failed-skip",
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	task := buildAsynqTask(t, payload)
+	record := &model.TaskRecord{
+		ID:         "task-fix-failed-skip",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		DeliveryID: payload.DeliveryID,
+	}
+	seedRecord(s, record)
+
+	err := p.ProcessTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("应返回 SkipRetry 错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+	if !strings.Contains(err.Error(), "跳过重试") {
+		t.Errorf("错误信息应包含'跳过重试'，实际: %v", err)
+	}
+	updated := s.tasks["task-fix-failed-skip"]
+	if updated.Status != model.TaskStatusFailed {
+		t.Errorf("状态应为 failed，实际: %s", updated.Status)
 	}
 }
 

@@ -232,7 +232,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if reviewResult != nil {
 			result = adaptReviewResult(reviewResult)
 		}
-	case payload.TaskType == model.TaskTypeAnalyzeIssue && p.fixService != nil:
+	case (payload.TaskType == model.TaskTypeAnalyzeIssue || payload.TaskType == model.TaskTypeFixIssue) && p.fixService != nil:
 		fixResult, runErr = p.fixService.Execute(ctx, payload)
 		if fixResult != nil {
 			result = adaptFixResult(fixResult)
@@ -264,6 +264,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		}
 		if errors.Is(runErr, fix.ErrInvalidIssueRef) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Issue 关联的 ref 不存在，跳过分析")
+		}
+		if errors.Is(runErr, fix.ErrInfoInsufficient) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "前序分析信息不足，跳过修复")
+		}
+		if errors.Is(runErr, fix.ErrFixFailed) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Claude 返回 success=false，跳过重试")
 		}
 		// 解析失败且重试耗尽：发送降级评论，让用户至少能在 PR 上看到原始输出
 		if errors.Is(runErr, review.ErrParseFailure) && !shouldRetry(ctx) && reviewResult != nil {

@@ -81,6 +81,10 @@ func (m *mockStoreForRecovery) ListReviewResultsByTimeRange(_ context.Context, _
 	return nil, nil
 }
 
+func (m *mockStoreForRecovery) GetLatestAnalysisByIssue(_ context.Context, _ string, _ int64) (*model.TaskRecord, error) {
+	return nil, nil
+}
+
 // mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
 type mockEnqueuerForRecovery struct {
 	enqueueErr error
