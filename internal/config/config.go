@@ -77,6 +77,7 @@ type WorkerConfig struct {
 	Timeout     time.Duration `mapstructure:"timeout"`
 
 	Image       string `mapstructure:"image"`
+	ImageFull   string `mapstructure:"image_full"`     // M3.4: 执行镜像（可选）
 	CPULimit    string `mapstructure:"cpu_limit"`
 	MemoryLimit string `mapstructure:"memory_limit"`
 	NetworkName string `mapstructure:"network_name"`
@@ -87,9 +88,10 @@ type WorkerConfig struct {
 
 // TaskTimeouts 按任务类型配置硬超时，零值表示使用默认值
 type TaskTimeouts struct {
-	ReviewPR time.Duration `mapstructure:"review_pr"`
-	FixIssue time.Duration `mapstructure:"fix_issue"`
-	GenTests time.Duration `mapstructure:"gen_tests"`
+	ReviewPR     time.Duration `mapstructure:"review_pr"`
+	AnalyzeIssue time.Duration `mapstructure:"analyze_issue"` // M3.4: 默认 15m
+	FixIssue     time.Duration `mapstructure:"fix_issue"`
+	GenTests     time.Duration `mapstructure:"gen_tests"`
 }
 
 // StreamMonitorConf 流式心跳监控配置
