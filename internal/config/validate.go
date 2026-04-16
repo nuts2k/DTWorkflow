@@ -113,11 +113,19 @@ func Validate(cfg *Config) error {
 		{"worker.timeouts.review_pr", cfg.Worker.Timeouts.ReviewPR},
 		{"worker.timeouts.fix_issue", cfg.Worker.Timeouts.FixIssue},
 		{"worker.timeouts.gen_tests", cfg.Worker.Timeouts.GenTests},
+		{"worker.timeouts.analyze_issue", cfg.Worker.Timeouts.AnalyzeIssue},
 	} {
 		if tc.val < 0 {
 			errs = append(errs, fmt.Errorf("%s 不能为负数，当前值: %s", tc.name, tc.val))
 		} else if tc.val > maxTimeout {
 			errs = append(errs, fmt.Errorf("%s 不能超过 %s，当前值: %s", tc.name, maxTimeout, tc.val))
+		}
+	}
+
+	// worker.image_full 格式校验（非空时检查无空格）
+	if cfg.Worker.ImageFull != "" {
+		if strings.Contains(cfg.Worker.ImageFull, " ") {
+			errs = append(errs, fmt.Errorf("worker.image_full 格式非法: %q", cfg.Worker.ImageFull))
 		}
 	}
 

@@ -971,6 +971,34 @@ func TestValidate_APITokens(t *testing.T) {
 	}
 }
 
+func TestValidate_WorkerImageFull(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Worker.ImageFull = ""
+	if err := Validate(cfg); err != nil {
+		t.Errorf("ImageFull 为空应合法: %v", err)
+	}
+	cfg.Worker.ImageFull = "dtworkflow-worker-full:latest"
+	if err := Validate(cfg); err != nil {
+		t.Errorf("ImageFull 合法应通过: %v", err)
+	}
+	cfg.Worker.ImageFull = "bad image"
+	if err := Validate(cfg); err == nil {
+		t.Error("ImageFull 含空格应报错")
+	}
+}
+
+func TestValidate_WorkerTimeoutsAnalyzeIssue(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Worker.Timeouts.AnalyzeIssue = 0
+	if err := Validate(cfg); err != nil {
+		t.Errorf("AnalyzeIssue 零值应合法: %v", err)
+	}
+	cfg.Worker.Timeouts.AnalyzeIssue = -1 * time.Minute
+	if err := Validate(cfg); err == nil {
+		t.Error("AnalyzeIssue 负值应报错")
+	}
+}
+
 func TestValidate_RepoFeishuOverride(t *testing.T) {
 	// 辅助函数：构造启用了全局飞书渠道的基础配置
 	feishuBaseConfig := func() *Config {
