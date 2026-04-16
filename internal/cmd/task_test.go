@@ -90,6 +90,10 @@ func (m *mockTaskStore) ListReviewResultsByTimeRange(_ context.Context, _, _ tim
 	return nil, nil
 }
 
+func (m *mockTaskStore) GetLatestAnalysisByIssue(_ context.Context, _ string, _ int64) (*model.TaskRecord, error) {
+	return nil, nil
+}
+
 type stubTaskEnqueuer struct {
 	asynqID     string
 	enqueueErr  error

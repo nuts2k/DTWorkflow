@@ -167,6 +167,10 @@ func (m *mockStore) ListReviewResultsByTimeRange(_ context.Context, _, _ time.Ti
 	return nil, nil
 }
 
+func (m *mockStore) GetLatestAnalysisByIssue(_ context.Context, _ string, _ int64) (*model.TaskRecord, error) {
+	return nil, nil
+}
+
 func (m *mockStore) Ping(_ context.Context) error {
 	return nil
 }

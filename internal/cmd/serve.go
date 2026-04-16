@@ -229,6 +229,8 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 			fix.WithServiceLogger(slog.Default()),
 			fix.WithConfigProvider(cfgAdapter),
 			fix.WithRefClient(deps.GiteaClient),
+			fix.WithPRClient(deps.GiteaClient),   // M3.5: 修复 PR 创建
+			fix.WithFixStaleChecker(deps.Store),  // M3.5: 前序分析"信息不足"检查
 		)
 		processorOpts = append(processorOpts, queue.WithFixService(fixSvc))
 	}
