@@ -12,7 +12,7 @@ DTW_LDFLAGS := -X '$(MODULE)/internal/dtw/cmd.dtwVersion=$(VERSION)' \
                -X '$(MODULE)/internal/dtw/cmd.dtwCommit=$(GIT_COMMIT)' \
                -X '$(MODULE)/internal/dtw/cmd.dtwBuildTime=$(BUILD_TIME)'
 
-.PHONY: build build-linux build-dtw build-dtw-linux build-all install lint test fmt clean dev-up dev-down docker-build release deploy rollback help
+.PHONY: build build-linux build-dtw build-dtw-linux build-all install lint test fmt clean dev-up dev-down docker-build build-worker build-worker-full release deploy rollback help
 
 ## build: 构建本平台二进制到 bin/
 build:
@@ -66,6 +66,16 @@ docker-build:
 	docker build -f build/Dockerfile \
 		--build-arg LDFLAGS="$(LDFLAGS)" \
 		-t $(APP_NAME):$(VERSION) .
+
+## build-worker: 构建轻量 Worker 镜像
+build-worker:
+	docker build -f build/docker/Dockerfile.worker \
+		-t dtworkflow-worker:latest .
+
+## build-worker-full: 构建执行 Worker 镜像（依赖 build-worker）
+build-worker-full: build-worker
+	docker build -f build/docker/Dockerfile.worker-full \
+		-t dtworkflow-worker-full:latest .
 
 ## release: 构建发布包（用法：make release VERSION=v0.2.0）
 release:
