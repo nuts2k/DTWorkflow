@@ -6,8 +6,9 @@ import "time"
 type TaskType string
 
 const (
-	TaskTypeReviewPR TaskType = "review_pr"
-	TaskTypeFixIssue TaskType = "fix_issue"
+	TaskTypeReviewPR       TaskType = "review_pr"
+	TaskTypeAnalyzeIssue   TaskType = "analyze_issue"   // M3.4: 只读分析（从 fix_issue 拆分）
+	TaskTypeFixIssue       TaskType = "fix_issue"        // M3.4: 语义修正为真正的修复
 	TaskTypeGenTests       TaskType = "gen_tests"
 	TaskTypeGenDailyReport TaskType = "gen_daily_report"
 )
@@ -38,7 +39,7 @@ const (
 // IsValid 检查任务类型是否为已知值
 func (t TaskType) IsValid() bool {
 	switch t {
-	case TaskTypeReviewPR, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport:
+	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport:
 		return true
 	}
 	return false

@@ -54,6 +54,12 @@ func TestTaskStatus_IsValid(t *testing.T) {
 	}
 }
 
+func TestTaskTypeAnalyzeIssue_IsValid(t *testing.T) {
+	if !TaskTypeAnalyzeIssue.IsValid() {
+		t.Error("TaskTypeAnalyzeIssue 应为合法 TaskType")
+	}
+}
+
 func TestTaskPriority_IsValid(t *testing.T) {
 	tests := []struct {
 		name  string
