@@ -26,6 +26,22 @@ type RefClient interface {
 	GetTag(ctx context.Context, owner, repo, tag string) (*gitea.Tag, *gitea.Response, error)
 }
 
+// PRClient M3.5 窄接口，仅暴露修复模式创建 PR 所需的 Gitea API。
+// *gitea.Client 通过 CreatePullRequest 和 GetRepo 满足此接口。
+type PRClient interface {
+	CreatePullRequest(ctx context.Context, owner, repo string,
+		opts gitea.CreatePullRequestOption) (*gitea.PullRequest, *gitea.Response, error)
+	// GetRepo 用于 Tag-as-Ref 场景下获取仓库默认分支作为 PR Base。
+	GetRepo(ctx context.Context, owner, repo string) (*gitea.Repository, *gitea.Response, error)
+}
+
+// FixStaleChecker M3.5 窄接口，查询前序分析结果以支持"信息不足"前置检查。
+// *store.SQLiteStore 通过 GetLatestAnalysisByIssue 满足此接口。
+type FixStaleChecker interface {
+	GetLatestAnalysisByIssue(ctx context.Context, repoFullName string,
+		issueNumber int64) (*model.TaskRecord, error)
+}
+
 // FixPoolRunner fix 专用的容器执行接口。
 // *worker.Pool 通过 RunWithCommandAndStdin 满足此接口。
 type FixPoolRunner interface {
@@ -60,13 +76,27 @@ func WithRefClient(c RefClient) ServiceOption {
 	return func(s *Service) { s.refClient = c }
 }
 
+// WithPRClient M3.5: 注入创建 PR 所需的 Gitea API 客户端（可选）。
+// 仅在 fix_issue 修复模式执行 PR 创建时使用；analyze_issue 无需。
+func WithPRClient(c PRClient) ServiceOption {
+	return func(s *Service) { s.prClient = c }
+}
+
+// WithFixStaleChecker M3.5: 注入前序分析查询接口（可选）。
+// 仅在 fix_issue 模式下用于"信息不足"前置检查。未注入时跳过检查（Claude 自行判断）。
+func WithFixStaleChecker(c FixStaleChecker) ServiceOption {
+	return func(s *Service) { s.staleChecker = c }
+}
+
 // Service Issue 分析编排服务，负责 analyze_issue 的上下文采集和分析执行。
 type Service struct {
-	gitea     IssueClient
-	pool      FixPoolRunner
-	cfgProv   FixConfigProvider
-	refClient RefClient
-	logger    *slog.Logger
+	gitea        IssueClient
+	pool         FixPoolRunner
+	cfgProv      FixConfigProvider
+	refClient    RefClient
+	prClient     PRClient        // M3.5: fix_issue 创建 PR 使用
+	staleChecker FixStaleChecker // M3.5: fix_issue 前置检查使用
+	logger       *slog.Logger
 }
 
 // NewService 创建 Issue 分析服务实例。
