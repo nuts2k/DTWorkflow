@@ -230,7 +230,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if reviewResult != nil {
 			result = adaptReviewResult(reviewResult)
 		}
-	case payload.TaskType == model.TaskTypeFixIssue && p.fixService != nil:
+	case (payload.TaskType == model.TaskTypeAnalyzeIssue || payload.TaskType == model.TaskTypeFixIssue) && p.fixService != nil:
 		fixResult, runErr = p.fixService.Execute(ctx, payload)
 		if fixResult != nil {
 			result = adaptFixResult(fixResult)
@@ -252,16 +252,16 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 		// ErrPRNotOpen / ErrIssueNotOpen 是确定性失败，直接标记 failed 并跳过重试
 		if errors.Is(runErr, review.ErrPRNotOpen) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, "PR 不处于 open 状态，跳过评审")
+			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, nil, "PR 不处于 open 状态，跳过评审")
 		}
 		if errors.Is(runErr, fix.ErrIssueNotOpen) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, "Issue 不处于 open 状态，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Issue 不处于 open 状态，跳过分析")
 		}
 		if errors.Is(runErr, fix.ErrMissingIssueRef) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, "Issue 未设置关联分支，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Issue 未设置关联分支，跳过分析")
 		}
 		if errors.Is(runErr, fix.ErrInvalidIssueRef) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, "Issue 关联的 ref 不存在，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Issue 关联的 ref 不存在，跳过分析")
 		}
 		// 解析失败且重试耗尽：发送降级评论，让用户至少能在 PR 上看到原始输出
 		if errors.Is(runErr, review.ErrParseFailure) && !shouldRetry(ctx) && reviewResult != nil {
@@ -340,7 +340,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if finalStatePersisted {
-		p.sendCompletionNotification(ctx, record, reviewResult)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult)
 	}
 
 	if runErr != nil {
@@ -447,6 +447,28 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 			Body:      fmt.Sprintf("正在评审 PR #%d\n\n仓库：%s", payload.PRNumber, payload.RepoFullName),
 			Metadata:  p.buildPRMetadata(payload),
 		}
+	case model.TaskTypeAnalyzeIssue:
+		if payload.IssueNumber <= 0 {
+			return notify.Message{}, false
+		}
+		metadata := map[string]string{}
+		if p.giteaBaseURL != "" {
+			metadata[notify.MetaKeyIssueURL] = fmt.Sprintf("%s/%s/%s/issues/%d",
+				p.giteaBaseURL, payload.RepoOwner, payload.RepoName, payload.IssueNumber)
+		}
+		msg = notify.Message{
+			EventType: notify.EventIssueAnalyzeStarted,
+			Severity:  notify.SeverityInfo,
+			Target: notify.Target{
+				Owner:  payload.RepoOwner,
+				Repo:   payload.RepoName,
+				Number: payload.IssueNumber,
+				IsPR:   false,
+			},
+			Title:    "Issue 自动分析开始",
+			Body:     fmt.Sprintf("正在分析 Issue #%d\n\n仓库：%s", payload.IssueNumber, payload.RepoFullName),
+			Metadata: metadata,
+		}
 	case model.TaskTypeFixIssue:
 		if payload.IssueNumber <= 0 {
 			return notify.Message{}, false
@@ -465,8 +487,8 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 				Number: payload.IssueNumber,
 				IsPR:   false,
 			},
-			Title:    "Issue 自动分析开始",
-			Body:     fmt.Sprintf("正在分析 Issue #%d\n\n仓库：%s", payload.IssueNumber, payload.RepoFullName),
+			Title:    "Issue 自动修复开始",
+			Body:     fmt.Sprintf("正在修复 Issue #%d\n\n仓库：%s", payload.IssueNumber, payload.RepoFullName),
 			Metadata: metadata,
 		}
 	default:
@@ -482,7 +504,7 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 }
 
 // sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知
-func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult) {
+func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult) {
 	if p.notifier == nil || record == nil {
 		return
 	}
@@ -568,6 +590,55 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 				Severity:  notify.SeverityWarning,
 				Target:    target,
 				Title:     "PR 自动评审任务失败",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		}
+	case model.TaskTypeAnalyzeIssue:
+		if payload.IssueNumber <= 0 {
+			return notify.Message{}, false
+		}
+		issueTarget := notify.Target{
+			Owner:  payload.RepoOwner,
+			Repo:   payload.RepoName,
+			Number: payload.IssueNumber,
+			IsPR:   false,
+		}
+		metadata := map[string]string{}
+		if p.giteaBaseURL != "" {
+			metadata[notify.MetaKeyIssueURL] = fmt.Sprintf("%s/%s/%s/issues/%d",
+				p.giteaBaseURL, payload.RepoOwner, payload.RepoName, payload.IssueNumber)
+		}
+		if record.Status == model.TaskStatusRetrying {
+			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
+			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
+			metadata[notify.MetaKeyTaskStatus] = string(record.Status)
+		}
+		switch record.Status {
+		case model.TaskStatusSucceeded:
+			msg = notify.Message{
+				EventType: notify.EventIssueAnalyzeDone,
+				Severity:  notify.SeverityInfo,
+				Target:    issueTarget,
+				Title:     "Issue 自动分析完成",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		case model.TaskStatusRetrying:
+			msg = notify.Message{
+				EventType: notify.EventSystemError,
+				Severity:  notify.SeverityWarning,
+				Target:    issueTarget,
+				Title:     "Issue 自动分析重试中",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		default: // failed
+			msg = notify.Message{
+				EventType: notify.EventSystemError,
+				Severity:  notify.SeverityWarning,
+				Target:    issueTarget,
+				Title:     "Issue 自动分析失败",
 				Body:      body,
 				Metadata:  metadata,
 			}
@@ -717,7 +788,7 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 
 // handleSkipRetryFailure 处理确定性失败（如 PR/Issue 不处于 open 状态），
 // 标记任务 failed、持久化、发送通知，并返回 SkipRetry 错误。
-func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, logMsg string) error {
+func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, logMsg string) error {
 	record.Status = model.TaskStatusFailed
 	record.Error = runErr.Error()
 	completedAt := time.Now()
@@ -733,7 +804,7 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 			"error", err,
 		)
 	} else {
-		p.sendCompletionNotification(ctx, record, reviewResult)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult)
 	}
 	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
 }

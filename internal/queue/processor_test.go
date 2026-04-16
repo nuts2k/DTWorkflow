@@ -676,7 +676,7 @@ func TestProcessTask_Retrying_SendsNotification(t *testing.T) {
 		},
 	}
 	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default())
-	p.sendCompletionNotification(context.Background(), record, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil)
 	if len(notifier.messages) != 1 {
 		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
 	}
