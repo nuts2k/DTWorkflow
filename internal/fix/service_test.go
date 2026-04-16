@@ -1055,6 +1055,55 @@ func TestExecute_RefCommentWritebackFailure_StillReturnsError(t *testing.T) {
 	}
 }
 
+func TestService_ParseFixResult_Success(t *testing.T) {
+	envelope := `{"type":"result","subtype":"success","duration_ms":12000,"total_cost_usd":0.05,"is_error":false,"num_turns":8,"result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc123\",\"modified_files\":[\"a.java\"],\"test_results\":{\"passed\":5,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"x\",\"fix_approach\":\"y\"}","session_id":"s1"}`
+	s := &Service{}
+	result := s.parseFixResult(envelope)
+	if result.ParseError != nil {
+		t.Fatalf("解析不应失败: %v", result.ParseError)
+	}
+	if result.Fix == nil {
+		t.Fatal("Fix 不应为 nil")
+	}
+	if !result.Fix.Success || result.Fix.BranchName != "auto-fix/issue-15" {
+		t.Errorf("Fix 字段不正确: %+v", result.Fix)
+	}
+	if result.CLIMeta == nil || result.CLIMeta.CostUSD != 0.05 {
+		t.Errorf("CLIMeta 不正确: %+v", result.CLIMeta)
+	}
+}
+
+func TestService_ParseFixResult_SuccessInvariantViolation(t *testing.T) {
+	// success=true 但 branch_name 为空 → 视为解析异常
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"analysis\":\"x\"}"}`
+	s := &Service{}
+	result := s.parseFixResult(envelope)
+	if result.ParseError == nil {
+		t.Error("success=true 时 branch_name 为空应视为解析异常")
+	}
+}
+
+func TestService_ParseFixResult_InfoInsufficient(t *testing.T) {
+	envelope := `{"type":"result","result":"{\"success\":false,\"info_sufficient\":false,\"missing_info\":[\"需要堆栈\"]}"}`
+	s := &Service{}
+	result := s.parseFixResult(envelope)
+	if result.ParseError != nil {
+		t.Fatalf("解析不应失败: %v", result.ParseError)
+	}
+	if result.Fix == nil || result.Fix.InfoSufficient {
+		t.Errorf("InfoSufficient 应为 false, got Fix=%+v", result.Fix)
+	}
+}
+
+func TestService_ParseFixResult_CLIError(t *testing.T) {
+	envelope := `{"type":"error","subtype":"context_limit","is_error":true}`
+	s := &Service{}
+	result := s.parseFixResult(envelope)
+	if result.ParseError == nil {
+		t.Error("CLI 错误时应有 ParseError")
+	}
+}
+
 func TestValidateRef_ReturnsRefKind_Branch(t *testing.T) {
 	rc := &mockRefClient{
 		getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {

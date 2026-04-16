@@ -270,6 +270,52 @@ func (s *Service) parseResult(output string) *FixResult {
 	return result
 }
 
+// parseFixResult M3.5: 双层 JSON 解析 — 外层 CLI 信封 → 内层 FixOutput。
+// 与 parseResult（分析模式）的区别仅在于内层 schema；外层解析逻辑相同。
+// 成功场景不变量：success=true 时 BranchName 和 CommitSHA 必须非空，否则视为 ParseError。
+func (s *Service) parseFixResult(output string) *FixResult {
+	result := &FixResult{}
+
+	// 外层 CLI JSON 信封
+	var cliResp CLIResponse
+	if err := json.Unmarshal([]byte(output), &cliResp); err != nil {
+		result.ParseError = fmt.Errorf("CLI JSON 解析失败: %w", err)
+		return result
+	}
+	result.CLIMeta = &model.CLIMeta{
+		CostUSD:    cliResp.EffectiveCostUSD(),
+		DurationMs: cliResp.DurationMs,
+		IsError:    cliResp.IsExecutionError(),
+		NumTurns:   cliResp.NumTurns,
+		SessionID:  cliResp.SessionID,
+	}
+
+	if cliResp.IsExecutionError() {
+		result.ParseError = fmt.Errorf("Claude CLI 报告错误: type=%s, subtype=%s", cliResp.Type, cliResp.Subtype)
+		return result
+	}
+
+	// 内层 FixOutput JSON
+	jsonText := extractJSON(cliResp.Result)
+	var fix FixOutput
+	if err := json.Unmarshal([]byte(jsonText), &fix); err != nil {
+		result.ParseError = fmt.Errorf("FixOutput JSON 解析失败: %w", err)
+		return result
+	}
+
+	// 成功不变量校验：success=true 必须有 branch_name 和 commit_sha
+	if fix.Success {
+		if fix.BranchName == "" || fix.CommitSHA == "" {
+			result.ParseError = fmt.Errorf("FixOutput 不变量违反：success=true 但 branch_name=%q commit_sha=%q",
+				fix.BranchName, fix.CommitSHA)
+			return result
+		}
+	}
+
+	result.Fix = &fix
+	return result
+}
+
 // collectContext 采集 Issue 富上下文
 func (s *Service) collectContext(ctx context.Context, owner, repo string, issue *gitea.Issue) (*IssueContext, error) {
 	// 单页获取评论（最多 50 条）
