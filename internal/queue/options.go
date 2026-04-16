@@ -9,9 +9,10 @@ import (
 // TaskTimeoutsConfig 按任务类型的超时配置
 // 在 queue 包中单独定义，避免依赖 worker 包导致循环引用
 type TaskTimeoutsConfig struct {
-	ReviewPR time.Duration
-	FixIssue time.Duration
-	GenTests time.Duration
+	ReviewPR     time.Duration
+	FixIssue     time.Duration
+	GenTests     time.Duration
+	AnalyzeIssue time.Duration // M3.4: 只读分析超时（默认 15m）
 }
 
 // TaskTimeout 从配置中获取超时值，零值时回退到硬编码默认值
@@ -24,6 +25,8 @@ func TaskTimeout(taskType model.TaskType, cfg TaskTimeoutsConfig) time.Duration 
 		configured = cfg.FixIssue
 	case model.TaskTypeGenTests:
 		configured = cfg.GenTests
+	case model.TaskTypeAnalyzeIssue:
+		configured = cfg.AnalyzeIssue
 	}
 	if configured > 0 {
 		return configured
@@ -42,6 +45,8 @@ func defaultTaskTimeout(taskType model.TaskType) time.Duration {
 		return 20 * time.Minute
 	case model.TaskTypeGenDailyReport:
 		return 10 * time.Minute
+	case model.TaskTypeAnalyzeIssue:
+		return 15 * time.Minute
 	default:
 		return 10 * time.Minute
 	}

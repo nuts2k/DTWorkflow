@@ -134,6 +134,22 @@ func TestBuildAsynqOptions_WithoutTaskID(t *testing.T) {
 	}
 }
 
+func TestTaskTimeout_AnalyzeIssue_Default(t *testing.T) {
+	cfg := TaskTimeoutsConfig{}
+	got := TaskTimeout(model.TaskTypeAnalyzeIssue, cfg)
+	if got != 15*time.Minute {
+		t.Errorf("AnalyzeIssue 默认超时 = %v, 期望 15m", got)
+	}
+}
+
+func TestTaskTimeout_AnalyzeIssue_Configured(t *testing.T) {
+	cfg := TaskTimeoutsConfig{AnalyzeIssue: 20 * time.Minute}
+	got := TaskTimeout(model.TaskTypeAnalyzeIssue, cfg)
+	if got != 20*time.Minute {
+		t.Errorf("AnalyzeIssue 配置超时 = %v, 期望 20m", got)
+	}
+}
+
 func TestPriorityToQueue(t *testing.T) {
 	tests := []struct {
 		priority model.TaskPriority
