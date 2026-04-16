@@ -1101,7 +1101,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 			PRNumber:     1,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil)
 	if ok {
 		t.Error("RepoOwner 为空时不应生成通知消息")
 	}
@@ -1109,7 +1109,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 
 func TestBuildNotificationMessage_NilRecord(t *testing.T) {
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
-	_, ok := p.buildNotificationMessage(nil, nil)
+	_, ok := p.buildNotificationMessage(nil, nil, nil)
 	if ok {
 		t.Error("nil record 不应生成通知消息")
 	}
@@ -1129,7 +1129,7 @@ func TestBuildNotificationMessage_FixIssue_InvalidNumber(t *testing.T) {
 			IssueNumber: 0,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil)
 	if ok {
 		t.Error("IssueNumber=0 不应生成通知消息")
 	}
@@ -2299,7 +2299,7 @@ func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2342,7 +2342,7 @@ func TestBuildNotificationMessage_Failed_HasNotifyTimeNoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2380,7 +2380,7 @@ func TestBuildNotificationMessage_Retrying_HasNotifyTimeNoDuration(t *testing.T)
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2418,7 +2418,7 @@ func TestBuildNotificationMessage_FixIssue_Succeeded_HasDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2456,7 +2456,7 @@ func TestBuildNotificationMessage_FixIssue_Failed_NoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")

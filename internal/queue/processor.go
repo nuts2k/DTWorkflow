@@ -224,6 +224,8 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	var fixResult *fix.FixResult
 	var result *worker.ExecutionResult
 	var runErr error
+	// M3.4 路由：review_pr → reviewService，analyze_issue → fixService。
+	// fix_issue 暂走 pool.Run（通用容器执行），M3.5 将在 fix.Service 获得写能力后接入。
 	switch {
 	case payload.TaskType == model.TaskTypeReviewPR && p.reviewService != nil:
 		reviewResult, runErr = p.reviewService.Execute(ctx, payload)
@@ -508,7 +510,7 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 	if p.notifier == nil || record == nil {
 		return
 	}
-	msg, ok := p.buildNotificationMessage(record, reviewResult)
+	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult)
 	if !ok {
 		return
 	}
@@ -521,7 +523,9 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 	}
 }
 
-func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult) (notify.Message, bool) {
+// buildNotificationMessage 构建任务完成通知消息。
+// fixResult 预留给 M3.5，届时将注入 fix 结果的 PR 元数据。
+func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, _ *fix.FixResult) (notify.Message, bool) {
 	if record == nil {
 		return notify.Message{}, false
 	}

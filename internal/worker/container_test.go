@@ -568,7 +568,7 @@ func TestBuildContainerCmd_AnalyzeIssue(t *testing.T) {
 	if !strings.Contains(prompt, "#15") {
 		t.Error("prompt 应包含 Issue 编号 #15")
 	}
-	if !strings.Contains(prompt, "nalyze") {
+	if !strings.Contains(strings.ToLower(prompt), "analyze") {
 		t.Error("prompt 应包含分析指令关键词")
 	}
 	if strings.Contains(prompt, "Fix issue") || strings.Contains(prompt, "implement a fix") {

@@ -99,8 +99,12 @@ func (h *handlers) triggerFix(c *gin.Context) {
 		return
 	}
 
+	taskLabel := "分析"
+	if taskType == model.TaskTypeFixIssue {
+		taskLabel = "修复"
+	}
 	Success(c, http.StatusAccepted, gin.H{
 		"task_id": taskID,
-		"message": fmt.Sprintf("Issue #%d 修复任务已入队", req.IssueNumber),
+		"message": fmt.Sprintf("Issue #%d %s任务已入队", req.IssueNumber, taskLabel),
 	})
 }

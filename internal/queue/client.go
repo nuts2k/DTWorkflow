@@ -17,10 +17,10 @@ import (
 // asynq 任务类型常量
 const (
 	AsynqTypeReviewPR       = "dtworkflow:review_pr"
+	AsynqTypeAnalyzeIssue   = "dtworkflow:analyze_issue"
 	AsynqTypeFixIssue       = "dtworkflow:fix_issue"
 	AsynqTypeGenTests       = "dtworkflow:gen_tests"
 	AsynqTypeGenDailyReport = "dtworkflow:gen_daily_report"
-	AsynqTypeAnalyzeIssue   = "dtworkflow:analyze_issue" // M3.4
 )
 
 // 队列名称常量
