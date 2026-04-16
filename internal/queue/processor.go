@@ -54,6 +54,8 @@ type ReviewExecutor interface {
 // M3.2 激活：当 fix.Service 实现容器执行后，Processor 将通过此接口路由 fix_issue 任务。
 type FixExecutor interface {
 	Execute(ctx context.Context, payload model.TaskPayload) (*fix.FixResult, error)
+	// WriteDegraded 在修复结果解析失败且重试耗尽后发送降级 Issue 评论。
+	WriteDegraded(ctx context.Context, payload model.TaskPayload, result *fix.FixResult) error
 }
 
 // WithFixService 注入 Issue 分析服务。
@@ -270,6 +272,13 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		}
 		if errors.Is(runErr, fix.ErrFixFailed) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Claude 返回 success=false，跳过重试")
+		}
+		// fix 解析失败且重试耗尽：发送降级评论，让用户至少能在 Issue 上看到原始输出
+		if errors.Is(runErr, fix.ErrFixParseFailure) && !shouldRetry(ctx) && fixResult != nil {
+			if wbErr := p.fixService.WriteDegraded(ctx, payload, fixResult); wbErr != nil {
+				p.logger.ErrorContext(ctx, "修复解析失败降级回写失败",
+					"task_id", taskID, "error", wbErr)
+			}
 		}
 		// 解析失败且重试耗尽：发送降级评论，让用户至少能在 PR 上看到原始输出
 		if errors.Is(runErr, review.ErrParseFailure) && !shouldRetry(ctx) && reviewResult != nil {
@@ -725,7 +734,8 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 }
 
 // adaptFixResult 将 fix.FixResult 适配为 worker.ExecutionResult。
-// M3.3: ParseError 仅保留信息到 Error 字段供调试，不再导致 ExitCode=1（降级评论已发出）。
+// M3.3: ParseError 仅保留信息到 Error 字段供调试，不再导致 ExitCode=1。
+// fix 解析失败的降级评论由 processor 在重试耗尽后统一触发。
 // CLIMeta.IsError 仍保留 ExitCode=1（与 review 包对齐）。
 func adaptFixResult(r *fix.FixResult) *worker.ExecutionResult {
 	if r == nil {

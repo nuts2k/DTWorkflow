@@ -292,10 +292,40 @@ func FormatFixPushButNoPRComment(branchName, apiError string) string {
 		escapeMarkdown(branchName))
 }
 
+// FormatFixDegradedComment M3.5: 修复结果解析失败后的降级评论。
+func FormatFixDegradedComment(result *FixResult) string {
+	var durationSec, costUSD float64
+	if result != nil && result.CLIMeta != nil {
+		durationSec = float64(result.CLIMeta.DurationMs) / 1000.0
+		costUSD = result.CLIMeta.CostUSD
+	}
+	raw := ""
+	if result != nil {
+		raw = result.RawOutput
+	}
+	return formatRawOutputFallback(
+		"## DTWorkflow Issue 自动修复降级报告\n\n",
+		"> 修复结果解析失败，以下为 Claude 原始输出。\n\n",
+		raw,
+		durationSec,
+		costUSD,
+	)
+}
+
 func formatFallback(rawOutput string, durationSec, costUSD float64) string {
+	return formatRawOutputFallback(
+		"## DTWorkflow Issue 分析报告\n\n",
+		"> 分析结果解析失败，以下为 Claude 原始输出。\n\n",
+		rawOutput,
+		durationSec,
+		costUSD,
+	)
+}
+
+func formatRawOutputFallback(title, lead, rawOutput string, durationSec, costUSD float64) string {
 	var sb strings.Builder
-	sb.WriteString("## DTWorkflow Issue 分析报告\n\n")
-	sb.WriteString("> 分析结果解析失败，以下为 Claude 原始输出。\n\n")
+	sb.WriteString(title)
+	sb.WriteString(lead)
 	sb.WriteString("---\n\n")
 
 	raw := rawOutput

@@ -60,14 +60,21 @@ func (m *mockReviewExecutor) WriteDegraded(_ context.Context, _ model.TaskPayloa
 }
 
 type mockFixExecutor struct {
-	result *fix.FixResult
-	err    error
-	calls  int
+	result             *fix.FixResult
+	err                error
+	writeDegradedErr   error
+	calls              int
+	writeDegradedCalls int
 }
 
 func (m *mockFixExecutor) Execute(_ context.Context, _ model.TaskPayload) (*fix.FixResult, error) {
 	m.calls++
 	return m.result, m.err
+}
+
+func (m *mockFixExecutor) WriteDegraded(_ context.Context, _ model.TaskPayload, _ *fix.FixResult) error {
+	m.writeDegradedCalls++
+	return m.writeDegradedErr
 }
 
 // buildAsynqTask 构建测试用的 asynq.Task（仅序列化 payload，不依赖 ResultWriter）
@@ -1086,6 +1093,51 @@ func TestProcessTask_ExitCode2_SkipRetry(t *testing.T) {
 	}
 }
 
+func TestProcessTask_FixExitCode2_SkipRetry(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-exitcode2",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  9,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-fix-exitcode2",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	fixExec := &mockFixExecutor{
+		result: &fix.FixResult{
+			RawOutput: "bad args",
+			ExitCode:  2,
+		},
+	}
+
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithFixService(fixExec))
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("fix 退出码 2 应返回错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("fix 退出码 2 应包含 SkipRetry，实际: %v", err)
+	}
+
+	got := s.tasks["proc-task-fix-exitcode2"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+}
+
 func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
 
@@ -1310,6 +1362,61 @@ func TestProcessTask_ReviewParseFailure_DegradedStaleMarksCancelled(t *testing.T
 	}
 	if !strings.Contains(got.Error, "评审已过时，被更新的任务取代") {
 		t.Fatalf("error = %q，应包含过时取消原因", got.Error)
+	}
+}
+
+func TestProcessTask_FixParseFailure_PersistsRawOutputAndWritesDegraded(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-parse-failed",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  12,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-fix-parse-failed",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	fixExec := &mockFixExecutor{
+		result: &fix.FixResult{
+			RawOutput:  "raw fix output",
+			ParseError: errors.New("bad fix json"),
+		},
+		err: fmt.Errorf("%w: bad fix json", fix.ErrFixParseFailure),
+	}
+
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithFixService(fixExec))
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("解析失败应返回错误")
+	}
+	if errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("解析失败不应 SkipRetry，实际: %v", err)
+	}
+	if fixExec.writeDegradedCalls != 1 {
+		t.Fatalf("WriteDegraded 调用次数 = %d, want 1", fixExec.writeDegradedCalls)
+	}
+
+	got := s.tasks["proc-task-fix-parse-failed"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if got.Result != "raw fix output" {
+		t.Fatalf("result = %q, want %q", got.Result, "raw fix output")
+	}
+	if !strings.Contains(got.Error, fix.ErrFixParseFailure.Error()) {
+		t.Fatalf("error = %q，应包含 %q", got.Error, fix.ErrFixParseFailure.Error())
 	}
 }
 

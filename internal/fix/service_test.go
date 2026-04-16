@@ -158,9 +158,9 @@ func TestExecute_InvalidIssueNumber(t *testing.T) {
 
 // stubPRClient mock PRClient for fix tests
 type stubPRClient struct {
-	createResult *gitea.PullRequest
-	createErr    error
-	createCalls  int
+	createResult  *gitea.PullRequest
+	createErr     error
+	createCalls   int
 	getRepoResult *gitea.Repository
 	getRepoErr    error
 }
@@ -994,6 +994,76 @@ func TestExecute_ContainerNilResult(t *testing.T) {
 	}
 }
 
+func TestExecuteFix_NonZeroExitReturnsResultWithoutError(t *testing.T) {
+	issue := openIssue(10)
+	pool := &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 2, Output: "invalid arguments"},
+	}
+
+	svc := NewService(
+		&mockIssueClient{
+			getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+				return issue, nil, nil
+			},
+			listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+				return nil, nil, nil
+			},
+		},
+		pool,
+		WithRefClient(&mockRefClient{}),
+	)
+
+	result, err := svc.Execute(context.Background(), model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  10,
+		IssueRef:     "main",
+	})
+	if err != nil {
+		t.Fatalf("非零退出码应交给上层统一处理，实际 error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result 不应为 nil")
+	}
+	if result.ExitCode != 2 {
+		t.Fatalf("ExitCode = %d, want 2", result.ExitCode)
+	}
+}
+
+func TestService_WriteDegraded_WritesIssueComment(t *testing.T) {
+	var commentBody string
+	svc := NewService(
+		&mockIssueClient{
+			createComment: func(_ context.Context, _, _ string, _ int64, opts gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+				commentBody = opts.Body
+				return &gitea.Comment{ID: 1}, nil, nil
+			},
+		},
+		&mockFixPoolRunner{},
+	)
+
+	err := svc.WriteDegraded(context.Background(), model.TaskPayload{
+		RepoOwner:   "owner",
+		RepoName:    "repo",
+		IssueNumber: 10,
+	}, &FixResult{
+		RawOutput:  "raw fix output",
+		ParseError: errors.New("bad json"),
+		CLIMeta:    &model.CLIMeta{DurationMs: 5000, CostUSD: 0.01},
+	})
+	if err != nil {
+		t.Fatalf("WriteDegraded 返回错误: %v", err)
+	}
+	if !strings.Contains(commentBody, "修复结果解析失败") {
+		t.Fatalf("降级评论应包含解析失败提示，实际: %q", commentBody)
+	}
+	if !strings.Contains(commentBody, "raw fix output") {
+		t.Fatalf("降级评论应包含原始输出，实际: %q", commentBody)
+	}
+}
+
 // --- ref 校验测试用例 ---
 
 func TestExecute_MissingIssueRef(t *testing.T) {
@@ -1336,6 +1406,30 @@ func TestService_ParseFixResult_SuccessInvariantViolation(t *testing.T) {
 	result := s.parseFixResult(envelope)
 	if result.ParseError == nil {
 		t.Error("success=true 时 branch_name 为空应视为解析异常")
+	}
+}
+
+func TestService_ParseFixResult_SuccessWithoutTestResultsInvariantViolation(t *testing.T) {
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc123\"}"}`
+	s := &Service{}
+	result := s.parseFixResult(envelope)
+	if result.ParseError == nil {
+		t.Fatal("success=true 且缺少 test_results 应视为解析异常")
+	}
+	if !strings.Contains(result.ParseError.Error(), "test_results") {
+		t.Fatalf("ParseError = %v，应包含 test_results", result.ParseError)
+	}
+}
+
+func TestService_ParseFixResult_SuccessWithFailedTestsInvariantViolation(t *testing.T) {
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc123\",\"test_results\":{\"passed\":5,\"failed\":1,\"skipped\":0,\"all_passed\":false}}"}`
+	s := &Service{}
+	result := s.parseFixResult(envelope)
+	if result.ParseError == nil {
+		t.Fatal("success=true 且测试未全部通过应视为解析异常")
+	}
+	if !strings.Contains(result.ParseError.Error(), "测试未全部通过") {
+		t.Fatalf("ParseError = %v，应包含测试未全部通过", result.ParseError)
 	}
 }
 

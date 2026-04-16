@@ -271,7 +271,8 @@ func (s *Service) parseResult(output string) *FixResult {
 
 // parseFixResult M3.5: 双层 JSON 解析 — 外层 CLI 信封 → 内层 FixOutput。
 // 与 parseResult（分析模式）的区别仅在于内层 schema；外层解析逻辑相同。
-// 成功场景不变量：success=true 时 BranchName 和 CommitSHA 必须非空，否则视为 ParseError。
+// 成功场景不变量：success=true 时必须具备 branch/commit/test_results，且测试全部通过；
+// 否则视为 ParseError，避免把未验证的修复当作成功结果继续推进。
 func (s *Service) parseFixResult(output string) *FixResult {
 	result := &FixResult{}
 
@@ -302,17 +303,35 @@ func (s *Service) parseFixResult(output string) *FixResult {
 		return result
 	}
 
-	// 成功不变量校验：success=true 必须有 branch_name 和 commit_sha
-	if fix.Success {
-		if fix.BranchName == "" || fix.CommitSHA == "" {
-			result.ParseError = fmt.Errorf("FixOutput 不变量违反：success=true 但 branch_name=%q commit_sha=%q",
-				fix.BranchName, fix.CommitSHA)
-			return result
-		}
+	// 成功不变量校验：success=true 必须具备完整的可交付修复结果。
+	if err := validateSuccessfulFixOutput(&fix); err != nil {
+		result.ParseError = err
+		return result
 	}
 
 	result.Fix = &fix
 	return result
+}
+
+func validateSuccessfulFixOutput(fix *FixOutput) error {
+	if fix == nil || !fix.Success {
+		return nil
+	}
+	if !fix.InfoSufficient {
+		return fmt.Errorf("FixOutput 不变量违反：success=true 但 info_sufficient=false")
+	}
+	if fix.BranchName == "" || fix.CommitSHA == "" {
+		return fmt.Errorf("FixOutput 不变量违反：success=true 但 branch_name=%q commit_sha=%q",
+			fix.BranchName, fix.CommitSHA)
+	}
+	if fix.TestResults == nil {
+		return fmt.Errorf("FixOutput 不变量违反：success=true 但 test_results 为空")
+	}
+	if !fix.TestResults.AllPassed || fix.TestResults.Failed > 0 {
+		return fmt.Errorf("FixOutput 不变量违反：success=true 但测试未全部通过 all_passed=%v failed=%d",
+			fix.TestResults.AllPassed, fix.TestResults.Failed)
+	}
+	return nil
 }
 
 // collectContext 采集 Issue 富上下文
@@ -548,7 +567,7 @@ func (s *Service) executeFix(ctx context.Context, payload model.TaskPayload) (*F
 		return &FixResult{
 			IssueContext: issueCtx, RawOutput: execResult.Output,
 			ExitCode: execResult.ExitCode, RefKind: refKind,
-		}, fmt.Errorf("容器退出码 %d", execResult.ExitCode)
+		}, nil
 	}
 
 	// 8. 解析 FixOutput
@@ -615,6 +634,23 @@ func (s *Service) executeFix(ctx context.Context, payload model.TaskPayload) (*F
 		result.WritebackError = fmt.Errorf("回写修复成功评论失败: %w", commentErr)
 	}
 	return result, nil
+}
+
+// WriteDegraded 在重试耗尽后将原始输出降级回写到 Issue 评论。
+func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload, result *FixResult) error {
+	if result == nil {
+		return nil
+	}
+	if payload.RepoOwner == "" || payload.RepoName == "" || payload.IssueNumber <= 0 {
+		return fmt.Errorf("无效的 Issue 目标，无法回写降级评论")
+	}
+	body := FormatFixDegradedComment(result)
+	_, _, err := s.gitea.CreateIssueComment(ctx, payload.RepoOwner, payload.RepoName, payload.IssueNumber,
+		gitea.CreateIssueCommentOption{Body: body})
+	if err != nil {
+		return fmt.Errorf("回写修复降级评论失败: %w", err)
+	}
+	return nil
 }
 
 // createFixPR M3.5: 通过 Gitea API 创建修复 PR。

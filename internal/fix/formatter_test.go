@@ -303,6 +303,23 @@ func TestFormatFixPushButNoPRComment(t *testing.T) {
 	}
 }
 
+func TestFormatFixDegradedComment(t *testing.T) {
+	body := FormatFixDegradedComment(&FixResult{
+		RawOutput:  "raw fix output",
+		ParseError: fmt.Errorf("bad json"),
+		CLIMeta:    &model.CLIMeta{DurationMs: 6000, CostUSD: 0.02},
+	})
+	checks := []string{"自动修复降级报告", "修复结果解析失败", "raw fix output", "耗时 6s", "$0.0200"}
+	for _, s := range checks {
+		if !strings.Contains(body, s) {
+			t.Errorf("降级评论应包含 %q", s)
+		}
+	}
+	if strings.Contains(body, "bad json") {
+		t.Error("不应暴露内部 ParseError 详情到评论")
+	}
+}
+
 func TestFormatAnalysisComment_NilCLIMeta(t *testing.T) {
 	result := &FixResult{
 		Analysis: &AnalysisOutput{

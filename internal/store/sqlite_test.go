@@ -538,6 +538,57 @@ func TestSQLiteStore_GetLatestAnalysisByIssue(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_GetLatestAnalysisByIssue_DoesNotMissOlderTargetAmongManyNewerRecords(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const repo = "owner/repo"
+	const issueNum = int64(42)
+
+	target := newTestRecord("analyze-target", "d-target", model.TaskTypeAnalyzeIssue)
+	target.Status = model.TaskStatusSucceeded
+	target.Payload.IssueNumber = issueNum
+	target.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	target.UpdatedAt = target.CreatedAt
+	if err := s.CreateTask(ctx, target); err != nil {
+		t.Fatalf("CreateTask(target) 失败: %v", err)
+	}
+
+	falsePositive := newTestRecord("analyze-420", "d-420", model.TaskTypeAnalyzeIssue)
+	falsePositive.Status = model.TaskStatusSucceeded
+	falsePositive.Payload.IssueNumber = 420
+	falsePositive.CreatedAt = time.Now().UTC().Add(-90 * time.Minute)
+	falsePositive.UpdatedAt = falsePositive.CreatedAt
+	if err := s.CreateTask(ctx, falsePositive); err != nil {
+		t.Fatalf("CreateTask(falsePositive) 失败: %v", err)
+	}
+
+	for i := 0; i < 60; i++ {
+		rec := newTestRecord(fmt.Sprintf("analyze-other-%d", i), fmt.Sprintf("d-other-%d", i), model.TaskTypeAnalyzeIssue)
+		rec.Status = model.TaskStatusSucceeded
+		rec.Payload.IssueNumber = int64(100 + i)
+		rec.CreatedAt = time.Now().UTC().Add(-time.Duration(i) * time.Minute)
+		rec.UpdatedAt = rec.CreatedAt
+		if err := s.CreateTask(ctx, rec); err != nil {
+			t.Fatalf("CreateTask(other-%d) 失败: %v", i, err)
+		}
+	}
+
+	got, err := s.GetLatestAnalysisByIssue(ctx, repo, issueNum)
+	if err != nil {
+		t.Fatalf("GetLatestAnalysisByIssue 失败: %v", err)
+	}
+	if got == nil {
+		t.Fatal("期望找到目标 issue 的分析记录，得到 nil")
+	}
+	if got.ID != "analyze-target" {
+		t.Fatalf("期望返回 analyze-target，实际: %s", got.ID)
+	}
+	if got.Payload.IssueNumber != issueNum {
+		t.Fatalf("期望 IssueNumber=%d，实际: %d", issueNum, got.Payload.IssueNumber)
+	}
+}
+
 func TestPurgeTasks(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
