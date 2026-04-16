@@ -30,8 +30,10 @@ const (
 	MetaKeyRetryCount   = "retry_count"
 	MetaKeyMaxRetry     = "max_retry"
 	MetaKeyTaskStatus   = "task_status"
-	MetaKeyNotifyTime   = "notify_time" // 通知发送时间
-	MetaKeyDuration     = "duration"    // 任务耗时（仅 succeeded）
+	MetaKeyNotifyTime   = "notify_time"     // 通知发送时间
+	MetaKeyDuration     = "duration"        // 任务耗时（仅 succeeded）
+	MetaKeyPRNumber     = "pr_number"       // M3.5: 修复任务创建的 PR 编号
+	MetaKeyModifiedFiles = "modified_files" // M3.5: 修复任务改动文件数
 )
 
 // Severity 通知紧急程度

@@ -2329,6 +2329,93 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
+// TestBuildNotificationMessage_FixIssue_SuccessInjectsPRMetadata 验证 fix_issue succeeded
+// 时，fixResult 中的 PRNumber/PRURL/ModifiedFiles 被注入到通知 Metadata（M3.5 Task 12）。
+func TestBuildNotificationMessage_FixIssue_SuccessInjectsPRMetadata(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	startedAt := time.Now().Add(-10 * time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:       "fix-pr-meta-success",
+		TaskType: model.TaskTypeFixIssue,
+		Status:   model.TaskStatusSucceeded,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeFixIssue,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			IssueNumber:  10,
+		},
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+	}
+
+	fixResult := &fix.FixResult{
+		PRNumber: 42,
+		PRURL:    "https://gitea.example.com/org/repo/pulls/42",
+		Fix: &fix.FixOutput{
+			ModifiedFiles: []string{"src/a.go", "src/b.go"},
+		},
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+
+	if msg.Metadata[notify.MetaKeyPRURL] != fixResult.PRURL {
+		t.Errorf("MetaKeyPRURL = %q, want %q", msg.Metadata[notify.MetaKeyPRURL], fixResult.PRURL)
+	}
+	if msg.Metadata[notify.MetaKeyPRNumber] != "42" {
+		t.Errorf("MetaKeyPRNumber = %q, want %q", msg.Metadata[notify.MetaKeyPRNumber], "42")
+	}
+	if msg.Metadata[notify.MetaKeyModifiedFiles] != "2" {
+		t.Errorf("MetaKeyModifiedFiles = %q, want %q", msg.Metadata[notify.MetaKeyModifiedFiles], "2")
+	}
+}
+
+// TestBuildNotificationMessage_FixIssue_FailureOmitsPRMetadata 验证 fix_issue failed
+// 时，PR 元数据不被注入（M3.5 Task 12）。
+func TestBuildNotificationMessage_FixIssue_FailureOmitsPRMetadata(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"))
+
+	record := &model.TaskRecord{
+		ID:       "fix-pr-meta-failed",
+		TaskType: model.TaskTypeFixIssue,
+		Status:   model.TaskStatusFailed,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeFixIssue,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			IssueNumber:  10,
+		},
+	}
+
+	fixResult := &fix.FixResult{
+		PRNumber: 42,
+		PRURL:    "https://gitea.example.com/org/repo/pulls/42",
+		Fix: &fix.FixOutput{
+			ModifiedFiles: []string{"src/a.go"},
+		},
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+
+	if msg.Metadata[notify.MetaKeyPRNumber] != "" {
+		t.Errorf("failed 通知不应包含 MetaKeyPRNumber，got %q", msg.Metadata[notify.MetaKeyPRNumber])
+	}
+	if msg.Metadata[notify.MetaKeyModifiedFiles] != "" {
+		t.Errorf("failed 通知不应包含 MetaKeyModifiedFiles，got %q", msg.Metadata[notify.MetaKeyModifiedFiles])
+	}
+}
+
 func TestBuildStartMessage_ReviewPR_HasNotifyTime(t *testing.T) {
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default(),
 		WithGiteaBaseURL("https://gitea.example.com"))

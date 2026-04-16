@@ -531,7 +531,7 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 
 // buildNotificationMessage 构建任务完成通知消息。
 // fixResult 预留给 M3.5，届时将注入 fix 结果的 PR 元数据。
-func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, _ *fix.FixResult) (notify.Message, bool) {
+func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult) (notify.Message, bool) {
 	if record == nil {
 		return notify.Message{}, false
 	}
@@ -672,6 +672,11 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
 			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
 			metadata[notify.MetaKeyTaskStatus] = string(record.Status)
+		}
+		if record.Status == model.TaskStatusSucceeded && fixResult != nil && fixResult.Fix != nil && fixResult.PRNumber > 0 {
+			metadata[notify.MetaKeyPRURL] = fixResult.PRURL
+			metadata[notify.MetaKeyPRNumber] = fmt.Sprintf("%d", fixResult.PRNumber)
+			metadata[notify.MetaKeyModifiedFiles] = fmt.Sprintf("%d", len(fixResult.Fix.ModifiedFiles))
 		}
 		switch record.Status {
 		case model.TaskStatusSucceeded:
