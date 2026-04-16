@@ -17,7 +17,11 @@ case "${1:-}" in
   clone)
     mkdir -p "${@: -1}/.git"
     ;;
-  fetch|checkout|remote|config)
+  fetch|checkout)
+    echo "stdout:${1}"
+    echo "stderr:${1}" >&2
+    ;;
+  remote|config)
     ;;
   rev-parse)
     echo "abc123"
@@ -40,7 +44,7 @@ PASS=0
 FAIL=0
 
 run_case() {
-  local desc="$1" issue_ref="$2" expect_fetch="$3"
+  local desc="$1" task_type="$2" issue_ref="$3" expect_fetch="$4"
   local repo_dir="${TMPDIR}/repo-$$"
   rm -rf "${repo_dir}"
   : > "${TMPDIR}/git.log"
@@ -51,7 +55,7 @@ run_case() {
   REPO_DIR="${repo_dir}" \
   REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
   GITEA_TOKEN="token" \
-  TASK_TYPE="fix_issue" \
+  TASK_TYPE="${task_type}" \
   ISSUE_REF="${issue_ref}" \
   bash "${ENTRYPOINT}" true >/dev/null 2>&1 || true
 
@@ -101,10 +105,41 @@ run_case() {
   fi
 }
 
+run_stdout_case() {
+  local desc="$1" task_type="$2"
+  local repo_dir="${TMPDIR}/repo-stdout-$$"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  local stdout_file="${TMPDIR}/stdout-${task_type}.log"
+  local stderr_file="${TMPDIR}/stderr-${task_type}.log"
+
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="${task_type}" \
+  ISSUE_REF="feature/auth" \
+  bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}" || true
+
+  if [ -s "${stdout_file}" ]; then
+    echo "FAIL: ${desc} — stdout should be empty, got:"
+    cat "${stdout_file}"
+    (( FAIL++ ))
+  else
+    echo "PASS: ${desc} — stdout clean"
+    (( PASS++ ))
+  fi
+}
+
 echo "=== Entrypoint Behavior Tests ==="
 
-run_case "fix_issue with ISSUE_REF=feature/auth" "feature/auth" "yes"
-run_case "fix_issue with empty ISSUE_REF" "" "no"
+run_case "fix_issue with ISSUE_REF=feature/auth" "fix_issue" "feature/auth" "yes"
+run_case "fix_issue with empty ISSUE_REF" "fix_issue" "" "no"
+run_case "analyze_issue with ISSUE_REF=feature/auth" "analyze_issue" "feature/auth" "yes"
+run_stdout_case "fix_issue should not leak git output to stdout" "fix_issue"
+run_stdout_case "analyze_issue should not leak git output to stdout" "analyze_issue"
 
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"

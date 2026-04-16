@@ -999,10 +999,10 @@ func TestHandleIssueLabel_FixToPRAdded(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.IssueLabelEvent{
-		DeliveryID:  "delivery-fix-to-pr-1",
+		DeliveryID:   "delivery-fix-to-pr-1",
 		FixToPRAdded: true,
-		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
-		Issue:       webhook.IssueRef{Number: 20, Title: "feature request"},
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:        webhook.IssueRef{Number: 20, Title: "feature request"},
 	}
 
 	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
@@ -1072,6 +1072,43 @@ func TestHandleIssueLabel_BothLabels_FixToPRPriority(t *testing.T) {
 		if record.TaskType != model.TaskTypeFixIssue {
 			t.Errorf("task type = %q, want %q (fix-to-pr 优先级高于 auto-fix)", record.TaskType, model.TaskTypeFixIssue)
 		}
+	}
+}
+
+// TestHandleIssueLabel_FixToPR_CancelsSupersededAnalyzeTask 验证 fix-to-pr 升级为修复时，
+// 旧的 analyze_issue 活跃任务也会被取消，避免分析与修复并发执行。
+func TestHandleIssueLabel_FixToPR_CancelsSupersededAnalyzeTask(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-fix-replacement"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	oldAnalyze := &model.TaskRecord{
+		ID:           "old-analyze-for-fix",
+		AsynqID:      "asynq-old-analyze-for-fix",
+		TaskType:     model.TaskTypeAnalyzeIssue,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityNormal,
+		RepoFullName: "org/repo",
+		Payload:      model.TaskPayload{IssueNumber: 41},
+	}
+	s.tasks[oldAnalyze.ID] = oldAnalyze
+
+	event := webhook.IssueLabelEvent{
+		DeliveryID:   "delivery-fix-replaces-analyze-1",
+		FixToPRAdded: true,
+		Repository:   webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
+		Issue:        webhook.IssueRef{Number: 41, Title: "critical bug"},
+	}
+
+	if err := h.HandleIssueLabel(context.Background(), event); err != nil {
+		t.Fatalf("HandleIssueLabel error: %v", err)
+	}
+	if s.tasks[oldAnalyze.ID].Status != model.TaskStatusCancelled {
+		t.Errorf("旧 analyze_issue 状态 = %q, want %q", s.tasks[oldAnalyze.ID].Status, model.TaskStatusCancelled)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-old-analyze-for-fix" {
+		t.Errorf("deleteCalls = %v, want [asynq-old-analyze-for-fix]", canceller.deleteCalls)
 	}
 }
 

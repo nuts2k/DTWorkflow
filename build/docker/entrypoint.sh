@@ -82,16 +82,16 @@ case "${TASK_TYPE:-}" in
         # M3.4: 只读分析模式（从原 fix_issue 搬迁）
         if [ -n "${ISSUE_REF:-}" ]; then
             log "checkout 到关联 ref: ${ISSUE_REF}"
-            git fetch origin "${ISSUE_REF}" 2>&1 >&2
-            git checkout FETCH_HEAD 2>&1 >&2
+            git fetch origin "${ISSUE_REF}" >&2 2>&1
+            git checkout FETCH_HEAD >&2 2>&1
         fi
         ;;
     fix_issue)
         # M3.4: 修复模式（写权限）
         if [ -n "${ISSUE_REF:-}" ]; then
             log "checkout 到关联 ref: ${ISSUE_REF}"
-            git fetch origin "${ISSUE_REF}" 2>&1 >&2
-            git checkout FETCH_HEAD 2>&1 >&2
+            git fetch origin "${ISSUE_REF}" >&2 2>&1
+            git checkout FETCH_HEAD >&2 2>&1
         fi
         # 配置凭证缓存（内存模式，1 小时超时），允许 push
         git config --global credential.helper 'cache --timeout=3600'

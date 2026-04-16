@@ -129,6 +129,27 @@ func TestUpdateTask(t *testing.T) {
 	}
 }
 
+func TestCreateTask_AnalyzeIssue(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	record := newTestRecord("task-analyze-001", "delivery-analyze-001", model.TaskTypeAnalyzeIssue)
+	if err := s.CreateTask(ctx, record); err != nil {
+		t.Fatalf("CreateTask(analyze_issue) 失败: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, record.ID)
+	if err != nil {
+		t.Fatalf("GetTask 失败: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetTask 返回 nil，期望找到记录")
+	}
+	if got.TaskType != model.TaskTypeAnalyzeIssue {
+		t.Fatalf("task_type = %q, want %q", got.TaskType, model.TaskTypeAnalyzeIssue)
+	}
+}
+
 func TestUpdateTask_NotFound(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -1417,8 +1438,8 @@ func TestMigration_PRNumber(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// 验证迁移 13/14/15 已成功执行（schema_migrations 中存在这些版本）
-	for _, ver := range []int{13, 14, 15} {
+	// 验证迁移 13/14/15/18 已成功执行（schema_migrations 中存在这些版本）
+	for _, ver := range []int{13, 14, 15, 18} {
 		var exists int
 		err := s.db.QueryRowContext(ctx, "SELECT 1 FROM schema_migrations WHERE version = ?", ver).Scan(&exists)
 		if err != nil {

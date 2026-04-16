@@ -98,7 +98,7 @@ func openIssue(num int64) *gitea.Issue {
 
 func fixPayload() model.TaskPayload {
 	return model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     model.TaskTypeAnalyzeIssue,
 		RepoOwner:    "owner",
 		RepoName:     "repo",
 		RepoFullName: "owner/repo",
@@ -153,6 +153,21 @@ func TestExecute_InvalidIssueNumber(t *testing.T) {
 	_, err := svc.Execute(context.Background(), payload)
 	if err == nil {
 		t.Fatal("预期返回错误")
+	}
+}
+
+func TestExecute_FixIssueUnsupported(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, defaultPool())
+
+	payload := fixPayload()
+	payload.TaskType = model.TaskTypeFixIssue
+
+	_, err := svc.Execute(context.Background(), payload)
+	if err == nil {
+		t.Fatal("fix_issue 误入分析服务时应返回错误")
+	}
+	if !strings.Contains(err.Error(), "fix_issue 修复执行链路") {
+		t.Fatalf("error = %q, want contains %q", err.Error(), "fix_issue 修复执行链路")
 	}
 }
 

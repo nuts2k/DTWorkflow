@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -204,5 +205,37 @@ func TestParseIssue_FixToPRLabel(t *testing.T) {
 	}
 	if issueEvent.AutoFixChanged {
 		t.Errorf("AutoFixChanged = true, 期望 false")
+	}
+}
+
+func TestParser_ParseIssueLabelUpdated_MultipleLabelsDoesNotFalseTrigger(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("testdata", "issue_label_updated_auto_fix.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	issue := payload["issue"].(map[string]any)
+	issue["labels"] = []map[string]any{
+		{"name": "auto-fix", "color": "70c24a"},
+		{"name": "bug", "color": "ee0701"},
+	}
+	payload["issue"] = issue
+	body, err = json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	parser := NewParser()
+	event, err := parser.Parse("issues", "delivery-multi-label", body)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	issueEvent := event.(IssueLabelEvent)
+	if issueEvent.AutoFixChanged || issueEvent.AutoFixAdded || issueEvent.FixToPRChanged || issueEvent.FixToPRAdded {
+		t.Fatalf("多标签 label_updated 不应误判为目标标签变更: %+v", issueEvent)
 	}
 }

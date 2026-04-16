@@ -81,8 +81,13 @@ func (p *Parser) parseIssue(deliveryID string, body []byte) (Event, error) {
 
 	// 提取标签名：优先使用顶层 label 字段（早期版本），
 	// 回退到 issue.labels 中查找 auto-fix（Gitea 1.21+ label_updated）。
-	labelRef, isAutoFix := extractLabel(payload)
-	isFixToPR := hasFixToPRLabel(payload)
+	labelRef, _ := extractLabel(payload)
+	changedLabel, changedLabelKnown := detectChangedLabel(payload)
+	if changedLabelKnown {
+		labelRef = changedLabel
+	}
+	isAutoFix := changedLabelKnown && isAutoFixLabel(changedLabel.Name)
+	isFixToPR := changedLabelKnown && isFixToPRLabel(changedLabel.Name)
 
 	if payload.Issue.Number == 0 || payload.Repository.FullName == "" {
 		return nil, ErrInvalidPayload
@@ -112,7 +117,7 @@ func (p *Parser) parseIssue(deliveryID string, body []byte) (Event, error) {
 			State:   payload.Issue.State,
 			Ref:     payload.Issue.Ref,
 		},
-		Label:  labelRef,
+		Label: labelRef,
 		Sender: UserRef{
 			Login:    payload.Sender.Login,
 			FullName: payload.Sender.FullName,
@@ -169,14 +174,17 @@ func isFixToPRLabel(name string) bool {
 	return strings.EqualFold(name, "fix-to-pr")
 }
 
-func hasFixToPRLabel(payload giteaIssueEventPayload) bool {
-	if isFixToPRLabel(payload.Label.Name) {
-		return true
+// detectChangedLabel 识别本次 webhook 变更的标签。
+// 优先使用顶层 label 字段；Gitea 1.21+ 的 label_updated 若缺少顶层 label，
+// 仅在 issue.labels 恰好只有 1 个标签时才将其视为本次变更标签。
+// 当当前 payload 无法可靠判断本次变更的是哪个标签时，返回 false，调用方需保守处理。
+func detectChangedLabel(payload giteaIssueEventPayload) (LabelRef, bool) {
+	if payload.Label.Name != "" {
+		return LabelRef{Name: payload.Label.Name, Color: payload.Label.Color}, true
 	}
-	for _, l := range payload.Issue.Labels {
-		if isFixToPRLabel(l.Name) {
-			return true
-		}
+	if normalizeIssueLabelAction(payload.Action) == "labeled" && len(payload.Issue.Labels) == 1 {
+		l := payload.Issue.Labels[0]
+		return LabelRef{Name: l.Name, Color: l.Color}, true
 	}
-	return false
+	return LabelRef{}, false
 }

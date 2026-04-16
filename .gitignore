@@ -4,6 +4,7 @@ poc/.env
 # 构建产物
 bin/
 /dtworkflow
+/dtw
 
 # Go
 *.exe

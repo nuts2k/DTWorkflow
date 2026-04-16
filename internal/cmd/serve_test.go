@@ -368,7 +368,7 @@ func TestNewFixService_InjectsRefClient(t *testing.T) {
 	)
 
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     model.TaskTypeAnalyzeIssue,
 		RepoOwner:    "owner",
 		RepoName:     "repo",
 		RepoFullName: "owner/repo",

@@ -158,6 +158,43 @@ var migrations = []migration{
 		Version: 17,
 		SQL:     `ALTER TABLE tasks ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'webhook'`,
 	},
+	// M3.4: tasks 表 task_type CHECK 约束添加 analyze_issue
+	{
+		Version: 18,
+		SQL: `
+			CREATE TABLE tasks_new (
+				id              TEXT PRIMARY KEY,
+				asynq_id        TEXT NOT NULL DEFAULT '',
+				task_type       TEXT NOT NULL CHECK(task_type IN ('review_pr', 'analyze_issue', 'fix_issue', 'gen_tests', 'gen_daily_report')),
+				status          TEXT NOT NULL DEFAULT 'pending'
+				                CHECK(status IN ('pending','queued','running','succeeded','failed','retrying','cancelled')),
+				priority        INTEGER NOT NULL DEFAULT 5,
+				payload         TEXT NOT NULL,
+				repo_full_name  TEXT NOT NULL DEFAULT '',
+				result          TEXT NOT NULL DEFAULT '',
+				error           TEXT NOT NULL DEFAULT '',
+				retry_count     INTEGER NOT NULL DEFAULT 0,
+				max_retry       INTEGER NOT NULL DEFAULT 3,
+				worker_id       TEXT NOT NULL DEFAULT '',
+				delivery_id     TEXT NOT NULL DEFAULT '',
+				created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				started_at      DATETIME,
+				completed_at    DATETIME,
+				pr_number       INTEGER,
+				triggered_by    TEXT NOT NULL DEFAULT 'webhook'
+			);
+			INSERT INTO tasks_new SELECT * FROM tasks;
+			DROP TABLE tasks;
+			ALTER TABLE tasks_new RENAME TO tasks;
+			CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+			CREATE INDEX IF NOT EXISTS idx_tasks_repo ON tasks(repo_full_name);
+			CREATE INDEX IF NOT EXISTS idx_tasks_type_status ON tasks(task_type, status);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_delivery_dedup ON tasks(delivery_id, task_type) WHERE delivery_id != '';
+			CREATE INDEX IF NOT EXISTS idx_tasks_pending_created ON tasks(status, created_at) WHERE status = 'pending';
+			CREATE INDEX IF NOT EXISTS idx_tasks_repo_pr ON tasks(repo_full_name, pr_number, task_type, status);
+		`,
+	},
 }
 
 // RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本

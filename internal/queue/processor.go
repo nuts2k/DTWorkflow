@@ -230,7 +230,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if reviewResult != nil {
 			result = adaptReviewResult(reviewResult)
 		}
-	case (payload.TaskType == model.TaskTypeAnalyzeIssue || payload.TaskType == model.TaskTypeFixIssue) && p.fixService != nil:
+	case payload.TaskType == model.TaskTypeAnalyzeIssue && p.fixService != nil:
 		fixResult, runErr = p.fixService.Execute(ctx, payload)
 		if fixResult != nil {
 			result = adaptFixResult(fixResult)

@@ -1859,13 +1859,12 @@ func TestFormatIssueSummary(t *testing.T) {
 	}
 }
 
-// TestProcessTask_FixIssue_WithService 验证 M3.2 激活后，
-// fix_issue 任务走 fixService.Execute 路径，pool.Run 不被调用。
-func TestProcessTask_FixIssue_WithService(t *testing.T) {
+// TestProcessTask_AnalyzeIssue_WithService 验证 analyze_issue 任务走 fixService.Execute 路径。
+func TestProcessTask_AnalyzeIssue_WithService(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
-		DeliveryID:   "dlv-fix-svc-1",
+		TaskType:     model.TaskTypeAnalyzeIssue,
+		DeliveryID:   "dlv-analyze-svc-1",
 		RepoOwner:    "org",
 		RepoName:     "repo",
 		RepoFullName: "org/repo",
@@ -1875,8 +1874,8 @@ func TestProcessTask_FixIssue_WithService(t *testing.T) {
 
 	now := time.Now()
 	record := &model.TaskRecord{
-		ID:         "proc-fix-svc-1",
-		TaskType:   model.TaskTypeFixIssue,
+		ID:         "proc-analyze-svc-1",
+		TaskType:   model.TaskTypeAnalyzeIssue,
 		Status:     model.TaskStatusQueued,
 		Payload:    payload,
 		DeliveryID: payload.DeliveryID,
@@ -1914,17 +1913,17 @@ func TestProcessTask_FixIssue_WithService(t *testing.T) {
 		t.Errorf("pool.Run 不应被调用，实际 %d 次", pool.calls)
 	}
 
-	got := s.tasks["proc-fix-svc-1"]
+	got := s.tasks["proc-analyze-svc-1"]
 	if got.Status != model.TaskStatusSucceeded {
 		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
 	}
 }
 
-func TestProcessTask_FixIssue_WithService_WritebackErrorFailsTask(t *testing.T) {
+func TestProcessTask_AnalyzeIssue_WithService_WritebackErrorFailsTask(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
-		DeliveryID:   "dlv-fix-svc-writeback-failed-1",
+		TaskType:     model.TaskTypeAnalyzeIssue,
+		DeliveryID:   "dlv-analyze-svc-writeback-failed-1",
 		RepoOwner:    "org",
 		RepoName:     "repo",
 		RepoFullName: "org/repo",
@@ -1934,8 +1933,8 @@ func TestProcessTask_FixIssue_WithService_WritebackErrorFailsTask(t *testing.T) 
 
 	now := time.Now()
 	record := &model.TaskRecord{
-		ID:         "proc-fix-svc-writeback-failed-1",
-		TaskType:   model.TaskTypeFixIssue,
+		ID:         "proc-analyze-svc-writeback-failed-1",
+		TaskType:   model.TaskTypeAnalyzeIssue,
 		Status:     model.TaskStatusQueued,
 		Payload:    payload,
 		DeliveryID: payload.DeliveryID,
@@ -1970,7 +1969,7 @@ func TestProcessTask_FixIssue_WithService_WritebackErrorFailsTask(t *testing.T) 
 		t.Errorf("pool.Run 不应被调用，实际 %d 次", pool.calls)
 	}
 
-	got := s.tasks["proc-fix-svc-writeback-failed-1"]
+	got := s.tasks["proc-analyze-svc-writeback-failed-1"]
 	if got.Status != model.TaskStatusFailed {
 		t.Errorf("status = %q, want %q", got.Status, model.TaskStatusFailed)
 	}
@@ -2019,7 +2018,51 @@ func TestProcessTask_FixIssue_WithoutService(t *testing.T) {
 	}
 }
 
-func TestProcessTask_FixIssue_MissingRef_SkipsRetry(t *testing.T) {
+func TestProcessTask_FixIssue_WithService_StillUsesPoolRun(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixIssue,
+		DeliveryID:   "dlv-fix-with-svc-uses-pool-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		IssueNumber:  5,
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-fix-with-svc-uses-pool-1",
+		TaskType:   model.TaskTypeFixIssue,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	fixExec := &mockFixExecutor{
+		result: &fix.FixResult{RawOutput: "should not be used"},
+	}
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: "pool result"},
+	}
+
+	p := NewProcessor(pool, s, nil, slog.Default(), WithFixService(fixExec))
+	task := buildAsynqTask(t, payload)
+
+	if err := p.ProcessTask(context.Background(), task); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if fixExec.calls != 0 {
+		t.Errorf("fixService.Execute 不应被调用，实际 %d 次", fixExec.calls)
+	}
+	if pool.calls != 1 {
+		t.Errorf("pool.Run 应被调用 1 次，实际 %d 次", pool.calls)
+	}
+}
+
+func TestProcessTask_AnalyzeIssue_MissingRef_SkipsRetry(t *testing.T) {
 	s := newMockStore()
 	fixExec := &mockFixExecutor{
 		err: fmt.Errorf("Issue #10: %w", fix.ErrMissingIssueRef),
@@ -2029,7 +2072,7 @@ func TestProcessTask_FixIssue_MissingRef_SkipsRetry(t *testing.T) {
 	p := NewProcessor(pool, s, notifier, slog.Default(), WithFixService(fixExec))
 
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     model.TaskTypeAnalyzeIssue,
 		DeliveryID:   "delivery-miss-ref",
 		RepoOwner:    "owner",
 		RepoName:     "repo",
@@ -2039,7 +2082,7 @@ func TestProcessTask_FixIssue_MissingRef_SkipsRetry(t *testing.T) {
 	task := buildAsynqTask(t, payload)
 	record := &model.TaskRecord{
 		ID:         "task-miss-ref",
-		TaskType:   model.TaskTypeFixIssue,
+		TaskType:   model.TaskTypeAnalyzeIssue,
 		Status:     model.TaskStatusQueued,
 		DeliveryID: "delivery-miss-ref",
 	}
@@ -2061,7 +2104,7 @@ func TestProcessTask_FixIssue_MissingRef_SkipsRetry(t *testing.T) {
 	}
 }
 
-func TestProcessTask_FixIssue_InvalidRef_SkipsRetry(t *testing.T) {
+func TestProcessTask_AnalyzeIssue_InvalidRef_SkipsRetry(t *testing.T) {
 	s := newMockStore()
 	fixExec := &mockFixExecutor{
 		err: fmt.Errorf("Issue #10 ref=bad: %w", fix.ErrInvalidIssueRef),
@@ -2071,7 +2114,7 @@ func TestProcessTask_FixIssue_InvalidRef_SkipsRetry(t *testing.T) {
 	p := NewProcessor(pool, s, notifier, slog.Default(), WithFixService(fixExec))
 
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     model.TaskTypeAnalyzeIssue,
 		DeliveryID:   "delivery-bad-ref",
 		RepoOwner:    "owner",
 		RepoName:     "repo",
@@ -2081,7 +2124,7 @@ func TestProcessTask_FixIssue_InvalidRef_SkipsRetry(t *testing.T) {
 	task := buildAsynqTask(t, payload)
 	record := &model.TaskRecord{
 		ID:         "task-bad-ref",
-		TaskType:   model.TaskTypeFixIssue,
+		TaskType:   model.TaskTypeAnalyzeIssue,
 		Status:     model.TaskStatusQueued,
 		DeliveryID: "delivery-bad-ref",
 	}
@@ -2100,7 +2143,7 @@ func TestProcessTask_FixIssue_InvalidRef_SkipsRetry(t *testing.T) {
 	}
 }
 
-func TestProcessTask_FixIssue_RefHintCommentFailure_Retries(t *testing.T) {
+func TestProcessTask_AnalyzeIssue_RefHintCommentFailure_Retries(t *testing.T) {
 	s := newMockStore()
 	commentErr := errors.New("Gitea API 500")
 	fixExec := &mockFixExecutor{
@@ -2111,7 +2154,7 @@ func TestProcessTask_FixIssue_RefHintCommentFailure_Retries(t *testing.T) {
 	p := NewProcessor(pool, s, notifier, slog.Default(), WithFixService(fixExec))
 
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     model.TaskTypeAnalyzeIssue,
 		DeliveryID:   "delivery-ref-comment-failed",
 		RepoOwner:    "owner",
 		RepoName:     "repo",
@@ -2121,7 +2164,7 @@ func TestProcessTask_FixIssue_RefHintCommentFailure_Retries(t *testing.T) {
 	task := buildAsynqTask(t, payload)
 	record := &model.TaskRecord{
 		ID:         "task-ref-comment-failed",
-		TaskType:   model.TaskTypeFixIssue,
+		TaskType:   model.TaskTypeAnalyzeIssue,
 		Status:     model.TaskStatusQueued,
 		DeliveryID: payload.DeliveryID,
 	}

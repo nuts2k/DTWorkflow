@@ -60,7 +60,7 @@ func WithRefClient(c RefClient) ServiceOption {
 	return func(s *Service) { s.refClient = c }
 }
 
-// Service Issue 分析编排服务，负责 Issue 上下文采集和分析执行
+// Service Issue 分析编排服务，负责 analyze_issue 的上下文采集和分析执行。
 type Service struct {
 	gitea     IssueClient
 	pool      FixPoolRunner
@@ -89,9 +89,20 @@ func NewService(gitea IssueClient, pool FixPoolRunner, opts ...ServiceOption) *S
 	return s
 }
 
-// Execute 执行 Issue 分析的完整流程。
-// M3.1 只完成上下文采集，M3.2 补充容器执行，M3.3 补充结果回写。
+// Execute 执行 analyze_issue 的完整流程。
+// fix_issue 已在 M3.4 拆分为独立修复链路，不应再落到只读分析实现。
 func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixResult, error) {
+	switch payload.TaskType {
+	case "", model.TaskTypeAnalyzeIssue:
+		return s.executeAnalysis(ctx, payload)
+	case model.TaskTypeFixIssue:
+		return nil, fmt.Errorf("fix.Service 不支持任务类型 %q，请走 fix_issue 修复执行链路", payload.TaskType)
+	default:
+		return nil, fmt.Errorf("fix.Service 不支持任务类型: %s", payload.TaskType)
+	}
+}
+
+func (s *Service) executeAnalysis(ctx context.Context, payload model.TaskPayload) (*FixResult, error) {
 	owner, repo, issueNum := payload.RepoOwner, payload.RepoName, payload.IssueNumber
 
 	// 1. 前置校验

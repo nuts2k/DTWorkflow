@@ -176,7 +176,7 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 		DeliveryID:   event.DeliveryID,
 	}
 
-	activeTasks := h.listActiveIssueTasks(ctx, event.Repository.FullName, event.Issue.Number, taskType)
+	activeTasks := h.listReplacementIssueTasks(ctx, event.Repository.FullName, event.Issue.Number, taskType)
 
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
 		return err
@@ -255,6 +255,35 @@ func (h *EnqueueHandler) listActiveIssueTasks(ctx context.Context, repoFullName 
 		return nil
 	}
 	return tasks
+}
+
+// listReplacementIssueTasks 查找新任务创建后需要取消的旧任务。
+// analyze_issue 仅替换旧 analyze_issue；fix_issue 会同时替换旧 fix_issue 和 analyze_issue，
+// 确保 fix-to-pr 升级为修复时不会与前序分析任务并发运行。
+func (h *EnqueueHandler) listReplacementIssueTasks(ctx context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) []*model.TaskRecord {
+	tasks := h.listActiveIssueTasks(ctx, repoFullName, issueNumber, taskType)
+	if taskType != model.TaskTypeFixIssue {
+		return tasks
+	}
+
+	analyzeTasks := h.listActiveIssueTasks(ctx, repoFullName, issueNumber, model.TaskTypeAnalyzeIssue)
+	if len(analyzeTasks) == 0 {
+		return tasks
+	}
+
+	merged := make([]*model.TaskRecord, 0, len(tasks)+len(analyzeTasks))
+	seen := make(map[string]struct{}, len(tasks)+len(analyzeTasks))
+	for _, task := range append(tasks, analyzeTasks...) {
+		if task == nil {
+			continue
+		}
+		if _, ok := seen[task.ID]; ok {
+			continue
+		}
+		seen[task.ID] = struct{}{}
+		merged = append(merged, task)
+	}
+	return merged
 }
 
 // cancelTasks 在 replacement 已持久化后，逐个取消旧任务（best-effort）。
@@ -420,7 +449,7 @@ func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.Tas
 	}
 	payload.DeliveryID = generateManualDeliveryID()
 
-	activeTasks := h.listActiveIssueTasks(ctx, payload.RepoFullName, payload.IssueNumber, payload.TaskType)
+	activeTasks := h.listReplacementIssueTasks(ctx, payload.RepoFullName, payload.IssueNumber, payload.TaskType)
 
 	record := &model.TaskRecord{
 		TaskType:     payload.TaskType,
