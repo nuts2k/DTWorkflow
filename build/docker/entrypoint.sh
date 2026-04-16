@@ -78,12 +78,29 @@ case "${TASK_TYPE:-}" in
             log "分支已就绪"
         fi
         ;;
-    fix_issue)
+    analyze_issue)
+        # M3.4: 只读分析模式（从原 fix_issue 搬迁）
         if [ -n "${ISSUE_REF:-}" ]; then
             log "checkout 到关联 ref: ${ISSUE_REF}"
-            git fetch origin "${ISSUE_REF}" >&2 2>&1
-            git checkout FETCH_HEAD >&2 2>&1
+            git fetch origin "${ISSUE_REF}" 2>&1 >&2
+            git checkout FETCH_HEAD 2>&1 >&2
         fi
+        ;;
+    fix_issue)
+        # M3.4: 修复模式（写权限）
+        if [ -n "${ISSUE_REF:-}" ]; then
+            log "checkout 到关联 ref: ${ISSUE_REF}"
+            git fetch origin "${ISSUE_REF}" 2>&1 >&2
+            git checkout FETCH_HEAD 2>&1 >&2
+        fi
+        # 配置凭证缓存（内存模式，1 小时超时），允许 push
+        git config --global credential.helper 'cache --timeout=3600'
+        git config --global user.name "DTWorkflow Bot"
+        git config --global user.email "dtworkflow-bot@noreply.local"
+        # Maven/Gradle 缓存重定向到 /workspace（避免 /tmp tmpfs 溢出）
+        export MAVEN_OPTS="${MAVEN_OPTS:--Dmaven.repo.local=/workspace/.m2/repository}"
+        export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/workspace/.gradle}"
+        log "修复模式已启用（credential cache + git identity + build cache redirect）"
         ;;
     gen_tests)
         log "测试生成任务，使用默认分支"
