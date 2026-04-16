@@ -406,15 +406,24 @@ func (h *EnqueueHandler) EnqueueManualReview(ctx context.Context, payload model.
 	return record.ID, nil
 }
 
-// EnqueueManualFix 手动触发 Issue 修复入队。
+// EnqueueManualFix 手动触发 Issue 分析或修复入队。
+// M3.4: 支持调用方通过 payload.TaskType 指定任务类型（analyze_issue 或 fix_issue），
+// 未指定时默认为 analyze_issue。
 func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
-	payload.TaskType = model.TaskTypeFixIssue
+	// M3.4: 支持调用方指定 TaskType（analyze_issue 或 fix_issue）
+	if payload.TaskType == "" {
+		payload.TaskType = model.TaskTypeAnalyzeIssue // 默认分析模式
+	}
+	// 校验仅允许 Issue 相关类型
+	if payload.TaskType != model.TaskTypeAnalyzeIssue && payload.TaskType != model.TaskTypeFixIssue {
+		return "", fmt.Errorf("EnqueueManualFix 不支持任务类型: %s", payload.TaskType)
+	}
 	payload.DeliveryID = generateManualDeliveryID()
 
-	activeTasks := h.listActiveIssueTasks(ctx, payload.RepoFullName, payload.IssueNumber, model.TaskTypeFixIssue)
+	activeTasks := h.listActiveIssueTasks(ctx, payload.RepoFullName, payload.IssueNumber, payload.TaskType)
 
 	record := &model.TaskRecord{
-		TaskType:     model.TaskTypeFixIssue,
+		TaskType:     payload.TaskType,
 		Priority:     model.PriorityNormal,
 		RepoFullName: payload.RepoFullName,
 		DeliveryID:   payload.DeliveryID,
@@ -426,8 +435,13 @@ func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.Tas
 	}
 	h.cancelTasks(ctx, activeTasks)
 
-	h.logger.InfoContext(ctx, "手动 Issue 修复任务已入队",
-		"task_id", record.ID, "repo", payload.RepoFullName,
+	taskTypeName := "Issue 分析"
+	if payload.TaskType == model.TaskTypeFixIssue {
+		taskTypeName = "Issue 修复"
+	}
+	h.logger.InfoContext(ctx, "手动"+taskTypeName+"任务已入队",
+		"task_id", record.ID, "task_type", payload.TaskType,
+		"repo", payload.RepoFullName,
 		"issue", payload.IssueNumber, "triggered_by", triggeredBy)
 	return record.ID, nil
 }

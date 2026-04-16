@@ -12,7 +12,8 @@ import (
 
 type fixRequest struct {
 	IssueNumber int64  `json:"issue_number" binding:"required,min=1"`
-	Ref         string `json:"ref,omitempty"` // 可选：指定修复的基准分支
+	Ref         string `json:"ref,omitempty"`      // 可选：指定修复的基准分支
+	TaskType    string `json:"task_type,omitempty"` // M3.4: analyze_issue（默认）或 fix_issue
 }
 
 func (h *handlers) triggerFix(c *gin.Context) {
@@ -74,7 +75,14 @@ func (h *handlers) triggerFix(c *gin.Context) {
 		issueRef = repoInfo.DefaultBranch
 	}
 
+	// M3.4: 解析 task_type，默认 analyze_issue
+	taskType := model.TaskTypeAnalyzeIssue
+	if req.TaskType == string(model.TaskTypeFixIssue) {
+		taskType = model.TaskTypeFixIssue
+	}
+
 	payload := model.TaskPayload{
+		TaskType:     taskType,
 		RepoOwner:    owner,
 		RepoName:     repo,
 		RepoFullName: repoInfo.FullName,

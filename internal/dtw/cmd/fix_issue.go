@@ -15,11 +15,13 @@ var (
 	fixIssue   int
 	fixNoWait  bool
 	fixTimeout time.Duration
+	fixMode    bool // M3.4: true=修复模式（fix_issue），false=分析模式（analyze_issue，默认）
 )
 
 var fixIssueCmd = &cobra.Command{
 	Use:   "fix-issue",
-	Short: "触发 Issue 自动修复",
+	Short: "触发 Issue 自动分析或修复",
+	Long:  "默认触发只读分析（analyze_issue），使用 --fix 触发修复（fix_issue）。",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		parts := strings.SplitN(fixRepo, "/", 2)
 		if len(parts) != 2 {
@@ -27,7 +29,14 @@ var fixIssueCmd = &cobra.Command{
 		}
 		owner, repo := parts[0], parts[1]
 
-		body := map[string]int{"issue_number": fixIssue}
+		taskType := "analyze_issue"
+		if fixMode {
+			taskType = "fix_issue"
+		}
+		body := map[string]interface{}{
+			"issue_number": fixIssue,
+			"task_type":    taskType,
+		}
 		var result struct {
 			TaskID string `json:"task_id"`
 		}
@@ -80,6 +89,7 @@ func init() {
 	fixIssueCmd.Flags().IntVar(&fixIssue, "issue", 0, "Issue 编号")
 	fixIssueCmd.Flags().BoolVar(&fixNoWait, "no-wait", false, "提交后不等待结果")
 	fixIssueCmd.Flags().DurationVar(&fixTimeout, "timeout", 0, "等待超时时间（默认 30m）")
+	fixIssueCmd.Flags().BoolVar(&fixMode, "fix", false, "触发修复模式（默认为分析模式）")
 
 	_ = fixIssueCmd.MarkFlagRequired("repo")
 	_ = fixIssueCmd.MarkFlagRequired("issue")
