@@ -231,6 +231,78 @@ func TestFormatAnalysisComment_Fallback_BacktickEscape(t *testing.T) {
 	}
 }
 
+func TestFormatFixPRBody_Success(t *testing.T) {
+	fix := &FixOutput{
+		Success:       true,
+		BranchName:    "auto-fix/issue-15",
+		CommitSHA:     "abc123",
+		ModifiedFiles: []string{"src/a.java", "test/a_test.java"},
+		TestResults:   &TestResults{Passed: 12, Failed: 0, Skipped: 1, AllPassed: true},
+		Analysis:      "NPE 由未校验空密码引起",
+		FixApproach:   "在 login 前添加 isEmpty 判断",
+	}
+	body := FormatFixPRBody(fix, 15, RefKindBranch, "")
+
+	checks := []string{"fixes #15", "NPE 由未校验空密码引起", "src/a.java", "12", "DTWorkflow"}
+	for _, s := range checks {
+		if !strings.Contains(body, s) {
+			t.Errorf("PR body 应包含 %q", s)
+		}
+	}
+}
+
+func TestFormatFixPRBody_TagRef_NotesBaseBranchFallback(t *testing.T) {
+	fix := &FixOutput{Success: true, BranchName: "auto-fix/issue-15", CommitSHA: "abc",
+		ModifiedFiles: []string{"x.go"}, TestResults: &TestResults{AllPassed: true}}
+	body := FormatFixPRBody(fix, 15, RefKindTag, "main")
+	if !strings.Contains(body, "tag") || !strings.Contains(body, "main") {
+		t.Errorf("Tag 场景 PR body 应注明 base 为默认分支 main, got:\n%s", body)
+	}
+}
+
+func TestFormatFixSuccessComment(t *testing.T) {
+	body := FormatFixSuccessComment(42, "https://gitea/owner/repo/pulls/42", 3)
+	checks := []string{"#42", "https://gitea/owner/repo/pulls/42", "3 个文件"}
+	for _, s := range checks {
+		if !strings.Contains(body, s) {
+			t.Errorf("成功评论应包含 %q", s)
+		}
+	}
+}
+
+func TestFormatFixFailureComment(t *testing.T) {
+	fix := &FixOutput{
+		Success:       false,
+		FailureReason: "3 个测试未通过",
+		TestResults:   &TestResults{Passed: 5, Failed: 3, AllPassed: false},
+		Analysis:      "根因是边界条件",
+	}
+	body := FormatFixFailureComment(fix, 2.5, 0.1)
+	if !strings.Contains(body, "3 个测试未通过") {
+		t.Error("失败评论应包含 failure_reason")
+	}
+	if !strings.Contains(body, "根因是边界条件") {
+		t.Error("失败评论应包含分析说明帮助用户定位")
+	}
+}
+
+func TestFormatFixInfoInsufficientComment(t *testing.T) {
+	body := FormatFixInfoInsufficientComment([]string{"缺少堆栈", "缺少复现步骤"})
+	checks := []string{"信息不足", "缺少堆栈", "缺少复现步骤", "auto-fix", "fix-to-pr"}
+	for _, s := range checks {
+		if !strings.Contains(body, s) {
+			t.Errorf("评论应包含 %q", s)
+		}
+	}
+}
+
+func TestFormatFixPushButNoPRComment(t *testing.T) {
+	body := FormatFixPushButNoPRComment("auto-fix/issue-15", "gitea API 返回 500")
+	if !strings.Contains(body, "auto-fix/issue-15") || !strings.Contains(body, "PR 创建失败") {
+		t.Errorf("push 成功但 PR 失败的评论应包含分支名和说明: %s", body)
+	}
+}
+
 func TestFormatAnalysisComment_NilCLIMeta(t *testing.T) {
 	result := &FixResult{
 		Analysis: &AnalysisOutput{

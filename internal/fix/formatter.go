@@ -156,6 +156,142 @@ func formatInsufficientInfo(analysis *AnalysisOutput, durationSec, costUSD float
 	return body
 }
 
+// ==================== M3.5: fix_issue 修复模式格式化 ====================
+
+// FormatFixPRBody M3.5: 构造修复 PR 的 body。
+// refKind=RefKindTag 时，baseBranch 为仓库默认分支，body 中注明 base 差异。
+func FormatFixPRBody(fix *FixOutput, issueNum int64, refKind RefKind, baseBranch string) string {
+	var sb strings.Builder
+	sb.WriteString("## 关联 Issue\n\n")
+	sb.WriteString(fmt.Sprintf("fixes #%d\n\n", issueNum))
+
+	if refKind == RefKindTag && baseBranch != "" {
+		sb.WriteString("> ⚠️ 原 Issue 指定的 ref 为 tag，Gitea PR 不支持 tag 作为 base 分支。\n")
+		sb.WriteString(fmt.Sprintf("> PR base 已改用仓库默认分支 `%s`，修复代码仍基于 tag 对应的 commit。\n\n", escapeMarkdown(baseBranch)))
+	}
+
+	if fix.Analysis != "" {
+		sb.WriteString("## 根因分析\n\n")
+		sb.WriteString(escapeMarkdown(fix.Analysis))
+		sb.WriteString("\n\n")
+	}
+
+	if fix.FixApproach != "" {
+		sb.WriteString("## 修复方案\n\n")
+		sb.WriteString(escapeMarkdown(fix.FixApproach))
+		sb.WriteString("\n\n")
+	}
+
+	if len(fix.ModifiedFiles) > 0 {
+		sb.WriteString("## 修改文件\n\n")
+		for _, f := range fix.ModifiedFiles {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", escapeMarkdown(f)))
+		}
+		sb.WriteString("\n")
+	}
+
+	if fix.TestResults != nil {
+		sb.WriteString("## 测试结果\n\n")
+		tr := fix.TestResults
+		sb.WriteString(fmt.Sprintf("通过 **%d** / 失败 **%d** / 跳过 **%d**（全部通过：%v）\n\n",
+			tr.Passed, tr.Failed, tr.Skipped, tr.AllPassed))
+	}
+
+	sb.WriteString("---\n")
+	sb.WriteString("🤖 由 DTWorkflow 自动生成")
+
+	body := sb.String()
+	if len(body) > bodyMaxLen {
+		body = truncateString(body, bodyMaxLen)
+	}
+	return body
+}
+
+// FormatFixSuccessComment M3.5: 修复成功后发送给 Issue 的评论。
+func FormatFixSuccessComment(prNumber int64, prURL string, modifiedFileCount int) string {
+	return fmt.Sprintf(
+		"✅ 已创建修复 PR [#%d](%s)\n\n"+
+			"修改了 **%d 个文件**，测试全部通过。\n"+
+			"PR 将自动进入评审流程。\n\n"+
+			"---\n_由 DTWorkflow 自动生成_",
+		prNumber, prURL, modifiedFileCount)
+}
+
+// FormatFixFailureComment M3.5: 修复失败（测试未通过、分支未创建等）。
+func FormatFixFailureComment(fix *FixOutput, durationSec, costUSD float64) string {
+	var sb strings.Builder
+	sb.WriteString("## DTWorkflow Issue 修复失败\n\n")
+
+	if fix.FailureReason != "" {
+		sb.WriteString("### 失败原因\n\n")
+		sb.WriteString(escapeMarkdown(fix.FailureReason))
+		sb.WriteString("\n\n")
+	}
+
+	if fix.Analysis != "" {
+		sb.WriteString("### 尝试的分析\n\n")
+		sb.WriteString(escapeMarkdown(fix.Analysis))
+		sb.WriteString("\n\n")
+	}
+
+	if fix.TestResults != nil {
+		tr := fix.TestResults
+		sb.WriteString("### 测试结果\n\n")
+		sb.WriteString(fmt.Sprintf("通过 %d / 失败 %d / 跳过 %d\n\n",
+			tr.Passed, tr.Failed, tr.Skipped))
+	}
+
+	sb.WriteString("---\n")
+	sb.WriteString("**建议**：人工检查失败原因，补充信息或修正代码后重新触发修复。\n\n")
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))
+
+	body := sb.String()
+	if len(body) > bodyMaxLen {
+		body = truncateString(body, bodyMaxLen)
+	}
+	return body
+}
+
+// FormatFixInfoInsufficientComment M3.5: 前序分析信息不足时的提醒。
+func FormatFixInfoInsufficientComment(missingInfo []string) string {
+	var sb strings.Builder
+	sb.WriteString("## DTWorkflow Issue 修复前置检查\n\n")
+	sb.WriteString("> 之前的 `auto-fix` 分析表明 Issue 信息不足以自动修复。\n\n")
+
+	if len(missingInfo) > 0 {
+		sb.WriteString("### 缺失信息\n\n")
+		for _, info := range missingInfo {
+			sb.WriteString(fmt.Sprintf("- %s\n", escapeMarkdown(info)))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("---\n\n")
+	sb.WriteString("**补充信息后**，请移除 `auto-fix` 标签再重新添加以更新分析；\n")
+	sb.WriteString("若新的分析确认信息充分，再添加 `fix-to-pr` 标签触发自动修复。\n\n")
+	sb.WriteString("---\n")
+	sb.WriteString("_由 DTWorkflow 自动生成_")
+
+	body := sb.String()
+	if len(body) > bodyMaxLen {
+		body = truncateString(body, bodyMaxLen)
+	}
+	return body
+}
+
+// FormatFixPushButNoPRComment M3.5: 容器 push 成功但容器外 PR 创建失败。
+func FormatFixPushButNoPRComment(branchName, apiError string) string {
+	return fmt.Sprintf(
+		"⚠️ 修复分支 `%s` 已推送成功，但 PR 创建失败。\n\n"+
+			"错误：%s\n\n"+
+			"系统将自动重试。如持续失败，请人工从 `%s` 分支手动创建 PR。\n\n"+
+			"---\n_由 DTWorkflow 自动生成_",
+		escapeMarkdown(branchName),
+		escapeMarkdown(apiError),
+		escapeMarkdown(branchName))
+}
+
 func formatFallback(rawOutput string, durationSec, costUSD float64) string {
 	var sb strings.Builder
 	sb.WriteString("## DTWorkflow Issue 分析报告\n\n")
