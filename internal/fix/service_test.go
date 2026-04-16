@@ -1055,6 +1055,79 @@ func TestExecute_RefCommentWritebackFailure_StillReturnsError(t *testing.T) {
 	}
 }
 
+func TestValidateRef_ReturnsRefKind_Branch(t *testing.T) {
+	rc := &mockRefClient{
+		getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+			if branch == "feature/x" {
+				return &gitea.Branch{Name: branch}, nil, nil
+			}
+			return nil, nil, notFoundErr()
+		},
+	}
+	s := &Service{refClient: rc}
+	kind, err := s.validateRef(context.Background(), "o", "r", "feature/x")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if kind != RefKindBranch {
+		t.Errorf("kind = %v, want RefKindBranch", kind)
+	}
+}
+
+func TestValidateRef_ReturnsRefKind_Tag(t *testing.T) {
+	rc := &mockRefClient{
+		getBranch: func(_ context.Context, _, _, _ string) (*gitea.Branch, *gitea.Response, error) {
+			return nil, nil, notFoundErr()
+		},
+		getTag: func(_ context.Context, _, _, tag string) (*gitea.Tag, *gitea.Response, error) {
+			if tag == "v1.0.0" {
+				return &gitea.Tag{Name: tag}, nil, nil
+			}
+			return nil, nil, notFoundErr()
+		},
+	}
+	s := &Service{refClient: rc}
+	kind, err := s.validateRef(context.Background(), "o", "r", "v1.0.0")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if kind != RefKindTag {
+		t.Errorf("kind = %v, want RefKindTag", kind)
+	}
+}
+
+func TestValidateRef_StripsRefsHeadsPrefix(t *testing.T) {
+	rc := &mockRefClient{
+		getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+			if branch == "main" {
+				return &gitea.Branch{Name: branch}, nil, nil
+			}
+			return nil, nil, notFoundErr()
+		},
+	}
+	s := &Service{refClient: rc}
+	kind, err := s.validateRef(context.Background(), "o", "r", "refs/heads/main")
+	if err != nil || kind != RefKindBranch {
+		t.Fatalf("refs/heads/main 应解析为分支，got kind=%v err=%v", kind, err)
+	}
+}
+
+func TestValidateRef_NotFound(t *testing.T) {
+	rc := &mockRefClient{
+		getBranch: func(_ context.Context, _, _, _ string) (*gitea.Branch, *gitea.Response, error) {
+			return nil, nil, notFoundErr()
+		},
+		getTag: func(_ context.Context, _, _, _ string) (*gitea.Tag, *gitea.Response, error) {
+			return nil, nil, notFoundErr()
+		},
+	}
+	s := &Service{refClient: rc}
+	_, err := s.validateRef(context.Background(), "o", "r", "does-not-exist")
+	if !errors.Is(err, ErrInvalidIssueRef) {
+		t.Errorf("expected ErrInvalidIssueRef, got %v", err)
+	}
+}
+
 func TestStripRefPrefix(t *testing.T) {
 	tests := []struct {
 		input string

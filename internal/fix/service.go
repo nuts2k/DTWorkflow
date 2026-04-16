@@ -164,7 +164,7 @@ func (s *Service) executeAnalysis(ctx context.Context, payload model.TaskPayload
 
 	// 4. ref 有效性检查
 	if s.refClient != nil {
-		if err := s.validateRef(ctx, owner, repo, effectiveRef); err != nil {
+		if _, err := s.validateRef(ctx, owner, repo, effectiveRef); err != nil {
 			if errors.Is(err, ErrInvalidIssueRef) {
 				if commentErr := s.commentRefInvalid(ctx, owner, repo, issueNum, effectiveRef); commentErr != nil {
 					return nil, fmt.Errorf("Issue #%d ref=%q: 回写 ref 无效提示失败: %w", issueNum, effectiveRef, commentErr)
@@ -304,24 +304,25 @@ func stripRefPrefix(ref string) string {
 	return ref
 }
 
-// validateRef 验证 Issue 关联的 ref 是否存在（先检查分支，再检查 tag）。
-func (s *Service) validateRef(ctx context.Context, owner, repo, ref string) error {
+// validateRef M3.5: 验证 Issue 关联的 ref 是否存在，并返回 ref 类型。
+// 先查分支再查 tag；RefKind 用于 PR 创建时决定 Base 字段（tag 不能直接作为 Base）。
+func (s *Service) validateRef(ctx context.Context, owner, repo, ref string) (RefKind, error) {
 	bare := stripRefPrefix(ref)
 	_, _, err := s.refClient.GetBranch(ctx, owner, repo, bare)
 	if err == nil {
-		return nil
+		return RefKindBranch, nil
 	}
 	if !gitea.IsNotFound(err) {
-		return fmt.Errorf("检查分支 %q 失败: %w", bare, err)
+		return RefKindUnknown, fmt.Errorf("检查分支 %q 失败: %w", bare, err)
 	}
 	_, _, err = s.refClient.GetTag(ctx, owner, repo, bare)
 	if err == nil {
-		return nil
+		return RefKindTag, nil
 	}
 	if !gitea.IsNotFound(err) {
-		return fmt.Errorf("检查 tag %q 失败: %w", bare, err)
+		return RefKindUnknown, fmt.Errorf("检查 tag %q 失败: %w", bare, err)
 	}
-	return ErrInvalidIssueRef
+	return RefKindUnknown, ErrInvalidIssueRef
 }
 
 func (s *Service) commentRefMissing(ctx context.Context, owner, repo string, issueNum int64) error {
