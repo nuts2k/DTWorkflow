@@ -515,6 +515,41 @@ func TestBuildContainerEnv_FixIssueWithoutRef(t *testing.T) {
 	}
 }
 
+func TestBuildContainerEnv_AnalyzeIssue(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeAnalyzeIssue,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		IssueNumber:  15,
+		IssueTitle:   "Login page crash",
+		IssueRef:     "main",
+	}
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+	if envMap["TASK_TYPE"] != "analyze_issue" {
+		t.Errorf("TASK_TYPE = %q, 期望 analyze_issue", envMap["TASK_TYPE"])
+	}
+	if envMap["ISSUE_NUMBER"] != "15" {
+		t.Errorf("ISSUE_NUMBER = %q, 期望 15", envMap["ISSUE_NUMBER"])
+	}
+	if envMap["ISSUE_TITLE"] != "Login page crash" {
+		t.Errorf("ISSUE_TITLE = %q, 期望 Login page crash", envMap["ISSUE_TITLE"])
+	}
+	if envMap["ISSUE_REF"] != "main" {
+		t.Errorf("ISSUE_REF = %q, 期望 main", envMap["ISSUE_REF"])
+	}
+	if _, ok := envMap["PR_NUMBER"]; ok {
+		t.Error("analyze_issue 不应包含 PR_NUMBER")
+	}
+}
+
 func TestBuildContainerCmd_FixIssueWithRef(t *testing.T) {
 	payload := model.TaskPayload{
 		TaskType:     model.TaskTypeFixIssue,

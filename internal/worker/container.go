@@ -73,7 +73,7 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
 			fmt.Sprintf("HEAD_SHA=%s", sanitizeEnvValue(payload.HeadSHA)),
 		)
-	case model.TaskTypeFixIssue:
+	case model.TaskTypeAnalyzeIssue, model.TaskTypeFixIssue:
 		env = append(env,
 			fmt.Sprintf("ISSUE_NUMBER=%d", payload.IssueNumber),
 			fmt.Sprintf("ISSUE_TITLE=%s", sanitizeEnvValue(payload.IssueTitle)),
