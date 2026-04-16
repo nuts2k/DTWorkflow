@@ -68,6 +68,9 @@ type IssueLabelEvent struct {
 	AutoFixChanged bool
 	AutoFixAdded   bool
 	AutoFixRemoved bool
+	FixToPRChanged bool  // M3.4: fix-to-pr 标签变化
+	FixToPRAdded   bool  // M3.4: fix-to-pr 标签添加
+	FixToPRRemoved bool  // M3.4: fix-to-pr 标签移除
 }
 
 func (e IssueLabelEvent) Name() string {

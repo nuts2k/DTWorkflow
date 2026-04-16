@@ -82,12 +82,14 @@ func (p *Parser) parseIssue(deliveryID string, body []byte) (Event, error) {
 	// 提取标签名：优先使用顶层 label 字段（早期版本），
 	// 回退到 issue.labels 中查找 auto-fix（Gitea 1.21+ label_updated）。
 	labelRef, isAutoFix := extractLabel(payload)
+	isFixToPR := hasFixToPRLabel(payload)
 
 	if payload.Issue.Number == 0 || payload.Repository.FullName == "" {
 		return nil, ErrInvalidPayload
 	}
 	// 早期版本要求 label.name 非空；Gitea 1.21+ label_cleared 可以没有 label
-	if action == "labeled" && labelRef.Name == "" {
+	// fix-to-pr 独立检测，不依赖 labelRef
+	if action == "labeled" && labelRef.Name == "" && !isFixToPR {
 		return nil, ErrInvalidPayload
 	}
 
@@ -118,6 +120,9 @@ func (p *Parser) parseIssue(deliveryID string, body []byte) (Event, error) {
 		AutoFixChanged: isAutoFix,
 		AutoFixAdded:   isAutoFix && action == "labeled",
 		AutoFixRemoved: isAutoFix && action == "unlabeled",
+		FixToPRChanged: isFixToPR,
+		FixToPRAdded:   isFixToPR && action == "labeled",
+		FixToPRRemoved: isFixToPR && action == "unlabeled",
 	}, nil
 }
 
@@ -158,4 +163,20 @@ func extractLabel(payload giteaIssueEventPayload) (LabelRef, bool) {
 
 func isAutoFixLabel(name string) bool {
 	return strings.EqualFold(name, "auto-fix")
+}
+
+func isFixToPRLabel(name string) bool {
+	return strings.EqualFold(name, "fix-to-pr")
+}
+
+func hasFixToPRLabel(payload giteaIssueEventPayload) bool {
+	if isFixToPRLabel(payload.Label.Name) {
+		return true
+	}
+	for _, l := range payload.Issue.Labels {
+		if isFixToPRLabel(l.Name) {
+			return true
+		}
+	}
+	return false
 }

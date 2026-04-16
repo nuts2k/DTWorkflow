@@ -139,6 +139,27 @@ func TestParser_ParseIssueRef(t *testing.T) {
 	}
 }
 
+func TestIsFixToPRLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"fix-to-pr", true},
+		{"Fix-To-PR", true},
+		{"FIX-TO-PR", true},
+		{"auto-fix", false},
+		{"fix-to-pr2", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFixToPRLabel(tc.name); got != tc.want {
+				t.Errorf("isFixToPRLabel(%q) = %v, 期望 %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParser_ParseIssueRefEmpty(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("testdata", "issue_labeled_other.json"))
 	if err != nil {
@@ -152,5 +173,36 @@ func TestParser_ParseIssueRefEmpty(t *testing.T) {
 	issueEvent := event.(IssueLabelEvent)
 	if issueEvent.Issue.Ref != "" {
 		t.Errorf("Issue.Ref = %q, want empty", issueEvent.Issue.Ref)
+	}
+}
+
+func TestParseIssue_FixToPRLabel(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("testdata", "issue_labeled_fix_to_pr.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	parser := NewParser()
+	event, err := parser.Parse("issues", "delivery-fix-to-pr", body)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	issueEvent, ok := event.(IssueLabelEvent)
+	if !ok {
+		t.Fatalf("event type = %T, want IssueLabelEvent", event)
+	}
+	if !issueEvent.FixToPRAdded {
+		t.Errorf("FixToPRAdded = false, 期望 true")
+	}
+	if !issueEvent.FixToPRChanged {
+		t.Errorf("FixToPRChanged = false, 期望 true")
+	}
+	if issueEvent.FixToPRRemoved {
+		t.Errorf("FixToPRRemoved = true, 期望 false")
+	}
+	if issueEvent.AutoFixAdded {
+		t.Errorf("AutoFixAdded = true, 期望 false")
+	}
+	if issueEvent.AutoFixChanged {
+		t.Errorf("AutoFixChanged = true, 期望 false")
 	}
 }

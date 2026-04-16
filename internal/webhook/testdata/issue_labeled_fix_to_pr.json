@@ -1,0 +1,18 @@
+{
+  "action": "labeled",
+  "repository": {
+    "full_name": "owner/repo",
+    "owner": {"login": "owner"},
+    "name": "repo"
+  },
+  "issue": {
+    "number": 8,
+    "title": "Fix issue to PR",
+    "body": "Issue body",
+    "html_url": "https://gitea.example.com/owner/repo/issues/8",
+    "state": "open",
+    "ref": ""
+  },
+  "label": {"name": "fix-to-pr", "color": "0075ca"},
+  "sender": {"login": "alice", "full_name": "Alice"}
+}
