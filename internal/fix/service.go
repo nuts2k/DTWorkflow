@@ -119,14 +119,13 @@ func NewService(gitea IssueClient, pool FixPoolRunner, opts ...ServiceOption) *S
 	return s
 }
 
-// Execute 执行 analyze_issue 的完整流程。
-// fix_issue 已在 M3.4 拆分为独立修复链路，不应再落到只读分析实现。
+// Execute 按 TaskType 分发到分析或修复流程。
 func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixResult, error) {
 	switch payload.TaskType {
 	case "", model.TaskTypeAnalyzeIssue:
 		return s.executeAnalysis(ctx, payload)
 	case model.TaskTypeFixIssue:
-		return nil, fmt.Errorf("fix.Service 不支持任务类型 %q，请走 fix_issue 修复执行链路", payload.TaskType)
+		return s.executeFix(ctx, payload)
 	default:
 		return nil, fmt.Errorf("fix.Service 不支持任务类型: %s", payload.TaskType)
 	}
@@ -452,4 +451,210 @@ func (s *Service) commentRefInvalid(ctx context.Context, owner, repo string, iss
 		return err
 	}
 	return nil
+}
+
+// executeFix M3.5: 修复模式主流程。
+func (s *Service) executeFix(ctx context.Context, payload model.TaskPayload) (*FixResult, error) {
+	owner, repo, issueNum := payload.RepoOwner, payload.RepoName, payload.IssueNumber
+
+	// 1. 前置校验
+	if issueNum <= 0 {
+		return nil, fmt.Errorf("无效的 Issue 编号: %d", issueNum)
+	}
+
+	// 2. Issue 状态校验
+	issue, _, err := s.gitea.GetIssue(ctx, owner, repo, issueNum)
+	if err != nil {
+		return nil, fmt.Errorf("获取 Issue #%d 信息失败: %w", issueNum, err)
+	}
+	if issue.State != "open" {
+		return nil, fmt.Errorf("Issue #%d 状态为 %s: %w", issueNum, issue.State, ErrIssueNotOpen)
+	}
+
+	effectiveRef := issue.Ref
+	if effectiveRef == "" {
+		effectiveRef = payload.IssueRef
+	}
+
+	// 3. ref 空值检查
+	if effectiveRef == "" {
+		if commentErr := s.commentRefMissing(ctx, owner, repo, issueNum); commentErr != nil {
+			return nil, fmt.Errorf("Issue #%d: 回写 ref 缺失提示失败: %w", issueNum, commentErr)
+		}
+		return nil, fmt.Errorf("Issue #%d: %w", issueNum, ErrMissingIssueRef)
+	}
+
+	// 4. ref 有效性检查，并获取 RefKind
+	refKind := RefKindUnknown
+	if s.refClient != nil {
+		kind, err := s.validateRef(ctx, owner, repo, effectiveRef)
+		if err != nil {
+			if errors.Is(err, ErrInvalidIssueRef) {
+				if commentErr := s.commentRefInvalid(ctx, owner, repo, issueNum, effectiveRef); commentErr != nil {
+					return nil, fmt.Errorf("Issue #%d ref=%q: 回写 ref 无效提示失败: %w", issueNum, effectiveRef, commentErr)
+				}
+				return nil, fmt.Errorf("Issue #%d ref=%q: %w", issueNum, effectiveRef, ErrInvalidIssueRef)
+			}
+			return nil, fmt.Errorf("验证 ref %q 失败: %w", effectiveRef, err)
+		}
+		refKind = kind
+	}
+
+	// 5. "信息不足"前置检查
+	sufficient, err := s.checkPreviousAnalysis(ctx, payload.RepoFullName, issueNum)
+	if err != nil {
+		// checkPreviousAnalysis 实际上 fail-open，不会返回 error；防御性处理
+		s.logger.WarnContext(ctx, "前序分析检查异常，继续修复", "error", err)
+	}
+	if !sufficient {
+		missing := s.latestMissingInfo(ctx, payload.RepoFullName, issueNum)
+		body := FormatFixInfoInsufficientComment(missing)
+		if _, _, commentErr := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
+			gitea.CreateIssueCommentOption{Body: body}); commentErr != nil {
+			return nil, fmt.Errorf("Issue #%d: 回写信息不足提示失败: %w", issueNum, commentErr)
+		}
+		return nil, fmt.Errorf("Issue #%d: %w", issueNum, ErrInfoInsufficient)
+	}
+
+	// 6. 采集上下文
+	issueCtx, err := s.collectContext(ctx, owner, repo, issue)
+	if err != nil {
+		return nil, fmt.Errorf("采集 Issue #%d 上下文失败: %w", issueNum, err)
+	}
+	issueCtx.Ref = effectiveRef
+	payload.IssueRef = effectiveRef
+
+	s.logger.InfoContext(ctx, "开始修复 Issue",
+		"issue", issueNum, "ref", effectiveRef, "ref_kind", refKind,
+		"comments", len(issueCtx.Comments))
+
+	// 7. 构造修复 prompt + 容器执行
+	prompt := s.buildFixPrompt(issueCtx)
+	cmd := s.buildFixCommand()
+	execResult, err := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
+	if err != nil {
+		return &FixResult{
+			IssueContext: issueCtx, RawOutput: safeOutput(execResult),
+			RefKind: refKind,
+		}, fmt.Errorf("容器执行失败: %w", err)
+	}
+	if execResult == nil {
+		return &FixResult{IssueContext: issueCtx, RefKind: refKind},
+			fmt.Errorf("容器执行结果为空")
+	}
+	if execResult.ExitCode != 0 {
+		s.logger.ErrorContext(ctx, "fix worker 非零退出",
+			"issue", issueNum, "exit_code", execResult.ExitCode)
+		return &FixResult{
+			IssueContext: issueCtx, RawOutput: execResult.Output,
+			ExitCode: execResult.ExitCode, RefKind: refKind,
+		}, fmt.Errorf("容器退出码 %d", execResult.ExitCode)
+	}
+
+	// 8. 解析 FixOutput
+	result := s.parseFixResult(execResult.Output)
+	result.IssueContext = issueCtx
+	result.RawOutput = execResult.Output
+	result.RefKind = refKind
+
+	// 解析失败 → 上层 Processor 决定重试或降级
+	if result.ParseError != nil {
+		return result, fmt.Errorf("%w: %v", ErrFixParseFailure, result.ParseError)
+	}
+	fix := result.Fix
+	if fix == nil {
+		return result, fmt.Errorf("%w: FixOutput 为 nil", ErrFixParseFailure)
+	}
+
+	// 9. Claude 自行判断信息不足 → 发送提醒，跳过重试
+	if !fix.InfoSufficient {
+		body := FormatFixInfoInsufficientComment(fix.MissingInfo)
+		if _, _, commentErr := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
+			gitea.CreateIssueCommentOption{Body: body}); commentErr != nil {
+			result.WritebackError = fmt.Errorf("回写信息不足提示失败: %w", commentErr)
+		}
+		return result, fmt.Errorf("Issue #%d: %w", issueNum, ErrInfoInsufficient)
+	}
+
+	// 10. success=false → 失败报告评论，跳过重试
+	if !fix.Success {
+		var durationSec, costUSD float64
+		if result.CLIMeta != nil {
+			durationSec = float64(result.CLIMeta.DurationMs) / 1000.0
+			costUSD = result.CLIMeta.CostUSD
+		}
+		body := FormatFixFailureComment(fix, durationSec, costUSD)
+		if _, _, commentErr := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
+			gitea.CreateIssueCommentOption{Body: body}); commentErr != nil {
+			result.WritebackError = fmt.Errorf("回写修复失败评论失败: %w", commentErr)
+		}
+		return result, fmt.Errorf("Issue #%d: %w", issueNum, ErrFixFailed)
+	}
+
+	// 11. success=true → 创建 PR（容器已完成 push）
+	if s.prClient == nil {
+		return result, fmt.Errorf("未注入 PRClient，无法创建修复 PR（success=true 但基础设施未就绪）")
+	}
+	prNum, prURL, prErr := s.createFixPR(ctx, payload, fix, refKind, issue.Title)
+	if prErr != nil {
+		// push 成功但 PR 失败 → 发送提醒评论 + 允许重试
+		body := FormatFixPushButNoPRComment(fix.BranchName, prErr.Error())
+		if _, _, commentErr := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
+			gitea.CreateIssueCommentOption{Body: body}); commentErr != nil {
+			result.WritebackError = fmt.Errorf("回写 PR 创建失败提醒失败: %w", commentErr)
+		}
+		return result, fmt.Errorf("创建修复 PR 失败: %w", prErr)
+	}
+	result.PRNumber = prNum
+	result.PRURL = prURL
+
+	// 12. 修复成功评论
+	body := FormatFixSuccessComment(prNum, prURL, len(fix.ModifiedFiles))
+	if _, _, commentErr := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
+		gitea.CreateIssueCommentOption{Body: body}); commentErr != nil {
+		result.WritebackError = fmt.Errorf("回写修复成功评论失败: %w", commentErr)
+	}
+	return result, nil
+}
+
+// createFixPR M3.5: 通过 Gitea API 创建修复 PR。
+// refKind=RefKindTag 时需回退到仓库默认分支作为 Base（tag 不能作为 PR Base）。
+func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fix *FixOutput,
+	refKind RefKind, issueTitle string) (int64, string, error) {
+
+	base := stripRefPrefix(payload.IssueRef)
+	if refKind == RefKindTag {
+		// Tag 不能作为 Base，改用默认分支
+		repoInfo, _, err := s.prClient.GetRepo(ctx, payload.RepoOwner, payload.RepoName)
+		if err != nil {
+			return 0, "", fmt.Errorf("获取仓库默认分支失败: %w", err)
+		}
+		base = repoInfo.DefaultBranch
+		if base == "" {
+			return 0, "", fmt.Errorf("仓库默认分支为空，无法创建 PR")
+		}
+	}
+
+	title := fmt.Sprintf("fix: #%d %s", payload.IssueNumber, issueTitle)
+	// PR 标题 Gitea 上限约 255，安全截断
+	if len(title) > 250 {
+		title = title[:250]
+	}
+
+	body := FormatFixPRBody(fix, payload.IssueNumber, refKind, base)
+
+	pr, _, err := s.prClient.CreatePullRequest(ctx, payload.RepoOwner, payload.RepoName,
+		gitea.CreatePullRequestOption{
+			Head:  fix.BranchName,
+			Base:  base,
+			Title: title,
+			Body:  body,
+		})
+	if err != nil {
+		return 0, "", err
+	}
+	if pr == nil {
+		return 0, "", fmt.Errorf("Gitea API 返回空 PR")
+	}
+	return pr.Number, pr.HTMLURL, nil
 }

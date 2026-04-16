@@ -156,18 +156,198 @@ func TestExecute_InvalidIssueNumber(t *testing.T) {
 	}
 }
 
-func TestExecute_FixIssueUnsupported(t *testing.T) {
-	svc := NewService(&mockIssueClient{}, defaultPool())
+// stubPRClient mock PRClient for fix tests
+type stubPRClient struct {
+	createResult *gitea.PullRequest
+	createErr    error
+	createCalls  int
+	getRepoResult *gitea.Repository
+	getRepoErr    error
+}
 
-	payload := fixPayload()
-	payload.TaskType = model.TaskTypeFixIssue
+func (s *stubPRClient) CreatePullRequest(_ context.Context, _, _ string, _ gitea.CreatePullRequestOption) (*gitea.PullRequest, *gitea.Response, error) {
+	s.createCalls++
+	return s.createResult, nil, s.createErr
+}
 
-	_, err := svc.Execute(context.Background(), payload)
-	if err == nil {
-		t.Fatal("fix_issue 误入分析服务时应返回错误")
+func (s *stubPRClient) GetRepo(_ context.Context, _, _ string) (*gitea.Repository, *gitea.Response, error) {
+	if s.getRepoErr != nil {
+		return nil, nil, s.getRepoErr
 	}
-	if !strings.Contains(err.Error(), "fix_issue 修复执行链路") {
-		t.Fatalf("error = %q, want contains %q", err.Error(), "fix_issue 修复执行链路")
+	if s.getRepoResult != nil {
+		return s.getRepoResult, nil, nil
+	}
+	return &gitea.Repository{DefaultBranch: "main"}, nil, nil
+}
+
+func TestExecuteFix_InfoInsufficientPreCheck(t *testing.T) {
+	analysisRec := &model.TaskRecord{
+		ID:     "a-1",
+		Result: `{"type":"result","result":"{\"info_sufficient\":false,\"missing_info\":[\"堆栈\"]}"}`,
+	}
+	createCommentCount := 0
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			createCommentCount++
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	pool := defaultPool() // 不应被调用
+	s := NewService(issueClient, pool,
+		WithFixStaleChecker(&stubFixStaleChecker{record: analysisRec}),
+	)
+
+	payload := model.TaskPayload{
+		TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+		RepoFullName: "o/r", IssueNumber: 15,
+	}
+	_, err := s.Execute(context.Background(), payload)
+	if !errors.Is(err, ErrInfoInsufficient) {
+		t.Errorf("应返回 ErrInfoInsufficient, got %v", err)
+	}
+	if createCommentCount == 0 {
+		t.Error("应发出 Issue 评论提醒用户补充信息")
+	}
+	if pool.calls != 0 {
+		t.Errorf("容器池不应被调用，实际调用 %d 次", pool.calls)
+	}
+}
+
+func TestExecuteFix_SuccessCreatesPR(t *testing.T) {
+	createCommentCount := 0
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			createCommentCount++
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	fixEnvelope := `{"type":"result","duration_ms":1000,"total_cost_usd":0.01,"result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"passed\":5,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"x\",\"fix_approach\":\"y\"}"}`
+	pool := &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: fixEnvelope},
+	}
+	prClient := &stubPRClient{
+		createResult: &gitea.PullRequest{Number: 42, HTMLURL: "https://g/o/r/pulls/42"},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+	result, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	if result == nil || result.Fix == nil || !result.Fix.Success {
+		t.Fatalf("Fix 结果不正确: %+v", result)
+	}
+	if result.PRNumber != 42 || result.PRURL == "" {
+		t.Errorf("PRNumber=%d PRURL=%q, 期望 42 + 非空", result.PRNumber, result.PRURL)
+	}
+	if prClient.createCalls != 1 {
+		t.Errorf("CreatePullRequest 应调用 1 次, 实际 %d", prClient.createCalls)
+	}
+	if createCommentCount != 1 {
+		t.Errorf("应发出 1 条 Issue 评论, 实际 %d", createCommentCount)
+	}
+}
+
+func TestExecuteFix_PushSuccessButPRCreateFailed(t *testing.T) {
+	createCommentCount := 0
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			createCommentCount++
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	fixEnvelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"all_passed\":true}}"}`
+	pool := &mockFixPoolRunner{result: &worker.ExecutionResult{Output: fixEnvelope}}
+	prClient := &stubPRClient{createErr: fmt.Errorf("gitea 500")}
+
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	_, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err == nil {
+		t.Fatal("PR 创建失败应返回可重试错误")
+	}
+	if createCommentCount == 0 {
+		t.Error("应发出 push-成功-PR-失败 评论")
+	}
+}
+
+func TestExecuteFix_ClaudeReturnsFailure(t *testing.T) {
+	createCommentCount := 0
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			createCommentCount++
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	fixEnvelope := `{"type":"result","result":"{\"success\":false,\"info_sufficient\":true,\"failure_reason\":\"测试未通过\",\"analysis\":\"x\",\"test_results\":{\"passed\":5,\"failed\":3,\"all_passed\":false}}"}`
+	pool := &mockFixPoolRunner{result: &worker.ExecutionResult{Output: fixEnvelope}}
+
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+	)
+
+	_, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if !errors.Is(err, ErrFixFailed) {
+		t.Errorf("应返回 ErrFixFailed, got %v", err)
+	}
+	if createCommentCount == 0 {
+		t.Error("应发出失败报告评论")
 	}
 }
 
