@@ -282,3 +282,122 @@ func TestFormatFeishuCard_FailedNoDuration(t *testing.T) {
 		t.Errorf("失败通知不应包含耗时，got:\n%s", md)
 	}
 }
+
+// TestFormatFeishuCard_FixIssueDone_GreenWithPRButton 验证 fix 完成事件应绿色卡片 + "查看修复 PR" 按钮。
+func TestFormatFeishuCard_FixIssueDone_GreenWithPRButton(t *testing.T) {
+	msg := Message{
+		EventType: EventFixIssueDone,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo", Number: 7, IsPR: false},
+		Title:     "Issue 修复 PR 已创建",
+		Body:      "已为 Issue #7 创建修复 PR",
+		Metadata: map[string]string{
+			MetaKeyIssueURL: "https://gitea.example.com/org/repo/issues/7",
+			MetaKeyPRURL:    "https://gitea.example.com/org/repo/pulls/8",
+		},
+	}
+
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "green" {
+		t.Errorf("template = %v, want green (fix issue done)", header["template"])
+	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "Issue 修复 PR 已创建" {
+		t.Errorf("title = %q, want %q", title["content"], "Issue 修复 PR 已创建")
+	}
+
+	elements := card["elements"].([]any)
+	if len(elements) < 2 {
+		t.Fatal("应包含按钮 action element")
+	}
+	action := elements[1].(map[string]any)
+	actions := action["actions"].([]any)
+	btn := actions[0].(map[string]any)
+	btnText := btn["text"].(map[string]string)["content"]
+	if btnText != "查看修复 PR" {
+		t.Errorf("按钮文案 = %q, want %q", btnText, "查看修复 PR")
+	}
+	if btn["type"] != "primary" {
+		t.Errorf("按钮类型 = %v, want primary", btn["type"])
+	}
+}
+
+// TestFormatFeishuCard_IssueAnalyzeStarted_Blue 验证分析开始事件应蓝色卡片 + "查看 Issue" 按钮。
+func TestFormatFeishuCard_IssueAnalyzeStarted_Blue(t *testing.T) {
+	msg := Message{
+		EventType: EventIssueAnalyzeStarted,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo", Number: 7, IsPR: false},
+		Title:     "Issue 分析开始",
+		Body:      "正在分析 Issue #7",
+		Metadata: map[string]string{
+			MetaKeyIssueURL: "https://gitea.example.com/org/repo/issues/7",
+		},
+	}
+
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "blue" {
+		t.Errorf("template = %v, want blue (issue analyze started)", header["template"])
+	}
+
+	elements := card["elements"].([]any)
+	if len(elements) < 2 {
+		t.Fatal("应包含按钮 action element")
+	}
+	action := elements[1].(map[string]any)
+	actions := action["actions"].([]any)
+	btn := actions[0].(map[string]any)
+	btnText := btn["text"].(map[string]string)["content"]
+	if btnText != "查看 Issue" {
+		t.Errorf("按钮文案 = %q, want %q", btnText, "查看 Issue")
+	}
+}
+
+// TestFormatFeishuCard_IssueFixStarted_Blue 验证修复开始事件应蓝色卡片 + "查看 Issue" 按钮。
+func TestFormatFeishuCard_IssueFixStarted_Blue(t *testing.T) {
+	msg := Message{
+		EventType: EventIssueFixStarted,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo", Number: 7, IsPR: false},
+		Title:     "Issue 修复开始",
+		Body:      "正在修复 Issue #7",
+		Metadata: map[string]string{
+			MetaKeyIssueURL: "https://gitea.example.com/org/repo/issues/7",
+		},
+	}
+
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "blue" {
+		t.Errorf("template = %v, want blue (issue fix started)", header["template"])
+	}
+
+	elements := card["elements"].([]any)
+	if len(elements) < 2 {
+		t.Fatal("应包含按钮 action element")
+	}
+	action := elements[1].(map[string]any)
+	actions := action["actions"].([]any)
+	btn := actions[0].(map[string]any)
+	btnText := btn["text"].(map[string]string)["content"]
+	if btnText != "查看 Issue" {
+		t.Errorf("按钮文案 = %q, want %q", btnText, "查看 Issue")
+	}
+}
