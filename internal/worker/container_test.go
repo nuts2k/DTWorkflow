@@ -550,6 +550,32 @@ func TestBuildContainerEnv_AnalyzeIssue(t *testing.T) {
 	}
 }
 
+func TestBuildContainerCmd_AnalyzeIssue(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeAnalyzeIssue,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		IssueNumber:  15,
+		IssueTitle:   "Login page crash",
+		IssueRef:     "release/v1.0",
+	}
+	cmd := buildContainerCmd(payload)
+	if len(cmd) < 2 || cmd[0] != "claude" || cmd[1] != "-p" {
+		t.Fatalf("命令前缀应为 [claude -p], 实际: %v", cmd[:min(len(cmd), 2)])
+	}
+	prompt := cmd[2]
+	if !strings.Contains(prompt, "#15") {
+		t.Error("prompt 应包含 Issue 编号 #15")
+	}
+	if !strings.Contains(prompt, "nalyze") {
+		t.Error("prompt 应包含分析指令关键词")
+	}
+	if strings.Contains(prompt, "Fix issue") || strings.Contains(prompt, "implement a fix") {
+		t.Error("analyze_issue prompt 不应包含祈使句修复指令")
+	}
+}
+
 func TestBuildContainerCmd_FixIssueWithRef(t *testing.T) {
 	payload := model.TaskPayload{
 		TaskType:     model.TaskTypeFixIssue,

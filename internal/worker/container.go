@@ -136,6 +136,27 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 				sanitizePromptInput(baseRef, 100),
 			),
 		}
+	case model.TaskTypeAnalyzeIssue:
+		repoInfo := "The repository has been cloned to the current directory."
+		if payload.IssueRef != "" {
+			repoInfo = fmt.Sprintf(
+				"The repository has been cloned and ref '%s' is checked out.",
+				sanitizePromptInput(payload.IssueRef, 200))
+		}
+		return []string{
+			"claude", "-p",
+			fmt.Sprintf(
+				"Analyze issue #%d (%s) in repository %s. "+
+					"%s "+
+					"Read the issue description and comments. "+
+					"Explore the codebase to identify the root cause. "+
+					"Provide a detailed analysis report with: root cause, affected files, suggested approach, and whether the information is sufficient for an automated fix.",
+				payload.IssueNumber,
+				sanitizePromptInput(payload.IssueTitle, 500),
+				sanitizePromptInput(payload.RepoFullName, 200),
+				repoInfo,
+			),
+		}
 	case model.TaskTypeFixIssue:
 		repoInfo := "The repository has been cloned to the current directory."
 		if payload.IssueRef != "" {
