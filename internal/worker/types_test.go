@@ -222,3 +222,36 @@ func TestTaskTimeoutsConfig_Lookup(t *testing.T) {
 		})
 	}
 }
+
+func TestTaskTimeoutsConfig_Lookup_AnalyzeIssue(t *testing.T) {
+	cfg := TaskTimeoutsConfig{}
+	got := cfg.Lookup(model.TaskTypeAnalyzeIssue)
+	if got != 15*time.Minute {
+		t.Errorf("AnalyzeIssue 默认超时 = %v, 期望 15m", got)
+	}
+	cfg.AnalyzeIssue = 20 * time.Minute
+	got = cfg.Lookup(model.TaskTypeAnalyzeIssue)
+	if got != 20*time.Minute {
+		t.Errorf("AnalyzeIssue 配置超时 = %v, 期望 20m", got)
+	}
+}
+
+func TestPoolConfig_Validate_ImageFull(t *testing.T) {
+	cfg := PoolConfig{
+		Image:        "img",
+		GiteaURL:     "http://g",
+		GiteaToken:   "t",
+		ClaudeAPIKey: "k",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("ImageFull 为空时不应报错: %v", err)
+	}
+	cfg.ImageFull = "img-full:latest"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("ImageFull 合法时不应报错: %v", err)
+	}
+	cfg.ImageFull = "img full"
+	if err := cfg.Validate(); err == nil {
+		t.Error("ImageFull 含空格时应报错")
+	}
+}

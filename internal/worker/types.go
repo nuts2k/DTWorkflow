@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -37,9 +38,10 @@ type ExecutionResult struct {
 
 // TaskTimeoutsConfig Worker 层的超时配置（从 config.TaskTimeouts 转换而来）
 type TaskTimeoutsConfig struct {
-	ReviewPR time.Duration
-	FixIssue time.Duration
-	GenTests time.Duration
+	ReviewPR     time.Duration
+	FixIssue     time.Duration
+	GenTests     time.Duration
+	AnalyzeIssue time.Duration // M3.4: 只读分析超时（默认 15m）
 }
 
 // Lookup 根据任务类型返回对应超时值。零值时回退到与 queue 层一致的按类型默认值。
@@ -60,6 +62,11 @@ func (c TaskTimeoutsConfig) Lookup(taskType model.TaskType) time.Duration {
 			return c.GenTests
 		}
 		return 20 * time.Minute
+	case model.TaskTypeAnalyzeIssue:
+		if c.AnalyzeIssue > 0 {
+			return c.AnalyzeIssue
+		}
+		return 15 * time.Minute
 	default:
 		return 10 * time.Minute
 	}
@@ -74,6 +81,7 @@ type StreamMonitorConfig struct {
 // PoolConfig Worker 池配置
 type PoolConfig struct {
 	Image        string // 锁定 tag，如 dtworkflow-worker:1.0
+	ImageFull    string // 执行镜像（fix、gen_tests），可选
 	CPULimit     string // 容器 CPU 限制，如 "2.0"
 	MemoryLimit  string // 容器内存限制，如 "4g"
 	GiteaURL     string // Gitea 实例地址
@@ -100,6 +108,9 @@ func (c PoolConfig) Validate() error {
 	}
 	if c.ClaudeAPIKey == "" {
 		return fmt.Errorf("PoolConfig.ClaudeAPIKey 不可为空")
+	}
+	if c.ImageFull != "" && strings.Contains(c.ImageFull, " ") {
+		return fmt.Errorf("PoolConfig.ImageFull 不可含空格: %q", c.ImageFull)
 	}
 	return nil
 }
