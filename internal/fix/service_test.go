@@ -163,6 +163,11 @@ type stubPRClient struct {
 	createCalls   int
 	getRepoResult *gitea.Repository
 	getRepoErr    error
+
+	// 幂等检查：listResult 为 ListRepoPullRequests 返回结果，listErr 为返回错误
+	listResult []*gitea.PullRequest
+	listErr    error
+	listCalls  int
 }
 
 func (s *stubPRClient) CreatePullRequest(_ context.Context, _, _ string, _ gitea.CreatePullRequestOption) (*gitea.PullRequest, *gitea.Response, error) {
@@ -178,6 +183,12 @@ func (s *stubPRClient) GetRepo(_ context.Context, _, _ string) (*gitea.Repositor
 		return s.getRepoResult, nil, nil
 	}
 	return &gitea.Repository{DefaultBranch: "main"}, nil, nil
+}
+
+func (s *stubPRClient) ListRepoPullRequests(_ context.Context, _, _ string,
+	_ gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error) {
+	s.listCalls++
+	return s.listResult, nil, s.listErr
 }
 
 func TestExecuteFix_InfoInsufficientPreCheck(t *testing.T) {
@@ -309,6 +320,132 @@ func TestExecuteFix_PushSuccessButPRCreateFailed(t *testing.T) {
 	}
 	if createCommentCount == 0 {
 		t.Error("应发出 push-成功-PR-失败 评论")
+	}
+	// I-6: 必须断言 CreatePullRequest 实际被调用过 1 次，
+	// 否则未来若 executeFix 误删 PR 创建步骤、测试仍会绿（测试假阳性）。
+	if prClient.createCalls != 1 {
+		t.Errorf("CreatePullRequest 应调用 1 次（验证 push-成功-PR-失败 路径确实尝试创建 PR），实际 %d", prClient.createCalls)
+	}
+}
+
+func TestExecuteFix_IdempotentReusesExistingPR(t *testing.T) {
+	// 验证 I-1 PR 创建幂等保护：
+	// 当同 head 分支已存在 open PR 时，createFixPR 复用而非新建，
+	// 重试场景下不会出现重复 PR / 重复评论 / 重复 Claude 调用。
+	createCommentCount := 0
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			createCommentCount++
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	fixEnvelope := `{"type":"result","duration_ms":1000,"total_cost_usd":0.01,"result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"passed\":5,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"x\",\"fix_approach\":\"y\"}"}`
+	pool := &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: fixEnvelope},
+	}
+	prClient := &stubPRClient{
+		// 模拟 ListRepoPullRequests 已返回同 head 分支的 open PR
+		listResult: []*gitea.PullRequest{
+			{
+				Number:  77,
+				HTMLURL: "https://g/o/r/pulls/77",
+				Head:    &gitea.PRBranch{Ref: "auto-fix/issue-15"},
+			},
+		},
+		// 如果幂等检查没有命中，CreatePullRequest 会被调用并返回此结果
+		createResult: &gitea.PullRequest{Number: 99, HTMLURL: "https://g/o/r/pulls/99"},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	result, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	if prClient.listCalls != 1 {
+		t.Errorf("ListRepoPullRequests 应调用 1 次，实际 %d", prClient.listCalls)
+	}
+	if prClient.createCalls != 0 {
+		t.Errorf("既有 PR 命中幂等检查时不应再调用 CreatePullRequest，实际调用 %d 次", prClient.createCalls)
+	}
+	if result.PRNumber != 77 {
+		t.Errorf("应复用既有 PR Number 77，实际: %d", result.PRNumber)
+	}
+	if result.PRURL != "https://g/o/r/pulls/77" {
+		t.Errorf("应复用既有 PR URL，实际: %q", result.PRURL)
+	}
+	if createCommentCount != 1 {
+		t.Errorf("仍应发出 1 条修复成功评论（指向复用 PR），实际 %d", createCommentCount)
+	}
+}
+
+func TestExecuteFix_IdempotentListFailureFailsOpen(t *testing.T) {
+	// 验证 I-1: 当 ListRepoPullRequests 短暂失败（不是"已存在"）时，
+	// 应 fail-open 走 CreatePullRequest 而不是阻断主流程。
+	createCommentCount := 0
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			createCommentCount++
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	fixEnvelope := `{"type":"result","duration_ms":1000,"total_cost_usd":0.01,"result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"passed\":5,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"x\",\"fix_approach\":\"y\"}"}`
+	pool := &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: fixEnvelope},
+	}
+	prClient := &stubPRClient{
+		listErr:      fmt.Errorf("gitea 503"),
+		createResult: &gitea.PullRequest{Number: 42, HTMLURL: "https://g/o/r/pulls/42"},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				return &gitea.Branch{Name: branch}, nil, nil
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	result, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("list 失败应 fail-open，实际错误: %v", err)
+	}
+	if prClient.listCalls != 1 {
+		t.Errorf("ListRepoPullRequests 应被调用 1 次，实际 %d", prClient.listCalls)
+	}
+	if prClient.createCalls != 1 {
+		t.Errorf("list 失败应 fail-open 继续 Create，实际 createCalls = %d", prClient.createCalls)
+	}
+	if result.PRNumber != 42 {
+		t.Errorf("应使用 Create 返回的 PR Number 42，实际: %d", result.PRNumber)
+	}
+	if createCommentCount != 1 {
+		t.Errorf("应发出 1 条修复成功评论，实际 %d", createCommentCount)
 	}
 }
 

@@ -355,8 +355,11 @@ func TestBuildPrompt_NoRefOmitted(t *testing.T) {
 }
 
 func TestBuildFixPrompt_FourSegments(t *testing.T) {
+	// 用 99 作为 Issue 编号，与 schema 示例硬编码的 15 区分开，
+	// 这样我们可以精确验证模板占位符 %[1]d 确实被渲染成真实编号，
+	// 而不是误把 schema 示例段当作指令段命中。
 	issue := &gitea.Issue{
-		Number: 15,
+		Number: 99,
 		Title:  "登录页面崩溃",
 		Body:   "用户输入空密码时报 NPE",
 	}
@@ -370,10 +373,11 @@ func TestBuildFixPrompt_FourSegments(t *testing.T) {
 
 	// 关键段落必须出现
 	checks := []struct{ needle, reason string }{
-		{"#15", "Issue 编号"},
+		{"#99", "Issue 编号"},
 		{"登录页面崩溃", "Issue 标题"},
 		{"main", "ref 信息"},
-		{"auto-fix/issue-15", "分支命名规范"},
+		{"auto-fix/issue-99", "分支命名规范（模板渲染为真实编号）"},
+		{"fix: #99", "commit message 模板渲染为真实编号"},
 		{"force-with-lease", "force push 指令（重试场景）"},
 		{"mvn test", "Java 测试指令"},
 		{"npm test", "前端测试指令"},
@@ -381,11 +385,24 @@ func TestBuildFixPrompt_FourSegments(t *testing.T) {
 		{"branch_name", "JSON schema branch_name 字段"},
 		{"commit_sha", "JSON schema commit_sha 字段"},
 		{"test_results", "JSON schema test_results 字段"},
+		{"auto-fix/issue-15", "JSON schema 示例段保留硬编码 issue-15"},
 	}
 	for _, c := range checks {
 		if !strings.Contains(prompt, c.needle) {
 			t.Errorf("fix prompt 应包含 %q（%s）", c.needle, c.reason)
 		}
+	}
+
+	// 占位符不能泄漏到最终 prompt
+	if strings.Contains(prompt, "<id>") || strings.Contains(prompt, "<issue_id>") {
+		t.Errorf("fix prompt 不应含未替换的占位符 <id>/<issue_id>，实际:\n%s", prompt)
+	}
+
+	// 修复流程段必须出现真实编号的分支名（不是模板字面）
+	const branchInInstructions = "git checkout -b auto-fix/issue-99"
+	if !strings.Contains(prompt, branchInInstructions) {
+		t.Errorf("第二步指令应包含 %q（验证模板被实际渲染），实际:\n%s",
+			branchInInstructions, prompt)
 	}
 
 	// 不应含只读模式独有文本

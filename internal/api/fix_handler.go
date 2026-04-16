@@ -12,7 +12,7 @@ import (
 
 type fixRequest struct {
 	IssueNumber int64  `json:"issue_number" binding:"required,min=1"`
-	Ref         string `json:"ref,omitempty"`      // 可选：指定修复的基准分支
+	Ref         string `json:"ref,omitempty"`       // 可选：指定修复的基准分支
 	TaskType    string `json:"task_type,omitempty"` // M3.4: analyze_issue（默认）或 fix_issue
 }
 

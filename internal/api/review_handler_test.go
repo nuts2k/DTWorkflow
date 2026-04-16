@@ -113,9 +113,9 @@ func TestTriggerReview_NoGiteaClient(t *testing.T) {
 // --- 辅助函数 ---
 
 type fakeGiteaOpts struct {
-	prState      string // PR state，默认 "open"
-	prNotFound   bool
-	issueState   string // Issue state，默认 "open"
+	prState       string // PR state，默认 "open"
+	prNotFound    bool
+	issueState    string // Issue state，默认 "open"
 	issueNotFound bool
 }
 

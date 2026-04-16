@@ -27,12 +27,17 @@ type RefClient interface {
 }
 
 // PRClient M3.5 窄接口，仅暴露修复模式创建 PR 所需的 Gitea API。
-// *gitea.Client 通过 CreatePullRequest 和 GetRepo 满足此接口。
+// *gitea.Client 通过 CreatePullRequest、GetRepo、ListRepoPullRequests 满足此接口。
 type PRClient interface {
 	CreatePullRequest(ctx context.Context, owner, repo string,
 		opts gitea.CreatePullRequestOption) (*gitea.PullRequest, *gitea.Response, error)
 	// GetRepo 用于 Tag-as-Ref 场景下获取仓库默认分支作为 PR Base。
 	GetRepo(ctx context.Context, owner, repo string) (*gitea.Repository, *gitea.Response, error)
+	// ListRepoPullRequests 用于 createFixPR 入口的幂等检查：
+	// 如果同 head 分支已存在 open PR，复用而不再创建，避免重试场景出现重复 PR /
+	// 重复评论 / 重复消耗 Claude 配额。
+	ListRepoPullRequests(ctx context.Context, owner, repo string,
+		opts gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error)
 }
 
 // FixStaleChecker M3.5 窄接口，查询前序分析结果以支持"信息不足"前置检查。
@@ -530,7 +535,14 @@ func (s *Service) executeFix(ctx context.Context, payload model.TaskPayload) (*F
 		body := FormatFixInfoInsufficientComment(missing)
 		if _, _, commentErr := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
 			gitea.CreateIssueCommentOption{Body: body}); commentErr != nil {
-			return nil, fmt.Errorf("Issue #%d: 回写信息不足提示失败: %w", issueNum, commentErr)
+			// 评论失败仍要保留 ErrInfoInsufficient sentinel，让上层 processor
+			// 能 errors.Is 命中并 SkipRetry，避免重试时反复触发同一条提醒评论。
+			// errors.Join 会把两个错误合并：errors.Is(joined, ErrInfoInsufficient)
+			// 与 errors.Is(joined, commentErr) 同时成立。
+			return nil, errors.Join(
+				fmt.Errorf("Issue #%d: 回写信息不足提示失败: %w", issueNum, commentErr),
+				ErrInfoInsufficient,
+			)
 		}
 		return nil, fmt.Errorf("Issue #%d: %w", issueNum, ErrInfoInsufficient)
 	}
@@ -576,13 +588,20 @@ func (s *Service) executeFix(ctx context.Context, payload model.TaskPayload) (*F
 	result.RawOutput = execResult.Output
 	result.RefKind = refKind
 
-	// 解析失败 → 上层 Processor 决定重试或降级
+	// 解析失败 → 上层 Processor 决定重试或降级。
+	// ParseError 详情可能源自 Claude 原始输出（潜在 prompt injection 注入面），
+	// 因此仅通过 logger 落到结构化日志，不混入返回 error（避免被写入 record.Error
+	// 进而出现在 Issue 评论 / 飞书通知正文中）。result.ParseError 字段仍保留，
+	// 供 WriteDegraded 等下游链路按需使用。
 	if result.ParseError != nil {
-		return result, fmt.Errorf("%w: %v", ErrFixParseFailure, result.ParseError)
+		s.logger.ErrorContext(ctx, "fix 结果解析失败",
+			"issue", issueNum, "parse_error", result.ParseError)
+		return result, fmt.Errorf("Issue #%d: %w", issueNum, ErrFixParseFailure)
 	}
 	fix := result.Fix
 	if fix == nil {
-		return result, fmt.Errorf("%w: FixOutput 为 nil", ErrFixParseFailure)
+		s.logger.ErrorContext(ctx, "fix 结果 FixOutput 为 nil", "issue", issueNum)
+		return result, fmt.Errorf("Issue #%d: %w", issueNum, ErrFixParseFailure)
 	}
 
 	// 9. Claude 自行判断信息不足 → 发送提醒，跳过重试
@@ -655,8 +674,20 @@ func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload, 
 
 // createFixPR M3.5: 通过 Gitea API 创建修复 PR。
 // refKind=RefKindTag 时需回退到仓库默认分支作为 Base（tag 不能作为 PR Base）。
+//
+// 幂等保护：先 ListRepoPullRequests 查询是否已有同 head 分支的 open PR，
+// 如有则直接复用其 Number/HTMLURL，避免重试时（push 成功 / PR 创建失败 → 重试）
+// 反复创建重复 PR 与重复 Claude 调用。
 func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fix *FixOutput,
 	refKind RefKind, issueTitle string) (int64, string, error) {
+
+	// 0. 幂等检查：相同 head 分支已存在 open PR 则复用
+	if num, url, ok := s.findExistingFixPR(ctx, payload.RepoOwner, payload.RepoName, fix.BranchName); ok {
+		s.logger.InfoContext(ctx, "复用已存在的修复 PR（幂等）",
+			"issue", payload.IssueNumber, "branch", fix.BranchName,
+			"pr_number", num)
+		return num, url, nil
+	}
 
 	base := stripRefPrefix(payload.IssueRef)
 	if refKind == RefKindTag {
@@ -693,4 +724,32 @@ func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fi
 		return 0, "", fmt.Errorf("Gitea API 返回空 PR")
 	}
 	return pr.Number, pr.HTMLURL, nil
+}
+
+// findExistingFixPR 查询同 head 分支的 open PR；找到返回 (number, url, true)。
+// 列表查询失败按 fail-open 处理（返回 false），让后续 CreatePullRequest 走原本路径，
+// 失败再处理——避免列表 API 短暂故障阻断主流程。
+func (s *Service) findExistingFixPR(ctx context.Context, owner, repo, headBranch string) (int64, string, bool) {
+	if headBranch == "" {
+		return 0, "", false
+	}
+	prs, _, err := s.prClient.ListRepoPullRequests(ctx, owner, repo,
+		gitea.ListPullRequestsOptions{
+			State:       "open",
+			ListOptions: gitea.ListOptions{PageSize: 50},
+		})
+	if err != nil {
+		s.logger.WarnContext(ctx, "查询既有 PR 失败，跳过幂等检查继续创建",
+			"owner", owner, "repo", repo, "head", headBranch, "error", err)
+		return 0, "", false
+	}
+	for _, pr := range prs {
+		if pr == nil || pr.Head == nil {
+			continue
+		}
+		if pr.Head.Ref == headBranch {
+			return pr.Number, pr.HTMLURL, true
+		}
+	}
+	return 0, "", false
 }

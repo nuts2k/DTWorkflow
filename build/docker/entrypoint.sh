@@ -93,14 +93,25 @@ case "${TASK_TYPE:-}" in
             git fetch origin "${ISSUE_REF}" >&2 2>&1
             git checkout FETCH_HEAD >&2 2>&1
         fi
-        # 配置凭证缓存（内存模式，1 小时超时），允许 push
-        git config --global credential.helper 'cache --timeout=3600'
+        # 安全加固：把 origin URL 重置为不含 token 的版本，避免 token 持久化到 .git/config
+        # （clone 时使用了 AUTH_URL，若不重置则 .git/config 会保留完整凭证）
+        git remote set-url origin "${REPO_CLONE_URL}"
+        # 通过 credential helper 在每次 push 时按需注入 token，运行结束后随容器销毁
+        # GITEA_TOKEN 在脚本末尾被 unset，但 helper 已捕获其值，故 push 仍可用
+        CRED_HELPER_SCRIPT="/tmp/.git-credential-helper"
+        cat > "${CRED_HELPER_SCRIPT}" <<HELPER
+#!/bin/sh
+echo "username=token"
+echo "password=${GITEA_TOKEN}"
+HELPER
+        chmod 700 "${CRED_HELPER_SCRIPT}"
+        git config --global credential.helper "${CRED_HELPER_SCRIPT}"
         git config --global user.name "DTWorkflow Bot"
         git config --global user.email "dtworkflow-bot@noreply.local"
         # Maven/Gradle 缓存重定向到 /workspace（避免 /tmp tmpfs 溢出）
         export MAVEN_OPTS="${MAVEN_OPTS:--Dmaven.repo.local=/workspace/.m2/repository}"
         export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/workspace/.gradle}"
-        log "修复模式已启用（credential cache + git identity + build cache redirect）"
+        log "修复模式已启用（origin URL 已脱敏 + credential helper + git identity + build cache redirect）"
         ;;
     gen_tests)
         log "测试生成任务，使用默认分支"

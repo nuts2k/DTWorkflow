@@ -6,33 +6,33 @@ import "context"
 type EventType string
 
 const (
-	EventPRReviewDone      EventType = "pr.review.done"
-	EventPRRejected        EventType = "pr.rejected"
-	EventIssueAnalysisDone EventType = "issue.analysis.done"
-	EventIssueNeedInfo     EventType = "issue.need_info"
-	EventFixIssueDone      EventType = "fix.issue.done"
-	EventFixPRCreated      EventType = "fix.pr.created"
-	EventE2ETestFailed     EventType = "e2e.test.failed"
-	EventPRReviewStarted EventType = "pr.review.started"
-	EventIssueFixStarted    EventType = "issue.fix.started"
-	EventIssueAnalyzeStarted EventType = "issue.analyze.started"  // M3.4
-	EventIssueAnalyzeDone    EventType = "issue.analyze.done"     // M3.4
+	EventPRReviewDone        EventType = "pr.review.done"
+	EventPRRejected          EventType = "pr.rejected"
+	EventIssueAnalysisDone   EventType = "issue.analysis.done"
+	EventIssueNeedInfo       EventType = "issue.need_info"
+	EventFixIssueDone        EventType = "fix.issue.done"
+	EventFixPRCreated        EventType = "fix.pr.created"
+	EventE2ETestFailed       EventType = "e2e.test.failed"
+	EventPRReviewStarted     EventType = "pr.review.started"
+	EventIssueFixStarted     EventType = "issue.fix.started"
+	EventIssueAnalyzeStarted EventType = "issue.analyze.started" // M3.4
+	EventIssueAnalyzeDone    EventType = "issue.analyze.done"    // M3.4
 	EventSystemError         EventType = "system.error"
 )
 
 // Metadata key 常量，用于 Message.Metadata 的键名，确保生产端和消费端类型安全。
 const (
-	MetaKeyPRURL        = "pr_url"
-	MetaKeyPRTitle      = "pr_title"
-	MetaKeyIssueURL     = "issue_url"
-	MetaKeyVerdict      = "verdict"
-	MetaKeyIssueSummary = "issue_summary"
-	MetaKeyRetryCount   = "retry_count"
-	MetaKeyMaxRetry     = "max_retry"
-	MetaKeyTaskStatus   = "task_status"
-	MetaKeyNotifyTime   = "notify_time"     // 通知发送时间
-	MetaKeyDuration     = "duration"        // 任务耗时（仅 succeeded）
-	MetaKeyPRNumber     = "pr_number"       // M3.5: 修复任务创建的 PR 编号
+	MetaKeyPRURL         = "pr_url"
+	MetaKeyPRTitle       = "pr_title"
+	MetaKeyIssueURL      = "issue_url"
+	MetaKeyVerdict       = "verdict"
+	MetaKeyIssueSummary  = "issue_summary"
+	MetaKeyRetryCount    = "retry_count"
+	MetaKeyMaxRetry      = "max_retry"
+	MetaKeyTaskStatus    = "task_status"
+	MetaKeyNotifyTime    = "notify_time"    // 通知发送时间
+	MetaKeyDuration      = "duration"       // 任务耗时（仅 succeeded）
+	MetaKeyPRNumber      = "pr_number"      // M3.5: 修复任务创建的 PR 编号
 	MetaKeyModifiedFiles = "modified_files" // M3.5: 修复任务改动文件数
 )
 

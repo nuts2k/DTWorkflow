@@ -696,24 +696,26 @@ func (s *SQLiteStore) FindActiveIssueTasks(ctx context.Context, repoFullName str
 
 // GetLatestAnalysisByIssue 返回指定仓库 + Issue 最新一条 analyze_issue succeeded 任务记录。
 // 未找到时返回 (nil, nil)。
-// 实现策略：按 repo_full_name + task_type + status + payload.issue_number 在 SQL 层过滤，
-// 避免只扫描最近 N 条带来的漏判，同时不依赖 json1 扩展。
+//
+// 使用 json_extract 在 SQL 层精准匹配 payload.issue_number，与 migrations.go 中
+// `json_extract(payload, '$.pr_number')` 保持一致：
+//   - 不依赖 JSON 字段顺序假设（早期 LIKE pattern 假设 issue_number 后必紧跟 ',' 或 '}'，
+//     一旦上游把字段挪位或更换 marshal 库即静默漏匹配）。
+//   - 严格类型匹配（json_extract 返回 INTEGER），与参数类型一致。
+//   - modernc.org/sqlite 默认启用 json1 扩展，无需额外开关。
 func (s *SQLiteStore) GetLatestAnalysisByIssue(ctx context.Context, repoFullName string, issueNumber int64) (*model.TaskRecord, error) {
 	query := `SELECT ` + taskColumns + `
 	FROM tasks
 	WHERE repo_full_name = ?
 	  AND task_type = ?
 	  AND status = ?
-	  AND (payload LIKE ? OR payload LIKE ?)
+	  AND json_extract(payload, '$.issue_number') = ?
 	ORDER BY created_at DESC
 	LIMIT 1`
 
-	issuePatternWithComma := fmt.Sprintf(`%%"issue_number":%d,%%`, issueNumber)
-	issuePatternAtEnd := fmt.Sprintf(`%%"issue_number":%d}%%`, issueNumber)
-
 	row := s.db.QueryRowContext(ctx, query, repoFullName,
 		string(model.TaskTypeAnalyzeIssue), string(model.TaskStatusSucceeded),
-		issuePatternWithComma, issuePatternAtEnd)
+		issueNumber)
 	record, err := scanTaskRecord(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
