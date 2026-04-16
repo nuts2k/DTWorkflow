@@ -235,6 +235,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), processorOpts...)
 	mux := asynq.NewServeMux()
 	mux.Handle(queue.AsynqTypeReviewPR, processor)
+	mux.Handle(queue.AsynqTypeAnalyzeIssue, processor) // M3.4
 	mux.Handle(queue.AsynqTypeFixIssue, processor)
 	mux.Handle(queue.AsynqTypeGenTests, processor)
 
