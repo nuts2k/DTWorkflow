@@ -52,6 +52,7 @@ worker:
   # 全局兜底超时（asynq 任务级）。当 timeouts 中未配置对应任务类型时使用此值。
   timeout: "30m"
   image: "dtworkflow-worker:1.0"
+  image_full: "dtworkflow-worker-full:latest"  # M3.4: 执行镜像（可选，不配则所有任务用 image）
   cpu_limit: "2.0"
   memory_limit: "4g"
   network_name: "dtworkflow-net"
@@ -61,7 +62,8 @@ worker:
   # 上限 24h，超过会被校验拦截。
   timeouts:
     review_pr: "15m"
-    fix_issue: "45m"
+    analyze_issue: "15m"   # M3.4: 只读分析
+    fix_issue: "45m"       # M3.4: 含分析 + 修复 + 测试
     gen_tests: "30m"
   # 流式心跳监控（stream-json 活跃度检测）
   # 启用后容器内 claude -p 改用 stream-json 输出格式，
