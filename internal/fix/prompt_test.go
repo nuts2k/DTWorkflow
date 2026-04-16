@@ -317,3 +317,43 @@ func TestBuildPrompt_NoRefOmitted(t *testing.T) {
 		t.Errorf("ref 为空时不应出现 ref 信息，实际:\n%s", prompt)
 	}
 }
+
+func TestBuildFixPrompt_FourSegments(t *testing.T) {
+	issue := &gitea.Issue{
+		Number: 15,
+		Title:  "登录页面崩溃",
+		Body:   "用户输入空密码时报 NPE",
+	}
+	ctx := &IssueContext{
+		Issue:    issue,
+		Comments: nil,
+		Ref:      "main",
+	}
+	s := &Service{}
+	prompt := s.buildFixPrompt(ctx)
+
+	// 关键段落必须出现
+	checks := []struct{ needle, reason string }{
+		{"#15", "Issue 编号"},
+		{"登录页面崩溃", "Issue 标题"},
+		{"main", "ref 信息"},
+		{"auto-fix/issue-15", "分支命名规范"},
+		{"force-with-lease", "force push 指令（重试场景）"},
+		{"mvn test", "Java 测试指令"},
+		{"npm test", "前端测试指令"},
+		{"missing_info", "JSON schema info_sufficient 字段"},
+		{"branch_name", "JSON schema branch_name 字段"},
+		{"commit_sha", "JSON schema commit_sha 字段"},
+		{"test_results", "JSON schema test_results 字段"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(prompt, c.needle) {
+			t.Errorf("fix prompt 应包含 %q（%s）", c.needle, c.reason)
+		}
+	}
+
+	// 不应含只读模式独有文本
+	if strings.Contains(prompt, "READ-ONLY code analysis mode") {
+		t.Error("fix prompt 不应包含 READ-ONLY 只读约束（修复需要写权限）")
+	}
+}
