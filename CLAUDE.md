@@ -71,6 +71,17 @@ configs/        # 配置文件模板
 - **精确定位**（已知文件名、函数名、字符串）→ 用 Grep / Glob
 - 并行读取多个文件时无需等待，直接同时发起所有 Read 调用
 
+## Issue 自动修复功能（M3.5）
+
+- **触发方式**：
+  - 标签触发：Issue 添加 `auto-fix` 标签 → 只读分析（`analyze_issue`）；添加 `fix-to-pr` 标签 → 修复 + PR 创建（`fix_issue`）
+  - CLI 触发：`./bin/dtw fix-issue --owner <owner> --repo <repo> --issue <N> --fix`
+- **两级镜像**：`analyze_issue` 用轻量镜像（只读），`fix_issue` 用执行镜像（`worker-full`，含 JDK + Maven）
+- **修复流程**：`fix.Service.executeFix` 12 步 — 前置校验 → 信息不足检查 → 采集上下文 → 构造 prompt → 容器执行 → 解析 FixOutput → 创建 PR → Issue 评论
+- **PR 创建**：容器内 Claude push 分支 `auto-fix/issue-{id}`，容器外 `fix.Service` 通过 Gitea API 创建 PR（`fixes #{id}` 关联 Issue）
+- **Tag-as-Ref**：Issue 关联 tag 时，PR Base 改用仓库默认分支，PR 描述中注明
+- **失败处理**：信息不足 / Claude 返回失败 → SkipRetry + Issue 评论；Push 成功但 PR 创建失败 → 允许重试
+
 ## 测试服务器
 
 - SSH Host 别名：`companytest`（对应 `~/.ssh/config` 中的 Host 条目）

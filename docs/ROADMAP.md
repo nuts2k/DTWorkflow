@@ -509,18 +509,18 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 示例配置 `dtworkflow.example.yaml` 补充 `worker.image_full` 和 `worker.timeouts.analyze_issue`
 - [x] 现有 M3.1-M3.3 分析流程回归验证
 
-##### M3.5 修复业务逻辑层
-- [ ] **修复 Prompt 设计**（stdin 传入，四段式）：
+##### M3.5 修复业务逻辑层（已完成 2026-04-16）
+- [x] **修复 Prompt 设计**（stdin 传入，四段式）：
   - 上下文段：仓库/Issue/Ref 信息 + 指示 Claude 阅读 Issue 评论参考前序分析
   - 修复指令段：分析→修复→补充测试→运行测试（`mvn test` / `npm test`）→失败重试（最多 3 轮）→创建分支 `auto-fix/issue-{id}` + commit + push
   - 约束段：不修改无关文件、不删除现有测试、commit message 格式 `fix: #{issue_id} {简述}`
   - 输出格式段：FixOutput JSON schema
   - 安全：不加 `--disallowedTools` Bash 限制（需运行测试），保留 prompt 层网络访问禁令，包含 `--output-format json`
-- [ ] **修复输出 JSON schema**（`FixOutput`）：
+- [x] **修复输出 JSON schema**（`FixOutput`）：
   - `success` / `info_sufficient` / `missing_info` / `branch_name` / `commit_sha` / `modified_files` / `test_results` / `analysis` / `fix_approach`
   - `TestResults`：`passed` / `failed` / `skipped` / `all_passed`
   - 校验不变量：`success=true` 时 `branch_name` 和 `commit_sha` 必须非空
-- [ ] **fix.Service `executeFix` 流程**：
+- [x] **fix.Service `executeFix` 流程**：
   - 前置校验：Issue open + Ref 有效（区分分支 vs tag）
   - "信息不足"前置检查：查 DB 最新 `analyze_issue` 结果，`info_sufficient=false` → Issue 评论提醒 + SkipRetry，不启动容器
   - 采集 Issue 上下文（复用 `collectContext`）
@@ -529,23 +529,31 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
   - 按结果分流处理
   - 新增窄接口：`PRClient`（`CreatePullRequest`）、`FixStaleChecker`（`GetLatestAnalysisByIssue`），ServiceOption 注入
   - `store/` 新增 `GetLatestAnalysisByIssue` 查询方法
-- [ ] **PR 创建**（Gitea API）：
+- [x] **PR 创建**（Gitea API）：
   - 触发条件：`success=true` + `branch_name` 非空
   - PR 标题：`fix: #{issue_id} {issue_title}`
   - PR 描述模板：关联 Issue（`fixes #{issue_id}`）+ 根因分析 + 修复方案 + 修改文件 + 测试结果
   - Tag 作为 Ref 边界处理：Gitea API `Base` 不支持 tag，改用仓库默认分支，PR 描述中注明
   - Issue 评论通知：修复 PR 已创建 + PR 链接 + 修改文件数
-- [ ] **失败处理**：
+- [x] **失败处理**：
   - Issue 已关闭 / Ref 无效 / Ref 缺失：同分析模式，Issue 评论提醒 + SkipRetry
   - DB 前置检查"信息不足"：Issue 评论提醒补充信息 + SkipRetry
   - 容器执行失败：Issue 评论报告错误 + 允许 asynq 重试
   - Claude 返回 `info_sufficient=false` / `success=false`：Issue 评论 + SkipRetry
   - Push 成功但 PR 创建失败：Issue 评论报告 + 允许重试
   - 分支已存在（重试场景）：prompt 指示 `git push --force-with-lease`
-- [ ] **FixResult 扩展**：新增 `Fix *FixOutput` / `PRNumber` / `PRURL` 字段
-- [ ] 修复 PR 自动评审：无需额外代码，Gitea PR created Webhook 自然触发 Phase 2 评审流程
-- [ ] 通知适配：Processor 修复模式下飞书+Gitea 通知（开始/成功含 PR 链接/失败三场景）
-- [ ] 单元测试覆盖
+- [x] **FixResult 扩展**：新增 `Fix *FixOutput` / `PRNumber` / `PRURL` 字段
+- [x] 修复 PR 自动评审：无需额外代码，Gitea PR created Webhook 自然触发 Phase 2 评审流程
+- [x] 通知适配：Processor 修复模式下飞书+Gitea 通知（开始/成功含 PR 链接/失败三场景）
+- [x] 单元测试覆盖
+
+> **完成说明**（2026-04-16）：14 个 commit 实现了完整的 Issue 自动修复到 PR 创建闭环。
+> 核心交付：`executeFix` 12 步主流程（前置检查 → 容器执行 → 解析 → PR 创建 → 评论回写）、
+> `buildFixPrompt` 四段式修复 prompt、`parseFixResult` 双层 JSON 解析（含成功不变量校验）、
+> `checkPreviousAnalysis` fail-open 前置检查、5 种 Issue 评论 formatter、
+> Processor 路由 `fix_issue` → `fixService` + `ErrInfoInsufficient`/`ErrFixFailed` SkipRetry、
+> 飞书卡片绿色修复成功 + PR 按钮、`serve.go` 装配 PRClient + FixStaleChecker。
+> 全量 16 包测试通过，`make build` + Linux amd64 交叉编译成功。
 
 ### 交付物
 
