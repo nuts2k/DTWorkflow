@@ -472,42 +472,42 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > 引入容器写权限，按层切分为 M3.4（基础设施）和 M3.5（业务逻辑）。依赖第一轮分析能力验证后启动。
 > 详细设计见 `docs/superpowers/specs/2026-04-16-m3.4-m3.5-fix-execution-design.md`。
 
-##### M3.4 修复基础设施层
-- [ ] **两级镜像策略**（Phase 4 复用的基础设施）：
+##### M3.4 修复基础设施层（已完成 2026-04-16）
+- [x] **两级镜像策略**（Phase 4 复用的基础设施）：
   - 新建 `build/Dockerfile.worker-full`（执行镜像）：在现有 worker 镜像基础上叠加 JDK 17 + Maven
   - 两级镜像共享 Node.js + Claude CLI 基础层，Docker layer cache 友好
   - Maven/Gradle 缓存目录重定向到 `/workspace`（2GB tmpfs），避免 `/tmp`（256MB）溢出
   - Makefile 新增 `build-worker-full` 构建目标（依赖 `build-worker`）
-- [ ] **Pool 多镜像支持**：
+- [x] **Pool 多镜像支持**：
   - `PoolConfig` 新增 `ImageFull` 字段，`runContainer` 中 `resolveImage(taskType)` 按任务类型选择镜像
   - 镜像映射：`review_pr` / `analyze_issue` → 轻量镜像；`fix_issue` / `gen_tests` → 执行镜像
   - `ImageFull` 为空时向后兼容，所有任务用 `Image`
   - 配置段 `worker.image_full`，`WorkerConfig` 结构体新增字段，`buildWorkerPoolConfigFromServeConfig` 传递
-- [ ] **TaskType 拆分**：
+- [x] **TaskType 拆分**：
   - 新增 `TaskTypeAnalyzeIssue = "analyze_issue"`，现有分析流程从 `fix_issue` 迁移
   - `fix.Service.Execute` 入口按 `payload.TaskType` 路由：`analyze_issue` → 现有分析流程（`executeAnalysis`），`fix_issue` → 新修复流程（`executeFix`）
   - `TaskTimeoutsConfig` 新增 `AnalyzeIssue` 字段（默认 15 分钟），`fix_issue` 调整为 30 分钟（含分析 + 修复 + 测试）
   - `queue/client.go` 新增 `AsynqTypeAnalyzeIssue` 常量 + 路由注册
   - `serve.go` asynq `ServeMux` 注册 `AsynqTypeAnalyzeIssue` handler
   - `queue/processor.go` switch 新增 `TaskTypeAnalyzeIssue` → `fixService`（分析模式）
-- [ ] **entrypoint.sh 修复模式**：
+- [x] **entrypoint.sh 修复模式**：
   - `fix_issue)` case：`credential.helper cache --timeout=3600`（内存模式）+ `git config user.name/email`（Bot 身份）+ Maven/Gradle 缓存重定向
   - `analyze_issue)` case：搬自原 `fix_issue` 只读行为（Ref checkout，无凭证、无写权限）
   - 环境变量照常清除（`GITEA_TOKEN` / `AUTH_URL` 等），不设 pre-commit hook / 不锁 push URL
-- [ ] **Webhook 标签路由扩展**：
+- [x] **Webhook 标签路由扩展**：
   - 新增 `isFixToPRLabel` 识别 `fix-to-pr` 标签（大小写不敏感）
   - `IssueLabelEvent` 新增 `FixToPRAdded` 字段
   - `HandleIssueLabel` 按标签分流入队：`auto-fix` → `analyze_issue`，`fix-to-pr` → `fix_issue`，后者优先
   - 幂等检查按各自 TaskType 独立查询
   - 并发修复同一 Issue：参照 M2.4 Cancel-and-Replace 机制
-- [ ] **通知事件拆分**：
+- [x] **通知事件拆分**：
   - 新增 `EventIssueAnalyzeStarted` / `EventIssueAnalyzeDone`
   - 现有 `EventIssueFixStarted` / `EventFixIssueDone` 语义修正为修复（非分析）
   - `buildStartMessage` / `buildNotificationMessage` 新增 `TaskTypeAnalyzeIssue` case
-- [ ] `worker/container.go` `buildContainerEnv` / `buildContainerCmd` 新增 `analyze_issue` case
-- [ ] `dtw fix-issue` 命令新增 `--fix` flag 区分触发分析或修复
-- [ ] 示例配置 `dtworkflow.example.yaml` 补充 `worker.image_full` 和 `worker.timeouts.analyze_issue`
-- [ ] 现有 M3.1-M3.3 分析流程回归验证
+- [x] `worker/container.go` `buildContainerEnv` / `buildContainerCmd` 新增 `analyze_issue` case
+- [x] `dtw fix-issue` 命令新增 `--fix` flag 区分触发分析或修复
+- [x] 示例配置 `dtworkflow.example.yaml` 补充 `worker.image_full` 和 `worker.timeouts.analyze_issue`
+- [x] 现有 M3.1-M3.3 分析流程回归验证
 
 ##### M3.5 修复业务逻辑层
 - [ ] **修复 Prompt 设计**（stdin 传入，四段式）：

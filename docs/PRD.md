@@ -200,8 +200,11 @@ dtworkflow gen-tests --repo myrepo --module service
 
 #### 3.2.1 触发条件
 
-- Issue 被添加 `auto-fix` 标签时触发
+- Issue 被添加 `auto-fix` 标签时触发**分析任务**（`analyze_issue`，只读模式）
+- Issue 被添加 `fix-to-pr` 标签时触发**修复任务**（`fix_issue`，写权限模式）
+- 两标签并存时 `fix-to-pr` 优先（触发修复而非分析）
 - 同一 Issue 重复添加标签不重复触发（幂等性）
+- 手动 API 调用 `dtw fix-issue` 默认触发分析，`--fix` 标志触发修复
 
 #### 3.2.2 分析流程
 

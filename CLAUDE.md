@@ -50,7 +50,7 @@ internal/       # 内部包（不对外暴露）
   worker/       # Docker Worker 池管理
   queue/        # 任务队列
   review/       # PR 评审逻辑
-  fix/          # Issue 修复逻辑
+  fix/          # Issue 分析与修复逻辑（analyze_issue 只读分析 / fix_issue 写权限修复）
   notify/       # 通知框架
   config/       # 配置管理
   dtw/          # dtw 客户端核心库（HTTP 客户端/配置/Wait 轮询/输出）
