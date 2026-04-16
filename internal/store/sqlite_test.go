@@ -458,6 +458,86 @@ func TestFindByDeliveryID_EmptyDeliveryID(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_GetLatestAnalysisByIssue(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const repo = "owner/repo"
+	const issueNum = int64(42)
+
+	// 未找到时应返回 (nil, nil)
+	got, err := s.GetLatestAnalysisByIssue(ctx, repo, issueNum)
+	if err != nil {
+		t.Fatalf("空库期望 nil error，得到: %v", err)
+	}
+	if got != nil {
+		t.Fatal("空库期望 nil record")
+	}
+
+	// 插入一条其他 issue 的 analyze_issue succeeded 任务——不应被返回
+	other := newTestRecord("other-issue", "d-other", model.TaskTypeAnalyzeIssue)
+	other.Status = model.TaskStatusSucceeded
+	other.Payload.IssueNumber = 99
+	other.CreatedAt = time.Now().UTC().Add(-10 * time.Minute)
+	other.UpdatedAt = other.CreatedAt
+	if err := s.CreateTask(ctx, other); err != nil {
+		t.Fatalf("CreateTask(other) 失败: %v", err)
+	}
+
+	got, err = s.GetLatestAnalysisByIssue(ctx, repo, issueNum)
+	if err != nil {
+		t.Fatalf("其他 issue 后期望 nil error，得到: %v", err)
+	}
+	if got != nil {
+		t.Fatal("其他 issue 后期望 nil record")
+	}
+
+	// 插入目标 issue 的 analyze_issue succeeded 任务（较早）
+	early := newTestRecord("analyze-early", "d-early", model.TaskTypeAnalyzeIssue)
+	early.Status = model.TaskStatusSucceeded
+	early.Payload.IssueNumber = issueNum
+	early.CreatedAt = time.Now().UTC().Add(-5 * time.Minute)
+	early.UpdatedAt = early.CreatedAt
+	if err := s.CreateTask(ctx, early); err != nil {
+		t.Fatalf("CreateTask(early) 失败: %v", err)
+	}
+
+	// 插入目标 issue 的 analyze_issue succeeded 任务（较新）
+	latest := newTestRecord("analyze-latest", "d-latest", model.TaskTypeAnalyzeIssue)
+	latest.Status = model.TaskStatusSucceeded
+	latest.Payload.IssueNumber = issueNum
+	latest.CreatedAt = time.Now().UTC().Add(-1 * time.Minute)
+	latest.UpdatedAt = latest.CreatedAt
+	if err := s.CreateTask(ctx, latest); err != nil {
+		t.Fatalf("CreateTask(latest) 失败: %v", err)
+	}
+
+	// 插入目标 issue 的 analyze_issue failed 任务——不应被返回
+	failed := newTestRecord("analyze-failed", "d-failed", model.TaskTypeAnalyzeIssue)
+	failed.Status = model.TaskStatusFailed
+	failed.Payload.IssueNumber = issueNum
+	failed.CreatedAt = time.Now().UTC()
+	failed.UpdatedAt = failed.CreatedAt
+	if err := s.CreateTask(ctx, failed); err != nil {
+		t.Fatalf("CreateTask(failed) 失败: %v", err)
+	}
+
+	// 应返回最新的 succeeded 记录
+	got, err = s.GetLatestAnalysisByIssue(ctx, repo, issueNum)
+	if err != nil {
+		t.Fatalf("期望 nil error，得到: %v", err)
+	}
+	if got == nil {
+		t.Fatal("期望找到记录，得到 nil")
+	}
+	if got.ID != "analyze-latest" {
+		t.Errorf("期望最新记录 ID=analyze-latest，得到: %s", got.ID)
+	}
+	if got.Payload.IssueNumber != issueNum {
+		t.Errorf("期望 IssueNumber=%d，得到: %d", issueNum, got.Payload.IssueNumber)
+	}
+}
+
 func TestPurgeTasks(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

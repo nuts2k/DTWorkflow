@@ -694,6 +694,41 @@ func (s *SQLiteStore) FindActiveIssueTasks(ctx context.Context, repoFullName str
 	return records, nil
 }
 
+// GetLatestAnalysisByIssue 返回指定仓库 + Issue 最新一条 analyze_issue succeeded 任务记录。
+// 未找到时返回 (nil, nil)。
+// 实现策略：按 repo_full_name + task_type + status 在 SQL 层过滤，ORDER BY created_at DESC LIMIT 50，
+// 再在内存中匹配 payload.issue_number，避免依赖 json1 扩展。
+func (s *SQLiteStore) GetLatestAnalysisByIssue(ctx context.Context, repoFullName string, issueNumber int64) (*model.TaskRecord, error) {
+	query := `SELECT ` + taskColumns + `
+	FROM tasks
+	WHERE repo_full_name = ?
+	  AND task_type = ?
+	  AND status = ?
+	ORDER BY created_at DESC
+	LIMIT 50`
+
+	rows, err := s.db.QueryContext(ctx, query, repoFullName,
+		string(model.TaskTypeAnalyzeIssue), string(model.TaskStatusSucceeded))
+	if err != nil {
+		return nil, fmt.Errorf("查询最新分析任务失败: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		record, err := scanTaskRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("扫描最新分析任务失败: %w", err)
+		}
+		if record.Payload.IssueNumber == issueNumber {
+			return record, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历最新分析任务失败: %w", err)
+	}
+	return nil, nil
+}
+
 // HasNewerReviewTask 检查是否存在比指定时间更新的同 PR 非终态评审任务
 func (s *SQLiteStore) HasNewerReviewTask(ctx context.Context, repoFullName string, prNumber int64, afterCreatedAt time.Time) (bool, error) {
 	query := `SELECT EXISTS(
