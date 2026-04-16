@@ -303,6 +303,42 @@ func TestBuildPrompt_ContainsRef(t *testing.T) {
 	}
 }
 
+func TestBuildFixCommand_NoDisallowedBash(t *testing.T) {
+	s := &Service{}
+	cmd := s.buildFixCommand()
+
+	// 必须是 claude -p - --output-format json 起始
+	if len(cmd) < 5 {
+		t.Fatalf("fix 命令长度 = %d，期望至少 5 个参数", len(cmd))
+	}
+	if cmd[0] != "claude" || cmd[1] != "-p" || cmd[2] != "-" {
+		t.Errorf("命令前缀 = %v，期望 [claude -p -]", cmd[:3])
+	}
+
+	// 必须有 --output-format json
+	joined := strings.Join(cmd, " ")
+	if !strings.Contains(joined, "--output-format json") {
+		t.Error("fix 命令必须含 --output-format json")
+	}
+
+	// 禁止带分析模式的 --disallowedTools（fix 需要 Bash）
+	if strings.Contains(joined, "--disallowedTools") {
+		t.Errorf("fix 命令不应含 --disallowedTools（需要 Bash 和 Write 权限运行测试）: %s", joined)
+	}
+}
+
+func TestBuildFixCommand_WithModelAndEffort(t *testing.T) {
+	s := &Service{cfgProv: &mockFixConfigProvider{model: "claude-sonnet-4-5", effort: "HIGH"}}
+	cmd := s.buildFixCommand()
+	joined := strings.Join(cmd, " ")
+	if !strings.Contains(joined, "--model claude-sonnet-4-5") {
+		t.Errorf("应透传 --model, got: %s", joined)
+	}
+	if !strings.Contains(joined, "--effort high") {
+		t.Errorf("effort 应小写归一化, got: %s", joined)
+	}
+}
+
 func TestBuildPrompt_NoRefOmitted(t *testing.T) {
 	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
 	issueCtx := &IssueContext{

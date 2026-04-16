@@ -370,6 +370,26 @@ func (s *Service) buildCommand() []string {
 	return cmd
 }
 
+// buildFixCommand M3.5: 构造 fix_issue 容器执行命令。
+// 与 buildCommand（分析模式）的关键区别：
+// - 不加 --disallowedTools（修复需要 Edit/Write/Bash 执行测试）
+// - 其他一致：stdin prompt（claude -p -）、--output-format json、透传模型和 effort
+func (s *Service) buildFixCommand() []string {
+	cmd := []string{
+		"claude", "-p", "-",
+		"--output-format", "json",
+	}
+	if s.cfgProv != nil {
+		if model := s.cfgProv.GetClaudeModel(); model != "" {
+			cmd = append(cmd, "--model", model)
+		}
+		if effort := s.cfgProv.GetClaudeEffort(); effort != "" {
+			cmd = append(cmd, "--effort", strings.ToLower(strings.TrimSpace(effort)))
+		}
+	}
+	return cmd
+}
+
 // extractJSON 从 Claude 回答文本中提取 JSON 内容（同 review 包逻辑，独立实现）
 func extractJSON(text string) string {
 	text = strings.TrimSpace(text)
