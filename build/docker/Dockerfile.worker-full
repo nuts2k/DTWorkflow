@@ -1,0 +1,19 @@
+# M3.4: 执行镜像（在轻量 worker 镜像基础上叠加 JDK + Maven 编译环境）
+# 用于 fix_issue 和 gen_tests 任务（需运行 mvn test / npm test）
+FROM dtworkflow-worker:latest AS base
+
+# Java 工具链
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+# Maven
+ARG MAVEN_VERSION=3.9.9
+RUN curl -fsSL https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+    | tar xz -C /opt \
+    && ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+
+# Maven/Gradle 缓存目录预创建
+# 运行时通过环境变量重定向到 /workspace（避免 /tmp tmpfs 溢出）
+ENV MAVEN_OPTS="-Dmaven.repo.local=/workspace/.m2/repository"
+ENV GRADLE_USER_HOME="/workspace/.gradle"
