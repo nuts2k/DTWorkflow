@@ -59,6 +59,7 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 	}
 	if cfg.AppCfg != nil {
 		pcfg.GiteaInsecureSkipVerify = cfg.AppCfg.Gitea.InsecureSkipVerify
+		pcfg.ImageFull = cfg.AppCfg.Worker.ImageFull // M3.4
 	}
 	return pcfg
 }

@@ -11,9 +11,10 @@ func buildQueueTimeoutConfigFromAppConfig(cfg *config.Config) queue.TaskTimeouts
 		return queue.TaskTimeoutsConfig{}
 	}
 	return queue.TaskTimeoutsConfig{
-		ReviewPR: cfg.Worker.Timeouts.ReviewPR,
-		FixIssue: cfg.Worker.Timeouts.FixIssue,
-		GenTests: cfg.Worker.Timeouts.GenTests,
+		ReviewPR:     cfg.Worker.Timeouts.ReviewPR,
+		AnalyzeIssue: cfg.Worker.Timeouts.AnalyzeIssue, // M3.4
+		FixIssue:     cfg.Worker.Timeouts.FixIssue,
+		GenTests:     cfg.Worker.Timeouts.GenTests,
 	}
 }
 
@@ -22,9 +23,10 @@ func buildWorkerTimeoutConfigFromAppConfig(cfg *config.Config) worker.TaskTimeou
 		return worker.TaskTimeoutsConfig{}
 	}
 	return worker.TaskTimeoutsConfig{
-		ReviewPR: cfg.Worker.Timeouts.ReviewPR,
-		FixIssue: cfg.Worker.Timeouts.FixIssue,
-		GenTests: cfg.Worker.Timeouts.GenTests,
+		ReviewPR:     cfg.Worker.Timeouts.ReviewPR,
+		AnalyzeIssue: cfg.Worker.Timeouts.AnalyzeIssue, // M3.4
+		FixIssue:     cfg.Worker.Timeouts.FixIssue,
+		GenTests:     cfg.Worker.Timeouts.GenTests,
 	}
 }
 
