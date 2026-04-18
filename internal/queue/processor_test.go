@@ -654,6 +654,47 @@ func TestProcessTask_GenTests_UsesTestService(t *testing.T) {
 	}
 }
 
+// TestProcessTask_GenTests_DisabledSkipRetry 验证：当 test.Service 返回
+// ErrTestGenDisabled（仓库级 test_gen.enabled=*false）时，Processor 直接标记
+// failed 并返回 SkipRetry，避免对已关闭仓库的空转重试。
+func TestProcessTask_GenTests_DisabledSkipRetry(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		DeliveryID:   "dlv-gentests-disabled-1",
+		RepoFullName: "org/repo",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-gentests-disabled",
+		TaskType:   model.TaskTypeGenTests,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	testExec := &mockTestExecutor{
+		err: fmt.Errorf("org/repo: %w", testgen.ErrTestGenDisabled),
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithTestService(testExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+	got := s.tasks["proc-task-gentests-disabled"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if !strings.Contains(got.Error, "禁用") {
+		t.Errorf("Error 应提及禁用原因，实际: %q", got.Error)
+	}
+}
+
 func TestProcessTask_GenTests_DeterministicFailureSkipRetry(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{

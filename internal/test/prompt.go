@@ -162,6 +162,21 @@ const javaVerificationCmdTemplate = `
 注意：首次执行可能触发 maven 依赖下载，MAVEN_OPTS 已配置本地仓库到 /workspace/.m2/repository。
 `
 
+// javaVerificationCmdNoPlTemplate 根级 pom 检测到时使用：跳过 -pl，直接在仓库根
+// 执行。参数 %[1]s 预留给 module 路径的展示（只作提示文字，无 shell 参数意义）。
+const javaVerificationCmdNoPlTemplate = `
+### Java 单文件验证命令
+
+检测到仓库根直接是 Maven 工程（根级 pom.xml），单测验证在仓库根执行即可：
+  mvn test -Dtest=<ClassName>
+
+提示：目标 module=%[1]s 位于根 Maven 工程的子目录下，若需要只跑该子目录下的测试，
+可配合 -Dtest=<包限定类名> 精准筛选；不要使用 mvn -pl 指向子目录（子目录不是
+Maven 子模块时会报 "not a project"）。
+
+注意：首次执行可能触发 maven 依赖下载，MAVEN_OPTS 已配置本地仓库到 /workspace/.m2/repository。
+`
+
 // ============================================================================
 // Vue 特有段
 // ============================================================================
@@ -201,26 +216,39 @@ type frameworkChecker interface {
 // resolveFramework 按设计文档 §4.4 规则推断测试框架。
 //
 // 规则：
-//  1. cfgFramework 显式设定（合法值："junit5" / "vitest"）→ 直接返回
+//  1. cfgFramework 显式设定（合法值："junit5" / "vitest"）→ 直接返回，anchor 未知
 //  2. 扫 module/pom.xml 存在 → JUnit5
 //  3. 扫 module/package.json 存在 → Vitest（前端生态统一识别为 Vitest）
 //  4. 两者都在 module 根下 → ErrAmbiguousFramework（硬拒绝，不静默猜测）
 //  5. 都不在 module 根下 → 回退仓库根重复判定；仍无 → ErrNoFrameworkDetected
-func resolveFramework(cfgFramework, module string, checker frameworkChecker) (Framework, error) {
+//
+// 返回值：
+//   - Framework：选定的测试框架
+//   - anchor：pom.xml/package.json 所在目录（命中的回溯候选路径）。对于显式
+//     cfgFramework 或未探测场景返回 ""
+//   - detected：true 表示 anchor 来自文件探测（anchor 可能是 "" 表示根目录命中）；
+//     false 表示来自 cfgFramework 声明，上层无从得知真实 Maven 模块根
+//   - error：解析失败
+//
+// 上层可据 detected 决定 Java 验证命令 `mvn -pl` 的取值：
+//   - detected && anchor != "" → 使用 anchor（真实 Maven 模块根）
+//   - detected && anchor == "" → 根级 pom，无需 -pl
+//   - !detected → 回退到用户输入的 module（信任用户显式配置）
+func resolveFramework(cfgFramework, module string, checker frameworkChecker) (Framework, string, bool, error) {
 	// 1. 显式配置优先
 	switch cfgFramework {
 	case string(FrameworkJUnit5):
-		return FrameworkJUnit5, nil
+		return FrameworkJUnit5, "", false, nil
 	case string(FrameworkVitest):
-		return FrameworkVitest, nil
+		return FrameworkVitest, "", false, nil
 	case "":
 		// 继续探测
 	default:
-		return FrameworkUnknown, fmt.Errorf("未知的测试框架: %q", cfgFramework)
+		return FrameworkUnknown, "", false, fmt.Errorf("未知的测试框架: %q", cfgFramework)
 	}
 
 	if checker == nil {
-		return FrameworkUnknown, ErrNoFrameworkDetected
+		return FrameworkUnknown, "", false, ErrNoFrameworkDetected
 	}
 
 	// 2-5. 从目标路径向上回溯到仓库根，寻找最近的框架锚点。
@@ -230,15 +258,15 @@ func resolveFramework(cfgFramework, module string, checker frameworkChecker) (Fr
 		hasPkg := checker.HasFile(candidate, "package.json")
 		switch {
 		case hasPom && hasPkg:
-			return FrameworkUnknown, ErrAmbiguousFramework
+			return FrameworkUnknown, "", false, ErrAmbiguousFramework
 		case hasPom:
-			return FrameworkJUnit5, nil
+			return FrameworkJUnit5, candidate, true, nil
 		case hasPkg:
-			return FrameworkVitest, nil
+			return FrameworkVitest, candidate, true, nil
 		}
 	}
 
-	return FrameworkUnknown, ErrNoFrameworkDetected
+	return FrameworkUnknown, "", false, ErrNoFrameworkDetected
 }
 
 // moduleCandidates 返回从当前 module 向上回溯到仓库根的候选路径，顺序为“近到远”。
@@ -276,10 +304,21 @@ func moduleCandidates(module string) []string {
 // PromptContext 构造 prompt 所需的上下文。字段均为未 sanitize 前的原值，
 // 由 build* 内部统一执行 sanitize（避免 prompt injection 与换行破坏指令结构）。
 type PromptContext struct {
-	RepoFullName   string
-	Module         string
-	BaseRef        string
-	Timestamp      string // 已格式化的时间串，如 "20260418120000"
+	RepoFullName string
+	Module       string
+	BaseRef      string
+	Timestamp    string // 已格式化的时间串，如 "20260418120000"
+	// MavenModulePath Java 验证命令 `mvn -pl` 的目标路径，由 resolveFramework 回溯
+	// 锚点后填入。
+	//   - 非空：使用该路径作为 -pl 参数（覆盖用户 Module，避免把子目录误当 Maven 模块根）
+	//   - 空串：回退到 Module（适用于显式 cfgFramework 或兼容旧构造路径）
+	// AnchorResolved 共同决定是否可以完全省略 -pl（根级 pom）。
+	MavenModulePath string
+	// AnchorResolved 标记 MavenModulePath 来自文件探测。用于区分两种 "MavenModulePath
+	// 为空" 的场景：
+	//   - AnchorResolved=true 且 MavenModulePath=="" → 根级 pom，prompt 建议省略 -pl
+	//   - AnchorResolved=false → 未探测（显式 cfg），prompt 回退到 Module
+	AnchorResolved bool
 	MaxRetryRounds int
 }
 
@@ -295,10 +334,34 @@ func buildJavaPrompt(ctx PromptContext) string {
 	b.WriteString(budgetAwareInstruction)
 	b.WriteString(fmt.Sprintf(verificationInstructionTemplate, ctx.MaxRetryRounds))
 	b.WriteString(javaTestingInstruction)
-	b.WriteString(fmt.Sprintf(javaVerificationCmdTemplate, javaVerificationTarget(ctx.Module)))
+	b.WriteString(javaVerificationSection(ctx))
 	b.WriteString(fmt.Sprintf(pushInstruction, branch))
 	b.WriteString(outputJSONSchemaInstruction)
 	return b.String()
+}
+
+// javaVerificationSection 选择 Java 验证命令模板：
+//   - 探测到根级 pom（AnchorResolved=true 且 MavenModulePath=""）→ no-pl 模板
+//   - 其它场景 → 标准 -pl 模板，参数取 mavenModuleTarget(ctx)
+func javaVerificationSection(ctx PromptContext) string {
+	if ctx.AnchorResolved && strings.TrimSpace(ctx.MavenModulePath) == "" {
+		displayModule := ctx.Module
+		if strings.TrimSpace(displayModule) == "" {
+			displayModule = "<整仓>"
+		}
+		return fmt.Sprintf(javaVerificationCmdNoPlTemplate, sanitize(displayModule, 500))
+	}
+	return fmt.Sprintf(javaVerificationCmdTemplate, javaVerificationTarget(mavenModuleTarget(ctx)))
+}
+
+// mavenModuleTarget 选择 Java 验证命令里 `mvn -pl` 的目标路径：
+//   - MavenModulePath 非空（resolveFramework 回溯命中的锚点）→ 使用 anchor
+//   - MavenModulePath 为空 → 回退到用户输入的 Module
+func mavenModuleTarget(ctx PromptContext) string {
+	if strings.TrimSpace(ctx.MavenModulePath) != "" {
+		return ctx.MavenModulePath
+	}
+	return ctx.Module
 }
 
 // buildVuePrompt 按公共段 + Vue 特有段拼接 prompt。

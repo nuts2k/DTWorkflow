@@ -175,13 +175,13 @@ func TestExecute_ExplicitlyDisabled(t *testing.T) {
 	s := newService(&mockRepoClient{}, &mockTestPool{}, cfg)
 
 	_, err := s.Execute(context.Background(), defaultPayload())
-	if err == nil {
-		t.Fatal("应返回错误")
+	if !errors.Is(err, ErrTestGenDisabled) {
+		t.Fatalf("应返回 ErrTestGenDisabled, 实际: %v", err)
 	}
 	if !strings.Contains(err.Error(), "被显式禁用") {
 		t.Errorf("错误消息应含'被显式禁用'，实际: %v", err)
 	}
-	// 非 sentinel
+	// 非 sentinel 串扰
 	if errors.Is(err, ErrInvalidModule) {
 		t.Error("不应误判为 ErrInvalidModule")
 	}
@@ -240,6 +240,21 @@ func TestExecute_ModuleContainsDotDot(t *testing.T) {
 	_, err := s.Execute(context.Background(), p)
 	if !errors.Is(err, ErrInvalidModule) {
 		t.Errorf("应返回 ErrInvalidModule, 实际: %v", err)
+	}
+}
+
+// Windows 风格的 `\` 分隔符不能绕过 Service 层 `..` 拦截。
+// validation.GenTestsModule 会先归一化 `\` → `/`；深层 validateModule 必须同步处理，
+// 否则若调用方绕过入口层（例如直接 queue.Enqueue）可能走到这里并被错误放行。
+func TestExecute_ModuleBackslashDotDotRejected(t *testing.T) {
+	cfg := &mockCfgProv{}
+	s := newService(&mockRepoClient{}, &mockTestPool{}, cfg)
+
+	p := defaultPayload()
+	p.Module = `a\..\b`
+	_, err := s.Execute(context.Background(), p)
+	if !errors.Is(err, ErrInvalidModule) {
+		t.Errorf("反斜杠 `..` 应被 Service 层拦截，实际: %v", err)
 	}
 }
 
@@ -325,8 +340,18 @@ func TestExecute_ModuleSubdirUsesAncestorFrameworkAnchor(t *testing.T) {
 	if result.Framework != FrameworkJUnit5 {
 		t.Fatalf("Framework = %v, want %v", result.Framework, FrameworkJUnit5)
 	}
-	if !strings.Contains(string(pool.lastStdin), "JUnit 5") {
+	stdin := string(pool.lastStdin)
+	if !strings.Contains(stdin, "JUnit 5") {
 		t.Fatal("祖先 pom.xml 命中后应走 Java prompt")
+	}
+	// Issue #3: prompt 的 `mvn -pl` 必须使用 Maven 模块根 anchor（backend），
+	// 不能用用户指定的子目录（backend/service），否则 Claude 会陷入
+	// Maven "not a project" 构建错误循环。
+	if !strings.Contains(stdin, "mvn -pl 'backend' test -Dtest=<ClassName>") {
+		t.Fatalf("prompt 应使用 Maven 模块根 anchor 'backend'，实际 stdin: %s", stdin)
+	}
+	if strings.Contains(stdin, "mvn -pl 'backend/service'") {
+		t.Fatal("prompt 不应用子目录作 -pl（非 Maven 子模块根）")
 	}
 }
 
