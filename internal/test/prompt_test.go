@@ -148,6 +148,18 @@ func TestBuildJavaPrompt_SanitizesNullByte(t *testing.T) {
 	}
 }
 
+func TestBuildJavaPrompt_QuotesModuleInVerificationCommand(t *testing.T) {
+	ctx := javaCtx()
+	ctx.Module = "services/api; touch /tmp/pwned"
+	p := buildJavaPrompt(ctx)
+	if !strings.Contains(p, "mvn -pl 'services/api; touch /tmp/pwned' test -Dtest=<ClassName>") {
+		t.Fatalf("Java 验证命令应对 module 做 shell quoting，实际 prompt: %s", p)
+	}
+	if strings.Contains(p, "mvn -pl services/api;") {
+		t.Fatal("Java 验证命令不应把 module 作为未转义的 shell 片段嵌入")
+	}
+}
+
 func TestBuildVuePrompt_ModuleEmptyBranch(t *testing.T) {
 	ctx := vueCtx()
 	ctx.Module = ""
@@ -178,12 +190,12 @@ func TestBranchSuffix(t *testing.T) {
 		{"svc?foo*bar[0]", "t", "svc-foo-bar-0-t"},
 		{"svc\\foo", "t", "svc-foo-t"},
 		{"svc@{1}", "t", "svc-1-t"},
-		{"-foo-", "t", "foo-t"},       // 头尾 - 被修剪
-		{".foo.", "t", "foo-t"},       // 头尾 . 被修剪（git 拒绝以 . 开头的 ref）
-		{"a/../b", "t", "a-b-t"},      // / 与 . 都被替换为 -
+		{"-foo-", "t", "foo-t"},        // 头尾 - 被修剪
+		{".foo.", "t", "foo-t"},        // 头尾 . 被修剪（git 拒绝以 . 开头的 ref）
+		{"a/../b", "t", "a-b-t"},       // / 与 . 都被替换为 -
 		{"foo..bar", "t", "foo.bar-t"}, // ".." 合法字符但 git ref 禁止 ".." 序列
-		{"中文module", "t", "module-t"},    // 非 ASCII 字符统一替换为 -
-		{"   ", "t", "all-t"},         // 全空格 → 全部过滤 → 回落 "all"
+		{"中文module", "t", "module-t"},  // 非 ASCII 字符统一替换为 -
+		{"   ", "t", "all-t"},          // 全空格 → 全部过滤 → 回落 "all"
 	}
 	for _, c := range cases {
 		if got := branchSuffix(c.module, c.ts); got != c.want {
@@ -257,6 +269,17 @@ func TestResolveFramework_ModuleAmbiguous(t *testing.T) {
 	_, err := resolveFramework("", "x", chk)
 	if err != ErrAmbiguousFramework {
 		t.Errorf("应返回 ErrAmbiguousFramework, 实际: %v", err)
+	}
+}
+
+func TestResolveFramework_UsesNearestAncestor(t *testing.T) {
+	chk := newChecker(map[string]bool{
+		"backend||pom.xml": true,
+		"||package.json":   true,
+	})
+	got, err := resolveFramework("", "backend/service", chk)
+	if err != nil || got != FrameworkJUnit5 {
+		t.Errorf("got=%v err=%v, want junit5 nil", got, err)
 	}
 }
 

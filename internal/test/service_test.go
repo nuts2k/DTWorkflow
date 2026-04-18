@@ -304,6 +304,32 @@ func TestExecute_ModuleUnderScopeAccepted(t *testing.T) {
 	}
 }
 
+func TestExecute_ModuleSubdirUsesAncestorFrameworkAnchor(t *testing.T) {
+	cfg := &mockCfgProv{}
+	pool := &mockTestPool{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: successEnvelope},
+	}
+	s := newService(&mockRepoClient{}, pool, cfg,
+		WithFileChecker(&mockFileChecker{files: map[string]bool{
+			"backend/service||": true,
+			"backend||pom.xml":  true,
+		}}),
+	)
+
+	p := defaultPayload()
+	p.Module = "backend/service"
+	result, err := s.Execute(context.Background(), p)
+	if err != nil {
+		t.Fatalf("任意子目录 module 应在祖先存在构建锚点时放行，实际: %v", err)
+	}
+	if result.Framework != FrameworkJUnit5 {
+		t.Fatalf("Framework = %v, want %v", result.Framework, FrameworkJUnit5)
+	}
+	if !strings.Contains(string(pool.lastStdin), "JUnit 5") {
+		t.Fatal("祖先 pom.xml 命中后应走 Java prompt")
+	}
+}
+
 // ============================================================================
 // validateModuleExists（module 子路径存在性校验）分支
 // ============================================================================
@@ -816,6 +842,23 @@ func TestWriteDegraded_NoParseError(t *testing.T) {
 	_ = s.WriteDegraded(context.Background(), defaultPayload(), r)
 	if !strings.Contains(buf.String(), "has_parse_error=false") {
 		t.Errorf("日志应含 has_parse_error=false, 实际: %s", buf.String())
+	}
+}
+
+func TestWriteDegraded_DoesNotLogRawOutput(t *testing.T) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(buf, nil))
+	s := newService(&mockRepoClient{}, &mockTestPool{}, &mockCfgProv{},
+		WithServiceLogger(logger))
+
+	raw := `helper password=super-secret-token`
+	_ = s.WriteDegraded(context.Background(), defaultPayload(), &TestGenResult{
+		RawOutput:  raw,
+		ParseError: errors.New("parse failed"),
+	})
+
+	if strings.Contains(buf.String(), raw) {
+		t.Fatalf("降级日志不应包含原始输出预览，实际: %s", buf.String())
 	}
 }
 

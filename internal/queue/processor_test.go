@@ -687,6 +687,57 @@ func TestProcessTask_GenTests_DeterministicFailureSkipRetry(t *testing.T) {
 	}
 }
 
+func TestProcessTask_GenTests_InfoInsufficientPreservesStructuredResult(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		DeliveryID:   "dlv-gentests-info-1",
+		RepoFullName: "org/repo",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-gentests-info",
+		TaskType:   model.TaskTypeGenTests,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	rawOutput := `{"type":"result","result":"{\"success\":false,\"info_sufficient\":false,\"missing_info\":[\"缺少仓库上下文\"]}"}`
+	testExec := &mockTestExecutor{
+		result: &testgen.TestGenResult{
+			RawOutput: rawOutput,
+			Output: &testgen.TestGenOutput{
+				Success:        false,
+				InfoSufficient: false,
+				MissingInfo:    []string{"缺少仓库上下文"},
+			},
+		},
+		err: fmt.Errorf("org/repo: %w", testgen.ErrInfoInsufficient),
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithTestService(testExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+
+	got := s.tasks["proc-task-gentests-info"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if got.Result != rawOutput {
+		t.Fatalf("result = %q, want %q", got.Result, rawOutput)
+	}
+	if !strings.Contains(got.Result, "missing_info") {
+		t.Fatalf("应保留结构化失败结果，实际: %q", got.Result)
+	}
+}
+
 // TestProcessTask_GenTests_ModuleNotFoundSkipRetry 覆盖 test.ErrModuleNotFound
 // 分发分支：module 子路径不存在于仓库时应标记 failed + SkipRetry。
 // 这一 sentinel 在 M4.1 的 Processor 增加分发后，与 ErrModuleOutOfScope 等对齐。

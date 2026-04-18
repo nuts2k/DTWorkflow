@@ -281,46 +281,46 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 		// ErrPRNotOpen / ErrIssueNotOpen 是确定性失败，直接标记 failed 并跳过重试
 		if errors.Is(runErr, review.ErrPRNotOpen) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, nil, "PR 不处于 open 状态，跳过评审")
+			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, nil, nil, "PR 不处于 open 状态，跳过评审")
 		}
 		if errors.Is(runErr, fix.ErrIssueNotOpen) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Issue 不处于 open 状态，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Issue 不处于 open 状态，跳过分析")
 		}
 		if errors.Is(runErr, fix.ErrMissingIssueRef) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Issue 未设置关联分支，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Issue 未设置关联分支，跳过分析")
 		}
 		if errors.Is(runErr, fix.ErrInvalidIssueRef) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Issue 关联的 ref 不存在，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Issue 关联的 ref 不存在，跳过分析")
 		}
 		if errors.Is(runErr, fix.ErrInfoInsufficient) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "前序分析信息不足，跳过修复")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "前序分析信息不足，跳过修复")
 		}
 		if errors.Is(runErr, fix.ErrFixFailed) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Claude 返回 success=false，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Claude 返回 success=false，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrInvalidModule) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "module 路径非法，跳过测试生成")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "module 路径非法，跳过测试生成")
 		}
 		if errors.Is(runErr, test.ErrModuleOutOfScope) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "module 超出允许范围，跳过测试生成")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "module 超出允许范围，跳过测试生成")
 		}
 		if errors.Is(runErr, test.ErrModuleNotFound) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "module 子路径不存在于仓库，跳过测试生成")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "module 子路径不存在于仓库，跳过测试生成")
 		}
 		if errors.Is(runErr, test.ErrInvalidRef) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "gen_tests 指定 ref 不存在，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "gen_tests 指定 ref 不存在，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrAmbiguousFramework) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "无法确定测试框架，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "无法确定测试框架，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrNoFrameworkDetected) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "未检测到测试框架，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "未检测到测试框架，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrInfoInsufficient) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "测试生成信息不足，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "测试生成信息不足，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrTestGenFailed) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "Claude 返回 success=false，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "Claude 返回 success=false，跳过重试")
 		}
 		// fix 解析失败且重试耗尽：发送降级评论，让用户至少能在 Issue 上看到原始输出
 		if errors.Is(runErr, fix.ErrFixParseFailure) && !shouldRetry(ctx) && fixResult != nil {
@@ -895,14 +895,33 @@ func adaptTestResult(r *test.TestGenResult) *worker.ExecutionResult {
 			res.Error = res.Error + "; " + r.ParseError.Error()
 		}
 	}
+	if res.Output == "" && r.Output != nil {
+		if data, err := json.Marshal(r.Output); err == nil {
+			res.Output = string(data)
+		}
+	}
 	return res
 }
 
 // handleSkipRetryFailure 处理确定性失败（如 PR/Issue 不处于 open 状态），
-// 标记任务 failed、持久化、发送通知，并返回 SkipRetry 错误。
-func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, logMsg string) error {
+// 标记任务 failed、尽可能保留结构化结果、持久化、发送通知，并返回 SkipRetry 错误。
+func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, logMsg string) error {
 	record.Status = model.TaskStatusFailed
 	record.Error = runErr.Error()
+	switch {
+	case reviewResult != nil:
+		if result := adaptReviewResult(reviewResult); result != nil {
+			record.Result = result.Output
+		}
+	case fixResult != nil:
+		if result := adaptFixResult(fixResult); result != nil {
+			record.Result = result.Output
+		}
+	case testResult != nil:
+		if result := adaptTestResult(testResult); result != nil {
+			record.Result = result.Output
+		}
+	}
 	completedAt := time.Now()
 	record.CompletedAt = &completedAt
 	p.logger.WarnContext(ctx, logMsg,

@@ -96,6 +96,9 @@ func TestConfigAdapter_ResolveTestGenConfig_ReturnsMergedOverride(t *testing.T) 
 func TestGiteaRepoFileChecker_HasFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/repos/acme/repo/contents/services/api":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"name":"api","path":"services/api","type":"dir"}`))
 		case "/api/v1/repos/acme/repo/contents/services/api/pom.xml":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"name":"pom.xml","path":"services/api/pom.xml","type":"file"}`))
@@ -117,6 +120,14 @@ func TestGiteaRepoFileChecker_HasFile(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("HasFile 应返回 true")
+	}
+
+	ok, err = checker.HasFile(context.Background(), "acme", "repo", "main", "services/api", "")
+	if err != nil {
+		t.Fatalf("HasFile(dir) 返回错误: %v", err)
+	}
+	if !ok {
+		t.Fatal("存在的目录应返回 true")
 	}
 
 	ok, err = checker.HasFile(context.Background(), "acme", "repo", "main", "services/api", "package.json")
