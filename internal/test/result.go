@@ -232,12 +232,3 @@ func safeOutput(r *worker.ExecutionResult) string {
 	}
 	return r.Output
 }
-
-// truncate 按 rune 截断字符串，避免截断 UTF-8 多字节字符。
-func truncate(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) > maxLen {
-		return string(runes[:maxLen]) + "..."
-	}
-	return s
-}

@@ -102,7 +102,7 @@ func defaultPayload() model.TaskPayload {
 
 // newService 构造可用的 Service：默认 fileChecker 让框架解析到 JUnit5，
 // 便于单测聚焦 Service 的错误处理而非 resolveFramework 细节。
-func newService(gitea RepoClient, pool TestPoolRunner, cfg TestConfigProvider, opts ...ServiceOption) *Service {
+func newService(gitea RepoClient, pool GenTestsPoolRunner, cfg TestConfigProvider, opts ...ServiceOption) *Service {
 	opts = append([]ServiceOption{WithFileChecker(juitRootChecker())}, opts...)
 	return NewService(gitea, pool, cfg, opts...)
 }

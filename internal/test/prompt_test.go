@@ -433,6 +433,58 @@ func TestBuildCommand_DefaultBase(t *testing.T) {
 	}
 }
 
+// TestSanitize_ControlCharsStripped 验证 sanitize 过滤全部 C0 控制字符：
+//   - NUL (\x00) 直接删除
+//   - \r / \n 替换为空格（与原行为一致）
+//   - ANSI 转义序列首字节 \x1b、BEL \x07 等其余控制字符替换为空格
+func TestSanitize_ControlCharsStripped(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "ANSI color + BEL",
+			input: "a\x1b[31mbad\x07",
+			// \x1b → ' '，[、3、1、m 保留，\x07 → ' '
+			want: "a [31mbad ",
+		},
+		{
+			name:  "NUL deleted",
+			input: "ab\x00cd",
+			want:  "abcd",
+		},
+		{
+			name:  "newline replaced",
+			input: "ab\ncd",
+			want:  "ab cd",
+		},
+		{
+			name:  "carriage return replaced",
+			input: "ab\rcd",
+			want:  "ab cd",
+		},
+		{
+			name:  "tab replaced",
+			input: "ab\tcd",
+			want:  "ab cd",
+		},
+		{
+			name:  "normal text unchanged",
+			input: "hello world",
+			want:  "hello world",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitize(tc.input, 1000)
+			if got != tc.want {
+				t.Errorf("sanitize(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildCommand_NoExtraArgsWhenNilCfg(t *testing.T) {
 	cmd := buildCommand(nil)
 	for _, arg := range cmd {

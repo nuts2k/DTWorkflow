@@ -492,9 +492,11 @@ func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload mode
 
 	activeTasks := h.listActiveGenTestsTasks(ctx, payload.RepoFullName, payload.Module)
 
+	// 手动触发使用 PriorityNormal，确保不被 review/fix 队列饿死。
+	// 未来若新增 webhook / CronJob 自动触发入口，应改用 PriorityLow（背景任务语义）。
 	record := &model.TaskRecord{
 		TaskType:     model.TaskTypeGenTests,
-		Priority:     model.PriorityLow, // 对齐已有 PriorityLow=测试生成
+		Priority:     model.PriorityNormal,
 		RepoFullName: payload.RepoFullName,
 		DeliveryID:   payload.DeliveryID,
 		TriggeredBy:  triggeredBy,

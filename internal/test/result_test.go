@@ -426,29 +426,8 @@ func TestCLIResponse_IsExecutionError(t *testing.T) {
 }
 
 // =============================================================================
-// truncate / safeOutput 边界
+// safeOutput 边界
 // =============================================================================
-
-func TestTruncate_Short(t *testing.T) {
-	if truncate("abc", 10) != "abc" {
-		t.Error("短字符串不应截断")
-	}
-}
-
-func TestTruncate_LongASCII(t *testing.T) {
-	got := truncate("abcdefghij", 3)
-	if got != "abc..." {
-		t.Errorf("got=%q", got)
-	}
-}
-
-func TestTruncate_LongUTF8(t *testing.T) {
-	// 长度 5 个中文字符（15 bytes）截成 3 字符
-	got := truncate("一二三四五", 3)
-	if got != "一二三..." {
-		t.Errorf("got=%q", got)
-	}
-}
 
 func TestSafeOutput_Nil(t *testing.T) {
 	if got := safeOutput(nil); got != "" {
