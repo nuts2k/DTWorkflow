@@ -148,6 +148,55 @@ func TestBuildJavaPrompt_SanitizesNullByte(t *testing.T) {
 	}
 }
 
+// 用户 module 指向子目录，resolveFramework 回溯命中祖先 Maven 模块根。
+// prompt 的 `mvn -pl` 必须指向 anchor 而非 module，否则 Maven 会报 "not a project"。
+func TestBuildJavaPrompt_UsesAnchorForMavenPl(t *testing.T) {
+	ctx := javaCtx()
+	ctx.Module = "backend/service/foo"
+	ctx.MavenModulePath = "backend"
+	ctx.AnchorResolved = true
+
+	p := buildJavaPrompt(ctx)
+	if !strings.Contains(p, "mvn -pl 'backend' test -Dtest=<ClassName>") {
+		t.Fatalf("Java 验证命令应用 anchor 'backend' 作 -pl 参数，实际 prompt: %s", p)
+	}
+	if strings.Contains(p, "mvn -pl 'backend/service/foo'") {
+		t.Fatal("Java 验证命令不应使用用户 module 子目录作 -pl（Maven 会报 'not a project'）")
+	}
+}
+
+// 当 MavenModulePath 未设置时，回退到用户 Module（兼容显式 cfg 场景）。
+func TestBuildJavaPrompt_FallsBackToModuleWhenAnchorUnset(t *testing.T) {
+	ctx := javaCtx()
+	ctx.Module = "services/api"
+	// MavenModulePath 空 & AnchorResolved=false → 信任用户
+
+	p := buildJavaPrompt(ctx)
+	if !strings.Contains(p, "mvn -pl 'services/api' test -Dtest=<ClassName>") {
+		t.Fatalf("未解析 anchor 时应回退到 Module，实际 prompt: %s", p)
+	}
+}
+
+// 根级 pom 命中（AnchorResolved=true 且 MavenModulePath=""）→ 使用 no-pl 模板，
+// 并提示 Claude 不要把子目录当作 Maven 子模块。
+func TestBuildJavaPrompt_RootPomEmitsNoPlForm(t *testing.T) {
+	ctx := javaCtx()
+	ctx.Module = "backend/service"
+	ctx.MavenModulePath = ""
+	ctx.AnchorResolved = true
+
+	p := buildJavaPrompt(ctx)
+	if strings.Contains(p, "mvn -pl 'backend/service'") {
+		t.Fatal("根级 pom 场景不应让 Claude 误把子目录填入 -pl")
+	}
+	if !strings.Contains(p, "不要使用 mvn -pl 指向子目录") {
+		t.Fatal("根级 pom 场景应显式提示禁止 -pl 子目录用法")
+	}
+	if !strings.Contains(p, "mvn test -Dtest=<ClassName>") {
+		t.Fatal("根级 pom 场景应给出 'mvn test -Dtest=<ClassName>' 整仓命令")
+	}
+}
+
 func TestBuildJavaPrompt_QuotesModuleInVerificationCommand(t *testing.T) {
 	ctx := javaCtx()
 	ctx.Module = "services/api; touch /tmp/pwned"
@@ -221,21 +270,33 @@ func TestSanitizeBranchRef_NoGitForbiddenChars(t *testing.T) {
 // ============================================================================
 
 func TestResolveFramework_ExplicitJUnit5(t *testing.T) {
-	got, err := resolveFramework("junit5", "x", nil)
+	got, anchor, detected, err := resolveFramework("junit5", "x", nil)
 	if err != nil || got != FrameworkJUnit5 {
 		t.Errorf("got=%v err=%v, want junit5 nil", got, err)
+	}
+	if detected {
+		t.Error("显式 cfgFramework 不应标记 detected")
+	}
+	if anchor != "" {
+		t.Errorf("anchor=%q, want ''", anchor)
 	}
 }
 
 func TestResolveFramework_ExplicitVitest(t *testing.T) {
-	got, err := resolveFramework("vitest", "x", nil)
+	got, anchor, detected, err := resolveFramework("vitest", "x", nil)
 	if err != nil || got != FrameworkVitest {
 		t.Errorf("got=%v err=%v, want vitest nil", got, err)
+	}
+	if detected {
+		t.Error("显式 cfgFramework 不应标记 detected")
+	}
+	if anchor != "" {
+		t.Errorf("anchor=%q, want ''", anchor)
 	}
 }
 
 func TestResolveFramework_ExplicitUnknown(t *testing.T) {
-	_, err := resolveFramework("rspec", "x", nil)
+	_, _, _, err := resolveFramework("rspec", "x", nil)
 	if err == nil || !strings.Contains(err.Error(), "未知的测试框架") {
 		t.Errorf("应返回未知框架错误，实际: %v", err)
 	}
@@ -245,9 +306,12 @@ func TestResolveFramework_ModulePom(t *testing.T) {
 	chk := newChecker(map[string]bool{
 		"services/api||pom.xml": true,
 	})
-	got, err := resolveFramework("", "services/api", chk)
+	got, anchor, detected, err := resolveFramework("", "services/api", chk)
 	if err != nil || got != FrameworkJUnit5 {
 		t.Errorf("got=%v err=%v, want junit5 nil", got, err)
+	}
+	if !detected || anchor != "services/api" {
+		t.Errorf("detected=%v anchor=%q, want true 'services/api'", detected, anchor)
 	}
 }
 
@@ -255,9 +319,12 @@ func TestResolveFramework_ModulePackageJSON(t *testing.T) {
 	chk := newChecker(map[string]bool{
 		"packages/web||package.json": true,
 	})
-	got, err := resolveFramework("", "packages/web", chk)
+	got, anchor, detected, err := resolveFramework("", "packages/web", chk)
 	if err != nil || got != FrameworkVitest {
 		t.Errorf("got=%v err=%v, want vitest nil", got, err)
+	}
+	if !detected || anchor != "packages/web" {
+		t.Errorf("detected=%v anchor=%q, want true 'packages/web'", detected, anchor)
 	}
 }
 
@@ -266,7 +333,7 @@ func TestResolveFramework_ModuleAmbiguous(t *testing.T) {
 		"x||pom.xml":      true,
 		"x||package.json": true,
 	})
-	_, err := resolveFramework("", "x", chk)
+	_, _, _, err := resolveFramework("", "x", chk)
 	if err != ErrAmbiguousFramework {
 		t.Errorf("应返回 ErrAmbiguousFramework, 实际: %v", err)
 	}
@@ -277,9 +344,13 @@ func TestResolveFramework_UsesNearestAncestor(t *testing.T) {
 		"backend||pom.xml": true,
 		"||package.json":   true,
 	})
-	got, err := resolveFramework("", "backend/service", chk)
+	got, anchor, detected, err := resolveFramework("", "backend/service", chk)
 	if err != nil || got != FrameworkJUnit5 {
 		t.Errorf("got=%v err=%v, want junit5 nil", got, err)
+	}
+	// 核心断言：跨目录跃迁时，anchor 指向最近祖先而非用户 module
+	if !detected || anchor != "backend" {
+		t.Errorf("detected=%v anchor=%q, want true 'backend' (Maven 模块根)", detected, anchor)
 	}
 }
 
@@ -287,9 +358,13 @@ func TestResolveFramework_FallbackToRoot_JUnit5(t *testing.T) {
 	chk := newChecker(map[string]bool{
 		"||pom.xml": true,
 	})
-	got, err := resolveFramework("", "some/module", chk)
+	got, anchor, detected, err := resolveFramework("", "some/module", chk)
 	if err != nil || got != FrameworkJUnit5 {
 		t.Errorf("got=%v err=%v, want junit5 nil", got, err)
+	}
+	// 根级 pom：anchor 为空串，detected=true 用于区分显式 cfg 场景
+	if !detected || anchor != "" {
+		t.Errorf("detected=%v anchor=%q, want true '' (root pom)", detected, anchor)
 	}
 }
 
@@ -297,9 +372,12 @@ func TestResolveFramework_FallbackToRoot_Vitest(t *testing.T) {
 	chk := newChecker(map[string]bool{
 		"||package.json": true,
 	})
-	got, err := resolveFramework("", "some/module", chk)
+	got, anchor, detected, err := resolveFramework("", "some/module", chk)
 	if err != nil || got != FrameworkVitest {
 		t.Errorf("got=%v err=%v, want vitest nil", got, err)
+	}
+	if !detected || anchor != "" {
+		t.Errorf("detected=%v anchor=%q, want true ''", detected, anchor)
 	}
 }
 
@@ -308,7 +386,7 @@ func TestResolveFramework_FallbackAmbiguous(t *testing.T) {
 		"||pom.xml":      true,
 		"||package.json": true,
 	})
-	_, err := resolveFramework("", "", chk)
+	_, _, _, err := resolveFramework("", "", chk)
 	if err != ErrAmbiguousFramework {
 		t.Errorf("根回退也应检测 Ambiguous，实际: %v", err)
 	}
@@ -316,14 +394,14 @@ func TestResolveFramework_FallbackAmbiguous(t *testing.T) {
 
 func TestResolveFramework_NoneDetected(t *testing.T) {
 	chk := newChecker(map[string]bool{})
-	_, err := resolveFramework("", "any", chk)
+	_, _, _, err := resolveFramework("", "any", chk)
 	if err != ErrNoFrameworkDetected {
 		t.Errorf("应返回 ErrNoFrameworkDetected, 实际: %v", err)
 	}
 }
 
 func TestResolveFramework_NilChecker(t *testing.T) {
-	_, err := resolveFramework("", "any", nil)
+	_, _, _, err := resolveFramework("", "any", nil)
 	if err != ErrNoFrameworkDetected {
 		t.Errorf("nil checker 应返回 ErrNoFrameworkDetected, 实际: %v", err)
 	}
@@ -334,9 +412,12 @@ func TestResolveFramework_EmptyModuleRoot(t *testing.T) {
 	chk := newChecker(map[string]bool{
 		"||pom.xml": true,
 	})
-	got, err := resolveFramework("", "", chk)
+	got, anchor, detected, err := resolveFramework("", "", chk)
 	if err != nil || got != FrameworkJUnit5 {
 		t.Errorf("got=%v err=%v, want junit5 nil", got, err)
+	}
+	if !detected || anchor != "" {
+		t.Errorf("detected=%v anchor=%q, want true ''", detected, anchor)
 	}
 }
 

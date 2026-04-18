@@ -136,7 +136,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	tgCfg := s.cfgProv.ResolveTestGenConfig(payload.RepoFullName)
 	// Enabled 指针语义：nil 视为默认启用；*false 才算显式禁用
 	if tgCfg.Enabled != nil && !*tgCfg.Enabled {
-		return nil, fmt.Errorf("gen_tests 在仓库 %s 下被显式禁用", payload.RepoFullName)
+		return nil, fmt.Errorf("%s: %w", payload.RepoFullName, ErrTestGenDisabled)
 	}
 
 	// 1. module 合法性 + ModuleScope 白名单（纯字符串规则，无需访问仓库）
@@ -167,7 +167,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	if requestFramework == "" {
 		requestFramework = tgCfg.TestFramework
 	}
-	framework, err := resolveFramework(requestFramework, payload.Module, chk)
+	framework, anchor, anchorResolved, err := resolveFramework(requestFramework, payload.Module, chk)
 	if err != nil {
 		return nil, err
 	}
@@ -178,11 +178,13 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		maxRetry = 3 // 防御性默认，与 config.WithDefaults 保持一致
 	}
 	promptCtx := PromptContext{
-		RepoFullName:   payload.RepoFullName,
-		Module:         payload.Module,
-		BaseRef:        baseRef,
-		Timestamp:      time.Now().UTC().Format("20060102150405"),
-		MaxRetryRounds: maxRetry,
+		RepoFullName:    payload.RepoFullName,
+		Module:          payload.Module,
+		BaseRef:         baseRef,
+		Timestamp:       time.Now().UTC().Format("20060102150405"),
+		MavenModulePath: anchor,
+		AnchorResolved:  anchorResolved,
+		MaxRetryRounds:  maxRetry,
 	}
 	var prompt string
 	switch framework {
@@ -307,11 +309,20 @@ func (s *Service) resolveBaseRef(ctx context.Context, payload model.TaskPayload)
 //
 // 约束：
 //   - 绝对路径（以 / 开头）或 path.Clean 后以 / 开头 → ErrInvalidModule
-//   - 包含 .. 元素（".."、"../x"、"a/../b"）→ ErrInvalidModule
+//   - 包含 .. 元素（".."、"../x"、"a/../b"、"a\..\b" 等）→ ErrInvalidModule
 //   - module 空 + scope 非空 → ErrModuleOutOfScope（scope 要求必须指定）
 //   - scope 非空 + cleaned 既不等于 scope 也不以 "scope/" 开头 → ErrModuleOutOfScope
 //   - module 空 + scope 空 → 放行（整仓模式）
+//
+// 深层校验必须 ⊇ 入口层校验（validation.GenTestsModule）。入口层会把 Windows 风格
+// 的 `\` 归一化为 `/` 再拒绝，若本函数只按 `/` 分段检查 `..`，会让绕过入口层直接
+// 入队的调用（例如后续新增的 CronJob 或直接 queue.Enqueue）把 `a\..\b` 当作合法
+// 路径通过，造成深浅校验不一致。
 func validateModule(module, scope string) error {
+	// 归一化 Windows 风格分隔符：与 validation.GenTestsModule 对齐。
+	// 归一化后的值既用于语义检查，也用于错误消息，便于用户看到校验器实际看到的输入。
+	module = strings.ReplaceAll(module, "\\", "/")
+
 	if module == "" {
 		if scope != "" {
 			return fmt.Errorf("%w: test_gen.module_scope=%q 要求 module 必须指定", ErrModuleOutOfScope, scope)

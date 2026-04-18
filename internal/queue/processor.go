@@ -298,6 +298,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if errors.Is(runErr, fix.ErrFixFailed) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Claude 返回 success=false，跳过重试")
 		}
+		if errors.Is(runErr, test.ErrTestGenDisabled) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "仓库已禁用 gen_tests，跳过重试")
+		}
 		if errors.Is(runErr, test.ErrInvalidModule) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "module 路径非法，跳过测试生成")
 		}

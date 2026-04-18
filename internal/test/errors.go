@@ -14,6 +14,9 @@ import "errors"
 
 // 参数层 sentinel
 var (
+	// ErrTestGenDisabled 仓库级 test_gen.enabled=*false 显式关闭。
+	// Processor 收到该 sentinel 直接 SkipRetry，避免为已禁用的仓库空转重试。
+	ErrTestGenDisabled = errors.New("gen_tests 在仓库下被显式禁用")
 	// ErrInvalidModule module 路径非法（绝对路径、含 .. 等）
 	ErrInvalidModule = errors.New("module 路径不合法")
 	// ErrModuleOutOfScope module 路径不在 test_gen.module_scope 白名单前缀下
