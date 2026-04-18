@@ -304,6 +304,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if errors.Is(runErr, test.ErrModuleOutOfScope) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "module 超出允许范围，跳过测试生成")
 		}
+		if errors.Is(runErr, test.ErrModuleNotFound) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "module 子路径不存在于仓库，跳过测试生成")
+		}
 		if errors.Is(runErr, test.ErrInvalidRef) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "gen_tests 指定 ref 不存在，跳过重试")
 		}

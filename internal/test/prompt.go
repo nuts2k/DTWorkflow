@@ -313,14 +313,64 @@ func writeHeader(b *strings.Builder, ctx PromptContext) {
 }
 
 // branchSuffix 以 module + timestamp 构造 auto-test 分支尾部。
-// module 空时用 "all"；斜杠替换为短横线以符合 git 分支命名。
+// module 空时用 "all"；通过 sanitizeBranchRef 过滤 git ref 非法字符。
 func branchSuffix(module, ts string) string {
 	key := module
 	if key == "" {
 		key = "all"
 	}
-	key = strings.ReplaceAll(key, "/", "-")
+	key = sanitizeBranchRef(key)
+	if key == "" {
+		// 所有字符都被过滤掉（例如 module 只含空格 / NUL 等），回落 "all"
+		key = "all"
+	}
 	return key + "-" + ts
+}
+
+// sanitizeBranchRef 按 git ref 命名约束清洗 module 名：
+//   - 仅保留 [A-Za-z0-9._-]；其他字符（空格、/、:、~、^、?、*、[、]、\、@、{、}、
+//     控制字符、UTF-8 字符等）统一替换为 -
+//   - 连续多个 - 合并为单个
+//   - 修剪首尾的 .、-（git 拒绝以 . 开头的 ref；以 - 开头易与命令行参数混淆）
+//
+// 约束依据：`git help check-ref-format` 列明 ref 禁止包含空格、~、^、:、?、*、[、\\、
+// `..`、`@{`、控制字符，且不能以 . 开头或以 .lock 结尾。module 经本函数处理后再拼入
+// `auto-test/<module>-<timestamp>`，可规避绝大多数 ref 非法情形。
+func sanitizeBranchRef(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevDash := false
+	for _, r := range s {
+		switch {
+		case (r >= 'a' && r <= 'z'),
+			(r >= 'A' && r <= 'Z'),
+			(r >= '0' && r <= '9'),
+			r == '.', r == '_':
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	out := b.String()
+	// 迭代归一化：消除 git ref 禁止的 ".." 序列以及替换过程中产生的
+	// "-."/".-" 混合（经常出现在 "a/../b" → "a-..-b" 这类输入里），
+	// 直到字符串稳定为止；再修剪首尾 . 与 -。
+	for {
+		prev := out
+		out = strings.ReplaceAll(out, "..", ".")
+		out = strings.ReplaceAll(out, "-.", "-")
+		out = strings.ReplaceAll(out, ".-", "-")
+		out = strings.ReplaceAll(out, "--", "-")
+		if out == prev {
+			break
+		}
+	}
+	out = strings.Trim(out, ".-")
+	return out
 }
 
 // sanitize 截断 + 清理换行/NUL 字符，防止 prompt injection 与格式破坏。

@@ -12,6 +12,7 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/validation"
 )
 
 // genTestsRequest POST /api/v1/repos/:owner/:repo/gen-tests 的请求体。
@@ -21,6 +22,11 @@ type genTestsRequest struct {
 	Ref       string `json:"ref,omitempty"`       // 可选：指定基准分支，留空时回退到仓库 default_branch
 	Framework string `json:"framework,omitempty"` // 可选：显式声明测试框架（"junit5" / "vitest"）
 }
+
+// genTestsMaxBodyBytes 限制 gen_tests POST 请求体大小。三字段 JSON 最多百字节数量级，
+// 16 KiB 足以容纳任何合法输入并抵御客户端无意或恶意地推大 body 导致的内存压力。
+// 对齐 webhook/receiver.go 的同名 MaxBytesReader 兜底风格（不过 webhook 体积更大故用 1MiB）。
+const genTestsMaxBodyBytes = 1 << 14 // 16 KiB
 
 // triggerGenTests 手动触发 gen_tests 任务入队。
 // 对齐 triggerReview / triggerFix 风格：
@@ -38,10 +44,19 @@ func (h *handlers) triggerGenTests(c *gin.Context) {
 	var req genTestsRequest
 	// gen_tests 允许空 body（使用全部默认值）。
 	// 不能仅依赖 Content-Length：chunked 请求常为 -1，若据此跳过解析会把合法 body
-	// 静默当成空请求。
+	// 静默当成空请求。通过 http.MaxBytesReader 在读取阶段就截断超限 body，
+	// 避免读取整个请求体至内存后再决定拒绝。
 	if c.Request.Body != nil {
-		body, err := io.ReadAll(c.Request.Body)
+		limited := http.MaxBytesReader(c.Writer, c.Request.Body, genTestsMaxBodyBytes)
+		body, err := io.ReadAll(limited)
 		if err != nil {
+			// MaxBytesReader 超限返回的 error.Error() 含 "http: request body too large"；
+			// 以 413 响应更贴近语义，其他读取错误维持 400。
+			if strings.Contains(err.Error(), "request body too large") {
+				Error(c, http.StatusRequestEntityTooLarge, ErrCodeBadRequest,
+					fmt.Sprintf("请求体过大（上限 %d 字节）", genTestsMaxBodyBytes))
+				return
+			}
 			Error(c, http.StatusBadRequest, ErrCodeBadRequest, "读取请求体失败: "+err.Error())
 			return
 		}
@@ -56,12 +71,12 @@ func (h *handlers) triggerGenTests(c *gin.Context) {
 	// module 最小安全校验（防 ../ 与绝对路径），防止在 API 层就能构造越界路径。
 	// ModuleScope 白名单 + path.Clean 归一化等完整校验交由 test.Service.validateModule
 	// 在任务执行时处理（避免 API 层重复访问 config provider）。
-	if err := validateGenTestsModule(req.Module); err != nil {
-		Error(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+	if err := validation.GenTestsModule(req.Module); err != nil {
+		Error(c, http.StatusBadRequest, ErrCodeBadRequest, "module "+err.Error())
 		return
 	}
-	if err := validateGenTestsFramework(req.Framework); err != nil {
-		Error(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+	if err := validation.GenTestsFramework(req.Framework); err != nil {
+		Error(c, http.StatusBadRequest, ErrCodeBadRequest, "framework "+err.Error())
 		return
 	}
 
@@ -122,31 +137,3 @@ func (h *handlers) triggerGenTests(c *gin.Context) {
 	})
 }
 
-// validateGenTestsModule API 层的最小 module 校验，与 test.validateModule 的"绝对路径 / .."
-// 规则对齐，但不做 ModuleScope 白名单与 path.Clean 归一化（由 test.Service 负责）。
-// module 为空表示整仓模式，此层直接放行。
-func validateGenTestsModule(module string) error {
-	if module == "" {
-		return nil
-	}
-	if strings.HasPrefix(module, "/") {
-		return fmt.Errorf("module 不能为绝对路径: %q", module)
-	}
-	for _, seg := range strings.Split(module, "/") {
-		if seg == ".." {
-			return fmt.Errorf("module 不能包含 ..: %q", module)
-		}
-	}
-	return nil
-}
-
-// validateGenTestsFramework framework 入口校验：仅允许空串 / "junit5" / "vitest"。
-// 空串由 test.Service.resolveFramework 根据仓库结构与配置推断。
-func validateGenTestsFramework(framework string) error {
-	switch framework {
-	case "", "junit5", "vitest":
-		return nil
-	default:
-		return fmt.Errorf("framework 合法值为 \"junit5\" / \"vitest\"，当前值: %q", framework)
-	}
-}

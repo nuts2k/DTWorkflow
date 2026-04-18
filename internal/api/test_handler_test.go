@@ -230,6 +230,28 @@ func TestTriggerGenTests_ModuleAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestTriggerGenTests_BodyTooLarge(t *testing.T) {
+	giteaSrv := newFakeGitea(fakeGiteaOpts{})
+	defer giteaSrv.Close()
+
+	r, _ := setupTriggerRouterWithGitea(t, giteaSrv.URL)
+
+	// 构造 > 16 KiB 的 body：用一个超长 module 字段填充
+	big := strings.Repeat("a", genTestsMaxBodyBytes+1)
+	body := `{"module": "` + big + `"}`
+	w := httptest.NewRecorder()
+	req := authedRequest("POST", "/api/v1/repos/owner/repo/gen-tests", body)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("期望 413，实际 %d, body: %s", w.Code, w.Body.String())
+	}
+	errMsg := readErrorMessage(t, w)
+	if !strings.Contains(errMsg, "请求体过大") {
+		t.Errorf("期望错误信息含 \"请求体过大\"，实际: %s", errMsg)
+	}
+}
+
 func TestTriggerGenTests_FrameworkInvalid(t *testing.T) {
 	giteaSrv := newFakeGitea(fakeGiteaOpts{})
 	defer giteaSrv.Close()

@@ -169,10 +169,37 @@ func TestBranchSuffix(t *testing.T) {
 		{"", "20260418", "all-20260418"},
 		{"services/api", "20260418", "services-api-20260418"},
 		{"packages/web/ui", "t1", "packages-web-ui-t1"},
+		// 扩展白名单后的覆盖：每类 git ref 非法字符都应被替换为 -，
+		// 连续非法字符合并为单个 - ，且结果不会把非法字符泄露到 branch 名。
+		{"svc with space", "t", "svc-with-space-t"},
+		{"svc:foo", "t", "svc-foo-t"},
+		{"svc~foo", "t", "svc-foo-t"},
+		{"svc^foo", "t", "svc-foo-t"},
+		{"svc?foo*bar[0]", "t", "svc-foo-bar-0-t"},
+		{"svc\\foo", "t", "svc-foo-t"},
+		{"svc@{1}", "t", "svc-1-t"},
+		{"-foo-", "t", "foo-t"},       // 头尾 - 被修剪
+		{".foo.", "t", "foo-t"},       // 头尾 . 被修剪（git 拒绝以 . 开头的 ref）
+		{"a/../b", "t", "a-b-t"},      // / 与 . 都被替换为 -
+		{"foo..bar", "t", "foo.bar-t"}, // ".." 合法字符但 git ref 禁止 ".." 序列
+		{"中文module", "t", "module-t"},    // 非 ASCII 字符统一替换为 -
+		{"   ", "t", "all-t"},         // 全空格 → 全部过滤 → 回落 "all"
 	}
 	for _, c := range cases {
 		if got := branchSuffix(c.module, c.ts); got != c.want {
 			t.Errorf("branchSuffix(%q,%q)=%q, want %q", c.module, c.ts, got, c.want)
+		}
+	}
+}
+
+func TestSanitizeBranchRef_NoGitForbiddenChars(t *testing.T) {
+	// 汇总 git help check-ref-format 列明的非法字符，确保清洗后全部消失。
+	forbidden := []string{" ", "~", "^", ":", "?", "*", "[", "]", "\\", "@{", ".."}
+	input := "svc " + strings.Join(forbidden, "") + "end"
+	got := sanitizeBranchRef(input)
+	for _, f := range forbidden {
+		if strings.Contains(got, f) {
+			t.Errorf("sanitizeBranchRef(%q)=%q 仍包含非法片段 %q", input, got, f)
 		}
 	}
 }

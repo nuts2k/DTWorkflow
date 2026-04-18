@@ -17,6 +17,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/validation"
 )
 
 // gen-tests 子命令的 flags（包级）
@@ -67,11 +68,11 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 		return &ExitCodeError{Code: 1, Err: fmt.Errorf("--owner 与 --repo 必填")}
 	}
 
-	if err := validateGenTestsFrameworkFlag(genTestsFramework); err != nil {
-		return &ExitCodeError{Code: 1, Err: err}
+	if err := validation.GenTestsFramework(genTestsFramework); err != nil {
+		return &ExitCodeError{Code: 1, Err: fmt.Errorf("--framework %w", err)}
 	}
-	if err := validateGenTestsModuleFlag(genTestsModule); err != nil {
-		return &ExitCodeError{Code: 1, Err: err}
+	if err := validation.GenTestsModule(genTestsModule); err != nil {
+		return &ExitCodeError{Code: 1, Err: fmt.Errorf("--module %w", err)}
 	}
 
 	ctx := cmd.Context()
@@ -224,31 +225,3 @@ func buildGenTestsTriggeredBy() string {
 	return fmt.Sprintf("cli:%s", hostname)
 }
 
-// validateGenTestsFrameworkFlag 校验 --framework 取值。
-func validateGenTestsFrameworkFlag(framework string) error {
-	switch framework {
-	case "", "junit5", "vitest":
-		return nil
-	default:
-		return fmt.Errorf(`--framework 合法值为 "junit5" / "vitest"，当前值: %q`, framework)
-	}
-}
-
-// validateGenTestsModuleFlag 校验 --module 取值：
-//   - 空字符串合法（全仓生成）；
-//   - 禁止绝对路径与任何 `..` 段（防止越出 repo 根目录）。
-func validateGenTestsModuleFlag(module string) error {
-	if module == "" {
-		return nil
-	}
-	if strings.HasPrefix(module, "/") {
-		return fmt.Errorf("--module 不能为绝对路径: %q", module)
-	}
-	// 将反斜杠视为分隔符处理一下，避免 Windows 风格路径绕过校验。
-	normalized := strings.ReplaceAll(module, `\`, "/")
-	if normalized == ".." || strings.HasPrefix(normalized, "../") ||
-		strings.HasSuffix(normalized, "/..") || strings.Contains(normalized, "/../") {
-		return fmt.Errorf("--module 不能包含 ..: %q", module)
-	}
-	return nil
-}
