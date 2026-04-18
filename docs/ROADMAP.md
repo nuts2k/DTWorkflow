@@ -645,7 +645,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 **已实现**：
 - **任务类型**：`TaskTypeGenTests` 已定义，asynq 路由已注册（`internal/model/task.go`、`internal/queue/client.go`）
-- **容器命令**：`buildContainerCmd` 有基础 gen_tests prompt（`internal/worker/container.go`），M4.2 Processor 接管后该分支成为死代码（同 review/fix 的 Service 模式）
+- **容器命令**：`buildContainerCmd` 有基础 gen_tests prompt（`internal/worker/container.go`），M4.1 Processor 接管后该分支成为死代码（同 review/fix 的 Service 模式）
 - **超时配置**：`worker.timeouts.gen_tests` 已有配置结构（默认 20 分钟，含容器内重试时间）
 - **技术栈检测**：Phase 2 的 `TechStack` 位掩码，可复用于选择测试框架
 - **通知**：飞书 + Gitea 通知框架（Processor 需新增 gen_tests 通知 case，见 M4.2）
@@ -663,38 +663,44 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > 通过 CLI / API 手动触发指定仓库/模块的测试生成。容器使用执行镜像（读写权限），Claude 分析代码缺口 → 生成测试 → 运行验证 → commit push，DTWorkflow 创建 PR。
 
 ##### M4.1 test.Service 骨架 + AI 原生测试缺口分析 + Prompt 工程
-- [ ] 新建 `internal/test` 包，架构仿照 `internal/review` 和 `internal/fix`（Service/Execute 模式）
-- [ ] 定义 `TestExecutor` 窄接口（M4.2 激活路由时使用）
-- [ ] AI 原生测试缺口分析设计：
+
+> **完成说明**（2026-04-18）：详细设计见 `docs/plans/2026-04-18-m4.1-test-service-skeleton-design.md`。核心交付：`internal/test` 包骨架（service / prompt / result / errors + 5 个 testdata fixtures）、Java / Vue 双套 prompt（含 9 项公共指令段）、`TestGenOutput` schema + `validateSuccessfulTestGenOutput` 不变量校验、手动触发四件套（REST API / 服务端 CLI / 瘦客户端 / `EnqueueManualGenTests`）、`test_gen` 配置段 + 仓库级覆盖。**决策 D11**：原计划 M4.2 的 `WithTestService` Processor 装配 + 7 条 sentinel 错误分发 + `adaptTestResult` 适配器**提前到 M4.1 落地**——路由已通，`createTestPR` 仍占位（PR 不真实创建）。`build/docker/entrypoint.sh` gen_tests 分支完整改造（credential helper + git identity + 构建缓存重定向 + pre-push hook 限 `auto-test/*`）。`internal/validation/gen_tests.go` 抽取三入口共用校验。全套单测通过（`internal/test/` 覆盖率 ≥ 80%，`go test -race ./...` 全通）。
+
+- [x] 新建 `internal/test` 包，架构仿照 `internal/review` 和 `internal/fix`（Service/Execute 模式）
+- [x] 定义 `TestExecutor` 窄接口（**M4.1 已激活路由**，决策 D11 提前自 M4.2）
+- [x] AI 原生测试缺口分析设计：
   - Claude 分析源代码目录结构与现有测试文件的映射关系
   - 识别无测试覆盖的关键模块/类/方法
   - 评估优先级：公共 API > 复杂业务逻辑 > 工具类
   - 分析现有测试风格和模式（命名规范、Mock 框架、断言库），确保生成的测试风格一致
-- [ ] 测试生成 Prompt 工程：
+- [x] 测试生成 Prompt 工程：
   - Java 单元测试生成指令（JUnit 5 + Mockito，覆盖 Service / Controller / 工具类）
   - Vue 单元测试生成指令（Vitest，覆盖组件 / Composable / Store / 工具函数）
   - 输出格式定义（结构化 JSON schema）：生成的文件列表、测试策略说明、每个测试的目标描述
   - 验证指令：生成后运行 `mvn test` / `npm test`，失败时根据错误信息自动修正
-- [ ] 分析+生成输出 JSON schema（`TestGenOutput`），字段包括：
+- [x] 分析+生成输出 JSON schema（`TestGenOutput`），字段包括：
   - `analysis`：测试缺口分析（未覆盖模块列表、优先级排序）
   - `generated_files`（[]GeneratedFile）：生成的测试文件路径和描述
-  - `test_results`：测试运行结果（通过数 / 失败数 / 跳过数）
+  - `test_results`（`TestRunResults`，与 `fix.TestResults` 同语义不同名，避免跨包消歧）：测试运行结果（通过数 / 失败数 / 跳过数）
   - `verification_passed`（bool）：所有测试是否通过
   - `branch_name`：创建的分支名
   - `commit_sha`：提交的 SHA
-- [ ] 手动触发入口（参照 M3.3.1 的 `review-pr` / `fix-issue` 模式）：
+- [x] 手动触发入口（参照 M3.3.1 的 `review-pr` / `fix-issue` 模式）：
   - `EnqueueManualGenTests` 函数（`internal/queue/enqueue.go`）
   - REST API handler + 路由注册（`POST /api/v1/gen-tests`，`internal/api/`）
-  - 服务端 CLI 命令 `dtworkflow gen-tests --repo --module`（`internal/cmd/`）
-  - 瘦客户端命令 `dtw gen-tests --repo --module`（`internal/dtw/cmd/`），支持 `--no-wait` 异步提交
-- [ ] 配置扩展：`test_gen` 配置段，仓库级覆盖
-  - `enabled`：启用开关
-  - `module_scope`：模块范围限定
-  - `max_retry_rounds`：容器内自动修正最大轮次（默认 3）
-  - `test_framework`：测试框架覆盖（默认自动检测）
+  - 服务端 CLI 命令 `dtworkflow gen-tests --owner --repo [--module] [--ref] [--framework]`（`internal/cmd/`）
+  - 瘦客户端命令 `dtw gen-tests --repo [--module] [--ref] [--framework]`（`internal/dtw/cmd/`），支持 `--no-wait` 异步提交
+- [x] 配置扩展：`test_gen` 配置段，仓库级覆盖
+  - `enabled`：启用开关（`*bool` 指针语义，与 `ReviewOverride.Enabled` 一致，避免零值误覆盖）
+  - `module_scope`：模块白名单前缀，违反时返回 `ErrModuleOutOfScope`
+  - `max_retry_rounds`：容器内自动修正最大轮次（默认 3，合法范围 [1, 10]）
+  - `test_framework`：测试框架覆盖（`""` 自动检测 / `"junit5"` / `"vitest"`）
+- [x] `build/docker/entrypoint.sh` gen_tests 分支完整改造（credential helper + git identity + 构建缓存重定向 + **pre-push hook 仅允许 `auto-test/*`**）+ `entrypoint_test.sh` 追加 5 项断言
+- [x] **Processor 集成（决策 D11，提前自 M4.2）**：`WithTestService` 装配 + `case TaskTypeGenTests` 路由 + 7 条 sentinel SkipRetry 分发 + `ErrTestGenParseFailure` 降级回写 + `adaptTestResult` 适配器；`processor_test.go` 覆盖 gen_tests 全部分支
+- [x] `internal/validation/gen_tests.go` 抽取 API / 服务端 CLI / dtw CLI 三处共用的 module 与 framework 校验逻辑
 
 ##### M4.2 容器执行 + 测试验证 + PR 创建 + 通知
-- [ ] Processor 集成：ProcessorOption 注入 TestExecutor，gen_tests 任务分发到 test.Service
+- [x] Processor 集成（`WithTestService` 注入 + `case TaskTypeGenTests` 路由）**——已在 M4.1 落地（决策 D11）**
 - [ ] 容器执行流程（执行镜像，读写权限）：
   - Clone 仓库 + checkout 目标分支
   - Claude 分析测试缺口
