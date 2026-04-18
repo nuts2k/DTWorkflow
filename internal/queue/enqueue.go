@@ -475,6 +475,49 @@ func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.Tas
 	return record.ID, nil
 }
 
+// EnqueueManualGenTests 手动触发 gen_tests 任务入队。
+// payload 由 API handler / CLI handler 组装；triggeredBy 格式为 "manual:{identity}"。
+// Cancel-and-Replace 按 (repo, module) 粒度：同仓库同 module 的活跃任务在本次入队后被取消。
+func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+	payload.TaskType = model.TaskTypeGenTests
+	payload.DeliveryID = generateManualDeliveryID()
+
+	activeTasks := h.listActiveGenTestsTasks(ctx, payload.RepoFullName, payload.Module)
+
+	record := &model.TaskRecord{
+		TaskType:     model.TaskTypeGenTests,
+		Priority:     model.PriorityLow, // 对齐已有 PriorityLow=测试生成
+		RepoFullName: payload.RepoFullName,
+		DeliveryID:   payload.DeliveryID,
+		TriggeredBy:  triggeredBy,
+	}
+
+	if err := h.enqueueTask(ctx, payload, record); err != nil {
+		return "", err
+	}
+	h.cancelTasks(ctx, activeTasks)
+
+	h.logger.InfoContext(ctx, "手动 gen_tests 任务已入队",
+		"task_id", record.ID,
+		"repo", payload.RepoFullName,
+		"module", payload.Module,
+		"triggered_by", triggeredBy,
+	)
+	return record.ID, nil
+}
+
+// listActiveGenTestsTasks EnqueueHandler 私有 helper，封装错误日志，
+// 与 listActivePRTasks / listActiveIssueTasks 风格一致。
+func (h *EnqueueHandler) listActiveGenTestsTasks(ctx context.Context, repoFullName, module string) []*model.TaskRecord {
+	tasks, err := h.store.FindActiveGenTestsTasks(ctx, repoFullName, module)
+	if err != nil {
+		h.logger.WarnContext(ctx, "查找活跃 gen_tests 任务失败，跳过取消",
+			"repo", repoFullName, "module", module, "error", err)
+		return nil
+	}
+	return tasks
+}
+
 // generateManualDeliveryID 生成手动触发的合成 delivery ID
 func generateManualDeliveryID() string {
 	return fmt.Sprintf("manual-%d-%s", time.Now().UnixMilli(), uuid.New().String()[:8])

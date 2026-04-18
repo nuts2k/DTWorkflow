@@ -48,6 +48,11 @@ type Store interface {
 	// 返回按 created_at 升序排列的任务列表（最旧的在前）
 	FindActiveIssueTasks(ctx context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) ([]*model.TaskRecord, error)
 
+	// FindActiveGenTestsTasks 查找同一仓库 + module 粒度的活跃 gen_tests 任务（pending/queued/running）。
+	// module 为空时匹配"整仓生成"的任务（payload.module 字段缺失的记录）。
+	// 返回按 created_at 升序排列的任务列表（最旧的在前）。
+	FindActiveGenTestsTasks(ctx context.Context, repoFullName, module string) ([]*model.TaskRecord, error)
+
 	// GetLatestAnalysisByIssue 返回指定仓库 + Issue 最新一条 analyze_issue succeeded 任务记录。
 	// 未找到时返回 (nil, nil)。
 	GetLatestAnalysisByIssue(ctx context.Context, repoFullName string, issueNumber int64) (*model.TaskRecord, error)

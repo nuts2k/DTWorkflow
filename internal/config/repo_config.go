@@ -2,9 +2,29 @@ package config
 
 // RepoConfig 仓库级配置覆盖。
 type RepoConfig struct {
-	Name   string          `mapstructure:"name"`
-	Review *ReviewOverride `mapstructure:"review"`
-	Notify *NotifyOverride `mapstructure:"notify"`
+	Name    string           `mapstructure:"name"`
+	Review  *ReviewOverride  `mapstructure:"review"`
+	Notify  *NotifyOverride  `mapstructure:"notify"`
+	TestGen *TestGenOverride `mapstructure:"test_gen"` // M4.1
+}
+
+// TestGenOverride 测试生成配置（全局或仓库级覆盖）。
+//
+// Enabled 使用指针语义，与 ReviewOverride.Enabled 一致：
+// nil = 未覆盖（回退到全局，默认启用）；*false = 显式关闭；*true = 显式启用。
+// 普通 bool 类型会让 RepoConfig 的零值 false 错误覆盖全局 true。
+type TestGenOverride struct {
+	Enabled *bool `mapstructure:"enabled"`
+	// ModuleScope：仓库级"允许做 gen_tests 的模块前缀白名单"（护栏）。
+	// 语义：CLI `--module` 或 API `module` 参数必须以此字符串为前缀，
+	// 否则校验拒绝。留空 = 无白名单限制。
+	// 不作默认模块：CLI 未传 `--module` 时仍按"整仓生成"处理（module=""），
+	// 而非自动套用 ModuleScope 值。
+	ModuleScope string `mapstructure:"module_scope"`
+	// MaxRetryRounds 容器内 Claude 自主修正测试失败的最大轮次，默认 3，合法范围 [1, 10]。
+	MaxRetryRounds int `mapstructure:"max_retry_rounds"`
+	// TestFramework 显式指定测试框架：空串 / "junit5" / "vitest"。
+	TestFramework string `mapstructure:"test_framework"`
 }
 
 // NotifyOverride 仓库级通知配置覆盖。
@@ -130,5 +150,41 @@ func (c *Config) ResolveReviewConfig(repoFullName string) ReviewOverride {
 		break
 	}
 
+	return merged
+}
+
+// ResolveTestGenConfig 解析指定仓库的最终 test_gen 配置。
+//
+// 全局 Config.TestGen 作为基础，若 repos[*].test_gen 非 nil，
+// 用其非零字段逐项覆盖。返回值可安全修改（按值返回）。
+//
+// 合并规则：
+//   - Enabled: repo.Enabled 非 nil 时覆盖（nil 表示未覆盖，保留全局值）
+//   - ModuleScope: repo 非空字符串时覆盖
+//   - MaxRetryRounds: repo > 0 时覆盖（0 视为未设置，保留全局值）
+//   - TestFramework: repo 非空字符串时覆盖
+func (c *Config) ResolveTestGenConfig(repoFullName string) TestGenOverride {
+	if c == nil {
+		return TestGenOverride{}
+	}
+	merged := c.TestGen
+	for _, repo := range c.Repos {
+		if repo.Name != repoFullName || repo.TestGen == nil {
+			continue
+		}
+		if repo.TestGen.Enabled != nil {
+			merged.Enabled = repo.TestGen.Enabled
+		}
+		if repo.TestGen.ModuleScope != "" {
+			merged.ModuleScope = repo.TestGen.ModuleScope
+		}
+		if repo.TestGen.MaxRetryRounds > 0 {
+			merged.MaxRetryRounds = repo.TestGen.MaxRetryRounds
+		}
+		if repo.TestGen.TestFramework != "" {
+			merged.TestFramework = repo.TestGen.TestFramework
+		}
+		break
+	}
 	return merged
 }

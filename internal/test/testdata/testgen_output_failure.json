@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "total_cost_usd": 1.05,
+  "duration_ms": 25000,
+  "is_error": false,
+  "num_turns": 18,
+  "session_id": "sess-failure",
+  "result": "{\n  \"success\": false,\n  \"info_sufficient\": true,\n  \"analysis\": {\n    \"untested_modules\": [\n      {\"path\": \"src/service/PaymentService.java\", \"kind\": \"service\", \"priority\": \"high\", \"reason\": \"支付核心\"}\n    ],\n    \"existing_tests\": [],\n    \"existing_style\": \"无既有测试\",\n    \"priority_notes\": \"\"\n  },\n  \"test_strategy\": \"Mockito 桩外部支付网关\",\n  \"generated_files\": [\n    {\"path\": \"src/test/java/PaymentServiceTest.java\", \"operation\": \"create\", \"description\": \"PaymentService 测试\", \"framework\": \"junit5\", \"target_files\": [\"src/service/PaymentService.java\"], \"test_count\": 3}\n  ],\n  \"committed_files\": [],\n  \"skipped_targets\": [\n    {\"path\": \"src/service/PaymentService.java\", \"reason\": \"verification_failed_after_retries\"}\n  ],\n  \"test_results\": {\"framework\": \"junit5\", \"passed\": 0, \"failed\": 3, \"skipped\": 0, \"all_passed\": false, \"duration_ms\": 12000},\n  \"verification_passed\": false,\n  \"failure_reason\": \"3 个单元测试 3 轮修正未过：依赖的 PaymentGateway 接口 Mockito 桩与实际行为不一致\",\n  \"retry_rounds\": 3\n}"
+}

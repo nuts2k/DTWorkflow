@@ -694,6 +694,49 @@ func (s *SQLiteStore) FindActiveIssueTasks(ctx context.Context, repoFullName str
 	return records, nil
 }
 
+// FindActiveGenTestsTasks 查找同一仓库 + module 粒度的活跃 gen_tests 任务（pending/queued/running）。
+//
+// 关键实现点：TaskPayload.Module 使用 omitempty 标签，整仓生成（--module 未传）
+// 时 JSON 中根本没有 module 字段，json_extract 返回 NULL。若直接用 `= ?` 比较空串，
+// NULL = '' 在 SQLite 恒假，会导致两次无 --module 的 gen_tests 并发放行、
+// Cancel-and-Replace 失效。COALESCE(..., '') 将 NULL 归一化为空串后再比较，
+// 确保"整仓粒度"与"具体 module 粒度"的 Cancel-and-Replace 都能正确生效。
+func (s *SQLiteStore) FindActiveGenTestsTasks(ctx context.Context, repoFullName, module string) ([]*model.TaskRecord, error) {
+	query := `SELECT ` + taskColumns + `
+	FROM tasks
+	WHERE repo_full_name = ?
+	  AND task_type = ?
+	  AND COALESCE(json_extract(payload, '$.module'), '') = ?
+	  AND status IN (?, ?, ?)
+	ORDER BY created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, query,
+		repoFullName,
+		string(model.TaskTypeGenTests),
+		module,
+		string(model.TaskStatusPending),
+		string(model.TaskStatusQueued),
+		string(model.TaskStatusRunning),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("查找活跃 gen_tests 任务失败: %w", err)
+	}
+	defer rows.Close()
+
+	var records []*model.TaskRecord
+	for rows.Next() {
+		record, err := scanTaskRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("扫描活跃 gen_tests 任务失败: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历活跃 gen_tests 任务失败: %w", err)
+	}
+	return records, nil
+}
+
 // GetLatestAnalysisByIssue 返回指定仓库 + Issue 最新一条 analyze_issue succeeded 任务记录。
 // 未找到时返回 (nil, nil)。
 //

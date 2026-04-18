@@ -133,6 +133,30 @@ func (m *mockStore) FindActiveIssueTasks(_ context.Context, repoFullName string,
 	return tasks, nil
 }
 
+func (m *mockStore) FindActiveGenTestsTasks(_ context.Context, repoFullName, module string) ([]*model.TaskRecord, error) {
+	if m.findActivePRTasksErr != nil {
+		return nil, m.findActivePRTasksErr
+	}
+	var tasks []*model.TaskRecord
+	for _, task := range m.tasks {
+		if task.RepoFullName != repoFullName {
+			continue
+		}
+		if task.TaskType != model.TaskTypeGenTests {
+			continue
+		}
+		if task.Status != model.TaskStatusPending && task.Status != model.TaskStatusQueued && task.Status != model.TaskStatusRunning {
+			continue
+		}
+		// 模拟 COALESCE(json_extract(payload, '$.module'), '') = module 的匹配语义
+		if task.Payload.Module != module {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
+}
+
 func (m *mockStore) HasNewerReviewTask(_ context.Context, _ string, _ int64, _ time.Time) (bool, error) {
 	return false, nil
 }
@@ -1185,5 +1209,241 @@ func TestEnqueueManualReview_WithSuperseded(t *testing.T) {
 	}
 	if newRecord.Payload.PreviousHeadSHA != "oldsha" {
 		t.Errorf("PreviousHeadSHA = %q, want %q", newRecord.Payload.PreviousHeadSHA, "oldsha")
+	}
+}
+
+// TestEnqueueManualGenTests_NoSuperseded 无旧任务时，EnqueueManualGenTests 创建 1 条 queued record。
+func TestEnqueueManualGenTests_NoSuperseded(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-gen-tests-1"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "backend/api",
+	}
+
+	taskID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("EnqueueManualGenTests error: %v", err)
+	}
+	if taskID == "" {
+		t.Fatal("返回的 taskID 不应为空")
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+
+	for _, record := range s.tasks {
+		if record.TaskType != model.TaskTypeGenTests {
+			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeGenTests)
+		}
+		if record.Priority != model.PriorityLow {
+			t.Errorf("priority = %v, want %v", record.Priority, model.PriorityLow)
+		}
+		if record.Status != model.TaskStatusQueued {
+			t.Errorf("task status = %q, want %q", record.Status, model.TaskStatusQueued)
+		}
+		if record.TriggeredBy != "manual:ci-bot" {
+			t.Errorf("triggered_by = %q, want %q", record.TriggeredBy, "manual:ci-bot")
+		}
+		if !strings.HasPrefix(record.DeliveryID, "manual-") {
+			t.Errorf("delivery_id = %q, want prefix 'manual-'", record.DeliveryID)
+		}
+		if record.Payload.Module != "backend/api" {
+			t.Errorf("payload.Module = %q, want %q", record.Payload.Module, "backend/api")
+		}
+		if record.Payload.TaskType != model.TaskTypeGenTests {
+			t.Errorf("payload.TaskType = %q, want %q", record.Payload.TaskType, model.TaskTypeGenTests)
+		}
+	}
+}
+
+// TestEnqueueManualGenTests_CancelAndReplace 两次触发同 (repo, module) → 第二次取消第一条。
+func TestEnqueueManualGenTests_CancelAndReplace(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-gen-tests-replace"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "backend/api",
+	}
+
+	firstID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第一次触发失败: %v", err)
+	}
+	// mockEnqueuer 为所有调用返回同一个 asynqID；手动置一个区分值，模拟两次入队的 asynq 作业独立
+	s.tasks[firstID].AsynqID = "asynq-gen-tests-first"
+
+	secondID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第二次触发失败: %v", err)
+	}
+	if secondID == firstID {
+		t.Fatal("两次触发的 taskID 不应相同")
+	}
+
+	// 第一条应被取消
+	if s.tasks[firstID].Status != model.TaskStatusCancelled {
+		t.Errorf("第一条任务状态 = %q, want %q", s.tasks[firstID].Status, model.TaskStatusCancelled)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-gen-tests-first" {
+		t.Errorf("deleteCalls = %v, want [asynq-gen-tests-first]", canceller.deleteCalls)
+	}
+	// 第二条应为 queued
+	if s.tasks[secondID].Status != model.TaskStatusQueued {
+		t.Errorf("第二条任务状态 = %q, want %q", s.tasks[secondID].Status, model.TaskStatusQueued)
+	}
+}
+
+// TestEnqueueManualGenTests_DifferentModulesNotCancelled 不同 module 并发放行。
+func TestEnqueueManualGenTests_DifferentModulesNotCancelled(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-gen-tests-diff"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	base := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+	}
+	backend := base
+	backend.Module = "backend"
+	frontend := base
+	frontend.Module = "frontend"
+
+	firstID, err := h.EnqueueManualGenTests(context.Background(), backend, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第一次触发失败: %v", err)
+	}
+	s.tasks[firstID].AsynqID = "asynq-gen-tests-backend"
+
+	secondID, err := h.EnqueueManualGenTests(context.Background(), frontend, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第二次触发失败: %v", err)
+	}
+
+	// 两条都应是 queued，不互相取消
+	if s.tasks[firstID].Status != model.TaskStatusQueued {
+		t.Errorf("第一条（backend）状态 = %q, want queued", s.tasks[firstID].Status)
+	}
+	if s.tasks[secondID].Status != model.TaskStatusQueued {
+		t.Errorf("第二条（frontend）状态 = %q, want queued", s.tasks[secondID].Status)
+	}
+	if len(canceller.deleteCalls) != 0 {
+		t.Errorf("deleteCalls = %v, want empty (不同 module 不应互相取消)", canceller.deleteCalls)
+	}
+}
+
+// TestEnqueueManualGenTests_EmptyModuleCancelAndReplace 两次触发相同 repo 但都不带 module（整仓生成）→
+// 第二次取消第一条（验证 COALESCE 对空 module 生效）。
+func TestEnqueueManualGenTests_EmptyModuleCancelAndReplace(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-gen-tests-empty"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		// 故意不设置 Module，模拟整仓生成
+	}
+
+	firstID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第一次触发失败: %v", err)
+	}
+	s.tasks[firstID].AsynqID = "asynq-gen-tests-empty-first"
+
+	secondID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第二次触发失败: %v", err)
+	}
+
+	if s.tasks[firstID].Status != model.TaskStatusCancelled {
+		t.Errorf("第一条任务状态 = %q, want %q (整仓 Cancel-and-Replace 必须生效)",
+			s.tasks[firstID].Status, model.TaskStatusCancelled)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-gen-tests-empty-first" {
+		t.Errorf("deleteCalls = %v, want [asynq-gen-tests-empty-first]", canceller.deleteCalls)
+	}
+	if s.tasks[secondID].Status != model.TaskStatusQueued {
+		t.Errorf("第二条任务状态 = %q, want %q", s.tasks[secondID].Status, model.TaskStatusQueued)
+	}
+}
+
+// TestListActiveGenTestsTasks_FiltersByTaskType 过滤 task_type='gen_tests'，
+// 不误伤 review_pr / fix_issue 的同 repo 任务。
+func TestListActiveGenTestsTasks_FiltersByTaskType(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-filter"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	// 预置同 repo 下不同类型的活跃任务，均不应被当作 gen_tests 取消
+	reviewTask := &model.TaskRecord{
+		ID:           "review-task",
+		AsynqID:      "asynq-review",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusRunning,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		Payload:      model.TaskPayload{Module: "backend"},
+	}
+	fixTask := &model.TaskRecord{
+		ID:           "fix-task",
+		AsynqID:      "asynq-fix",
+		TaskType:     model.TaskTypeFixIssue,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityNormal,
+		RepoFullName: "org/repo",
+		Payload:      model.TaskPayload{Module: "backend"},
+	}
+	s.tasks[reviewTask.ID] = reviewTask
+	s.tasks[fixTask.ID] = fixTask
+
+	tasks := h.listActiveGenTestsTasks(context.Background(), "org/repo", "backend")
+	if len(tasks) != 0 {
+		t.Errorf("期望 0 条 gen_tests 活跃任务（仅有 review/fix 任务），得到 %d", len(tasks))
+	}
+}
+
+// TestEnqueueManualGenTests_TriggeredByFormat TriggeredBy 正确注入 "manual:ci-bot"。
+func TestEnqueueManualGenTests_TriggeredByFormat(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-gen-tests-trig"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "svc",
+	}
+
+	taskID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("EnqueueManualGenTests error: %v", err)
+	}
+
+	got := s.tasks[taskID]
+	if got == nil {
+		t.Fatal("任务记录应存在")
+	}
+	if got.TriggeredBy != "manual:ci-bot" {
+		t.Errorf("TriggeredBy = %q, want %q", got.TriggeredBy, "manual:ci-bot")
 	}
 }

@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "total_cost_usd": 0.5,
+  "duration_ms": 8000,
+  "is_error": false,
+  "num_turns": 6,
+  "session_id": "sess-invalid-op",
+  "result": "{\n  \"success\": true,\n  \"info_sufficient\": true,\n  \"analysis\": {\n    \"untested_modules\": [\n      {\"path\": \"src/service/UserService.java\", \"kind\": \"service\", \"priority\": \"high\", \"reason\": \"缺少测试\"}\n    ],\n    \"existing_tests\": [],\n    \"existing_style\": \"\",\n    \"priority_notes\": \"\"\n  },\n  \"test_strategy\": \"\",\n  \"generated_files\": [\n    {\"path\": \"src/test/java/UserServiceTest.java\", \"operation\": \"replace\", \"description\": \"替换已有测试\", \"framework\": \"junit5\", \"target_files\": [\"src/service/UserService.java\"], \"test_count\": 4}\n  ],\n  \"committed_files\": [\"src/test/java/UserServiceTest.java\"],\n  \"skipped_targets\": [],\n  \"test_results\": {\"framework\": \"junit5\", \"passed\": 4, \"failed\": 0, \"skipped\": 0, \"all_passed\": true, \"duration_ms\": 3000},\n  \"verification_passed\": true,\n  \"branch_name\": \"auto-test/backend-20260418140000\",\n  \"commit_sha\": \"xyz999\",\n  \"retry_rounds\": 0\n}"
+}

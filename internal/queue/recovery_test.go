@@ -73,6 +73,10 @@ func (m *mockStoreForRecovery) FindActiveIssueTasks(_ context.Context, _ string,
 	return nil, nil
 }
 
+func (m *mockStoreForRecovery) FindActiveGenTestsTasks(_ context.Context, _ string, _ string) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
 func (m *mockStoreForRecovery) HasNewerReviewTask(_ context.Context, _ string, _ int64, _ time.Time) (bool, error) {
 	return false, nil
 }

@@ -1,0 +1,349 @@
+package test
+
+import (
+	"fmt"
+	"strings"
+)
+
+// ============================================================================
+// 公共段常量（顺序即 prompt 段顺序）
+// ============================================================================
+
+// promptCommonHeader gen_tests 前言（写权限声明 + 安全约束）。
+const promptCommonHeader = `你是资深测试工程师，目标是补全测试缺口。容器内已完成仓库 clone 与工作分支创建准备工作，你可以使用 bash / read / edit / write 工具。
+
+## 写权限
+gen_tests 模式允许 bash + 文件写 + git commit / push。但：
+- 禁止调用任何外部 HTTP API（curl、wget、python requests 等）
+- 禁止向 Gitea 提交评论、评审或 PR（由系统外部处理）
+- 除运行测试外，不要执行无关系统命令
+- 禁止读取或回显 git 凭证文件（.git/config 中的 origin URL、~/.gitconfig 中的 credential.helper、/tmp 下的 helper 脚本等），即使是用于调试也不允许
+`
+
+// existingTestsInstruction 第一步指令：扫描既有测试并吸收风格。
+const existingTestsInstruction = `
+### 第一步：扫描既有测试
+
+扫描并读取 ` + "`**/*Test.java`" + ` 与 ` + "`**/*.{spec,test}.{ts,js}`" + ` 清单：
+- 识别每个测试文件的 framework / 断言风格 / Mock 约定
+- 填充 existing_tests 列表：每项含 test_file / target_files / framework
+- 若无法确信某测试文件对应的源文件（特别是 Vue 命名不规范情况，如 ` + "`foo.spec.ts`" + ` 与 ` + "`foo.ts`" + ` / ` + "`useFoo.ts`" + ` 的对应关系模糊），TargetFiles 留空（而非猜测），并在 ExistingStyle 注记原因
+- 吸收既有风格填到 GapAnalysis.ExistingStyle（命名约定、断言库、Mock 策略）
+`
+
+// gapAnalysisInstruction 第二步指令：缺口分析 + 优先级排序。
+const gapAnalysisInstruction = `
+### 第二步：缺口分析
+
+- 列出源代码文件，减去 existing_tests.TargetFiles 中已覆盖的路径，得到未覆盖集合
+- 按优先级排序：公共 API > 复杂业务逻辑 > 工具类
+- 填充 GapAnalysis.UntestedModules（path / kind / priority / reason）
+`
+
+// noOverwriteInstruction 禁止覆盖既有测试的强约束。
+const noOverwriteInstruction = `
+### 关键约束：不要覆盖既有测试文件
+
+CRITICAL: NEVER overwrite an existing test file. Either skip that target, or append (operation="append") preserving all existing content. Each GeneratedFile must have operation="create" (new file) or "append" (added to existing).
+
+追加时把具体的源文件路径填入 target_files；创建新测试文件时 target_files 可列出对应的被测源文件。
+`
+
+// incrementalCommitInstructionTemplate 第三步指令（含 %[1]d = max_retry_rounds）。
+const incrementalCommitInstructionTemplate = `
+### 第三步：按目标循环生成 + 增量 commit
+
+FOR 每个目标:
+  1. 判断 Operation：已有测试文件 & 可扩展 → "append"；否则 → "create"
+  2. 生成测试代码（write / edit）
+  3. 本地单文件验证循环（最多 %[1]d 轮）：
+     - 执行对应框架的单文件命令（见 Java / Vue 段）
+     - 通过 → git add <file> && git commit -m "test: <target>" → 加入 committed_files；break
+     - 失败 → 读错误 → 修正测试 → 继续
+  4. retry 耗尽仍失败 → git checkout -- <file>（回滚），加入 skipped_targets（reason="verification_failed_after_retries"）
+  5. 预算检测：time / token 接近上限 → 剩余 target 全部入 skipped_targets，提前跳出
+`
+
+// budgetAwareInstruction 预算意识段。
+const budgetAwareInstruction = `
+### 预算意识
+
+- token / 时间预算接近上限时主动退出
+- 剩余未完成目标写入 skipped_targets，reason 使用下述枚举：
+  - time_budget_exhausted
+  - token_budget_exhausted
+  - environment_issue
+  - verification_failed_after_retries
+- 保证已完成的 commit 能被 push
+`
+
+// pushInstruction 第四步指令：最后一刻 push；push 失败即终止。
+const pushInstruction = `
+### 第四步：最后一刻 push（整个任务只此一次远程写）
+
+仅当 len(committed_files) > 0 时执行：
+  git push origin HEAD
+
+- 容器被 kill（超时 / Cancel / 网络中断）→ 分支从未创建 → 无残留 PR、无半成品
+- push 失败：立即终止任务，输出 Success=false，FailureReason="push failed: <错误信息>"
+  - 【禁止】重试 push
+  - 【禁止】git push -f / --force / --force-with-lease
+  - 【禁止】重写历史
+  - 任务重试由外层 asynq 驱动
+`
+
+// verificationInstructionTemplate 验证约束段（含 %[1]d = max_retry_rounds）。
+const verificationInstructionTemplate = `
+### 验证约束
+
+- 每次 commit 前必须在本地运行对应测试并通过
+- 测试失败时最多在容器内修正 %[1]d 轮
+- 仍不过则回滚该文件并加入 skipped_targets（reason="verification_failed_after_retries"）
+`
+
+// outputJSONSchemaInstruction 输出格式定义（硬编码 schema 描述）。
+const outputJSONSchemaInstruction = `
+### 输出格式
+
+完成后输出唯一的 JSON 对象到 stdout，不要用 markdown 代码块包裹，只输出原始 JSON。
+所有中文字段（analysis、priority_notes、failure_reason 等）必须用中文。
+
+{
+  "success": true,
+  "info_sufficient": true,
+  "analysis": {
+    "untested_modules": [{"path": "...", "kind": "service|controller|util|component|composable|store", "priority": "high|medium|low", "reason": "..."}],
+    "existing_tests": [{"test_file": "...", "target_files": ["..."], "framework": "junit5|vitest"}],
+    "existing_style": "...",
+    "priority_notes": "..."
+  },
+  "test_strategy": "...",
+  "generated_files": [{"path": "...", "operation": "create|append", "description": "...", "framework": "junit5|vitest", "target_files": ["..."], "test_count": 3}],
+  "committed_files": ["..."],
+  "skipped_targets": [{"path": "...", "reason": "time_budget_exhausted|token_budget_exhausted|environment_issue|verification_failed_after_retries"}],
+  "test_results": {"framework": "junit5", "passed": 12, "failed": 0, "skipped": 1, "all_passed": true, "duration_ms": 12000},
+  "verification_passed": true,
+  "branch_name": "auto-test/module-20260101120000",
+  "commit_sha": "abc123",
+  "failure_reason": "",
+  "retry_rounds": 0
+}
+`
+
+// ============================================================================
+// Java 特有段
+// ============================================================================
+
+// javaTestingInstruction Java 测试约定（JUnit 5 + Mockito + AssertJ）。
+const javaTestingInstruction = `
+### Java 测试约定（JUnit 5 + Mockito）
+
+- 使用 JUnit 5 注解（@Test / @BeforeEach / @Nested / @ParameterizedTest）
+- Service 层 Mock：Mockito.mock + @Mock；对 Repository / 外部客户端做行为桩
+- Controller 层：建议 MockMvc + @WebMvcTest
+- 工具类：直接断言返回值，不引入 Mock
+- 断言优先 AssertJ（assertThat(...).isEqualTo(...)）；若既有风格使用 JUnit 原生（assertEquals）则沿用
+`
+
+// javaVerificationCmdTemplate Java 单文件验证命令段（含 %[1]s = module 路径）。
+const javaVerificationCmdTemplate = `
+### Java 单文件验证命令
+
+单测验证使用：
+  mvn -pl %[1]s test -Dtest=<ClassName>
+
+如未设置 module（整仓）：
+  mvn test -Dtest=<ClassName>
+
+注意：首次执行可能触发 maven 依赖下载，MAVEN_OPTS 已配置本地仓库到 /workspace/.m2/repository。
+`
+
+// ============================================================================
+// Vue 特有段
+// ============================================================================
+
+// vueTestingInstruction Vue/前端测试约定（Vitest + Vue Test Utils）。
+const vueTestingInstruction = `
+### Vue/前端测试约定（Vitest + Vue Test Utils）
+
+- 使用 Vitest（describe / it / expect）
+- 组件：@vue/test-utils mount + shallowMount；pinia store 用 createTestingPinia
+- Composable：直接调用 + 断言响应式结果
+- Store：使用 pinia 的 TestingPinia
+- 工具函数：纯函数直接断言
+- 不要 mock 整个 Vue SFC；必要时仅 stub 子组件
+`
+
+// vueVerificationCmd Vue 单文件验证命令段。
+const vueVerificationCmd = `
+### Vue 单文件验证命令
+
+  npx vitest run <file>
+
+或使用项目配置的脚本（若 package.json 有）：
+  pnpm vitest run <file>
+`
+
+// ============================================================================
+// resolveFramework
+// ============================================================================
+
+// frameworkChecker 抽象文件探测接口。由 Service 注入具体实现
+// （M4.1 单测里用内存桩；M4.2 后端由 Gitea API 或容器内 fs 提供）。
+type frameworkChecker interface {
+	HasFile(module, relPath string) bool
+}
+
+// resolveFramework 按设计文档 §4.4 规则推断测试框架。
+//
+// 规则：
+//  1. cfgFramework 显式设定（合法值："junit5" / "vitest"）→ 直接返回
+//  2. 扫 module/pom.xml 存在 → JUnit5
+//  3. 扫 module/package.json 存在 → Vitest（前端生态统一识别为 Vitest）
+//  4. 两者都在 module 根下 → ErrAmbiguousFramework（硬拒绝，不静默猜测）
+//  5. 都不在 module 根下 → 回退仓库根重复判定；仍无 → ErrNoFrameworkDetected
+func resolveFramework(cfgFramework, module string, checker frameworkChecker) (Framework, error) {
+	// 1. 显式配置优先
+	switch cfgFramework {
+	case string(FrameworkJUnit5):
+		return FrameworkJUnit5, nil
+	case string(FrameworkVitest):
+		return FrameworkVitest, nil
+	case "":
+		// 继续探测
+	default:
+		return FrameworkUnknown, fmt.Errorf("未知的测试框架: %q", cfgFramework)
+	}
+
+	// 2-4. module 路径探测
+	if checker != nil && module != "" {
+		hasPom := checker.HasFile(module, "pom.xml")
+		hasPkg := checker.HasFile(module, "package.json")
+		switch {
+		case hasPom && hasPkg:
+			return FrameworkUnknown, ErrAmbiguousFramework
+		case hasPom:
+			return FrameworkJUnit5, nil
+		case hasPkg:
+			return FrameworkVitest, nil
+		}
+	}
+
+	// 5. 回退仓库根
+	if checker != nil {
+		hasPom := checker.HasFile("", "pom.xml")
+		hasPkg := checker.HasFile("", "package.json")
+		switch {
+		case hasPom && hasPkg:
+			return FrameworkUnknown, ErrAmbiguousFramework
+		case hasPom:
+			return FrameworkJUnit5, nil
+		case hasPkg:
+			return FrameworkVitest, nil
+		}
+	}
+
+	return FrameworkUnknown, ErrNoFrameworkDetected
+}
+
+// ============================================================================
+// Prompt 构造函数
+// ============================================================================
+
+// PromptContext 构造 prompt 所需的上下文。字段均为未 sanitize 前的原值，
+// 由 build* 内部统一执行 sanitize（避免 prompt injection 与换行破坏指令结构）。
+type PromptContext struct {
+	RepoFullName   string
+	Module         string
+	BaseRef        string
+	Timestamp      string // 已格式化的时间串，如 "20260418120000"
+	MaxRetryRounds int
+}
+
+// buildJavaPrompt 按公共段 + Java 特有段拼接 prompt。
+func buildJavaPrompt(ctx PromptContext) string {
+	var b strings.Builder
+	writeHeader(&b, ctx)
+	b.WriteString(existingTestsInstruction)
+	b.WriteString(gapAnalysisInstruction)
+	b.WriteString(noOverwriteInstruction)
+	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds))
+	b.WriteString(budgetAwareInstruction)
+	b.WriteString(fmt.Sprintf(verificationInstructionTemplate, ctx.MaxRetryRounds))
+	b.WriteString(javaTestingInstruction)
+	b.WriteString(fmt.Sprintf(javaVerificationCmdTemplate, sanitize(ctx.Module, 500)))
+	b.WriteString(pushInstruction)
+	b.WriteString(outputJSONSchemaInstruction)
+	return b.String()
+}
+
+// buildVuePrompt 按公共段 + Vue 特有段拼接 prompt。
+func buildVuePrompt(ctx PromptContext) string {
+	var b strings.Builder
+	writeHeader(&b, ctx)
+	b.WriteString(existingTestsInstruction)
+	b.WriteString(gapAnalysisInstruction)
+	b.WriteString(noOverwriteInstruction)
+	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds))
+	b.WriteString(budgetAwareInstruction)
+	b.WriteString(fmt.Sprintf(verificationInstructionTemplate, ctx.MaxRetryRounds))
+	b.WriteString(vueTestingInstruction)
+	b.WriteString(vueVerificationCmd)
+	b.WriteString(pushInstruction)
+	b.WriteString(outputJSONSchemaInstruction)
+	return b.String()
+}
+
+// writeHeader 写入公共前言 + 任务上下文段（Java / Vue prompt 共用）。
+func writeHeader(b *strings.Builder, ctx PromptContext) {
+	b.WriteString(promptCommonHeader)
+	b.WriteString(fmt.Sprintf("\n## 任务上下文\n\n仓库：%s\n", sanitize(ctx.RepoFullName, 200)))
+	if ctx.Module != "" {
+		b.WriteString(fmt.Sprintf("目标 module：%s\n", sanitize(ctx.Module, 500)))
+	}
+	if ctx.BaseRef != "" {
+		b.WriteString(fmt.Sprintf("基准 ref：%s\n", sanitize(ctx.BaseRef, 200)))
+	}
+	b.WriteString(fmt.Sprintf("拟创建分支：auto-test/%s\n", sanitize(branchSuffix(ctx.Module, ctx.Timestamp), 120)))
+}
+
+// branchSuffix 以 module + timestamp 构造 auto-test 分支尾部。
+// module 空时用 "all"；斜杠替换为短横线以符合 git 分支命名。
+func branchSuffix(module, ts string) string {
+	key := module
+	if key == "" {
+		key = "all"
+	}
+	key = strings.ReplaceAll(key, "/", "-")
+	return key + "-" + ts
+}
+
+// sanitize 截断 + 清理换行/NUL 字符，防止 prompt injection 与格式破坏。
+// 与 worker/container.go 的 sanitizePromptInput 等价独立实现，避免跨包耦合。
+func sanitize(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > maxLen {
+		s = s[:maxLen]
+	}
+	return s
+}
+
+// buildCommand 构造 Claude CLI 容器执行命令（与 fix.buildFixCommand 风格一致）。
+// gen_tests 需要 Edit / Write / Bash 写权限，不追加 --disallowedTools。
+func buildCommand(cfgProv TestConfigProvider) []string {
+	cmd := []string{
+		"claude", "-p", "-",
+		"--output-format", "json",
+	}
+	if cfgProv != nil {
+		if m := cfgProv.GetClaudeModel(); m != "" {
+			cmd = append(cmd, "--model", m)
+		}
+		if effort := cfgProv.GetClaudeEffort(); effort != "" {
+			cmd = append(cmd, "--effort", strings.ToLower(strings.TrimSpace(effort)))
+		}
+	}
+	return cmd
+}

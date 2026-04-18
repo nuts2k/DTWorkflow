@@ -114,7 +114,24 @@ HELPER
         log "修复模式已启用（origin URL 已脱敏 + credential helper + git identity + build cache redirect）"
         ;;
     gen_tests)
-        log "测试生成任务，使用默认分支"
+        log "测试生成任务，使用默认分支（将在容器内由 Claude 创建 auto-test/<module>-<ts> 分支）"
+        # 安全加固：origin URL 脱敏（避免 token 持久化到 .git/config）
+        git remote set-url origin "${REPO_CLONE_URL}"
+        # credential helper 按需注入 token，容器销毁即失效
+        CRED_HELPER_SCRIPT="/tmp/.git-credential-helper"
+        cat > "${CRED_HELPER_SCRIPT}" <<HELPER
+#!/bin/sh
+echo "username=token"
+echo "password=${GITEA_TOKEN}"
+HELPER
+        chmod 700 "${CRED_HELPER_SCRIPT}"
+        git config --global credential.helper "${CRED_HELPER_SCRIPT}"
+        git config --global user.name "DTWorkflow Bot"
+        git config --global user.email "dtworkflow-bot@noreply.local"
+        # 构建缓存重定向（避免 tmpfs 溢出）
+        export MAVEN_OPTS="${MAVEN_OPTS:--Dmaven.repo.local=/workspace/.m2/repository}"
+        export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/workspace/.gradle}"
+        log "测试生成模式已启用（origin URL 已脱敏 + credential helper + git identity + build cache redirect）"
         ;;
     *)
         log "任务类型: ${TASK_TYPE:-<empty>}，使用默认分支"
