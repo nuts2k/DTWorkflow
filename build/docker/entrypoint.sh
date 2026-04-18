@@ -171,8 +171,25 @@ HELPER
         git config --global credential.helper "${CRED_HELPER_SCRIPT}"
         git config --global user.name "DTWorkflow Bot"
         git config --global user.email "dtworkflow-bot@noreply.local"
+        # 安全加固：仅允许推送到 auto-test/*，防止误推默认分支
+        mkdir -p .git/hooks
+        cat > .git/hooks/pre-push <<'HOOK'
+#!/bin/sh
+while read -r local_ref local_sha remote_ref remote_sha
+do
+    case "${remote_ref}" in
+        refs/heads/auto-test/*)
+            ;;
+        *)
+            echo "ERROR: gen_tests may only push to refs/heads/auto-test/*" >&2
+            exit 1
+            ;;
+    esac
+done
+HOOK
+        chmod +x .git/hooks/pre-push
         setup_build_cache
-        log "测试生成模式已启用（origin URL 已脱敏 + credential helper + git identity + build cache redirect；mvn 包装器由镜像提供）"
+        log "测试生成模式已启用（origin URL 已脱敏 + credential helper + git identity + auto-test push guard + build cache redirect；mvn 包装器由镜像提供）"
         ;;
     *)
         log "任务类型: ${TASK_TYPE:-<empty>}，使用默认分支"

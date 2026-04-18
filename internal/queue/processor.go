@@ -68,9 +68,8 @@ func WithFixService(svc FixExecutor) ProcessorOption {
 }
 
 // TestExecutor 窄接口，解耦 test 包。
-// M4.1 仅定义接口形状；M4.2 激活装配（WithTestService）后 Processor 将通过此接口路由
-// gen_tests 任务。接口签名对齐 ReviewExecutor / FixExecutor，确保三者可以复用同一套
-// 通知 / 降级回写骨架。
+// Processor 通过此接口路由 gen_tests 任务；接口签名对齐 ReviewExecutor / FixExecutor，
+// 确保三者可复用同一套状态机与降级回写骨架。
 type TestExecutor interface {
 	Execute(ctx context.Context, payload model.TaskPayload) (*test.TestGenResult, error)
 	// WriteDegraded 在测试生成结果解析失败且重试耗尽后触发。
@@ -78,8 +77,7 @@ type TestExecutor interface {
 }
 
 // WithTestService 注入测试生成服务。
-// M4.2 激活：serve.go 装配层将调用此函数注入 test.Service；
-// M4.1 始终不注入，gen_tests 仍走 pool.Run default。
+// serve.go 装配层会调用此函数注入 test.Service。
 func WithTestService(svc TestExecutor) ProcessorOption {
 	return func(p *Processor) {
 		p.testService = svc
@@ -123,7 +121,7 @@ type Processor struct {
 	reviewService        ReviewExecutor
 	reviewEnabledChecker ReviewEnabledChecker // 可选，nil 时默认启用
 	fixService           FixExecutor          // M3.2 激活；M3.1 始终为 nil，fix_issue 走 pool.Run()
-	testService          TestExecutor         // M4.2 激活；M4.1 始终为 nil，gen_tests 走 pool.Run()
+	testService          TestExecutor         // 可选；注入后 gen_tests 走 test.Service，否则回退 pool.Run()
 	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 
@@ -245,10 +243,11 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 	var reviewResult *review.ReviewResult
 	var fixResult *fix.FixResult
+	var testResult *test.TestGenResult
 	var result *worker.ExecutionResult
 	var runErr error
-	// M3.4 路由：review_pr → reviewService，analyze_issue → fixService。
-	// fix_issue 暂走 pool.Run（通用容器执行），M3.5 将在 fix.Service 获得写能力后接入。
+	// 路由：review_pr → reviewService，analyze_issue/fix_issue → fixService，
+	// gen_tests → testService；对应 service 未注入时回退到 pool.Run。
 	switch {
 	case payload.TaskType == model.TaskTypeReviewPR && p.reviewService != nil:
 		reviewResult, runErr = p.reviewService.Execute(ctx, payload)
@@ -259,6 +258,11 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		fixResult, runErr = p.fixService.Execute(ctx, payload)
 		if fixResult != nil {
 			result = adaptFixResult(fixResult)
+		}
+	case payload.TaskType == model.TaskTypeGenTests && p.testService != nil:
+		testResult, runErr = p.testService.Execute(ctx, payload)
+		if testResult != nil {
+			result = adaptTestResult(testResult)
 		}
 	default:
 		result, runErr = p.pool.Run(ctx, payload)
@@ -294,6 +298,27 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if errors.Is(runErr, fix.ErrFixFailed) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, "Claude 返回 success=false，跳过重试")
 		}
+		if errors.Is(runErr, test.ErrInvalidModule) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "module 路径非法，跳过测试生成")
+		}
+		if errors.Is(runErr, test.ErrModuleOutOfScope) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "module 超出允许范围，跳过测试生成")
+		}
+		if errors.Is(runErr, test.ErrInvalidRef) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "gen_tests 指定 ref 不存在，跳过重试")
+		}
+		if errors.Is(runErr, test.ErrAmbiguousFramework) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "无法确定测试框架，跳过重试")
+		}
+		if errors.Is(runErr, test.ErrNoFrameworkDetected) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "未检测到测试框架，跳过重试")
+		}
+		if errors.Is(runErr, test.ErrInfoInsufficient) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "测试生成信息不足，跳过重试")
+		}
+		if errors.Is(runErr, test.ErrTestGenFailed) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, "Claude 返回 success=false，跳过重试")
+		}
 		// fix 解析失败且重试耗尽：发送降级评论，让用户至少能在 Issue 上看到原始输出
 		if errors.Is(runErr, fix.ErrFixParseFailure) && !shouldRetry(ctx) && fixResult != nil {
 			if wbErr := p.fixService.WriteDegraded(ctx, payload, fixResult); wbErr != nil {
@@ -308,6 +333,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 					return p.markTaskCancelled(ctx, record, "评审已过时，被更新的任务取代")
 				}
 				p.logger.ErrorContext(ctx, "解析失败降级回写失败",
+					"task_id", taskID, "error", wbErr)
+			}
+		}
+		if errors.Is(runErr, test.ErrTestGenParseFailure) && !shouldRetry(ctx) && testResult != nil {
+			if wbErr := p.testService.WriteDegraded(ctx, payload, testResult); wbErr != nil {
+				p.logger.ErrorContext(ctx, "测试生成解析失败降级回写失败",
 					"task_id", taskID, "error", wbErr)
 			}
 		}
@@ -837,6 +868,38 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 		}
 	}
 	return result
+}
+
+// adaptTestResult 将 test.TestGenResult 适配为 worker.ExecutionResult。
+// ParseError 仅保留到 Error 字段，不直接改写退出码；真正的重试策略由 Processor
+// 依据 ErrTestGenParseFailure 判断。
+func adaptTestResult(r *test.TestGenResult) *worker.ExecutionResult {
+	if r == nil {
+		return &worker.ExecutionResult{ExitCode: 0}
+	}
+	res := &worker.ExecutionResult{
+		Output:   r.RawOutput,
+		ExitCode: 0,
+	}
+	if r.ExitCode != 0 {
+		res.ExitCode = r.ExitCode
+		res.Error = fmt.Sprintf("gen_tests worker 退出码非零: %d", r.ExitCode)
+	}
+	if r.CLIMeta != nil {
+		res.Duration = r.CLIMeta.DurationMs
+		if r.CLIMeta.IsError {
+			res.ExitCode = 1
+			res.Error = "Claude CLI 报告错误"
+		}
+	}
+	if r.ParseError != nil {
+		if res.Error == "" {
+			res.Error = r.ParseError.Error()
+		} else if !strings.Contains(res.Error, r.ParseError.Error()) {
+			res.Error = res.Error + "; " + r.ParseError.Error()
+		}
+	}
+	return res
 }
 
 // handleSkipRetryFailure 处理确定性失败（如 PR/Issue 不处于 open 状态），

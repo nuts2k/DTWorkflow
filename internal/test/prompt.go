@@ -49,9 +49,12 @@ CRITICAL: NEVER overwrite an existing test file. Either skip that target, or app
 追加时把具体的源文件路径填入 target_files；创建新测试文件时 target_files 可列出对应的被测源文件。
 `
 
-// incrementalCommitInstructionTemplate 第三步指令（含 %[1]d = max_retry_rounds）。
+// incrementalCommitInstructionTemplate 第三步指令（含 %[1]d = max_retry_rounds, %[2]s = branch suffix）。
 const incrementalCommitInstructionTemplate = `
-### 第三步：按目标循环生成 + 增量 commit
+### 第三步：创建工作分支 + 按目标循环生成 + 增量 commit
+
+先执行：
+  git checkout -b auto-test/%[2]s 2>/dev/null || git checkout auto-test/%[2]s
 
 FOR 每个目标:
   1. 判断 Operation：已有测试文件 & 可扩展 → "append"；否则 → "create"
@@ -77,12 +80,12 @@ const budgetAwareInstruction = `
 - 保证已完成的 commit 能被 push
 `
 
-// pushInstruction 第四步指令：最后一刻 push；push 失败即终止。
+// pushInstruction 第四步指令：最后一刻 push；push 失败即终止。%[1]s = branch suffix。
 const pushInstruction = `
 ### 第四步：最后一刻 push（整个任务只此一次远程写）
 
 仅当 len(committed_files) > 0 时执行：
-  git push origin HEAD
+  git push origin HEAD:auto-test/%[1]s
 
 - 容器被 kill（超时 / Cancel / 网络中断）→ 分支从未创建 → 无残留 PR、无半成品
 - push 失败：立即终止任务，输出 Success=false，FailureReason="push failed: <错误信息>"
@@ -263,16 +266,17 @@ type PromptContext struct {
 // buildJavaPrompt 按公共段 + Java 特有段拼接 prompt。
 func buildJavaPrompt(ctx PromptContext) string {
 	var b strings.Builder
+	branch := sanitize(branchSuffix(ctx.Module, ctx.Timestamp), 120)
 	writeHeader(&b, ctx)
 	b.WriteString(existingTestsInstruction)
 	b.WriteString(gapAnalysisInstruction)
 	b.WriteString(noOverwriteInstruction)
-	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds))
+	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds, branch))
 	b.WriteString(budgetAwareInstruction)
 	b.WriteString(fmt.Sprintf(verificationInstructionTemplate, ctx.MaxRetryRounds))
 	b.WriteString(javaTestingInstruction)
 	b.WriteString(fmt.Sprintf(javaVerificationCmdTemplate, sanitize(ctx.Module, 500)))
-	b.WriteString(pushInstruction)
+	b.WriteString(fmt.Sprintf(pushInstruction, branch))
 	b.WriteString(outputJSONSchemaInstruction)
 	return b.String()
 }
@@ -280,16 +284,17 @@ func buildJavaPrompt(ctx PromptContext) string {
 // buildVuePrompt 按公共段 + Vue 特有段拼接 prompt。
 func buildVuePrompt(ctx PromptContext) string {
 	var b strings.Builder
+	branch := sanitize(branchSuffix(ctx.Module, ctx.Timestamp), 120)
 	writeHeader(&b, ctx)
 	b.WriteString(existingTestsInstruction)
 	b.WriteString(gapAnalysisInstruction)
 	b.WriteString(noOverwriteInstruction)
-	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds))
+	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds, branch))
 	b.WriteString(budgetAwareInstruction)
 	b.WriteString(fmt.Sprintf(verificationInstructionTemplate, ctx.MaxRetryRounds))
 	b.WriteString(vueTestingInstruction)
 	b.WriteString(vueVerificationCmd)
-	b.WriteString(pushInstruction)
+	b.WriteString(fmt.Sprintf(pushInstruction, branch))
 	b.WriteString(outputJSONSchemaInstruction)
 	return b.String()
 }

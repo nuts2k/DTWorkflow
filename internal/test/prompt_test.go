@@ -46,7 +46,9 @@ func vueCtx() PromptContext {
 func TestBuildJavaPrompt_ContainsCoreKeywords(t *testing.T) {
 	p := buildJavaPrompt(javaCtx())
 	mustContain(t, "Java prompt", p, []string{
+		"git checkout -b auto-test/services-api-20260418120000",
 		"git commit",
+		"git push origin HEAD:auto-test/services-api-20260418120000",
 		"最后一刻",
 		"**/*Test.java",
 		"NEVER overwrite",
@@ -82,6 +84,8 @@ func TestBuildJavaPrompt_DoesNotContainVueKeywords(t *testing.T) {
 func TestBuildVuePrompt_ContainsCoreKeywords(t *testing.T) {
 	p := buildVuePrompt(vueCtx())
 	mustContain(t, "Vue prompt", p, []string{
+		"git checkout -b auto-test/packages-web-20260418120000",
+		"git push origin HEAD:auto-test/packages-web-20260418120000",
 		"vitest run",
 		"{spec,test}",
 		"existing_tests",
@@ -150,6 +154,9 @@ func TestBuildVuePrompt_ModuleEmptyBranch(t *testing.T) {
 	p := buildVuePrompt(ctx)
 	if !strings.Contains(p, "auto-test/all-") {
 		t.Error("整仓模式分支后缀应用 all")
+	}
+	if !strings.Contains(p, "git push origin HEAD:auto-test/all-20260418120000") {
+		t.Error("整仓模式 push 应显式指向 auto-test/all-<ts>")
 	}
 }
 

@@ -7,8 +7,8 @@ type TaskType string
 
 const (
 	TaskTypeReviewPR       TaskType = "review_pr"
-	TaskTypeAnalyzeIssue   TaskType = "analyze_issue"   // M3.4: 只读分析（从 fix_issue 拆分）
-	TaskTypeFixIssue       TaskType = "fix_issue"        // M3.4: 语义修正为真正的修复
+	TaskTypeAnalyzeIssue   TaskType = "analyze_issue" // M3.4: 只读分析（从 fix_issue 拆分）
+	TaskTypeFixIssue       TaskType = "fix_issue"     // M3.4: 语义修正为真正的修复
 	TaskTypeGenTests       TaskType = "gen_tests"
 	TaskTypeGenDailyReport TaskType = "gen_daily_report"
 )
@@ -28,12 +28,12 @@ type TaskStatus string
 
 const (
 	TaskStatusPending   TaskStatus = "pending"   // 已创建（SQLite），尚未入队（Redis）
-	TaskStatusQueued    TaskStatus = "queued"     // 已入 asynq 队列
-	TaskStatusRunning   TaskStatus = "running"    // Worker 正在执行
-	TaskStatusSucceeded TaskStatus = "succeeded"  // 执行成功
-	TaskStatusFailed    TaskStatus = "failed"     // 执行失败（重试耗尽）
-	TaskStatusRetrying  TaskStatus = "retrying"   // 等待重试
-	TaskStatusCancelled TaskStatus = "cancelled"  // 手动取消
+	TaskStatusQueued    TaskStatus = "queued"    // 已入 asynq 队列
+	TaskStatusRunning   TaskStatus = "running"   // Worker 正在执行
+	TaskStatusSucceeded TaskStatus = "succeeded" // 执行成功
+	TaskStatusFailed    TaskStatus = "failed"    // 执行失败（重试耗尽）
+	TaskStatusRetrying  TaskStatus = "retrying"  // 等待重试
+	TaskStatusCancelled TaskStatus = "cancelled" // 手动取消
 )
 
 // IsValid 检查任务类型是否为已知值
@@ -71,7 +71,7 @@ type TaskPayload struct {
 	// TaskRecord.TaskType 用于 SQLite 列查询和索引过滤；
 	// TaskPayload.TaskType 随 JSON 序列化传递给 asynq Worker，使 Processor 无需反查数据库即可路由任务。
 	TaskType   TaskType `json:"task_type"`
-	TaskID     string   `json:"-"` // 运行时由 Processor 从 TaskRecord.ID 注入，不序列化
+	TaskID     string   `json:"-"`                     // 运行时由 Processor 从 TaskRecord.ID 注入，不序列化
 	DeliveryID string   `json:"delivery_id,omitempty"` // Webhook delivery ID，用于幂等
 
 	// 仓库定位（所有任务类型共享）
@@ -93,7 +93,8 @@ type TaskPayload struct {
 	IssueRef    string `json:"issue_ref,omitempty"`
 
 	// 测试生成定位
-	Module string `json:"module,omitempty"`
+	Module    string `json:"module,omitempty"`
+	Framework string `json:"framework,omitempty"`
 
 	// M2.4 重新评审
 	CreatedAt       time.Time `json:"created_at,omitempty"`        // 任务创建时间（staleness check 基准）
@@ -109,7 +110,7 @@ type TaskRecord struct {
 	Status       TaskStatus   `json:"status"`
 	Priority     TaskPriority `json:"priority"`
 	Payload      TaskPayload  `json:"payload"`
-	RepoFullName string       `json:"repo_full_name"` // 冗余列，便于过滤查询
+	RepoFullName string       `json:"repo_full_name"`      // 冗余列，便于过滤查询
 	PRNumber     int64        `json:"pr_number,omitempty"` // 冗余列，便于按 PR 查询
 	Result       string       `json:"result,omitempty"`
 	Error        string       `json:"error,omitempty"`
