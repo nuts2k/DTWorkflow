@@ -51,7 +51,8 @@ type TestConfigProvider interface {
 	GetClaudeEffort() string
 }
 
-// RepoFileChecker 检查仓库中是否存在指定相对路径的文件。
+// RepoFileChecker 检查仓库中指定路径是否存在。
+// relPath 为空时表示检查 module 本身；非空时表示检查 module/relPath。
 // M4.1 单测里用内存桩；M4.2 由上层适配（Gitea API 或容器内 fs）。
 type RepoFileChecker interface {
 	HasFile(ctx context.Context, owner, repo, ref, module, relPath string) (bool, error)
@@ -358,15 +359,29 @@ var moduleMarkerFiles = []string{
 	".gitkeep",
 }
 
-// validateModuleExists 通过 RepoFileChecker 探测 module 子路径下是否存在任一常见标记文件。
+// validateModuleExists 通过 RepoFileChecker 校验 module 路径本身是否存在。
 //
 // 行为：
 //   - payload.Module 为空（整仓模式）→ 跳过
 //   - fileChecker 未注入 → 跳过（与 resolveFramework 对齐，允许 M4.1 单测灵活构造 Service）
+//   - module 路径本身存在 → 通过（允许指向任意子目录，而非仅限构建模块根）
+//   - 若底层实现不支持目录存在性查询，则回退到 marker 文件探测以兼容旧桩实现
 //   - 查询错误 → 保守放行并记 warn 日志，避免临时性 Gitea 故障误杀任务
 //   - 所有 marker 都返回 false → 返回 ErrModuleNotFound 供 Processor SkipRetry
 func (s *Service) validateModuleExists(ctx context.Context, payload model.TaskPayload, baseRef string) error {
 	if payload.Module == "" || s.fileChecker == nil {
+		return nil
+	}
+	ok, err := s.fileChecker.HasFile(ctx, payload.RepoOwner, payload.RepoName, baseRef, payload.Module, "")
+	if err != nil {
+		s.logger.WarnContext(ctx, "module 存在性检查失败，保守放行",
+			"repo", payload.RepoFullName,
+			"module", payload.Module,
+			"error", err,
+		)
+		return nil
+	}
+	if ok {
 		return nil
 	}
 	for _, marker := range moduleMarkerFiles {
@@ -420,10 +435,8 @@ func (s *Service) createTestPR(_ context.Context, _ model.TaskPayload,
 // WriteDegraded M4.1 no-op 实现（仅结构化日志）。
 //
 // Processor 在解析失败且重试耗尽后调用本方法，目的是至少保留原始输出片段与
-// parse_error 迹象便于排障。M4.2 会把 raw_output_preview 升级为飞书通知 metadata。
-//
-// preview 限长 512 rune，由 truncate 做 UTF-8 安全截断，避免中文测试输出在日志里
-// 被拦腰切断产生非法字节序列。
+// parse_error 迹象便于排障。为避免原始输出中夹带凭证或 helper 内容，M4.1 不记录
+// 任何原文 preview，只保留长度和 parse_error 标记。
 func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload,
 	result *TestGenResult) error {
 	if result == nil {
@@ -433,7 +446,6 @@ func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload,
 		"repo", payload.RepoFullName,
 		"module", payload.Module,
 		"raw_output_len", len(result.RawOutput),
-		"raw_output_preview", truncate(result.RawOutput, 512),
 		"has_parse_error", result.ParseError != nil,
 	)
 	return nil

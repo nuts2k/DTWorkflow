@@ -2,6 +2,7 @@ package test
 
 import (
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -218,24 +219,15 @@ func resolveFramework(cfgFramework, module string, checker frameworkChecker) (Fr
 		return FrameworkUnknown, fmt.Errorf("未知的测试框架: %q", cfgFramework)
 	}
 
-	// 2-4. module 路径探测
-	if checker != nil && module != "" {
-		hasPom := checker.HasFile(module, "pom.xml")
-		hasPkg := checker.HasFile(module, "package.json")
-		switch {
-		case hasPom && hasPkg:
-			return FrameworkUnknown, ErrAmbiguousFramework
-		case hasPom:
-			return FrameworkJUnit5, nil
-		case hasPkg:
-			return FrameworkVitest, nil
-		}
+	if checker == nil {
+		return FrameworkUnknown, ErrNoFrameworkDetected
 	}
 
-	// 5. 回退仓库根
-	if checker != nil {
-		hasPom := checker.HasFile("", "pom.xml")
-		hasPkg := checker.HasFile("", "package.json")
+	// 2-5. 从目标路径向上回溯到仓库根，寻找最近的框架锚点。
+	// 这允许 module 指向任意子目录，而不要求它恰好是 Maven/npm 模块根目录。
+	for _, candidate := range moduleCandidates(module) {
+		hasPom := checker.HasFile(candidate, "pom.xml")
+		hasPkg := checker.HasFile(candidate, "package.json")
 		switch {
 		case hasPom && hasPkg:
 			return FrameworkUnknown, ErrAmbiguousFramework
@@ -247,6 +239,34 @@ func resolveFramework(cfgFramework, module string, checker frameworkChecker) (Fr
 	}
 
 	return FrameworkUnknown, ErrNoFrameworkDetected
+}
+
+// moduleCandidates 返回从当前 module 向上回溯到仓库根的候选路径，顺序为“近到远”。
+// 例如 backend/service -> [backend/service, backend, ""]。
+func moduleCandidates(module string) []string {
+	if strings.TrimSpace(module) == "" {
+		return []string{""}
+	}
+	curr := path.Clean(module)
+	if curr == "." {
+		return []string{""}
+	}
+	var candidates []string
+	for {
+		candidates = append(candidates, curr)
+		if curr == "" {
+			break
+		}
+		next := path.Dir(curr)
+		if next == "." {
+			next = ""
+		}
+		if next == curr {
+			break
+		}
+		curr = next
+	}
+	return candidates
 }
 
 // ============================================================================
@@ -275,7 +295,7 @@ func buildJavaPrompt(ctx PromptContext) string {
 	b.WriteString(budgetAwareInstruction)
 	b.WriteString(fmt.Sprintf(verificationInstructionTemplate, ctx.MaxRetryRounds))
 	b.WriteString(javaTestingInstruction)
-	b.WriteString(fmt.Sprintf(javaVerificationCmdTemplate, sanitize(ctx.Module, 500)))
+	b.WriteString(fmt.Sprintf(javaVerificationCmdTemplate, javaVerificationTarget(ctx.Module)))
 	b.WriteString(fmt.Sprintf(pushInstruction, branch))
 	b.WriteString(outputJSONSchemaInstruction)
 	return b.String()
@@ -383,6 +403,24 @@ func sanitize(s string, maxLen int) string {
 		s = s[:maxLen]
 	}
 	return s
+}
+
+// javaVerificationTarget 返回可安全嵌入 shell 命令的 module 参数。
+// 未指定 module 时使用占位文本，避免生成缺少有效 module 参数的误导性命令。
+func javaVerificationTarget(module string) string {
+	module = sanitize(module, 500)
+	if strings.TrimSpace(module) == "" {
+		return "<module>"
+	}
+	return shellQuote(module)
+}
+
+// shellQuote 用 POSIX 单引号形式转义任意字符串，避免把 module 当成 shell 片段执行。
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 // buildCommand 构造 Claude CLI 容器执行命令（与 fix.buildFixCommand 风格一致）。

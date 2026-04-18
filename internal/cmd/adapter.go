@@ -108,8 +108,14 @@ func (c *giteaRepoFileChecker) HasFile(ctx context.Context, owner, repo, ref, mo
 	if c == nil || c.client == nil {
 		return false, fmt.Errorf("giteaRepoFileChecker: client 不能为空")
 	}
+	if module == "" && relPath == "" {
+		return true, nil
+	}
 	targetPath := relPath
-	if module != "" {
+	switch {
+	case module != "" && relPath == "":
+		targetPath = module
+	case module != "":
 		targetPath = path.Join(module, relPath)
 	}
 	contents, _, err := c.client.GetContents(ctx, owner, repo, targetPath, ref)
