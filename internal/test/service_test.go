@@ -272,7 +272,11 @@ func TestExecute_ModuleExactScopeMatchAccepted(t *testing.T) {
 	pool := &mockTestPool{
 		result: &worker.ExecutionResult{ExitCode: 0, Output: successEnvelope},
 	}
-	s := newService(&mockRepoClient{}, pool, cfg)
+	// 同时提供 module 存在性标记（pom.xml）与 resolveFramework 所需信号，
+	// 让测试聚焦在 ModuleScope 白名单放行逻辑上。
+	s := newService(&mockRepoClient{}, pool, cfg,
+		WithFileChecker(&mockFileChecker{files: map[string]bool{"backend||pom.xml": true}}),
+	)
 
 	p := defaultPayload()
 	p.Module = "backend"
@@ -297,6 +301,90 @@ func TestExecute_ModuleUnderScopeAccepted(t *testing.T) {
 	_, err := s.Execute(context.Background(), p)
 	if err != nil {
 		t.Fatalf("module 在 scope 下应放行，实际: %v", err)
+	}
+}
+
+// ============================================================================
+// validateModuleExists（module 子路径存在性校验）分支
+// ============================================================================
+
+// fileChecker 未注入时：module 非空也应放行（M4.1 单测兼容性）
+func TestExecute_ModuleExistenceSkippedWithoutFileChecker(t *testing.T) {
+	cfg := &mockCfgProv{override: config.TestGenOverride{TestFramework: "junit5"}}
+	pool := &mockTestPool{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: successEnvelope},
+	}
+	// 显式不调用 WithFileChecker：fileChecker=nil 时 validateModuleExists 应跳过
+	s := NewService(&mockRepoClient{}, pool, cfg)
+
+	p := defaultPayload()
+	p.Module = "anywhere"
+	_, err := s.Execute(context.Background(), p)
+	if err != nil {
+		t.Fatalf("fileChecker 未注入时应跳过 module 存在性校验，实际: %v", err)
+	}
+}
+
+// module 根本没有任何 marker 文件 → ErrModuleNotFound
+func TestExecute_ModuleNotFound(t *testing.T) {
+	cfg := &mockCfgProv{override: config.TestGenOverride{TestFramework: "junit5"}}
+	pool := &mockTestPool{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: successEnvelope},
+	}
+	// fileChecker 对任何查询都返回 false：module 视作不存在
+	s := NewService(&mockRepoClient{}, pool, cfg,
+		WithFileChecker(&mockFileChecker{files: map[string]bool{}}),
+	)
+
+	p := defaultPayload()
+	p.Module = "nonexistent/module"
+	_, err := s.Execute(context.Background(), p)
+	if !errors.Is(err, ErrModuleNotFound) {
+		t.Fatalf("应返回 ErrModuleNotFound, 实际: %v", err)
+	}
+	// pool 不应被调用（早期拒绝）
+	if pool.calls != 0 {
+		t.Errorf("module 不存在时不应调用 pool，实际 %d 次", pool.calls)
+	}
+}
+
+// fileChecker 查询错误 → 保守放行（避免网络抖动误杀任务）
+func TestExecute_ModuleExistsCheckerErrorFailsOpen(t *testing.T) {
+	cfg := &mockCfgProv{override: config.TestGenOverride{TestFramework: "junit5"}}
+	pool := &mockTestPool{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: successEnvelope},
+	}
+	s := NewService(&mockRepoClient{}, pool, cfg,
+		WithFileChecker(&mockFileChecker{err: errors.New("gitea transient")}),
+	)
+
+	p := defaultPayload()
+	p.Module = "backend/api"
+	_, err := s.Execute(context.Background(), p)
+	if err != nil {
+		t.Fatalf("checker 查询错误时应保守放行，实际: %v", err)
+	}
+	if pool.calls != 1 {
+		t.Errorf("放行后应调用 pool 一次，实际 %d 次", pool.calls)
+	}
+}
+
+// 整仓模式（module=""）→ 始终跳过 module 存在性校验
+func TestExecute_EmptyModuleSkipsExistenceCheck(t *testing.T) {
+	cfg := &mockCfgProv{}
+	pool := &mockTestPool{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: successEnvelope},
+	}
+	// fileChecker 全空：若整仓模式仍走 validateModuleExists 则会 ErrModuleNotFound
+	s := NewService(&mockRepoClient{}, pool, cfg,
+		WithFileChecker(&mockFileChecker{files: map[string]bool{"||pom.xml": true}}),
+	)
+
+	p := defaultPayload()
+	p.Module = ""
+	_, err := s.Execute(context.Background(), p)
+	if err != nil {
+		t.Fatalf("整仓模式应放行，实际: %v", err)
 	}
 }
 

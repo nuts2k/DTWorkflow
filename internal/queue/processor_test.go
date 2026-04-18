@@ -687,6 +687,46 @@ func TestProcessTask_GenTests_DeterministicFailureSkipRetry(t *testing.T) {
 	}
 }
 
+// TestProcessTask_GenTests_ModuleNotFoundSkipRetry 覆盖 test.ErrModuleNotFound
+// 分发分支：module 子路径不存在于仓库时应标记 failed + SkipRetry。
+// 这一 sentinel 在 M4.1 的 Processor 增加分发后，与 ErrModuleOutOfScope 等对齐。
+func TestProcessTask_GenTests_ModuleNotFoundSkipRetry(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		DeliveryID:   "dlv-gentests-notfound-1",
+		RepoFullName: "org/repo",
+		Module:       "nonexistent/module",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-gentests-notfound",
+		TaskType:   model.TaskTypeGenTests,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	testExec := &mockTestExecutor{err: testgen.ErrModuleNotFound}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithTestService(testExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+	got := s.tasks["proc-task-gentests-notfound"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if !strings.Contains(got.Error, "module") {
+		t.Errorf("Error 应提及 module，实际: %q", got.Error)
+	}
+}
+
 func TestProcessTask_GenTests_ParseFailureCallsWriteDegraded(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{

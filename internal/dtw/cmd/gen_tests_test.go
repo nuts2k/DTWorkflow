@@ -13,60 +13,9 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/dtw"
 )
 
-// --- flag 校验器单元测试 ---
-
-func TestValidateGenTestsFrameworkFlag_AllowedValues(t *testing.T) {
-	cases := []string{"", "junit5", "vitest"}
-	for _, v := range cases {
-		if err := validateGenTestsFrameworkFlag(v); err != nil {
-			t.Errorf("validateGenTestsFrameworkFlag(%q) = %v，期望 nil", v, err)
-		}
-	}
-}
-
-func TestValidateGenTestsFrameworkFlag_RejectsOthers(t *testing.T) {
-	cases := []string{"jest", "mocha", "junit", "JUNIT5", "Vitest", "pytest", " "}
-	for _, v := range cases {
-		if err := validateGenTestsFrameworkFlag(v); err == nil {
-			t.Errorf("validateGenTestsFrameworkFlag(%q) = nil，期望错误", v)
-		}
-	}
-}
-
-func TestValidateGenTestsModuleFlag_EmptyIsAllowed(t *testing.T) {
-	if err := validateGenTestsModuleFlag(""); err != nil {
-		t.Errorf("空 module 不应报错，实际: %v", err)
-	}
-}
-
-func TestValidateGenTestsModuleFlag_RejectsEscapePaths(t *testing.T) {
-	bad := []string{
-		"/etc/passwd",       // 绝对路径
-		"..",                // 纯 ..
-		"../sibling",        // 以 ../ 开头
-		"a/../b",            // 中间 /../
-		"a/..",              // 以 /.. 结尾
-	}
-	for _, m := range bad {
-		if err := validateGenTestsModuleFlag(m); err == nil {
-			t.Errorf("validateGenTestsModuleFlag(%q) = nil，期望错误", m)
-		}
-	}
-}
-
-func TestValidateGenTestsModuleFlag_AllowsLegitPaths(t *testing.T) {
-	ok := []string{
-		"service",
-		"service/api",
-		"modules/frontend",
-		"a/b/c",
-	}
-	for _, m := range ok {
-		if err := validateGenTestsModuleFlag(m); err != nil {
-			t.Errorf("validateGenTestsModuleFlag(%q) = %v，期望 nil", m, err)
-		}
-	}
-}
+// 注：flag 级别的框架 / 模块校验已抽出到 internal/validation 包统一维护，
+// 对应单测见 internal/validation/gen_tests_test.go。本文件仅保留瘦客户端特有的
+// Cobra 装配、HTTP 请求序列化、结果消费相关测试。
 
 // --- Cobra 命令注册测试 ---
 

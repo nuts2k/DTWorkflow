@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/dtw"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/validation"
 )
 
 // gen-tests 命令标志（M4.1 Layer 4）
@@ -33,11 +34,11 @@ var genTestsCmd = &cobra.Command{
 		owner, repo := parts[0], parts[1]
 
 		// 参数基本校验（API 层会再校验一次，本地校验可给出更快反馈）
-		if err := validateGenTestsFrameworkFlag(genTestsFramework); err != nil {
-			return err
+		if err := validation.GenTestsFramework(genTestsFramework); err != nil {
+			return fmt.Errorf("--framework %w", err)
 		}
-		if err := validateGenTestsModuleFlag(genTestsModule); err != nil {
-			return err
+		if err := validation.GenTestsModule(genTestsModule); err != nil {
+			return fmt.Errorf("--module %w", err)
 		}
 
 		// 只把用户实际给出的字段放进 body，空字段省略，由 API 层按默认值处理
@@ -113,28 +114,3 @@ func init() {
 	rootCmd.AddCommand(genTestsCmd)
 }
 
-// validateGenTestsFrameworkFlag 仅允许空 / junit5 / vitest 三种取值。
-// 本地兜底，API 层还会再校验一次；防止空跑一个网络请求才发现打错框架名。
-func validateGenTestsFrameworkFlag(framework string) error {
-	switch framework {
-	case "", "junit5", "vitest":
-		return nil
-	default:
-		return fmt.Errorf("--framework 合法值为 \"junit5\" / \"vitest\"，当前值: %q", framework)
-	}
-}
-
-// validateGenTestsModuleFlag 拒绝绝对路径与包含 .. 的相对路径。
-// API 层会再做一次规范化与越界校验，这里只过滤明显非法输入。
-func validateGenTestsModuleFlag(module string) error {
-	if module == "" {
-		return nil
-	}
-	if strings.HasPrefix(module, "/") {
-		return fmt.Errorf("--module 不能为绝对路径: %q", module)
-	}
-	if module == ".." || strings.HasPrefix(module, "../") || strings.Contains(module, "/../") || strings.HasSuffix(module, "/..") {
-		return fmt.Errorf("--module 不能包含 ..: %q", module)
-	}
-	return nil
-}

@@ -138,7 +138,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		return nil, fmt.Errorf("gen_tests 在仓库 %s 下被显式禁用", payload.RepoFullName)
 	}
 
-	// 1. module 合法性 + ModuleScope 白名单
+	// 1. module 合法性 + ModuleScope 白名单（纯字符串规则，无需访问仓库）
 	if err := validateModule(payload.Module, tgCfg.ModuleScope); err != nil {
 		return nil, err
 	}
@@ -149,7 +149,12 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		return nil, err
 	}
 
-	// 3. resolveFramework
+	// 3. module 存在性校验（需 baseRef 后的真实访问；fileChecker 未注入则跳过）
+	if err := s.validateModuleExists(ctx, payload, baseRef); err != nil {
+		return nil, err
+	}
+
+	// 4. resolveFramework
 	chk := &repoFileCheckerAdapter{
 		inner: s.fileChecker,
 		ctx:   ctx,
@@ -203,7 +208,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	if execResult == nil {
 		return result, fmt.Errorf("容器执行结果为空")
 	}
-	result.RawOutput = execResult.Output
+	// RawOutput 已由 safeOutput(execResult) 设置；此处无需重复赋值。
 	if execResult.ExitCode != 0 {
 		result.ExitCode = execResult.ExitCode
 		s.logger.ErrorContext(ctx, "gen_tests worker 非零退出",
@@ -333,6 +338,59 @@ func validateModule(module, scope string) error {
 	return nil
 }
 
+// moduleMarkerFiles 判断 module 子路径存在性时尝试探测的文件清单。
+//
+// 选择原则：优先命中几乎必然存在的"构建 / 描述"文件，再兜底到通用文件。
+//   - 构建描述（Java / Gradle / Node）：直接命中常见后端模块
+//   - README：大多数文档化模块都有
+//   - .gitkeep：仅有空目录占位的极端情况
+//
+// 只要任一命中即视为 module 存在；全部不存在才返回 ErrModuleNotFound。
+// 这避免了 RepoFileChecker 接口扩展 HasDir 的成本，也可兼容 M4.2 的多种实现
+// （Gitea API / 容器内 fs）。
+var moduleMarkerFiles = []string{
+	"pom.xml",
+	"build.gradle",
+	"build.gradle.kts",
+	"package.json",
+	"README.md",
+	"README",
+	".gitkeep",
+}
+
+// validateModuleExists 通过 RepoFileChecker 探测 module 子路径下是否存在任一常见标记文件。
+//
+// 行为：
+//   - payload.Module 为空（整仓模式）→ 跳过
+//   - fileChecker 未注入 → 跳过（与 resolveFramework 对齐，允许 M4.1 单测灵活构造 Service）
+//   - 查询错误 → 保守放行并记 warn 日志，避免临时性 Gitea 故障误杀任务
+//   - 所有 marker 都返回 false → 返回 ErrModuleNotFound 供 Processor SkipRetry
+func (s *Service) validateModuleExists(ctx context.Context, payload model.TaskPayload, baseRef string) error {
+	if payload.Module == "" || s.fileChecker == nil {
+		return nil
+	}
+	for _, marker := range moduleMarkerFiles {
+		ok, err := s.fileChecker.HasFile(ctx, payload.RepoOwner, payload.RepoName, baseRef,
+			payload.Module, marker)
+		if err != nil {
+			// 保守放行：避免网络抖动或权限短暂失效导致合法任务被拒绝。
+			// 记录 warn 以便后续从日志中回溯不稳定情况。
+			s.logger.WarnContext(ctx, "module 存在性检查失败，保守放行",
+				"repo", payload.RepoFullName,
+				"module", payload.Module,
+				"marker", marker,
+				"error", err,
+			)
+			return nil
+		}
+		if ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s/%s@%s module=%q",
+		ErrModuleNotFound, payload.RepoOwner, payload.RepoName, baseRef, payload.Module)
+}
+
 // containsDotDotSegment 判断 path 是否含完整的 ".." 段（以 / 分隔）。
 // 仅当 ".." 作为独立段出现时返回 true（"a..b" 这种名字合法）。
 func containsDotDotSegment(p string) bool {
@@ -359,10 +417,13 @@ func (s *Service) createTestPR(_ context.Context, _ model.TaskPayload,
 	return 0, "", nil
 }
 
-// WriteDegraded M4.1 no-op 实现。
+// WriteDegraded M4.1 no-op 实现（仅结构化日志）。
 //
-// 当前版本仅记录降级日志，不回写外部系统；Processor 在解析失败且重试耗尽后会调用它，
-// 目的是至少保留原始输出长度与 parse_error 迹象，便于排障。
+// Processor 在解析失败且重试耗尽后调用本方法，目的是至少保留原始输出片段与
+// parse_error 迹象便于排障。M4.2 会把 raw_output_preview 升级为飞书通知 metadata。
+//
+// preview 限长 512 rune，由 truncate 做 UTF-8 安全截断，避免中文测试输出在日志里
+// 被拦腰切断产生非法字节序列。
 func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload,
 	result *TestGenResult) error {
 	if result == nil {
@@ -372,6 +433,7 @@ func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload,
 		"repo", payload.RepoFullName,
 		"module", payload.Module,
 		"raw_output_len", len(result.RawOutput),
+		"raw_output_preview", truncate(result.RawOutput, 512),
 		"has_parse_error", result.ParseError != nil,
 	)
 	return nil

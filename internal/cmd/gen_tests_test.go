@@ -7,64 +7,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TestValidateGenTestsFrameworkFlag 覆盖 --framework 的合法/非法取值。
-func TestValidateGenTestsFrameworkFlag(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{"空字符串合法（默认，由 test_gen.test_framework 决定）", "", false},
-		{"junit5 合法", "junit5", false},
-		{"vitest 合法", "vitest", false},
-		{"未知框架 go 非法", "go", true},
-		{"大小写敏感：JUnit5 非法", "JUnit5", true},
-		{"带前后空格也视为非法（调用方应 TrimSpace 后再传入）", " junit5 ", true},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateGenTestsFrameworkFlag(tc.input)
-			if tc.wantErr && err == nil {
-				t.Fatalf("期望 err != nil，got nil，input=%q", tc.input)
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("期望 err == nil，got %v，input=%q", err, tc.input)
-			}
-		})
-	}
-}
-
-// TestValidateGenTestsModuleFlag 覆盖 --module 的路径形态校验。
-func TestValidateGenTestsModuleFlag(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{"空字符串合法（整仓生成）", "", false},
-		{"相对路径合法", "services/api", false},
-		{"带点号子目录合法", "pkg/subpkg.v2", false},
-		{"绝对路径非法", "/abs/module", true},
-		{"单独 .. 非法", "..", true},
-		{"前缀 ../ 非法", "../escape", true},
-		{"中段 /../ 非法", "a/../b", true},
-		{"末尾 /.. 非法", "a/b/..", true},
-		{"Windows 风格反斜杠 ..\\x 非法", `..\escape`, true},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateGenTestsModuleFlag(tc.input)
-			if tc.wantErr && err == nil {
-				t.Fatalf("期望 err != nil，got nil，input=%q", tc.input)
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("期望 err == nil，got %v，input=%q", err, tc.input)
-			}
-		})
-	}
-}
+// 注：flag 级别的框架 / 模块校验已抽出到 internal/validation 包统一维护，
+// 对应单测见 internal/validation/gen_tests_test.go。本文件仅保留 Cobra 装配与
+// RunE 集成相关测试。
 
 // TestBuildGenTestsTriggeredBy_PrefixedWithCLI
 // 验证 CLI 触发者标识以 "cli:" 前缀开头，使 TaskRecord.TriggeredBy 可区分 webhook/API/CLI 三种来源。

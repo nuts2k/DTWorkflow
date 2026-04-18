@@ -479,6 +479,14 @@ func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.Tas
 // payload 由 API handler / CLI handler 组装；triggeredBy 格式为 "manual:{identity}"。
 // Cancel-and-Replace 按 (repo, module) 粒度：同仓库同 module 的活跃任务在本次入队后被取消。
 func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+	// 完整性校验：与 HandlePullRequest / EnqueueManualReview 对齐。
+	// API / CLI 装配层应确保 payload 已通过 Gitea 查询填充这两个字段，
+	// 但 worker 下游 entrypoint.sh 会依赖 CloneURL / RepoFullName 做凭证与 clone，
+	// 任一为空时直接拒绝入队，避免将不完整任务落库后再由 Worker 阶段失败。
+	if payload.RepoFullName == "" || payload.CloneURL == "" {
+		return "", fmt.Errorf("payload 数据不完整: RepoFullName 或 CloneURL 为空")
+	}
+
 	payload.TaskType = model.TaskTypeGenTests
 	payload.DeliveryID = generateManualDeliveryID()
 

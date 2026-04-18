@@ -1447,3 +1447,57 @@ func TestEnqueueManualGenTests_TriggeredByFormat(t *testing.T) {
 		t.Errorf("TriggeredBy = %q, want %q", got.TriggeredBy, "manual:ci-bot")
 	}
 }
+
+// TestEnqueueManualGenTests_IncompletePayload payload 缺失 RepoFullName / CloneURL 时拒绝入队。
+// 与 HandlePullRequest / HandleIssueLabel 对齐的完整性校验：装配层未能填充 Gitea 元数据即视为编程错误，
+// 拒绝入队可避免 Worker 阶段因 entrypoint.sh 依赖 CloneURL 失败而留下"pending → failed"的脏记录。
+func TestEnqueueManualGenTests_IncompletePayload(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload model.TaskPayload
+	}{
+		{
+			name: "missing RepoFullName",
+			payload: model.TaskPayload{
+				RepoOwner: "org",
+				RepoName:  "repo",
+				CloneURL:  "https://gitea.example.com/org/repo.git",
+				Module:    "svc",
+			},
+		},
+		{
+			name: "missing CloneURL",
+			payload: model.TaskPayload{
+				RepoOwner:    "org",
+				RepoName:     "repo",
+				RepoFullName: "org/repo",
+				Module:       "svc",
+			},
+		},
+		{
+			name:    "both empty",
+			payload: model.TaskPayload{RepoOwner: "org", RepoName: "repo"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newMockStore()
+			mc := &mockEnqueuer{enqueuedID: "asynq-should-not-enqueue"}
+			h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+			taskID, err := h.EnqueueManualGenTests(context.Background(), tc.payload, "manual:ci-bot")
+			if err == nil {
+				t.Fatalf("期望 error，实际 taskID=%q", taskID)
+			}
+			if !strings.Contains(err.Error(), "RepoFullName") && !strings.Contains(err.Error(), "CloneURL") {
+				t.Errorf("error 消息应提及 RepoFullName 或 CloneURL：%v", err)
+			}
+			if taskID != "" {
+				t.Errorf("拒绝入队时 taskID 应为空串，得 %q", taskID)
+			}
+			if len(s.tasks) != 0 {
+				t.Errorf("不应落库任何 task，实际有 %d 条", len(s.tasks))
+			}
+		})
+	}
+}
