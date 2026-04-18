@@ -139,6 +139,18 @@ review:
   # tech_stack: ["java", "vue"]        # 技术栈（留空则自动检测）
   # code_standards_paths: []            # 自定义编码规范文件路径（留空则使用默认扫描列表）
 
+# 测试生成配置（M4.1）
+# 说明：
+# - enabled 为可选（未设置时默认启用）。当仓库级 test_gen.enabled 设为 false 时显式禁用。
+# - module_scope 是"允许做 gen_tests 的模块前缀白名单"（护栏）；留空表示允许任意合法 module 路径。
+# - max_retry_rounds 是容器内 Claude 自主修正测试失败的最大轮次，默认 3，合法范围 [1, 10]。
+# - test_framework 显式指定测试框架（"junit5" / "vitest"）；留空则 resolveFramework 自动探测。
+test_gen:
+  # enabled: true
+  module_scope: ""          # 全局不限制；如 "backend" 表示仅允许 backend 前缀下的 module
+  max_retry_rounds: 3       # 容器内 Claude 修正测试失败的最大轮次
+  test_framework: ""        # 留空自动探测；可显式指定 "junit5" / "vitest"
+
 # 仓库级配置覆盖示例
 repos:
   - name: "acme/demo"
@@ -173,6 +185,15 @@ repos:
       #   - "docs/java-standards.md"
       # model: "claude-opus-4-6"        # 仓库级模型覆盖（留空则继承 claude.model）
       # effort: "medium"                # 仓库级推理强度覆盖（留空则继承 claude.effort）
+    test_gen:
+      # 仓库级覆盖语义：
+      # - enabled: 指针语义，未设置则继承全局；显式 false 时该仓库禁用 gen_tests。
+      # - module_scope/test_framework: 非空字符串覆盖；空串表示继承全局。
+      # - max_retry_rounds: > 0 时覆盖；= 0 时继承全局默认值 3。
+      enabled: true
+      # module_scope: "backend"          # 仓库级 module 白名单前缀
+      # max_retry_rounds: 5              # 仓库级覆盖，[1, 10]
+      # test_framework: "junit5"         # 强制仓库使用 JUnit 5
 
 # 每日评审统计报告
 # 定时通过飞书发送前一天的 PR 评审统计摘要。

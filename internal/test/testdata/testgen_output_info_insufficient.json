@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "total_cost_usd": 0.15,
+  "duration_ms": 2500,
+  "is_error": false,
+  "num_turns": 3,
+  "session_id": "sess-insufficient",
+  "result": "{\n  \"success\": false,\n  \"info_sufficient\": false,\n  \"missing_info\": [\"缺少 module 路径下的源文件\", \"未找到任何可供参考的现有测试用例\"],\n  \"verification_passed\": false,\n  \"retry_rounds\": 0\n}"
+}

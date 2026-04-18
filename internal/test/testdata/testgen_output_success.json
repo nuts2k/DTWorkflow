@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "total_cost_usd": 0.75,
+  "duration_ms": 12000,
+  "is_error": false,
+  "num_turns": 8,
+  "session_id": "sess-success",
+  "result": "{\n  \"success\": true,\n  \"info_sufficient\": true,\n  \"analysis\": {\n    \"untested_modules\": [\n      {\"path\": \"src/service/UserService.java\", \"kind\": \"service\", \"priority\": \"high\", \"reason\": \"公共 API 缺少测试\"}\n    ],\n    \"existing_tests\": [\n      {\"test_file\": \"src/test/java/UserServiceTest.java\", \"target_files\": [\"src/service/UserService.java\"], \"framework\": \"junit5\"}\n    ],\n    \"existing_style\": \"JUnit 5 + Mockito + AssertJ\",\n    \"priority_notes\": \"优先补公共 API\"\n  },\n  \"test_strategy\": \"Mockito 桩 Repository 层\",\n  \"generated_files\": [\n    {\"path\": \"src/test/java/UserServiceMoreTest.java\", \"operation\": \"create\", \"description\": \"补充 UserService 的异常路径\", \"framework\": \"junit5\", \"target_files\": [\"src/service/UserService.java\"], \"test_count\": 5},\n    {\"path\": \"src/test/java/UserServiceTest.java\", \"operation\": \"append\", \"description\": \"在既有测试追加用例\", \"framework\": \"junit5\", \"target_files\": [\"src/service/UserService.java\"], \"test_count\": 2},\n    {\"path\": \"src/test/java/OrderServiceTest.java\", \"operation\": \"create\", \"description\": \"新建 OrderService 测试\", \"framework\": \"junit5\", \"target_files\": [\"src/service/OrderService.java\"], \"test_count\": 3}\n  ],\n  \"committed_files\": [\"src/test/java/UserServiceMoreTest.java\", \"src/test/java/UserServiceTest.java\", \"src/test/java/OrderServiceTest.java\"],\n  \"skipped_targets\": [],\n  \"test_results\": {\"framework\": \"junit5\", \"passed\": 10, \"failed\": 0, \"skipped\": 0, \"all_passed\": true, \"duration_ms\": 8500},\n  \"verification_passed\": true,\n  \"branch_name\": \"auto-test/backend-20260418120000\",\n  \"commit_sha\": \"abc123def456\",\n  \"retry_rounds\": 1\n}"
+}

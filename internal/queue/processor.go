@@ -16,6 +16,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
@@ -66,6 +67,25 @@ func WithFixService(svc FixExecutor) ProcessorOption {
 	}
 }
 
+// TestExecutor 窄接口，解耦 test 包。
+// M4.1 仅定义接口形状；M4.2 激活装配（WithTestService）后 Processor 将通过此接口路由
+// gen_tests 任务。接口签名对齐 ReviewExecutor / FixExecutor，确保三者可以复用同一套
+// 通知 / 降级回写骨架。
+type TestExecutor interface {
+	Execute(ctx context.Context, payload model.TaskPayload) (*test.TestGenResult, error)
+	// WriteDegraded 在测试生成结果解析失败且重试耗尽后触发。
+	WriteDegraded(ctx context.Context, payload model.TaskPayload, result *test.TestGenResult) error
+}
+
+// WithTestService 注入测试生成服务。
+// M4.2 激活：serve.go 装配层将调用此函数注入 test.Service；
+// M4.1 始终不注入，gen_tests 仍走 pool.Run default。
+func WithTestService(svc TestExecutor) ProcessorOption {
+	return func(p *Processor) {
+		p.testService = svc
+	}
+}
+
 // ReviewEnabledChecker 是 Processor 层的窄接口（ISP）
 // 仅暴露 Enabled 检查所需的最小能力
 type ReviewEnabledChecker interface {
@@ -103,6 +123,7 @@ type Processor struct {
 	reviewService        ReviewExecutor
 	reviewEnabledChecker ReviewEnabledChecker // 可选，nil 时默认启用
 	fixService           FixExecutor          // M3.2 激活；M3.1 始终为 nil，fix_issue 走 pool.Run()
+	testService          TestExecutor         // M4.2 激活；M4.1 始终为 nil，gen_tests 走 pool.Run()
 	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 

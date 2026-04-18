@@ -287,6 +287,15 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	// M4.1: test_gen 校验（全局 + 仓库级同等生效）
+	errs = append(errs, validateTestGen("test_gen", cfg.TestGen)...)
+	for i, repo := range cfg.Repos {
+		if repo.TestGen == nil {
+			continue
+		}
+		errs = append(errs, validateTestGen(fmt.Sprintf("repos[%d].test_gen", i), *repo.TestGen)...)
+	}
+
 	// repos[].review 校验
 	for i, repo := range cfg.Repos {
 		if repo.Review == nil {
@@ -383,6 +392,34 @@ func validNotifyChannelNames() string {
 	}
 	sort.Strings(names)
 	return strings.Join(names, ", ")
+}
+
+// validateTestGen 校验 TestGenOverride 的字段合法性。
+//
+// field 参数作为错误消息前缀（如 "test_gen" / "repos[0].test_gen"）。
+//
+// 校验语义：
+//   - MaxRetryRounds=0 视为"使用默认值"跳过范围校验。全局 Config.TestGen 经
+//     WithDefaults 注入默认值 3；仓库级 repo.TestGen.MaxRetryRounds 为 0 时
+//     在 ResolveTestGenConfig 里不覆盖全局。所以只需要拒绝用户显式写 0 之外
+//     的非法值（负数 / >10）。
+//   - TestFramework 合法值：空串 / "junit5" / "vitest"。
+//   - ModuleScope 禁止以 "/" 开头，禁止含 ".."，避免绝对路径与目录穿越。
+func validateTestGen(field string, tg TestGenOverride) []error {
+	var errs []error
+	if tg.MaxRetryRounds != 0 && (tg.MaxRetryRounds < 1 || tg.MaxRetryRounds > 10) {
+		errs = append(errs, fmt.Errorf("%s.max_retry_rounds 必须在 [1, 10] 范围内，当前值: %d", field, tg.MaxRetryRounds))
+	}
+	if tg.TestFramework != "" && tg.TestFramework != "junit5" && tg.TestFramework != "vitest" {
+		errs = append(errs, fmt.Errorf("%s.test_framework 合法值为 \"junit5\" / \"vitest\"，当前值: %q", field, tg.TestFramework))
+	}
+	if strings.HasPrefix(tg.ModuleScope, "/") {
+		errs = append(errs, fmt.Errorf("%s.module_scope 不能以 / 开头，当前值: %q", field, tg.ModuleScope))
+	}
+	if strings.Contains(tg.ModuleScope, "..") {
+		errs = append(errs, fmt.Errorf("%s.module_scope 不能包含 ..，当前值: %q", field, tg.ModuleScope))
+	}
+	return errs
 }
 
 // ValidationError 配置校验聚合错误。

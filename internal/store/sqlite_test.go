@@ -1608,3 +1608,133 @@ func TestMigration_PRNumber(t *testing.T) {
 		t.Errorf("pr_number=0 回读期望 0，得到 %d", got0.PRNumber)
 	}
 }
+
+// newTestGenTestsRecord 创建带 module 字段的 gen_tests 任务记录。
+// 注意：TaskPayload.Module 使用 omitempty，module=="" 时序列化后 JSON 中
+// 根本不会出现 module 字段，测试正是要验证 SQL 中 COALESCE 能把 NULL 归一化为空串。
+func newTestGenTestsRecord(id, repoFullName, module string, status model.TaskStatus, createdAt time.Time) *model.TaskRecord {
+	r := newTestRecord(id, "", model.TaskTypeGenTests)
+	r.RepoFullName = repoFullName
+	r.Payload.RepoFullName = repoFullName
+	r.Payload.Module = module
+	r.Status = status
+	r.CreatedAt = createdAt
+	r.UpdatedAt = createdAt
+	return r
+}
+
+// TestFindActiveGenTestsTasks_FilterByModule 验证不同 module 的任务被正确区分
+func TestFindActiveGenTestsTasks_FilterByModule(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	r1 := newTestGenTestsRecord("gen-backend", "org/repo", "backend", model.TaskStatusQueued, base)
+	r2 := newTestGenTestsRecord("gen-frontend", "org/repo", "frontend", model.TaskStatusRunning, base.Add(time.Second))
+	for _, r := range []*model.TaskRecord{r1, r2} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask 失败: %v", err)
+		}
+	}
+
+	backendRecords, err := s.FindActiveGenTestsTasks(ctx, "org/repo", "backend")
+	if err != nil {
+		t.Fatalf("FindActiveGenTestsTasks(backend) 失败: %v", err)
+	}
+	if len(backendRecords) != 1 || backendRecords[0].ID != "gen-backend" {
+		t.Errorf("backend 查询期望 [gen-backend]，得到 %v", backendRecords)
+	}
+
+	frontendRecords, err := s.FindActiveGenTestsTasks(ctx, "org/repo", "frontend")
+	if err != nil {
+		t.Fatalf("FindActiveGenTestsTasks(frontend) 失败: %v", err)
+	}
+	if len(frontendRecords) != 1 || frontendRecords[0].ID != "gen-frontend" {
+		t.Errorf("frontend 查询期望 [gen-frontend]，得到 %v", frontendRecords)
+	}
+}
+
+// TestFindActiveGenTestsTasks_EmptyModuleCOALESCE 验证空 module（整仓生成）
+// 与具体 module 任务不混淆；omitempty 导致 JSON 中无 module 字段时，
+// COALESCE(json_extract(payload, '$.module'), '') 必须把 NULL 归一化为 ''。
+func TestFindActiveGenTestsTasks_EmptyModuleCOALESCE(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	// 整仓任务：module=""，因 omitempty 序列化后 JSON 中无 module 字段
+	whole := newTestGenTestsRecord("gen-whole", "org/repo", "", model.TaskStatusQueued, base)
+	// 具体 module 任务
+	partial := newTestGenTestsRecord("gen-backend", "org/repo", "backend", model.TaskStatusRunning, base.Add(time.Second))
+
+	for _, r := range []*model.TaskRecord{whole, partial} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask 失败: %v", err)
+		}
+	}
+
+	// 查询空串 module 应只返回整仓任务
+	emptyRecords, err := s.FindActiveGenTestsTasks(ctx, "org/repo", "")
+	if err != nil {
+		t.Fatalf("FindActiveGenTestsTasks('') 失败: %v", err)
+	}
+	if len(emptyRecords) != 1 || emptyRecords[0].ID != "gen-whole" {
+		t.Errorf("空 module 查询期望 [gen-whole]（验证 COALESCE 对 NULL 生效），得到 %d 条：%v",
+			len(emptyRecords), emptyRecords)
+	}
+
+	// 查询具体 module 应只返回对应 module 任务
+	backendRecords, err := s.FindActiveGenTestsTasks(ctx, "org/repo", "backend")
+	if err != nil {
+		t.Fatalf("FindActiveGenTestsTasks(backend) 失败: %v", err)
+	}
+	if len(backendRecords) != 1 || backendRecords[0].ID != "gen-backend" {
+		t.Errorf("backend 查询期望 [gen-backend]，得到 %v", backendRecords)
+	}
+}
+
+// TestFindActiveGenTestsTasks_FilterByRepoAndStatus 验证 repo_full_name + 活跃状态联合过滤。
+func TestFindActiveGenTestsTasks_FilterByRepoAndStatus(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+
+	// org/repo 下一条活跃任务
+	active := newTestGenTestsRecord("active-repo1", "org/repo", "svc", model.TaskStatusPending, base)
+	// org/repo 下一条已完成任务，不应被返回
+	done := newTestGenTestsRecord("done-repo1", "org/repo", "svc", model.TaskStatusSucceeded, base.Add(time.Second))
+	// 不同仓库的任务
+	otherRepo := newTestGenTestsRecord("other-repo", "other/repo", "svc", model.TaskStatusQueued, base.Add(2*time.Second))
+
+	for _, r := range []*model.TaskRecord{active, done, otherRepo} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask 失败: %v", err)
+		}
+	}
+
+	records, err := s.FindActiveGenTestsTasks(ctx, "org/repo", "svc")
+	if err != nil {
+		t.Fatalf("FindActiveGenTestsTasks 失败: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("期望 1 条活跃任务，得到 %d: %v", len(records), records)
+	}
+	if records[0].ID != "active-repo1" {
+		t.Errorf("期望 active-repo1，得到 %s", records[0].ID)
+	}
+}
+
+// TestFindActiveGenTestsTasks_Empty 无匹配任务时返回空切片 + nil error
+func TestFindActiveGenTestsTasks_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	records, err := s.FindActiveGenTestsTasks(ctx, "no/such-repo", "none")
+	if err != nil {
+		t.Fatalf("FindActiveGenTestsTasks 无匹配时不应返回错误，但得到: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("期望空切片，得到 %d 条", len(records))
+	}
+}

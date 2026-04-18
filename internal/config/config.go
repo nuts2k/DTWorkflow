@@ -25,6 +25,7 @@ type Config struct {
 	Webhook     WebhookConfig     `mapstructure:"webhook"`
 	Notify      NotifyConfig      `mapstructure:"notify"`
 	Review      ReviewOverride    `mapstructure:"review"`
+	TestGen     TestGenOverride   `mapstructure:"test_gen"` // M4.1
 	DailyReport DailyReportConfig `mapstructure:"daily_report"`
 	API         APIConfig         `mapstructure:"api" yaml:"api"`
 	Repos       []RepoConfig      `mapstructure:"repos"`
@@ -312,6 +313,10 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("daily_report.feishu_webhook", "")
 		m.v.SetDefault("daily_report.feishu_secret", "")
 
+		// M4.1: test_gen 默认值
+		// max_retry_rounds 默认 3（合法范围 [1, 10]）；其他字段零值即合法默认。
+		m.v.SetDefault("test_gen.max_retry_rounds", 3)
+
 		return nil
 	}
 }
@@ -422,6 +427,12 @@ func (c *Config) Clone() *Config {
 		clone.Review.Dimensions = append([]string(nil), c.Review.Dimensions...)
 	}
 
+	// 深拷贝 TestGen（M4.1：Enabled 是 *bool 需单独深拷贝）
+	if c.TestGen.Enabled != nil {
+		v := *c.TestGen.Enabled
+		clone.TestGen.Enabled = &v
+	}
+
 	// 深拷贝 API.Tokens
 	if c.API.Tokens != nil {
 		clone.API.Tokens = make([]TokenConfig, len(c.API.Tokens))
@@ -468,6 +479,15 @@ func (c *Config) Clone() *Config {
 					reviewCopy.Dimensions = append([]string(nil), repo.Review.Dimensions...)
 				}
 				clone.Repos[i].Review = &reviewCopy
+			}
+			// 深拷贝 repo.TestGen（M4.1：Enabled 是 *bool 需单独深拷贝）
+			if repo.TestGen != nil {
+				testGenCopy := *repo.TestGen
+				if repo.TestGen.Enabled != nil {
+					v := *repo.TestGen.Enabled
+					testGenCopy.Enabled = &v
+				}
+				clone.Repos[i].TestGen = &testGenCopy
 			}
 		}
 	}

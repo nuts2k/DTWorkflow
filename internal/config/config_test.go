@@ -439,3 +439,89 @@ func TestClone_FeishuOverrideNil(t *testing.T) {
 		t.Error("Feishu 为 nil 时 clone 也应为 nil")
 	}
 }
+
+func TestClone_TestGenGlobalEnabledDeepCopy(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	original := &Config{
+		TestGen: TestGenOverride{
+			Enabled:        &enabled,
+			ModuleScope:    "backend",
+			MaxRetryRounds: 5,
+			TestFramework:  "junit5",
+		},
+	}
+
+	cloned := original.Clone()
+
+	// 修改 clone 的 Enabled 指针指向的值不应影响原始值
+	if cloned.TestGen.Enabled == original.TestGen.Enabled {
+		t.Error("Enabled 指针应为不同的实例（深拷贝）")
+	}
+	*cloned.TestGen.Enabled = false
+	if original.TestGen.Enabled == nil || !*original.TestGen.Enabled {
+		t.Errorf("修改 clone 后原始 Enabled 被改变: %v", original.TestGen.Enabled)
+	}
+}
+
+func TestClone_TestGenRepoDeepCopy(t *testing.T) {
+	t.Parallel()
+
+	repoEnabled := true
+	original := &Config{
+		Repos: []RepoConfig{{
+			Name: "acme/repo",
+			TestGen: &TestGenOverride{
+				Enabled:        &repoEnabled,
+				ModuleScope:    "services/api",
+				MaxRetryRounds: 7,
+				TestFramework:  "vitest",
+			},
+		}},
+	}
+
+	cloned := original.Clone()
+
+	// 修改 clone 不应影响原始对象
+	if cloned.Repos[0].TestGen == original.Repos[0].TestGen {
+		t.Error("repo.TestGen 指针应为不同实例（深拷贝）")
+	}
+	if cloned.Repos[0].TestGen.Enabled == original.Repos[0].TestGen.Enabled {
+		t.Error("repo.TestGen.Enabled 指针应为不同实例（深拷贝）")
+	}
+	cloned.Repos[0].TestGen.ModuleScope = "modified"
+	*cloned.Repos[0].TestGen.Enabled = false
+
+	if original.Repos[0].TestGen.ModuleScope != "services/api" {
+		t.Errorf("修改 clone 后原始 ModuleScope 被改变: %q", original.Repos[0].TestGen.ModuleScope)
+	}
+	if original.Repos[0].TestGen.Enabled == nil || !*original.Repos[0].TestGen.Enabled {
+		t.Errorf("修改 clone 后原始 Enabled 被改变: %v", original.Repos[0].TestGen.Enabled)
+	}
+}
+
+func TestClone_TestGenNilPreserved(t *testing.T) {
+	t.Parallel()
+
+	// Repos[0].TestGen = nil 应保持 nil；全局 TestGen.Enabled = nil 应保持 nil
+	original := &Config{
+		TestGen: TestGenOverride{
+			Enabled:        nil,
+			ModuleScope:    "backend",
+			MaxRetryRounds: 3,
+		},
+		Repos: []RepoConfig{{Name: "acme/repo", TestGen: nil}},
+	}
+
+	cloned := original.Clone()
+	if cloned.TestGen.Enabled != nil {
+		t.Error("全局 TestGen.Enabled 为 nil 时 clone 也应为 nil")
+	}
+	if cloned.Repos[0].TestGen != nil {
+		t.Error("repo.TestGen 为 nil 时 clone 也应为 nil")
+	}
+	if cloned.TestGen.ModuleScope != "backend" {
+		t.Errorf("TestGen.ModuleScope = %q, want backend", cloned.TestGen.ModuleScope)
+	}
+}

@@ -2,6 +2,11 @@ package config
 
 import "testing"
 
+// boolPtr 便于构造指针常量，提升 test 表达力。
+func boolPtr(v bool) *bool {
+	return &v
+}
+
 func TestResolveNotifyRoutes_NilConfig(t *testing.T) {
 	var c *Config
 	routes := c.ResolveNotifyRoutes("any/repo")
@@ -294,6 +299,191 @@ func TestResolveFeishuOverride(t *testing.T) {
 		got := cfg.ResolveFeishuOverride("acme/repo")
 		if got == nil || got.WebhookURL != "https://first" {
 			t.Errorf("重复 repo 应返回第一个匹配项，得到: %+v", got)
+		}
+	})
+}
+
+func TestResolveTestGenConfig(t *testing.T) {
+	t.Run("nil config 返回零值", func(t *testing.T) {
+		var c *Config
+		got := c.ResolveTestGenConfig("any/repo")
+		want := TestGenOverride{}
+		if got != want {
+			t.Errorf("nil config 应返回零值 TestGenOverride，得到: %+v", got)
+		}
+	})
+
+	t.Run("无仓库匹配时返回全局 TestGen", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{
+			Enabled:        boolPtr(true),
+			ModuleScope:    "backend",
+			MaxRetryRounds: 5,
+			TestFramework:  "junit5",
+		}
+		cfg.Repos = []RepoConfig{{
+			Name:    "other/repo",
+			TestGen: &TestGenOverride{ModuleScope: "frontend"},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ModuleScope != "backend" {
+			t.Errorf("ModuleScope = %q, want %q", got.ModuleScope, "backend")
+		}
+		if got.MaxRetryRounds != 5 {
+			t.Errorf("MaxRetryRounds = %d, want %d", got.MaxRetryRounds, 5)
+		}
+		if got.TestFramework != "junit5" {
+			t.Errorf("TestFramework = %q, want %q", got.TestFramework, "junit5")
+		}
+		if got.Enabled == nil || !*got.Enabled {
+			t.Errorf("Enabled = %v, want *true", got.Enabled)
+		}
+	})
+
+	t.Run("仓库 TestGen 为 nil 时返回全局", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{
+			ModuleScope:    "backend",
+			MaxRetryRounds: 5,
+		}
+		cfg.Repos = []RepoConfig{{Name: "acme/repo", TestGen: nil}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ModuleScope != "backend" {
+			t.Errorf("ModuleScope = %q, want %q", got.ModuleScope, "backend")
+		}
+		if got.MaxRetryRounds != 5 {
+			t.Errorf("MaxRetryRounds = %d, want %d", got.MaxRetryRounds, 5)
+		}
+	})
+
+	t.Run("仓库 TestGen 非零字段覆盖", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{
+			ModuleScope:    "backend",
+			MaxRetryRounds: 3,
+			TestFramework:  "junit5",
+		}
+		cfg.Repos = []RepoConfig{{
+			Name: "acme/repo",
+			TestGen: &TestGenOverride{
+				ModuleScope:    "services/api",
+				MaxRetryRounds: 7,
+				TestFramework:  "vitest",
+			},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ModuleScope != "services/api" {
+			t.Errorf("ModuleScope = %q, want %q", got.ModuleScope, "services/api")
+		}
+		if got.MaxRetryRounds != 7 {
+			t.Errorf("MaxRetryRounds = %d, want %d", got.MaxRetryRounds, 7)
+		}
+		if got.TestFramework != "vitest" {
+			t.Errorf("TestFramework = %q, want %q", got.TestFramework, "vitest")
+		}
+	})
+
+	t.Run("Enabled 指针语义：nil 保留全局 *true", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{Enabled: boolPtr(true)}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{Enabled: nil},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.Enabled == nil || !*got.Enabled {
+			t.Errorf("Enabled = %v，nil 应保留全局 *true", got.Enabled)
+		}
+	})
+
+	t.Run("Enabled 指针语义：*false 覆盖全局 *true", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{Enabled: boolPtr(true)}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{Enabled: boolPtr(false)},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.Enabled == nil || *got.Enabled {
+			t.Errorf("Enabled = %v，*false 应覆盖全局 *true", got.Enabled)
+		}
+	})
+
+	t.Run("Enabled 指针语义：*true 覆盖全局 *false", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{Enabled: boolPtr(false)}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{Enabled: boolPtr(true)},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.Enabled == nil || !*got.Enabled {
+			t.Errorf("Enabled = %v，*true 应覆盖全局 *false", got.Enabled)
+		}
+	})
+
+	t.Run("仓库空字符串不覆盖 ModuleScope", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{ModuleScope: "backend"}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{ModuleScope: ""},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ModuleScope != "backend" {
+			t.Errorf("ModuleScope = %q，空字符串不应覆盖全局", got.ModuleScope)
+		}
+	})
+
+	t.Run("仓库空字符串不覆盖 TestFramework", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{TestFramework: "junit5"}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{TestFramework: ""},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.TestFramework != "junit5" {
+			t.Errorf("TestFramework = %q，空字符串不应覆盖全局", got.TestFramework)
+		}
+	})
+
+	t.Run("MaxRetryRounds=0 不覆盖全局", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{MaxRetryRounds: 5}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{MaxRetryRounds: 0},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.MaxRetryRounds != 5 {
+			t.Errorf("MaxRetryRounds = %d，0 应视为未设置不覆盖全局", got.MaxRetryRounds)
+		}
+	})
+
+	t.Run("MaxRetryRounds > 0 覆盖全局", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{MaxRetryRounds: 3}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{MaxRetryRounds: 8},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.MaxRetryRounds != 8 {
+			t.Errorf("MaxRetryRounds = %d, want 8", got.MaxRetryRounds)
+		}
+	})
+
+	t.Run("多仓库匹配返回第一个", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{ModuleScope: "global"}
+		cfg.Repos = []RepoConfig{
+			{Name: "acme/repo", TestGen: &TestGenOverride{ModuleScope: "first"}},
+			{Name: "acme/repo", TestGen: &TestGenOverride{ModuleScope: "second"}},
+		}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ModuleScope != "first" {
+			t.Errorf("ModuleScope = %q，重复仓库应返回第一个匹配项", got.ModuleScope)
 		}
 	})
 }

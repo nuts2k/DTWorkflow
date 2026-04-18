@@ -1046,6 +1046,237 @@ func TestValidate_WorkerTimeoutsAnalyzeIssue(t *testing.T) {
 	}
 }
 
+func TestValidate_TestGen_MaxRetryRounds(t *testing.T) {
+	t.Run("0 视为默认值通过", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{MaxRetryRounds: 0}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("max_retry_rounds=0（视为默认值）应通过: %v", err)
+		}
+	})
+
+	t.Run("1-10 范围内合法", func(t *testing.T) {
+		for _, v := range []int{1, 3, 5, 10} {
+			cfg := validBaseConfig()
+			cfg.TestGen = TestGenOverride{MaxRetryRounds: v}
+			if err := Validate(cfg); err != nil {
+				t.Errorf("max_retry_rounds=%d 应通过，但返回: %v", v, err)
+			}
+		}
+	})
+
+	t.Run("11 应被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{MaxRetryRounds: 11}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("max_retry_rounds=11 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "test_gen.max_retry_rounds") {
+			t.Errorf("错误应包含 test_gen.max_retry_rounds，得到: %v", err)
+		}
+	})
+
+	t.Run("负数应被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{MaxRetryRounds: -1}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("max_retry_rounds=-1 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "test_gen.max_retry_rounds") {
+			t.Errorf("错误应包含 test_gen.max_retry_rounds，得到: %v", err)
+		}
+	})
+
+	t.Run("仓库级 11 应被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{MaxRetryRounds: 11},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仓库级 max_retry_rounds=11 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "repos[0].test_gen.max_retry_rounds") {
+			t.Errorf("错误应包含 repos[0].test_gen.max_retry_rounds，得到: %v", err)
+		}
+	})
+}
+
+func TestValidate_TestGen_TestFramework(t *testing.T) {
+	t.Run("空串合法", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{TestFramework: ""}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("test_framework 空串应合法: %v", err)
+		}
+	})
+
+	t.Run("junit5 合法", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{TestFramework: "junit5"}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("test_framework=junit5 应合法: %v", err)
+		}
+	})
+
+	t.Run("vitest 合法", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{TestFramework: "vitest"}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("test_framework=vitest 应合法: %v", err)
+		}
+	})
+
+	t.Run("go 被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{TestFramework: "go"}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("test_framework=go 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "test_gen.test_framework") {
+			t.Errorf("错误应包含 test_gen.test_framework，得到: %v", err)
+		}
+	})
+
+	t.Run("仓库级非法值被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{TestFramework: "rspec"},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仓库级非法 test_framework 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "repos[0].test_gen.test_framework") {
+			t.Errorf("错误应包含 repos[0].test_gen.test_framework，得到: %v", err)
+		}
+	})
+}
+
+func TestValidate_TestGen_ModuleScope(t *testing.T) {
+	t.Run("空串合法", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{ModuleScope: ""}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("module_scope 空串应合法: %v", err)
+		}
+	})
+
+	t.Run("相对路径合法", func(t *testing.T) {
+		for _, v := range []string{"backend", "services/api", "src"} {
+			cfg := validBaseConfig()
+			cfg.TestGen = TestGenOverride{ModuleScope: v}
+			if err := Validate(cfg); err != nil {
+				t.Errorf("module_scope=%q 应合法: %v", v, err)
+			}
+		}
+	})
+
+	t.Run("以 / 开头被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{ModuleScope: "/absolute"}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("module_scope 以 / 开头应返回错误")
+		}
+		if !strings.Contains(err.Error(), "test_gen.module_scope") {
+			t.Errorf("错误应包含 test_gen.module_scope，得到: %v", err)
+		}
+		if !strings.Contains(err.Error(), "/") {
+			t.Errorf("错误应说明 / 开头的问题，得到: %v", err)
+		}
+	})
+
+	t.Run("含 .. 被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{ModuleScope: "../escape"}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("module_scope 含 .. 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "test_gen.module_scope") {
+			t.Errorf("错误应包含 test_gen.module_scope，得到: %v", err)
+		}
+		if !strings.Contains(err.Error(), "..") {
+			t.Errorf("错误应说明 .. 的问题，得到: %v", err)
+		}
+	})
+
+	t.Run("中间包含 .. 被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{ModuleScope: "backend/../escape"}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("module_scope 中间含 .. 应返回错误")
+		}
+	})
+
+	t.Run("仓库级以 / 开头被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{ModuleScope: "/abs"},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仓库级 module_scope 以 / 开头应返回错误")
+		}
+		if !strings.Contains(err.Error(), "repos[0].test_gen.module_scope") {
+			t.Errorf("错误应包含 repos[0].test_gen.module_scope，得到: %v", err)
+		}
+	})
+
+	t.Run("仓库级含 .. 被拒", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{ModuleScope: "../escape"},
+		}}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("仓库级 module_scope 含 .. 应返回错误")
+		}
+		if !strings.Contains(err.Error(), "repos[0].test_gen.module_scope") {
+			t.Errorf("错误应包含 repos[0].test_gen.module_scope，得到: %v", err)
+		}
+	})
+}
+
+func TestValidate_TestGen_RepoNilNotValidated(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Repos = []RepoConfig{{Name: "acme/repo", TestGen: nil}}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("repo.TestGen 为 nil 时不应触发 test_gen 校验: %v", err)
+	}
+}
+
+func TestValidate_TestGen_ValidFullOverride(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.TestGen = TestGenOverride{
+		Enabled:        boolPtr(true),
+		ModuleScope:    "backend",
+		MaxRetryRounds: 5,
+		TestFramework:  "junit5",
+	}
+	cfg.Repos = []RepoConfig{{
+		Name: "acme/repo",
+		TestGen: &TestGenOverride{
+			Enabled:        boolPtr(false),
+			ModuleScope:    "services/api",
+			MaxRetryRounds: 8,
+			TestFramework:  "vitest",
+		},
+	}}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("完整合法 test_gen 配置应通过，但返回: %v", err)
+	}
+}
+
 func TestValidate_RepoFeishuOverride(t *testing.T) {
 	// 辅助函数：构造启用了全局飞书渠道的基础配置
 	feishuBaseConfig := func() *Config {

@@ -156,8 +156,23 @@ OVERRIDE
         log "修复模式已启用（origin URL 已脱敏 + credential helper + git identity + build cache redirect；mvn 包装器由镜像提供）"
         ;;
     gen_tests)
+        log "测试生成任务，使用默认分支（将在容器内由 Claude 创建 auto-test/<module>-<ts> 分支）"
+        # 安全加固：origin URL 脱敏（避免 token 持久化到 .git/config）
+        git remote set-url origin "${REPO_CLONE_URL}"
+        # credential helper 按需注入 token，容器销毁即失效
+        # 放置于 /workspace 而非 /tmp：/tmp 为 noexec tmpfs，无法执行脚本
+        CRED_HELPER_SCRIPT="/workspace/.git-credential-helper"
+        cat > "${CRED_HELPER_SCRIPT}" <<HELPER
+#!/bin/sh
+echo "username=token"
+echo "password=${GITEA_TOKEN}"
+HELPER
+        chmod 700 "${CRED_HELPER_SCRIPT}"
+        git config --global credential.helper "${CRED_HELPER_SCRIPT}"
+        git config --global user.name "DTWorkflow Bot"
+        git config --global user.email "dtworkflow-bot@noreply.local"
         setup_build_cache
-        log "测试生成任务，已启用 build cache redirect（mvn 包装器由镜像提供）"
+        log "测试生成模式已启用（origin URL 已脱敏 + credential helper + git identity + build cache redirect；mvn 包装器由镜像提供）"
         ;;
     *)
         log "任务类型: ${TASK_TYPE:-<empty>}，使用默认分支"
