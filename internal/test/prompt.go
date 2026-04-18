@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode"
 )
 
 // ============================================================================
@@ -456,16 +457,36 @@ func sanitizeBranchRef(s string) string {
 	return out
 }
 
-// sanitize 截断 + 清理换行/NUL 字符，防止 prompt injection 与格式破坏。
+// sanitize 截断 + 清理控制字符，防止 prompt injection 与格式破坏。
 // 与 worker/container.go 的 sanitizePromptInput 等价独立实现，避免跨包耦合。
+//
+// 处理规则：
+//   - \x00（NUL）：直接删除（不替换），避免嵌入空字节污染下游命令
+//   - \r、\n（换行类）：替换为空格，保留语义分隔感
+//   - 其余 C0 控制字符（unicode.IsControl 为 true，含 \t、\v、\b、\x1b 等）：
+//     替换为空格，防止 ANSI 转义序列等控制序列破坏 prompt 结构
 func sanitize(s string, maxLen int) string {
-	s = strings.ReplaceAll(s, "\x00", "")
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > maxLen {
-		s = s[:maxLen]
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\x00':
+			// NUL 直接删除
+		case r == '\r' || r == '\n':
+			// 换行替换为空格，与旧行为一致
+			b.WriteByte(' ')
+		case unicode.IsControl(r):
+			// 其余控制字符（\t、\v、\b、\x1b 等）替换为空格
+			b.WriteByte(' ')
+		default:
+			b.WriteRune(r)
+		}
 	}
-	return s
+	out := b.String()
+	if len(out) > maxLen {
+		out = out[:maxLen]
+	}
+	return out
 }
 
 // javaVerificationTarget 返回可安全嵌入 shell 命令的 module 参数。

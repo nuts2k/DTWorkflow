@@ -1241,8 +1241,9 @@ func TestEnqueueManualGenTests_NoSuperseded(t *testing.T) {
 		if record.TaskType != model.TaskTypeGenTests {
 			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeGenTests)
 		}
-		if record.Priority != model.PriorityLow {
-			t.Errorf("priority = %v, want %v", record.Priority, model.PriorityLow)
+		// 手动触发使用 PriorityNormal（webhook/CronJob 自动触发应用 PriorityLow）
+		if record.Priority != model.PriorityNormal {
+			t.Errorf("priority = %v, want %v (手动触发应为 Normal)", record.Priority, model.PriorityNormal)
 		}
 		if record.Status != model.TaskStatusQueued {
 			t.Errorf("task status = %q, want %q", record.Status, model.TaskStatusQueued)

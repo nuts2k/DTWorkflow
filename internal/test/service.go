@@ -33,8 +33,9 @@ type PRClient interface {
 		opts gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error)
 }
 
-// TestPoolRunner 容器执行接口（与 review / fix 同类接口独立）。
-type TestPoolRunner interface {
+// GenTestsPoolRunner 容器执行接口（与 review / fix 同类接口独立）。
+// 命名对应 gen_tests 领域，区别于 review / fix 的 pool 接口。
+type GenTestsPoolRunner interface {
 	RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload,
 		cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
 }
@@ -89,7 +90,7 @@ func WithFileChecker(c RepoFileChecker) ServiceOption {
 type Service struct {
 	gitea       RepoClient
 	prClient    PRClient
-	pool        TestPoolRunner
+	pool        GenTestsPoolRunner
 	cfgProv     TestConfigProvider
 	fileChecker RepoFileChecker
 	logger      *slog.Logger
@@ -97,7 +98,7 @@ type Service struct {
 
 // NewService 创建 Service 实例。
 // gitea / pool / cfgProv 为必要依赖，传入 nil 属于编程错误（panic）。
-func NewService(gitea RepoClient, pool TestPoolRunner, cfgProv TestConfigProvider,
+func NewService(gitea RepoClient, pool GenTestsPoolRunner, cfgProv TestConfigProvider,
 	opts ...ServiceOption) *Service {
 	if gitea == nil {
 		panic("NewService: gitea 不能为 nil")
@@ -156,13 +157,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	}
 
 	// 4. resolveFramework
-	chk := &repoFileCheckerAdapter{
-		inner: s.fileChecker,
-		ctx:   ctx,
-		owner: payload.RepoOwner,
-		repo:  payload.RepoName,
-		ref:   baseRef,
-	}
+	chk := newFrameworkChecker(s.fileChecker, ctx, payload.RepoOwner, payload.RepoName, baseRef)
 	requestFramework := strings.TrimSpace(payload.Framework)
 	if requestFramework == "" {
 		requestFramework = tgCfg.TestFramework
@@ -466,27 +461,27 @@ func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload,
 // 内部适配器
 // ============================================================================
 
-// repoFileCheckerAdapter 把 ctx + owner/repo/ref 三元组适配到 frameworkChecker。
-//
-// resolveFramework 需要一个同步 HasFile(module, relPath) 接口；业务层 RepoFileChecker
-// 携带 ctx 与仓库元信息。此 adapter 在 Execute 中构造一次，消耗一个 ctx 生命周期。
-type repoFileCheckerAdapter struct {
-	inner RepoFileChecker
-	ctx   context.Context
-	owner string
-	repo  string
-	ref   string
+// frameworkCheckerFunc 是 frameworkChecker 的函数类型实现。
+// 通过闭包把 ctx / owner / repo / ref 捕获到函数体内，避免将 context.Context
+// 存入 struct（违反 Go 惯例："Context should not be stored inside a struct type"）。
+type frameworkCheckerFunc func(module, relPath string) bool
+
+func (f frameworkCheckerFunc) HasFile(module, relPath string) bool {
+	return f(module, relPath)
 }
 
-// HasFile 委托给 inner.HasFile；inner 为 nil 或查询出错时返回 false
-// （让 resolveFramework 走到错误分支而非静默判错）。
-func (a *repoFileCheckerAdapter) HasFile(module, relPath string) bool {
-	if a == nil || a.inner == nil {
-		return false
+// newFrameworkChecker 构造一个把 ctx + 仓库元信息闭包封装的 frameworkChecker。
+// inner 为 nil 时直接返回 nil，resolveFramework 对 nil checker 会返回 ErrNoFrameworkDetected。
+func newFrameworkChecker(inner RepoFileChecker, ctx context.Context,
+	owner, repo, ref string) frameworkChecker {
+	if inner == nil {
+		return nil
 	}
-	ok, err := a.inner.HasFile(a.ctx, a.owner, a.repo, a.ref, module, relPath)
-	if err != nil {
-		return false
-	}
-	return ok
+	return frameworkCheckerFunc(func(module, relPath string) bool {
+		ok, err := inner.HasFile(ctx, owner, repo, ref, module, relPath)
+		if err != nil {
+			return false
+		}
+		return ok
+	})
 }
