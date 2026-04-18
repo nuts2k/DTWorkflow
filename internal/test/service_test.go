@@ -434,6 +434,29 @@ func TestExecute_ExplicitFrameworkJUnit5(t *testing.T) {
 	}
 }
 
+func TestExecute_RequestFrameworkOverridesConfig(t *testing.T) {
+	cfg := &mockCfgProv{override: config.TestGenOverride{TestFramework: "junit5"}}
+	pool := &mockTestPool{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: successEnvelope},
+	}
+	payload := defaultPayload()
+	payload.Framework = "vitest"
+
+	s := newService(&mockRepoClient{}, pool, cfg,
+		WithFileChecker(&mockFileChecker{files: map[string]bool{}}),
+	)
+	result, err := s.Execute(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("应成功，实际: %v", err)
+	}
+	if result.Framework != FrameworkVitest {
+		t.Errorf("Framework = %v, 期望 vitest（请求级覆盖优先）", result.Framework)
+	}
+	if !strings.Contains(string(pool.lastStdin), "Vitest") {
+		t.Error("prompt 应走 Vue/Vitest 模板")
+	}
+}
+
 // ============================================================================
 // pool 执行错误
 // ============================================================================

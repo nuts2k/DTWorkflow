@@ -16,6 +16,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
+	testgen "otws19.zicp.vip/kelin/dtworkflow/internal/test"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
@@ -73,6 +74,24 @@ func (m *mockFixExecutor) Execute(_ context.Context, _ model.TaskPayload) (*fix.
 }
 
 func (m *mockFixExecutor) WriteDegraded(_ context.Context, _ model.TaskPayload, _ *fix.FixResult) error {
+	m.writeDegradedCalls++
+	return m.writeDegradedErr
+}
+
+type mockTestExecutor struct {
+	result             *testgen.TestGenResult
+	err                error
+	writeDegradedErr   error
+	calls              int
+	writeDegradedCalls int
+}
+
+func (m *mockTestExecutor) Execute(_ context.Context, _ model.TaskPayload) (*testgen.TestGenResult, error) {
+	m.calls++
+	return m.result, m.err
+}
+
+func (m *mockTestExecutor) WriteDegraded(_ context.Context, _ model.TaskPayload, _ *testgen.TestGenResult) error {
 	m.writeDegradedCalls++
 	return m.writeDegradedErr
 }
@@ -588,6 +607,121 @@ func TestProcessTask_GenTests_NoNotification(t *testing.T) {
 	}
 	if len(notifier.messages) != 0 {
 		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	}
+}
+
+func TestProcessTask_GenTests_UsesTestService(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		DeliveryID:   "dlv-gentests-service-1",
+		RepoFullName: "org/repo",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-gentests-service",
+		TaskType:   model.TaskTypeGenTests,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: "pool fallback"}}
+	testExec := &mockTestExecutor{
+		result: &testgen.TestGenResult{
+			RawOutput: "service output",
+			Output:    &testgen.TestGenOutput{Success: true, InfoSufficient: true},
+		},
+	}
+
+	p := NewProcessor(pool, s, nil, slog.Default(), WithTestService(testExec))
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if testExec.calls != 1 {
+		t.Fatalf("test service calls = %d, want 1", testExec.calls)
+	}
+	if pool.calls != 0 {
+		t.Fatalf("pool calls = %d, want 0", pool.calls)
+	}
+	got := s.tasks["proc-task-gentests-service"]
+	if got.Result != "service output" {
+		t.Fatalf("result = %q, want %q", got.Result, "service output")
+	}
+}
+
+func TestProcessTask_GenTests_DeterministicFailureSkipRetry(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		DeliveryID:   "dlv-gentests-skipretry-1",
+		RepoFullName: "org/repo",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-gentests-skipretry",
+		TaskType:   model.TaskTypeGenTests,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	testExec := &mockTestExecutor{err: testgen.ErrNoFrameworkDetected}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithTestService(testExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("错误应包含 asynq.SkipRetry，实际: %v", err)
+	}
+	got := s.tasks["proc-task-gentests-skipretry"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+}
+
+func TestProcessTask_GenTests_ParseFailureCallsWriteDegraded(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		DeliveryID:   "dlv-gentests-parsefail-1",
+		RepoFullName: "org/repo",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-gentests-parsefail",
+		TaskType:   model.TaskTypeGenTests,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	testExec := &mockTestExecutor{
+		result: &testgen.TestGenResult{
+			RawOutput:  "bad output",
+			ParseError: errors.New("json parse failed"),
+		},
+		err: testgen.ErrTestGenParseFailure,
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithTestService(testExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("ProcessTask 应返回错误")
+	}
+	if testExec.writeDegradedCalls != 1 {
+		t.Fatalf("writeDegradedCalls = %d, want 1", testExec.writeDegradedCalls)
 	}
 }
 

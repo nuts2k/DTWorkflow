@@ -125,7 +125,7 @@ func NewService(gitea RepoClient, pool TestPoolRunner, cfgProv TestConfigProvide
 //  1. 解析并校验 test_gen 配置（Enabled 语义）
 //  2. validateModule（路径合法性 + ModuleScope 白名单）
 //  3. resolveBaseRef（空则回退仓库默认分支）
-//  4. resolveFramework（探测 module 下 pom.xml / package.json 或 cfg 显式指定）
+//  4. resolveFramework（请求级 framework > cfg.test_framework > 仓库探测）
 //  5. 构造 prompt（Java / Vue 独立模板）
 //  6. pool.RunWithCommandAndStdin
 //  7. 解析结果（外层 CLI 信封 → 内层 TestGenOutput → 不变量校验）
@@ -157,7 +157,11 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		repo:  payload.RepoName,
 		ref:   baseRef,
 	}
-	framework, err := resolveFramework(tgCfg.TestFramework, payload.Module, chk)
+	requestFramework := strings.TrimSpace(payload.Framework)
+	if requestFramework == "" {
+		requestFramework = tgCfg.TestFramework
+	}
+	framework, err := resolveFramework(requestFramework, payload.Module, chk)
 	if err != nil {
 		return nil, err
 	}
@@ -357,12 +361,8 @@ func (s *Service) createTestPR(_ context.Context, _ model.TaskPayload,
 
 // WriteDegraded M4.1 no-op 实现。
 //
-// 注意：M4.1 期间 Processor 不会注入 testService，也不对 test.ErrTestGenParseFailure
-// 做错误分发（相关代码块在 M4.2 §6.5 加入 processor.go），因此本方法在 M4.1 运行时
-// 100% 不会被调用，存在意义是：
-//  1. 满足未来 TestExecutor 接口形状
-//  2. 便于单测覆盖日志字段
-//  3. M4.2 加装配代码时无需改 Service 签名
+// 当前版本仅记录降级日志，不回写外部系统；Processor 在解析失败且重试耗尽后会调用它，
+// 目的是至少保留原始输出长度与 parse_error 迹象，便于排障。
 func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload,
 	result *TestGenResult) error {
 	if result == nil {

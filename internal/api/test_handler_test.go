@@ -55,8 +55,48 @@ func TestTriggerGenTests_Success_FullBody(t *testing.T) {
 	if found.Payload.Module != "backend/service" {
 		t.Errorf("Payload.Module = %q, 期望 backend/service", found.Payload.Module)
 	}
+	if found.Payload.Framework != "junit5" {
+		t.Errorf("Payload.Framework = %q, 期望 junit5", found.Payload.Framework)
+	}
 	if found.Payload.BaseRef != "develop" {
 		t.Errorf("Payload.BaseRef = %q, 期望 develop", found.Payload.BaseRef)
+	}
+}
+
+func TestTriggerGenTests_Success_ChunkedBody(t *testing.T) {
+	giteaSrv := newFakeGitea(fakeGiteaOpts{})
+	defer giteaSrv.Close()
+
+	r, deps := setupTriggerRouterWithGitea(t, giteaSrv.URL)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/repos/owner/repo/gen-tests",
+		strings.NewReader(`{"module":"backend/service","framework":"vitest"}`))
+	req.ContentLength = -1 // 模拟 chunked 请求，无显式 Content-Length
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("期望 202，实际 %d, body: %s", w.Code, w.Body.String())
+	}
+
+	store := deps.Store.(*mockStore)
+	var found *model.TaskRecord
+	for _, task := range store.tasks {
+		if task.TaskType == model.TaskTypeGenTests {
+			found = task
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("应创建 gen_tests 任务 record")
+	}
+	if found.Payload.Module != "backend/service" {
+		t.Errorf("Payload.Module = %q, 期望 backend/service", found.Payload.Module)
+	}
+	if found.Payload.Framework != "vitest" {
+		t.Errorf("Payload.Framework = %q, 期望 vitest", found.Payload.Framework)
 	}
 }
 
@@ -364,4 +404,3 @@ func newFakeGiteaRepoError(statusCode int) *httptest.Server {
 	})
 	return httptest.NewServer(mux)
 }
-

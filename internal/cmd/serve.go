@@ -21,6 +21,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/report"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
+	testgen "otws19.zicp.vip/kelin/dtworkflow/internal/test"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
 )
 
@@ -233,6 +234,16 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 			fix.WithFixStaleChecker(deps.Store), // M3.5: 前序分析"信息不足"检查
 		)
 		processorOpts = append(processorOpts, queue.WithFixService(fixSvc))
+
+		testSvc := testgen.NewService(
+			deps.GiteaClient,
+			deps.Pool,
+			cfgAdapter,
+			testgen.WithServiceLogger(slog.Default()),
+			testgen.WithPRClient(deps.GiteaClient),
+			testgen.WithFileChecker(&giteaRepoFileChecker{client: deps.GiteaClient}),
+		)
+		processorOpts = append(processorOpts, queue.WithTestService(testSvc))
 	}
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), processorOpts...)
 	mux := asynq.NewServeMux()

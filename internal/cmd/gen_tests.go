@@ -168,8 +168,7 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 
 	// 6. 构造 payload 并入队。
 	//    注意：EnqueueManualGenTests 内部会强制设置 TaskType=gen_tests 并合成 DeliveryID。
-	//    --framework 目前仅在人类可读输出中展示，Service 层按 test_gen.test_framework 解析，
-	//    CLI 请求级框架覆盖为 M4.2 扩展项。
+	//    --framework 作为请求级覆盖透传到 test.Service，优先级高于配置级 test_gen.test_framework。
 	payload := model.TaskPayload{
 		TaskType:     model.TaskTypeGenTests,
 		RepoOwner:    owner,
@@ -177,6 +176,7 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 		RepoFullName: repoInfo.FullName,
 		CloneURL:     repoInfo.CloneURL,
 		Module:       genTestsModule,
+		Framework:    genTestsFramework,
 		BaseRef:      baseRef,
 	}
 

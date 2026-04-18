@@ -193,6 +193,14 @@ run_gen_tests_credentials_case() {
     echo "FAIL: gen_tests — 预期 /tmp/.git-credential-helper 已创建，实际未找到或不可执行"
     (( FAIL++ ))
   fi
+
+  if [ -x "${repo_dir}/.git/hooks/pre-push" ] && grep -q "refs/heads/auto-test/\*" "${repo_dir}/.git/hooks/pre-push"; then
+    echo "PASS: gen_tests — pre-push hook 已限制仅允许推送 auto-test/*"
+    (( PASS++ ))
+  else
+    echo "FAIL: gen_tests — 预期 pre-push hook 限制 auto-test/*，实际缺失或内容不符"
+    (( FAIL++ ))
+  fi
 }
 
 echo "=== Entrypoint Behavior Tests ==="

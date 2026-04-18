@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"context"
+	"fmt"
+	"path"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
+	testgen "otws19.zicp.vip/kelin/dtworkflow/internal/test"
 )
 
 // 编译时断言 giteaCommentAdapter 实现 notify.GiteaCommentCreator 接口
@@ -43,6 +46,8 @@ func (a *giteaCommentAdapter) CreateIssueComment(ctx context.Context, owner, rep
 
 // 编译时检查 *configAdapter 实现 fix.FixConfigProvider 接口
 var _ fix.FixConfigProvider = (*configAdapter)(nil)
+var _ testgen.TestConfigProvider = (*configAdapter)(nil)
+var _ testgen.RepoFileChecker = (*giteaRepoFileChecker)(nil)
 
 // configAdapter 将 config.Manager 适配为 review.ConfigProvider 接口
 type configAdapter struct {
@@ -83,4 +88,36 @@ func (a *configAdapter) GetClaudeEffort() string {
 		return ""
 	}
 	return cfg.Claude.Effort
+}
+
+// ResolveTestGenConfig 实现 test.TestConfigProvider 接口。
+func (a *configAdapter) ResolveTestGenConfig(repoFullName string) config.TestGenOverride {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return config.TestGenOverride{}
+	}
+	return cfg.ResolveTestGenConfig(repoFullName)
+}
+
+// giteaRepoFileChecker 基于 Gitea contents API 检测 ref 下文件是否存在。
+type giteaRepoFileChecker struct {
+	client *gitea.Client
+}
+
+func (c *giteaRepoFileChecker) HasFile(ctx context.Context, owner, repo, ref, module, relPath string) (bool, error) {
+	if c == nil || c.client == nil {
+		return false, fmt.Errorf("giteaRepoFileChecker: client 不能为空")
+	}
+	targetPath := relPath
+	if module != "" {
+		targetPath = path.Join(module, relPath)
+	}
+	contents, _, err := c.client.GetContents(ctx, owner, repo, targetPath, ref)
+	if err != nil {
+		if gitea.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return contents != nil, nil
 }

@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -34,12 +37,19 @@ func (h *handlers) triggerGenTests(c *gin.Context) {
 
 	var req genTestsRequest
 	// gen_tests 允许空 body（使用全部默认值）。
-	// Gin 的 ShouldBindJSON 在 body 为空时会返回 "EOF" 错误，因此仅在 Content-Length > 0
-	// 时绑定请求体；Content-Length <= 0 直接走全默认路径。
-	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
-			Error(c, http.StatusBadRequest, ErrCodeBadRequest, "无效的请求体: "+err.Error())
+	// 不能仅依赖 Content-Length：chunked 请求常为 -1，若据此跳过解析会把合法 body
+	// 静默当成空请求。
+	if c.Request.Body != nil {
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			Error(c, http.StatusBadRequest, ErrCodeBadRequest, "读取请求体失败: "+err.Error())
 			return
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				Error(c, http.StatusBadRequest, ErrCodeBadRequest, "无效的请求体: "+err.Error())
+				return
+			}
 		}
 	}
 
@@ -87,9 +97,6 @@ func (h *handlers) triggerGenTests(c *gin.Context) {
 		baseRef = repoInfo.DefaultBranch
 	}
 
-	// framework 不注入 payload：TaskPayload 目前无 Framework 字段，framework 偏好
-	// 由 config.TestGen.TestFramework 和 test.Service.resolveFramework 解析。API 层
-	// 仅做入口校验，保留字段以便 M4.2 扩展为请求级覆盖（届时需在 TaskPayload 增字段）。
 	payload := model.TaskPayload{
 		TaskType:     model.TaskTypeGenTests,
 		RepoOwner:    owner,
@@ -97,6 +104,7 @@ func (h *handlers) triggerGenTests(c *gin.Context) {
 		RepoFullName: repoInfo.FullName,
 		CloneURL:     repoInfo.CloneURL,
 		Module:       req.Module,
+		Framework:    req.Framework,
 		BaseRef:      baseRef,
 	}
 
