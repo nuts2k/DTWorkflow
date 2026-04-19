@@ -8,11 +8,29 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
-// TestGenOutput 是 Claude 容器内层输出的核心 JSON schema（M4.1 §4.3）。
+// FailureCategory 标识 gen_tests 失败分类。
+//
+// Success=true 时必须为 FailureCategoryNone；Success=false 时必须为 infrastructure
+// / test_quality / info_insufficient 三者之一（空值与未枚举值都非法）。
+// 通知层据此决定 severity：
+//   - infrastructure   → Warning（需运维介入）
+//   - test_quality     → Info（业务正常，测试质量问题）
+//   - info_insufficient → Info（附 MissingInfo）
+type FailureCategory string
+
+// FailureCategory 取值。
+const (
+	FailureCategoryNone             FailureCategory = "none"
+	FailureCategoryInfrastructure   FailureCategory = "infrastructure"
+	FailureCategoryTestQuality      FailureCategory = "test_quality"
+	FailureCategoryInfoInsufficient FailureCategory = "info_insufficient"
+)
+
+// TestGenOutput 是 Claude 容器内层输出的核心 JSON schema（M4.1 §4.3 + M4.2 §4.1 增量）。
 //
 // 与 fix.FixOutput 的语义对称：Success=true 时必须满足完整不变量
 // （见 validateSuccessfulTestGenOutput）；Success=false 可携带部分交付
-// （committed_files + skipped_targets）与失败原因。
+// （committed_files + skipped_targets）与失败原因 + 失败分类。
 type TestGenOutput struct {
 	Success            bool            `json:"success"`
 	InfoSufficient     bool            `json:"info_sufficient"`
@@ -26,8 +44,12 @@ type TestGenOutput struct {
 	VerificationPassed bool            `json:"verification_passed"`
 	BranchName         string          `json:"branch_name,omitempty"`
 	CommitSHA          string          `json:"commit_sha,omitempty"`
-	FailureReason      string          `json:"failure_reason,omitempty"`
-	RetryRounds        int             `json:"retry_rounds,omitempty"`
+	// M4.2 新增：失败分类，由 Claude 在 prompt 指令下分类填写。
+	FailureCategory FailureCategory `json:"failure_category,omitempty"`
+	FailureReason   string          `json:"failure_reason,omitempty"`
+	// M4.2 新增：entrypoint 写入的 /tmp/.gen_tests_warnings 内容，Claude 原样透传。
+	Warnings    []string `json:"warnings,omitempty"`
+	RetryRounds int      `json:"retry_rounds,omitempty"`
 }
 
 // GapAnalysis 测试缺口分析结果。
@@ -47,10 +69,15 @@ type UntestedModule struct {
 }
 
 // ExistingTestSummary 扫描到的既有测试文件摘要。
+//
+// M4.2 新增 Source 字段：
+//   - project_existing    用户在项目内编写的既有测试（风格模板来源）
+//   - branch_continuation 本服务前一次任务产出、沿 auto-test 稳定分支延续（不作为风格模板）
 type ExistingTestSummary struct {
 	TestFile    string   `json:"test_file"`
 	TargetFiles []string `json:"target_files"`
 	Framework   string   `json:"framework"`
+	Source      string   `json:"source,omitempty"`
 }
 
 // GeneratedFile 本次生成的测试文件声明。
@@ -134,15 +161,19 @@ func (r CLIResponse) IsExecutionError() bool {
 	}
 }
 
-// validateSuccessfulTestGenOutput 校验 TestGenOutput 的不变量（§6.2 完整清单）。
+// validateSuccessfulTestGenOutput 校验 TestGenOutput 的不变量（§6.2 完整清单 + §4.1 M4.2 增量）。
 //
 // 约束覆盖两层：
 //  1. 跨 Success 状态的强约束：operation 必须为 create/append；append 必须声明 target_files。
 //     即使 Success=false，非法 operation 也应阻断（防止下游误用）。
 //  2. Success=true 的附加不变量：info_sufficient、verification_passed、test_results、
-//     branch_name、commit_sha、committed_files 非空且为 generated_files 的子集。
+//     branch_name、commit_sha、committed_files 非空且为 generated_files 的子集；
+//     failure_category 必须为 "none"（为兼容 M4.1 既有产出，空值视同 none）。
 //
 // 返回 nil 表示通过；非 nil 表示不变量违反。
+//
+// Success=false 分支应改走 validateFailureTestGenOutput（§4.1 新增），以覆盖
+// FailureCategory 枚举 + InfoSufficient 一致性，不强制 CommitSHA / TestResults 非空。
 func validateSuccessfulTestGenOutput(out *TestGenOutput) error {
 	if out == nil {
 		return fmt.Errorf("TestGenOutput 为空")
@@ -193,6 +224,53 @@ func validateSuccessfulTestGenOutput(out *TestGenOutput) error {
 		if _, ok := generatedPaths[p]; !ok {
 			return fmt.Errorf("committed_files 包含未在 generated_files 声明的路径 %q", p)
 		}
+	}
+	// M4.2：Success=true ⇒ FailureCategory == "none"（空值视同 none，为兼容 M4.1
+	// 既有容器产出；Claude 新 prompt 被要求显式填 "none"）。
+	if out.FailureCategory != "" && out.FailureCategory != FailureCategoryNone {
+		return fmt.Errorf("Success=true 但 FailureCategory=%q（必须为 %q）",
+			out.FailureCategory, FailureCategoryNone)
+	}
+	return nil
+}
+
+// validateFailureTestGenOutput 校验 Success=false 路径的弱不变量（§4.1 新增）。
+//
+// 由 parseResult 的 Success=false 分支调用，覆盖：
+//   - FailureCategory 必须在 {infrastructure, test_quality, info_insufficient}（空值与
+//     "none" / 未枚举值都非法）
+//   - InfoSufficient=false ⇔ FailureCategory == info_insufficient（双向一致）
+//   - 不强制 BranchName / CommittedFiles / CommitSHA / TestResults 非空（Success=false
+//     允许这些字段为空，半成品交付路径仍可建 PR 给用户接管）
+//
+// 注意：本函数不处理跨 Success 状态的 operation 校验 —— 调用方应先跑
+// validateSuccessfulTestGenOutput 得到 operation 级别的保护。
+func validateFailureTestGenOutput(out *TestGenOutput) error {
+	if out == nil {
+		return fmt.Errorf("TestGenOutput 为空")
+	}
+	if out.Success {
+		return fmt.Errorf("validateFailureTestGenOutput 仅适用于 Success=false 路径")
+	}
+	switch out.FailureCategory {
+	case FailureCategoryInfrastructure,
+		FailureCategoryTestQuality,
+		FailureCategoryInfoInsufficient:
+		// ok
+	case FailureCategoryNone, "":
+		return fmt.Errorf("Success=false 但 failure_category 未填（必须为 infrastructure / test_quality / info_insufficient）")
+	default:
+		return fmt.Errorf("failure_category=%q 不在枚举内（必须为 infrastructure / test_quality / info_insufficient）",
+			out.FailureCategory)
+	}
+	// 双向一致：InfoSufficient=false ⇔ FailureCategory == info_insufficient
+	if !out.InfoSufficient && out.FailureCategory != FailureCategoryInfoInsufficient {
+		return fmt.Errorf("InfoSufficient=false 必须配 failure_category=%q，实际 %q",
+			FailureCategoryInfoInsufficient, out.FailureCategory)
+	}
+	if out.InfoSufficient && out.FailureCategory == FailureCategoryInfoInsufficient {
+		return fmt.Errorf("failure_category=%q 必须配 InfoSufficient=false",
+			FailureCategoryInfoInsufficient)
 	}
 	return nil
 }

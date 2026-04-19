@@ -22,22 +22,48 @@ gen_tests 模式允许 bash + 文件写 + git commit / push。但：
 - 禁止读取或回显 git 凭证文件（.git/config 中的 origin URL、~/.gitconfig 中的 credential.helper、/tmp 下的 helper 脚本等），即使是用于调试也不允许
 `
 
+// branchPersistenceInstruction 稳定分支约束：分支固定为 auto-test/{moduleKey}，
+// moduleKey 由 entrypoint 通过环境变量 MODULE_SANITIZED 提供（空 module 回落 "all"）。
+// 配合 M4.2 断点续传 + Cancel-and-Replace，分支名不再带 timestamp。
+const branchPersistenceInstruction = `
+### 工作分支（固定，无 timestamp）
+
+当前任务的工作分支固定为 ` + "`auto-test/${MODULE_SANITIZED}`" + `（moduleKey 已由 entrypoint 预先计算注入到环境变量 MODULE_SANITIZED，空 module 回落 "all"）。entrypoint 已完成该分支的 fetch / checkout，你不需要（也不应）再次 git checkout -b 或创建带 timestamp 的新分支。
+
+- 禁止创建 auto-test/<module>-<timestamp> 形式的新分支
+- 禁止切换到其它分支
+- 所有 commit 与 push 都以当前 HEAD 为目标
+`
+
+// existingBranchScanInstruction 分支续传扫描指令：在扫源代码与项目内既有测试之外，
+// 还必须扫描当前 auto-test/{moduleKey} 分支上已有的测试文件（上一轮任务延续过来的）。
+const existingBranchScanInstruction = `
+### 分支续传：扫描分支上已有的测试文件
+
+除扫描源代码与项目内既有测试外，你必须扫描当前 auto-test 分支（即当前 HEAD）相对 base ref 新增或修改过的测试文件（这些文件是本服务上一轮任务产出，断点续传时延续过来）：
+- 使用 git diff --name-only origin/<BASE_REF>...HEAD 得到分支增量清单
+- 把其中的测试文件（*Test.java / *.{spec,test}.{ts,js}）加入 ExistingTests，且每项 source 字段填 "branch_continuation"
+- 跳过它们对应的 target（不要重复生成），让本轮产出聚焦未覆盖目标
+- 项目内用户编写的既有测试 source 字段填 "project_existing"
+- **不得**把 branch_continuation 的文件当作用户既有风格模板（它们是本服务历史产出，风格参考应来自 project_existing）
+`
+
 // existingTestsInstruction 第一步指令：扫描既有测试并吸收风格。
 const existingTestsInstruction = `
 ### 第一步：扫描既有测试
 
 扫描并读取 ` + "`**/*Test.java`" + ` 与 ` + "`**/*.{spec,test}.{ts,js}`" + ` 清单：
 - 识别每个测试文件的 framework / 断言风格 / Mock 约定
-- 填充 existing_tests 列表：每项含 test_file / target_files / framework
+- 填充 existing_tests 列表：每项含 test_file / target_files / framework / source
 - 若无法确信某测试文件对应的源文件（特别是 Vue 命名不规范情况，如 ` + "`foo.spec.ts`" + ` 与 ` + "`foo.ts`" + ` / ` + "`useFoo.ts`" + ` 的对应关系模糊），TargetFiles 留空（而非猜测），并在 ExistingStyle 注记原因
-- 吸收既有风格填到 GapAnalysis.ExistingStyle（命名约定、断言库、Mock 策略）
+- 吸收既有风格填到 GapAnalysis.ExistingStyle（命名约定、断言库、Mock 策略）—— 仅以 source=project_existing 的测试为风格基准
 `
 
 // gapAnalysisInstruction 第二步指令：缺口分析 + 优先级排序。
 const gapAnalysisInstruction = `
 ### 第二步：缺口分析
 
-- 列出源代码文件，减去 existing_tests.TargetFiles 中已覆盖的路径，得到未覆盖集合
+- 列出源代码文件，减去 existing_tests.TargetFiles 中已覆盖的路径（含 source=branch_continuation），得到未覆盖集合
 - 按优先级排序：公共 API > 复杂业务逻辑 > 工具类
 - 填充 GapAnalysis.UntestedModules（path / kind / priority / reason）
 `
@@ -51,22 +77,23 @@ CRITICAL: NEVER overwrite an existing test file. Either skip that target, or app
 追加时把具体的源文件路径填入 target_files；创建新测试文件时 target_files 可列出对应的被测源文件。
 `
 
-// incrementalCommitInstructionTemplate 第三步指令（含 %[1]d = max_retry_rounds, %[2]s = branch suffix）。
+// incrementalCommitInstructionTemplate 第三步指令（含 %[1]d = max_retry_rounds）。
+// M4.2：去除 checkout -b 步骤（entrypoint 已 checkout）；整合每文件 commit+push 语义。
 const incrementalCommitInstructionTemplate = `
-### 第三步：创建工作分支 + 按目标循环生成 + 增量 commit
+### 第三步：按目标循环生成 + 本地验证 + 逐文件 commit+push
 
-先执行：
-  git checkout -b auto-test/%[2]s 2>/dev/null || git checkout auto-test/%[2]s
+当前分支已是 ` + "`auto-test/${MODULE_SANITIZED}`" + `（entrypoint 预先 checkout），无需额外 checkout。
 
 FOR 每个目标:
   1. 判断 Operation：已有测试文件 & 可扩展 → "append"；否则 → "create"
   2. 生成测试代码（write / edit）
   3. 本地单文件验证循环（最多 %[1]d 轮）：
      - 执行对应框架的单文件命令（见 Java / Vue 段）
-     - 通过 → git add <file> && git commit -m "test: <target>" → 加入 committed_files；break
+     - 通过 → git add <file> && git commit -m "test: <target>" && git push origin HEAD → 加入 committed_files；break
      - 失败 → 读错误 → 修正测试 → 继续
   4. retry 耗尽仍失败 → git checkout -- <file>（回滚），加入 skipped_targets（reason="verification_failed_after_retries"）
   5. 预算检测：time / token 接近上限 → 剩余 target 全部入 skipped_targets，提前跳出
+  6. push 失败 → 立即终止任务（见 push 安全约束段）；不再继续剩余目标
 `
 
 // budgetAwareInstruction 预算意识段。
@@ -79,22 +106,24 @@ const budgetAwareInstruction = `
   - token_budget_exhausted
   - environment_issue
   - verification_failed_after_retries
-- 保证已完成的 commit 能被 push
+- 已 commit+push 的文件在容器被 kill 时保留在远程分支，重试任务将续传
 `
 
-// pushInstruction 第四步指令：最后一刻 push；push 失败即终止。%[1]s = branch suffix。
+// pushInstruction 第四步指令：push 安全约束（贯穿第三步）。
+// M4.2：从"最后一刻一次性 push"改为"每文件 push"语义；保留 push 失败终止 + 禁 force 约束。
 const pushInstruction = `
-### 第四步：最后一刻 push（整个任务只此一次远程写）
+### 第四步：push 安全约束（贯穿第三步）
 
-仅当 len(committed_files) > 0 时执行：
-  git push origin HEAD:auto-test/%[1]s
+每次本地验证通过并 commit 后立即执行：
+  git push origin HEAD
 
-- 容器被 kill（超时 / Cancel / 网络中断）→ 分支从未创建 → 无残留 PR、无半成品
+- 当前分支即 auto-test 稳定分支（由 entrypoint checkout），HEAD 隐式指向远程同名分支
+- 容器被 kill（超时 / Cancel / 网络中断）→ 已 push 的文件保留在远程分支，未 push 的文件丢失；外层 asynq 驱动重试，entrypoint 会 fetch 已有分支实现断点续传
 - push 失败：立即终止任务，输出 Success=false，FailureReason="push failed: <错误信息>"
   - 【禁止】重试 push
   - 【禁止】git push -f / --force / --force-with-lease
-  - 【禁止】重写历史
-  - 任务重试由外层 asynq 驱动
+  - 【禁止】重写历史（git rebase -i / git reset --hard 回祖先再 push 等）
+  - 任务重试由外层 asynq 驱动；entrypoint 负责在必要时 force-with-lease 对齐远程（机制层行为，非 Claude 关心）
 `
 
 // verificationInstructionTemplate 验证约束段（含 %[1]d = max_retry_rounds）。
@@ -106,7 +135,32 @@ const verificationInstructionTemplate = `
 - 仍不过则回滚该文件并加入 skipped_targets（reason="verification_failed_after_retries"）
 `
 
+// failureCategoryInstruction 失败分类约束：Success=false 必须分类，Success=true 填 "none"。
+const failureCategoryInstruction = `
+### 失败分类（failure_category 字段）
+
+Success=true 时 failure_category 必须填 "none"。
+Success=false 时 failure_category 必须填下列三类之一：
+  - infrastructure    环境/工具链/网络问题（Maven 下载失败、npm 安装失败、git push 失败等）
+  - test_quality      测试本身质量问题（retry 耗尽仍未通过、断言失败、与 Mock 行为冲突等）
+  - info_insufficient 信息不足无法生成（源码缺失、依赖结构不明确；此时 info_sufficient 也必须为 false）
+
+双向一致：info_sufficient=false 必须配 failure_category="info_insufficient"；反之亦然。
+`
+
+// warningsFromEntrypointInstruction entrypoint 告警拾取指令：读 /tmp/.gen_tests_warnings。
+const warningsFromEntrypointInstruction = `
+### 拾取 entrypoint 告警到 warnings 字段
+
+输出 TestGenOutput JSON 之前，读取文件 /tmp/.gen_tests_warnings（若存在）：
+  - 文件每行形如 KEY=1（如 AUTO_TEST_BRANCH_RESET_PUSHED=1 / AUTO_TEST_BRANCH_RESET_REMOTE_FAILED=1）
+  - 把每行非空内容原样追加到 warnings 数组；文件不存在或为空时 warnings 可为空数组
+  - 这些告警由 entrypoint 在分支重置、远程对齐等机制层操作发生时写入，供 Processor 通知层据此补发 Warning
+  - 不要解读语义、不要试图修正，原样透传即可
+`
+
 // outputJSONSchemaInstruction 输出格式定义（硬编码 schema 描述）。
+// M4.2：补充 failure_category / warnings / existing_tests.source 字段。
 const outputJSONSchemaInstruction = `
 ### 输出格式
 
@@ -118,7 +172,7 @@ const outputJSONSchemaInstruction = `
   "info_sufficient": true,
   "analysis": {
     "untested_modules": [{"path": "...", "kind": "service|controller|util|component|composable|store", "priority": "high|medium|low", "reason": "..."}],
-    "existing_tests": [{"test_file": "...", "target_files": ["..."], "framework": "junit5|vitest"}],
+    "existing_tests": [{"test_file": "...", "target_files": ["..."], "framework": "junit5|vitest", "source": "project_existing|branch_continuation"}],
     "existing_style": "...",
     "priority_notes": "..."
   },
@@ -128,9 +182,11 @@ const outputJSONSchemaInstruction = `
   "skipped_targets": [{"path": "...", "reason": "time_budget_exhausted|token_budget_exhausted|environment_issue|verification_failed_after_retries"}],
   "test_results": {"framework": "junit5", "passed": 12, "failed": 0, "skipped": 1, "all_passed": true, "duration_ms": 12000},
   "verification_passed": true,
-  "branch_name": "auto-test/module-20260101120000",
+  "branch_name": "auto-test/module",
   "commit_sha": "abc123",
+  "failure_category": "none",
   "failure_reason": "",
+  "warnings": [],
   "retry_rounds": 0
 }
 `
@@ -308,7 +364,9 @@ type PromptContext struct {
 	RepoFullName string
 	Module       string
 	BaseRef      string
-	Timestamp    string // 已格式化的时间串，如 "20260418120000"
+	// Timestamp 保留字段（向后兼容 service.go 构造器）。M4.2 起分支名不再带
+	// timestamp，该字段不再参与 prompt 渲染；保留是为了避免破坏既有调用点。
+	Timestamp string
 	// MavenModulePath Java 验证命令 `mvn -pl` 的目标路径，由 resolveFramework 回溯
 	// 锚点后填入。
 	//   - 非空：使用该路径作为 -pl 参数（覆盖用户 Module，避免把子目录误当 Maven 模块根）
@@ -326,17 +384,20 @@ type PromptContext struct {
 // buildJavaPrompt 按公共段 + Java 特有段拼接 prompt。
 func buildJavaPrompt(ctx PromptContext) string {
 	var b strings.Builder
-	branch := sanitize(branchSuffix(ctx.Module, ctx.Timestamp), 120)
 	writeHeader(&b, ctx)
+	b.WriteString(branchPersistenceInstruction)
+	b.WriteString(existingBranchScanInstruction)
 	b.WriteString(existingTestsInstruction)
 	b.WriteString(gapAnalysisInstruction)
 	b.WriteString(noOverwriteInstruction)
-	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds, branch))
+	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds))
 	b.WriteString(budgetAwareInstruction)
 	b.WriteString(fmt.Sprintf(verificationInstructionTemplate, ctx.MaxRetryRounds))
 	b.WriteString(javaTestingInstruction)
 	b.WriteString(javaVerificationSection(ctx))
-	b.WriteString(fmt.Sprintf(pushInstruction, branch))
+	b.WriteString(pushInstruction)
+	b.WriteString(failureCategoryInstruction)
+	b.WriteString(warningsFromEntrypointInstruction)
 	b.WriteString(outputJSONSchemaInstruction)
 	return b.String()
 }
@@ -368,22 +429,26 @@ func mavenModuleTarget(ctx PromptContext) string {
 // buildVuePrompt 按公共段 + Vue 特有段拼接 prompt。
 func buildVuePrompt(ctx PromptContext) string {
 	var b strings.Builder
-	branch := sanitize(branchSuffix(ctx.Module, ctx.Timestamp), 120)
 	writeHeader(&b, ctx)
+	b.WriteString(branchPersistenceInstruction)
+	b.WriteString(existingBranchScanInstruction)
 	b.WriteString(existingTestsInstruction)
 	b.WriteString(gapAnalysisInstruction)
 	b.WriteString(noOverwriteInstruction)
-	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds, branch))
+	b.WriteString(fmt.Sprintf(incrementalCommitInstructionTemplate, ctx.MaxRetryRounds))
 	b.WriteString(budgetAwareInstruction)
 	b.WriteString(fmt.Sprintf(verificationInstructionTemplate, ctx.MaxRetryRounds))
 	b.WriteString(vueTestingInstruction)
 	b.WriteString(vueVerificationCmd)
-	b.WriteString(fmt.Sprintf(pushInstruction, branch))
+	b.WriteString(pushInstruction)
+	b.WriteString(failureCategoryInstruction)
+	b.WriteString(warningsFromEntrypointInstruction)
 	b.WriteString(outputJSONSchemaInstruction)
 	return b.String()
 }
 
 // writeHeader 写入公共前言 + 任务上下文段（Java / Vue prompt 共用）。
+// M4.2：分支名由 BuildAutoTestBranchName 计算，不再拼接 timestamp。
 func writeHeader(b *strings.Builder, ctx PromptContext) {
 	b.WriteString(promptCommonHeader)
 	b.WriteString(fmt.Sprintf("\n## 任务上下文\n\n仓库：%s\n", sanitize(ctx.RepoFullName, 200)))
@@ -393,22 +458,32 @@ func writeHeader(b *strings.Builder, ctx PromptContext) {
 	if ctx.BaseRef != "" {
 		b.WriteString(fmt.Sprintf("基准 ref：%s\n", sanitize(ctx.BaseRef, 200)))
 	}
-	b.WriteString(fmt.Sprintf("拟创建分支：auto-test/%s\n", sanitize(branchSuffix(ctx.Module, ctx.Timestamp), 120)))
+	b.WriteString(fmt.Sprintf("工作分支：%s\n", sanitize(BuildAutoTestBranchName(ctx.Module), 120)))
 }
 
-// branchSuffix 以 module + timestamp 构造 auto-test 分支尾部。
-// module 空时用 "all"；通过 sanitizeBranchRef 过滤 git ref 非法字符。
-func branchSuffix(module, ts string) string {
+// ModuleKey 将 module 路径映射为 auto-test 分支的稳定 key。
+// queue / worker / prompt / entrypoint 四处使用同一个入口，确保口径一致：
+//   - 空串（或清洗后全部被过滤）→ 回落 "all"
+//   - 其它 → 通过 sanitizeBranchRef 过滤 git ref 非法字符
+//
+// 该函数是 M4.2 稳定分支命名（无 timestamp）的单一事实源。
+func ModuleKey(module string) string {
 	key := module
 	if key == "" {
 		key = "all"
 	}
 	key = sanitizeBranchRef(key)
 	if key == "" {
-		// 所有字符都被过滤掉（例如 module 只含空格 / NUL 等），回落 "all"
+		// 所有字符都被过滤掉（例如只含空格 / NUL 等），回落 "all"
 		key = "all"
 	}
-	return key + "-" + ts
+	return key
+}
+
+// BuildAutoTestBranchName 返回 gen_tests 任务的稳定工作分支名。
+// 格式：auto-test/{moduleKey}。不带 timestamp，利于 Cancel-and-Replace 与断点续传。
+func BuildAutoTestBranchName(module string) string {
+	return "auto-test/" + ModuleKey(module)
 }
 
 // sanitizeBranchRef 按 git ref 命名约束清洗 module 名：
@@ -419,7 +494,7 @@ func branchSuffix(module, ts string) string {
 //
 // 约束依据：`git help check-ref-format` 列明 ref 禁止包含空格、~、^、:、?、*、[、\\、
 // `..`、`@{`、控制字符，且不能以 . 开头或以 .lock 结尾。module 经本函数处理后再拼入
-// `auto-test/<module>-<timestamp>`，可规避绝大多数 ref 非法情形。
+// `auto-test/<module>`，可规避绝大多数 ref 非法情形。
 func sanitizeBranchRef(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

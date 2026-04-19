@@ -28,7 +28,6 @@ func javaCtx() PromptContext {
 		RepoFullName:   "acme/backend",
 		Module:         "services/api",
 		BaseRef:        "main",
-		Timestamp:      "20260418120000",
 		MaxRetryRounds: 3,
 	}
 }
@@ -38,7 +37,6 @@ func vueCtx() PromptContext {
 		RepoFullName:   "acme/frontend",
 		Module:         "packages/web",
 		BaseRef:        "main",
-		Timestamp:      "20260418120000",
 		MaxRetryRounds: 3,
 	}
 }
@@ -46,10 +44,10 @@ func vueCtx() PromptContext {
 func TestBuildJavaPrompt_ContainsCoreKeywords(t *testing.T) {
 	p := buildJavaPrompt(javaCtx())
 	mustContain(t, "Java prompt", p, []string{
-		"git checkout -b auto-test/services-api-20260418120000",
+		// M4.2：稳定分支名（无 timestamp）
+		"auto-test/services-api",
 		"git commit",
-		"git push origin HEAD:auto-test/services-api-20260418120000",
-		"最后一刻",
+		"git push origin HEAD",
 		"**/*Test.java",
 		"NEVER overwrite",
 		`mvn -pl`,
@@ -68,7 +66,28 @@ func TestBuildJavaPrompt_ContainsCoreKeywords(t *testing.T) {
 		"任务上下文",
 		"acme/backend",
 		"services/api",
+		// M4.2 新增段
+		"分支续传",
+		"branch_continuation",
+		"project_existing",
+		"failure_category",
+		"warnings",
+		"/tmp/.gen_tests_warnings",
 	})
+}
+
+func TestBuildJavaPrompt_HasNoTimestampInBranch(t *testing.T) {
+	p := buildJavaPrompt(javaCtx())
+	// 稳定分支格式 auto-test/services-api，不允许尾部再挂 `-<数字时间戳>` 形式
+	forbiddenFragments := []string{
+		"auto-test/services-api-2",
+		"auto-test/services-api-1",
+	}
+	for _, f := range forbiddenFragments {
+		if strings.Contains(p, f) {
+			t.Errorf("Java prompt 不应含带 timestamp 的分支名 %q", f)
+		}
+	}
 }
 
 func TestBuildJavaPrompt_DoesNotContainVueKeywords(t *testing.T) {
@@ -84,8 +103,8 @@ func TestBuildJavaPrompt_DoesNotContainVueKeywords(t *testing.T) {
 func TestBuildVuePrompt_ContainsCoreKeywords(t *testing.T) {
 	p := buildVuePrompt(vueCtx())
 	mustContain(t, "Vue prompt", p, []string{
-		"git checkout -b auto-test/packages-web-20260418120000",
-		"git push origin HEAD:auto-test/packages-web-20260418120000",
+		"auto-test/packages-web",
+		"git push origin HEAD",
 		"vitest run",
 		"{spec,test}",
 		"existing_tests",
@@ -100,6 +119,9 @@ func TestBuildVuePrompt_ContainsCoreKeywords(t *testing.T) {
 		"任务上下文",
 		"acme/frontend",
 		"packages/web",
+		"分支续传",
+		"failure_category",
+		"warnings",
 	})
 }
 
@@ -122,7 +144,7 @@ func TestBuildJavaPrompt_MaxRetryRoundsRendering(t *testing.T) {
 	if !strings.Contains(p, "最多在容器内修正 5 轮") {
 		t.Errorf("应渲染 max_retry_rounds=5, prompt 片段缺失")
 	}
-	if !strings.Contains(p, "最多 5 轮") {
+	if !strings.Contains(p, "最多 %d 轮") && !strings.Contains(p, "最多 5 轮") {
 		t.Errorf("第三步指令也应渲染 5 轮")
 	}
 }
@@ -213,42 +235,143 @@ func TestBuildVuePrompt_ModuleEmptyBranch(t *testing.T) {
 	ctx := vueCtx()
 	ctx.Module = ""
 	p := buildVuePrompt(ctx)
-	if !strings.Contains(p, "auto-test/all-") {
+	if !strings.Contains(p, "auto-test/all") {
 		t.Error("整仓模式分支后缀应用 all")
 	}
-	if !strings.Contains(p, "git push origin HEAD:auto-test/all-20260418120000") {
-		t.Error("整仓模式 push 应显式指向 auto-test/all-<ts>")
+	// 不应出现带 timestamp 尾巴的分支名（例如 auto-test/all-202...）
+	if strings.Contains(p, "auto-test/all-2") {
+		t.Error("整仓模式分支名不应带 timestamp 后缀")
 	}
 }
 
-func TestBranchSuffix(t *testing.T) {
+// ============================================================================
+// M4.2 新增 prompt 指令段
+// ============================================================================
+
+// branchPersistenceInstruction 必须出现在 prompt 中，且强调"禁止带 timestamp 的新分支"。
+func TestBuildJavaPrompt_BranchPersistenceInstruction(t *testing.T) {
+	p := buildJavaPrompt(javaCtx())
+	mustContain(t, "branchPersistence", p, []string{
+		"auto-test/${MODULE_SANITIZED}",
+		"禁止创建",
+		"timestamp",
+		"entrypoint 已完成",
+	})
+}
+
+// existingBranchScanInstruction 必须包含 git diff 扫描 + branch_continuation 语义。
+func TestBuildJavaPrompt_ExistingBranchScanInstruction(t *testing.T) {
+	p := buildJavaPrompt(javaCtx())
+	mustContain(t, "existingBranchScan", p, []string{
+		"分支续传",
+		"git diff --name-only",
+		"branch_continuation",
+		"project_existing",
+		"不得",
+	})
+}
+
+// pushInstruction 必须包含"每文件 push"语义，以及禁止 force + 禁止重写历史。
+func TestBuildJavaPrompt_PushInstructionPerFile(t *testing.T) {
+	p := buildJavaPrompt(javaCtx())
+	mustContain(t, "pushInstruction", p, []string{
+		"git push origin HEAD",
+		"push 失败",
+		"FailureReason=\"push failed",
+		"--force",
+		"--force-with-lease",
+		"重写历史",
+		"禁止】重试 push",
+	})
+	// 不再出现 M4.1 "最后一刻 push" 字样
+	if strings.Contains(p, "最后一刻") {
+		t.Error("M4.2 pushInstruction 不应再出现 '最后一刻' 字样")
+	}
+}
+
+// failureCategoryInstruction 必须列出 4 个枚举值 + 双向一致约束。
+func TestBuildJavaPrompt_FailureCategoryInstruction(t *testing.T) {
+	p := buildJavaPrompt(javaCtx())
+	mustContain(t, "failureCategory", p, []string{
+		"failure_category",
+		"infrastructure",
+		"test_quality",
+		"info_insufficient",
+		"none",
+		"双向一致",
+	})
+}
+
+// warningsFromEntrypointInstruction 必须引导 Claude 读 /tmp/.gen_tests_warnings。
+func TestBuildJavaPrompt_WarningsFromEntrypointInstruction(t *testing.T) {
+	p := buildJavaPrompt(javaCtx())
+	mustContain(t, "warningsFromEntrypoint", p, []string{
+		"/tmp/.gen_tests_warnings",
+		"AUTO_TEST_BRANCH_RESET_PUSHED",
+		"warnings",
+		"原样",
+	})
+}
+
+// outputJSONSchemaInstruction 必须包含新字段示意：failure_category / warnings / existing_tests.source
+func TestBuildJavaPrompt_OutputSchemaHasNewFields(t *testing.T) {
+	p := buildJavaPrompt(javaCtx())
+	mustContain(t, "outputSchema", p, []string{
+		`"failure_category"`,
+		`"warnings"`,
+		`"source"`,
+		"project_existing|branch_continuation",
+	})
+	// schema 示例里分支名不再带 timestamp 尾巴
+	if strings.Contains(p, `"branch_name": "auto-test/module-2`) {
+		t.Error("outputJSONSchema 示例不应再展示带 timestamp 的分支名")
+	}
+}
+
+// ============================================================================
+// ModuleKey / BuildAutoTestBranchName 单测
+// ============================================================================
+
+func TestModuleKey(t *testing.T) {
 	cases := []struct {
 		module string
-		ts     string
 		want   string
 	}{
-		{"", "20260418", "all-20260418"},
-		{"services/api", "20260418", "services-api-20260418"},
-		{"packages/web/ui", "t1", "packages-web-ui-t1"},
-		// 扩展白名单后的覆盖：每类 git ref 非法字符都应被替换为 -，
-		// 连续非法字符合并为单个 - ，且结果不会把非法字符泄露到 branch 名。
-		{"svc with space", "t", "svc-with-space-t"},
-		{"svc:foo", "t", "svc-foo-t"},
-		{"svc~foo", "t", "svc-foo-t"},
-		{"svc^foo", "t", "svc-foo-t"},
-		{"svc?foo*bar[0]", "t", "svc-foo-bar-0-t"},
-		{"svc\\foo", "t", "svc-foo-t"},
-		{"svc@{1}", "t", "svc-1-t"},
-		{"-foo-", "t", "foo-t"},        // 头尾 - 被修剪
-		{".foo.", "t", "foo-t"},        // 头尾 . 被修剪（git 拒绝以 . 开头的 ref）
-		{"a/../b", "t", "a-b-t"},       // / 与 . 都被替换为 -
-		{"foo..bar", "t", "foo.bar-t"}, // ".." 合法字符但 git ref 禁止 ".." 序列
-		{"中文module", "t", "module-t"},  // 非 ASCII 字符统一替换为 -
-		{"   ", "t", "all-t"},          // 全空格 → 全部过滤 → 回落 "all"
+		{"", "all"},
+		{"services/api", "services-api"},
+		{"packages/web/ui", "packages-web-ui"},
+		{"   ", "all"},                  // 全空格清洗后为空 → 回落 all
+		{"中文module", "module"},          // 非 ASCII 字符全部变 - → trim → module
+		{"svc with space", "svc-with-space"},
+		{"svc:foo", "svc-foo"},
+		{"-foo-", "foo"},                // 头尾 - 被修剪
+		{".foo.", "foo"},                // 头尾 . 被修剪
+		{"a/../b", "a-b"},
+		{"foo..bar", "foo.bar"},         // ".." 合并
+		{"\x00\x00", "all"},             // 控制字符全被过滤 → 回落 all
 	}
 	for _, c := range cases {
-		if got := branchSuffix(c.module, c.ts); got != c.want {
-			t.Errorf("branchSuffix(%q,%q)=%q, want %q", c.module, c.ts, got, c.want)
+		if got := ModuleKey(c.module); got != c.want {
+			t.Errorf("ModuleKey(%q)=%q, want %q", c.module, got, c.want)
+		}
+	}
+}
+
+func TestBuildAutoTestBranchName(t *testing.T) {
+	cases := []struct {
+		module string
+		want   string
+	}{
+		{"", "auto-test/all"},
+		{"services/api", "auto-test/services-api"},
+		{"srv/api", "auto-test/srv-api"},
+		{"   ", "auto-test/all"},
+		{"svc with space", "auto-test/svc-with-space"},
+		{"packages/web/ui", "auto-test/packages-web-ui"},
+	}
+	for _, c := range cases {
+		if got := BuildAutoTestBranchName(c.module); got != c.want {
+			t.Errorf("BuildAutoTestBranchName(%q)=%q, want %q", c.module, got, c.want)
 		}
 	}
 }

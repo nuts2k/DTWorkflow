@@ -183,8 +183,9 @@ func successOutput() TestGenOutput {
 		Success:            true,
 		InfoSufficient:     true,
 		VerificationPassed: true,
-		BranchName:         "auto-test/foo-20260418",
+		BranchName:         "auto-test/foo",
 		CommitSHA:          "abc",
+		FailureCategory:    FailureCategoryNone,
 		GeneratedFiles: []GeneratedFile{
 			{Path: "a.java", Operation: "create", TargetFiles: []string{"src/a.java"}, TestCount: 1},
 		},
@@ -339,6 +340,216 @@ func TestValidate_SuccessFalse_OtherFieldsRelaxed(t *testing.T) {
 	}
 	if err := validateSuccessfulTestGenOutput(&out); err != nil {
 		t.Errorf("Success=false 合法 operation 应通过，实际: %v", err)
+	}
+}
+
+// =============================================================================
+// M4.2 FailureCategory 三态覆盖：validateSuccessfulTestGenOutput
+// =============================================================================
+
+// Success=true 显式 FailureCategoryNone → 通过
+func TestValidate_SuccessTrue_CategoryNone_Ok(t *testing.T) {
+	out := successOutput()
+	out.FailureCategory = FailureCategoryNone
+	if err := validateSuccessfulTestGenOutput(&out); err != nil {
+		t.Errorf("Success=true + FailureCategory=none 应通过，实际: %v", err)
+	}
+}
+
+// Success=true 显式非 none → 拒绝
+func TestValidate_SuccessTrue_CategoryNonNone_Rejected(t *testing.T) {
+	for _, cat := range []FailureCategory{
+		FailureCategoryInfrastructure,
+		FailureCategoryTestQuality,
+		FailureCategoryInfoInsufficient,
+		"unknown_value",
+	} {
+		out := successOutput()
+		out.FailureCategory = cat
+		err := validateSuccessfulTestGenOutput(&out)
+		if err == nil || !strings.Contains(err.Error(), "FailureCategory") {
+			t.Errorf("Success=true + FailureCategory=%q 应被拒绝，实际: %v", cat, err)
+		}
+	}
+}
+
+// 兼容 M4.1：Success=true + FailureCategory 未填（空串）应视同 none 通过
+func TestValidate_SuccessTrue_CategoryEmpty_TreatedAsNone(t *testing.T) {
+	out := successOutput()
+	out.FailureCategory = ""
+	if err := validateSuccessfulTestGenOutput(&out); err != nil {
+		t.Errorf("Success=true + FailureCategory 空串应视同 none 通过（M4.1 兼容），实际: %v", err)
+	}
+}
+
+// =============================================================================
+// M4.2 validateFailureTestGenOutput 覆盖
+// =============================================================================
+
+func failureOutputBase() TestGenOutput {
+	return TestGenOutput{
+		Success:         false,
+		InfoSufficient:  true,
+		FailureCategory: FailureCategoryTestQuality,
+		FailureReason:   "retry 耗尽",
+	}
+}
+
+func TestValidateFailure_NilOutput(t *testing.T) {
+	if err := validateFailureTestGenOutput(nil); err == nil {
+		t.Error("nil 应返回错误")
+	}
+}
+
+// Success=true 时调用 Failure 校验 → 语义错误
+func TestValidateFailure_SuccessTrue_Rejected(t *testing.T) {
+	out := successOutput()
+	if err := validateFailureTestGenOutput(&out); err == nil {
+		t.Error("Success=true 时调 validateFailureTestGenOutput 应报错")
+	}
+}
+
+// 4 个 FailureCategory 三态：none / 空 / unknown → 拒绝
+func TestValidateFailure_CategoryEmpty_Rejected(t *testing.T) {
+	out := failureOutputBase()
+	out.FailureCategory = ""
+	err := validateFailureTestGenOutput(&out)
+	if err == nil || !strings.Contains(err.Error(), "failure_category 未填") {
+		t.Errorf("空 failure_category 应被拒绝，实际: %v", err)
+	}
+}
+
+func TestValidateFailure_CategoryNone_Rejected(t *testing.T) {
+	out := failureOutputBase()
+	out.FailureCategory = FailureCategoryNone
+	err := validateFailureTestGenOutput(&out)
+	if err == nil || !strings.Contains(err.Error(), "failure_category 未填") {
+		t.Errorf("Success=false + FailureCategory=none 应被拒绝，实际: %v", err)
+	}
+}
+
+func TestValidateFailure_CategoryUnknown_Rejected(t *testing.T) {
+	out := failureOutputBase()
+	out.FailureCategory = "some_unknown_value"
+	err := validateFailureTestGenOutput(&out)
+	if err == nil || !strings.Contains(err.Error(), "不在枚举内") {
+		t.Errorf("未枚举 failure_category 应被拒绝，实际: %v", err)
+	}
+}
+
+// 合法枚举三种 → 通过
+func TestValidateFailure_ValidCategories_Pass(t *testing.T) {
+	for _, cat := range []FailureCategory{
+		FailureCategoryInfrastructure,
+		FailureCategoryTestQuality,
+	} {
+		out := failureOutputBase()
+		out.FailureCategory = cat
+		if err := validateFailureTestGenOutput(&out); err != nil {
+			t.Errorf("FailureCategory=%q 应通过，实际: %v", cat, err)
+		}
+	}
+	// info_insufficient 类需要 InfoSufficient=false 配合
+	out := failureOutputBase()
+	out.FailureCategory = FailureCategoryInfoInsufficient
+	out.InfoSufficient = false
+	if err := validateFailureTestGenOutput(&out); err != nil {
+		t.Errorf("FailureCategory=info_insufficient + InfoSufficient=false 应通过，实际: %v", err)
+	}
+}
+
+// InfoSufficient=false 必须配 info_insufficient（双向一致）
+func TestValidateFailure_InfoInsufficientBidirectional_Missing(t *testing.T) {
+	out := failureOutputBase()
+	out.InfoSufficient = false
+	out.FailureCategory = FailureCategoryInfrastructure
+	err := validateFailureTestGenOutput(&out)
+	if err == nil || !strings.Contains(err.Error(), "InfoSufficient=false") {
+		t.Errorf("InfoSufficient=false 配非 info_insufficient 应被拒绝，实际: %v", err)
+	}
+}
+
+// 反向：info_insufficient 但 InfoSufficient=true → 拒绝
+func TestValidateFailure_InfoInsufficientBidirectional_Mismatched(t *testing.T) {
+	out := failureOutputBase()
+	out.InfoSufficient = true
+	out.FailureCategory = FailureCategoryInfoInsufficient
+	err := validateFailureTestGenOutput(&out)
+	if err == nil || !strings.Contains(err.Error(), "必须配 InfoSufficient=false") {
+		t.Errorf("info_insufficient 必须配 InfoSufficient=false，实际: %v", err)
+	}
+}
+
+// Success=false && FailureCategory=test_quality → 允许 CommittedFiles / BranchName / CommitSHA 为空
+func TestValidateFailure_TestQualityAllowsEmptyArtifacts(t *testing.T) {
+	out := TestGenOutput{
+		Success:         false,
+		InfoSufficient:  true,
+		FailureCategory: FailureCategoryTestQuality,
+		// 无 BranchName / CommitSHA / CommittedFiles / TestResults
+	}
+	if err := validateFailureTestGenOutput(&out); err != nil {
+		t.Errorf("Success=false + test_quality 允许空交付，实际: %v", err)
+	}
+}
+
+// =============================================================================
+// M4.2 ExistingTestSummary.Source 字段 JSON 正反序列化
+// =============================================================================
+
+func TestExistingTestSummary_SourceRoundtrip(t *testing.T) {
+	original := ExistingTestSummary{
+		TestFile:    "src/test/FooTest.java",
+		TargetFiles: []string{"src/main/Foo.java"},
+		Framework:   "junit5",
+		Source:      "branch_continuation",
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal 失败: %v", err)
+	}
+	if !strings.Contains(string(data), `"source":"branch_continuation"`) {
+		t.Errorf("JSON 应含 source 字段，实际: %s", data)
+	}
+	var round ExistingTestSummary
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("Unmarshal 失败: %v", err)
+	}
+	if round.Source != "branch_continuation" {
+		t.Errorf("Source 字段未正确反序列化: %q", round.Source)
+	}
+}
+
+// Source 空值 omitempty 应被省略
+func TestExistingTestSummary_SourceOmitEmpty(t *testing.T) {
+	original := ExistingTestSummary{
+		TestFile:  "x",
+		Framework: "vitest",
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal 失败: %v", err)
+	}
+	if strings.Contains(string(data), `"source"`) {
+		t.Errorf("空 Source 应被 omitempty 省略，实际: %s", data)
+	}
+}
+
+// =============================================================================
+// M4.2 Warnings 字段 JSON 反序列化
+// =============================================================================
+
+func TestTestGenOutput_WarningsRoundtrip(t *testing.T) {
+	raw := `{"success":true,"info_sufficient":true,"warnings":["AUTO_TEST_BRANCH_RESET_PUSHED=1","X=1"]}`
+	var out TestGenOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("Unmarshal 失败: %v", err)
+	}
+	if len(out.Warnings) != 2 {
+		t.Fatalf("Warnings 长度 = %d, 期望 2", len(out.Warnings))
+	}
+	if out.Warnings[0] != "AUTO_TEST_BRANCH_RESET_PUSHED=1" {
+		t.Errorf("Warnings[0] = %q", out.Warnings[0])
 	}
 }
 

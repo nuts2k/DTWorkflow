@@ -12,6 +12,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
@@ -59,6 +60,23 @@ type RepoFileChecker interface {
 	HasFile(ctx context.Context, owner, repo, ref, module, relPath string) (bool, error)
 }
 
+// ReviewEnqueuer gen_tests 任务完成后触发 review 入队的窄接口。
+//
+// 由 queue.EnqueueHandler.EnqueueManualReview 天然满足；接口定义在 internal/test
+// 只是为了维持 queue → test 的既有依赖方向（禁止 internal/test 反向 import
+// internal/queue），wiring 在 cmd/dtworkflow 主程序完成。
+type ReviewEnqueuer interface {
+	EnqueueManualReview(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error)
+}
+
+// TestGenResultStore Service 持久化测试生成结果所需的窄接口。
+//
+// *store.SQLiteStore 通过 SaveTestGenResult 天然满足此接口；
+// 保持窄接口便于单测 mock，避免在测试中实现完整 store.Store 的 20+ 方法。
+type TestGenResultStore interface {
+	SaveTestGenResult(ctx context.Context, record *store.TestGenResultRecord) error
+}
+
 // ============================================================================
 // Service
 // ============================================================================
@@ -75,7 +93,8 @@ func WithServiceLogger(logger *slog.Logger) ServiceOption {
 	}
 }
 
-// WithPRClient 注入 PR 创建客户端（M4.2 必须；M4.1 createTestPR 占位不调用）。
+// WithPRClient 注入 PR 创建客户端。
+// M4.2：createTestPR 若 prClient 未注入将返回明确错误。
 func WithPRClient(c PRClient) ServiceOption {
 	return func(s *Service) { s.prClient = c }
 }
@@ -86,14 +105,28 @@ func WithFileChecker(c RepoFileChecker) ServiceOption {
 	return func(s *Service) { s.fileChecker = c }
 }
 
+// WithReviewEnqueuer 注入 review 入队器（M4.2 新增）。
+// 未注入时 Execute 跳过"完成后自动 enqueue review"步骤（单测兼容）。
+func WithReviewEnqueuer(e ReviewEnqueuer) ServiceOption {
+	return func(s *Service) { s.reviewEnqueuer = e }
+}
+
+// WithStore 注入测试生成结果持久化 store（M4.2 新增）。
+// 未注入时 persistTestGenResult 静默跳过；适合单测关注主流程而无需 SQLite。
+func WithStore(st TestGenResultStore) ServiceOption {
+	return func(s *Service) { s.store = st }
+}
+
 // Service 测试生成编排服务，负责 gen_tests 任务的完整流程。
 type Service struct {
-	gitea       RepoClient
-	prClient    PRClient
-	pool        GenTestsPoolRunner
-	cfgProv     TestConfigProvider
-	fileChecker RepoFileChecker
-	logger      *slog.Logger
+	gitea          RepoClient
+	prClient       PRClient
+	pool           GenTestsPoolRunner
+	cfgProv        TestConfigProvider
+	fileChecker    RepoFileChecker
+	reviewEnqueuer ReviewEnqueuer     // M4.2：Execute 完成后触发 review 入队
+	store          TestGenResultStore // M4.2：test_gen_results 表 UPSERT
+	logger         *slog.Logger
 }
 
 // NewService 创建 Service 实例。
@@ -121,42 +154,48 @@ func NewService(gitea RepoClient, pool GenTestsPoolRunner, cfgProv TestConfigPro
 	return s
 }
 
-// Execute 执行 gen_tests 任务的完整流程（§4.2）。
+// Execute 执行 gen_tests 任务的完整流程（设计文档 §4.2 八步流程）。
 //
-// 顺序：
-//  1. 解析并校验 test_gen 配置（Enabled 语义）
-//  2. validateModule（路径合法性 + ModuleScope 白名单）
-//  3. resolveBaseRef（空则回退仓库默认分支）
-//  4. resolveFramework（请求级 framework > cfg.test_framework > 仓库探测）
-//  5. 构造 prompt（Java / Vue 独立模板）
-//  6. pool.RunWithCommandAndStdin
-//  7. 解析结果（外层 CLI 信封 → 内层 TestGenOutput → 不变量校验）
-//  8. 业务失败判定（InfoSufficient / Success）
-//  9. createTestPR（M4.1 占位；M4.2 实装）
+// 与 M4.1 相比的关键差异：
+//
+//  1. 失败路径（Success=false / InfoSufficient=false）即使仍返回 sentinel error，
+//     也会在失败之前完成 createTestPR + persistTestGenResult，让 Processor
+//     即便拿到 error 也能拿到 PR 链接与 result metadata。
+//
+//  2. Success=false 路径新增 validateFailureTestGenOutput，覆盖 FailureCategory
+//     枚举 + InfoSufficient 一致性；任一违反视为解析层失败（数据不可信）。
+//
+//  3. 完成后由 test.Service 主动 enqueue review（Success=true 或
+//     ReviewOnFailure=*true 且 PRNumber>0）；入队器与 store 都是可选依赖。
+//
+// 流程：
+//  1. 前置校验：Enabled / validateModule / resolveBaseRef / validateModuleExists
+//  2. resolveFramework / buildPrompt / 容器执行
+//  3. parseResult（外层 CLI 信封 → 内层 TestGenOutput → Success 分支不变量校验）
+//  4. len(CommittedFiles)>0 即使 Success=false 也 createTestPR
+//  5. 阶段 1 UPSERT（review_enqueued=0 占位）
+//  6. review 入队决策 + 成功时阶段 2 UPSERT（review_enqueued=1）
+//  7. 业务失败判定（!InfoSufficient / !Success → sentinel error）
+//  8. return result, nil
 func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*TestGenResult, error) {
+	// Step 1：前置校验
 	tgCfg := s.cfgProv.ResolveTestGenConfig(payload.RepoFullName)
 	// Enabled 指针语义：nil 视为默认启用；*false 才算显式禁用
 	if tgCfg.Enabled != nil && !*tgCfg.Enabled {
 		return nil, fmt.Errorf("%s: %w", payload.RepoFullName, ErrTestGenDisabled)
 	}
-
-	// 1. module 合法性 + ModuleScope 白名单（纯字符串规则，无需访问仓库）
 	if err := validateModule(payload.Module, tgCfg.ModuleScope); err != nil {
 		return nil, err
 	}
-
-	// 2. resolveBaseRef
 	baseRef, err := s.resolveBaseRef(ctx, payload)
 	if err != nil {
 		return nil, err
 	}
-
-	// 3. module 存在性校验（需 baseRef 后的真实访问；fileChecker 未注入则跳过）
 	if err := s.validateModuleExists(ctx, payload, baseRef); err != nil {
 		return nil, err
 	}
 
-	// 4. resolveFramework
+	// Step 2：resolveFramework / buildPrompt / 容器执行
 	chk := newFrameworkChecker(s.fileChecker, ctx, payload.RepoOwner, payload.RepoName, baseRef)
 	requestFramework := strings.TrimSpace(payload.Framework)
 	if requestFramework == "" {
@@ -167,7 +206,6 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		return nil, err
 	}
 
-	// 4. 构造 prompt
 	maxRetry := tgCfg.MaxRetryRounds
 	if maxRetry <= 0 {
 		maxRetry = 3 // 防御性默认，与 config.WithDefaults 保持一致
@@ -192,7 +230,6 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		return nil, fmt.Errorf("未预期的 framework: %q", framework)
 	}
 
-	// 5. 容器执行
 	cmd := buildCommand(s.cfgProv)
 	execResult, execErr := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
 	result := &TestGenResult{
@@ -206,7 +243,6 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	if execResult == nil {
 		return result, fmt.Errorf("容器执行结果为空")
 	}
-	// RawOutput 已由 safeOutput(execResult) 设置；此处无需重复赋值。
 	if execResult.ExitCode != 0 {
 		result.ExitCode = execResult.ExitCode
 		s.logger.ErrorContext(ctx, "gen_tests worker 非零退出",
@@ -215,7 +251,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		return result, nil
 	}
 
-	// 6. 解析 + 不变量校验
+	// Step 3：解析 + 不变量校验（含 Success=false 的 validateFailureTestGenOutput）
 	s.parseResult(result)
 	if result.ParseError != nil {
 		// ParseError 详情仅走日志，不混入返回 error（防 prompt injection）
@@ -227,7 +263,55 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	}
 
 	out := result.Output
-	// 7. 业务失败判定
+
+	// Step 4：createTestPR（Output==nil / BranchName 空 / CommittedFiles 空 → 返回 0）
+	// 关键 M4.2 行为：即使 Success=false 也建 PR（保留半成品供用户接管），
+	// 具体门控由 createTestPR 内部判定。
+	prNum, prURL, prErr := s.createTestPR(ctx, payload, result)
+	if prErr != nil {
+		// PR 创建失败：仍返回 result 让上层保留原始输出做审计；
+		// 但不做 persist（避免写入 PRNumber=0 的误导性记录）。
+		s.logger.ErrorContext(ctx, "创建测试 PR 失败",
+			"repo", payload.RepoFullName, "module", payload.Module,
+			"branch", out.BranchName, "error", prErr)
+		return result, fmt.Errorf("创建测试 PR 失败: %w", prErr)
+	}
+	result.PRNumber = prNum
+	result.PRURL = prURL
+
+	// Step 5：阶段 1 UPSERT（review_enqueued=0 占位）
+	// 失败仅 warn 不阻断主流程（persistTestGenResult 内部处理）。
+	s.persistTestGenResult(ctx, payload, result, false)
+
+	// Step 6：review 入队决策（Success=true 默认入队；Success=false 仅在 ReviewOnFailure=*true 时入队）
+	reviewOnFailure := tgCfg.ReviewOnFailure != nil && *tgCfg.ReviewOnFailure
+	shouldEnqueue := s.reviewEnqueuer != nil && result.PRNumber > 0 &&
+		(out.Success || reviewOnFailure)
+	if shouldEnqueue {
+		reviewPayload := model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			RepoOwner:    payload.RepoOwner,
+			RepoName:     payload.RepoName,
+			RepoFullName: payload.RepoFullName,
+			CloneURL:     payload.CloneURL,
+			PRNumber:     result.PRNumber,
+			BaseRef:      result.BaseRef,
+			HeadRef:      out.BranchName,
+			HeadSHA:      out.CommitSHA,
+		}
+		triggeredBy := "gen_tests:" + payload.TaskID
+		if _, enqErr := s.reviewEnqueuer.EnqueueManualReview(ctx, reviewPayload, triggeredBy); enqErr != nil {
+			// 不阻断主流程：review 入队失败仅记日志；test_gen_results.review_enqueued=0 供审计检索
+			s.logger.WarnContext(ctx, "完成后入队 review 失败",
+				"task_id", payload.TaskID, "repo", payload.RepoFullName,
+				"pr_number", result.PRNumber, "error", enqErr)
+		} else {
+			// 阶段 2 UPSERT：仅刷新 review_enqueued=1 / updated_at
+			s.persistTestGenResult(ctx, payload, result, true)
+		}
+	}
+
+	// Step 7：业务失败判定
 	if !out.InfoSufficient {
 		return result, fmt.Errorf("%s: %w", payload.RepoFullName, ErrInfoInsufficient)
 	}
@@ -235,18 +319,16 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		return result, fmt.Errorf("%s: %w", payload.RepoFullName, ErrTestGenFailed)
 	}
 
-	// 8. createTestPR（M4.1 占位；M4.2 实装）
-	prNum, prURL, prErr := s.createTestPR(ctx, payload, result)
-	if prErr != nil {
-		return result, fmt.Errorf("创建测试 PR 失败: %w", prErr)
-	}
-	result.PRNumber = prNum
-	result.PRURL = prURL
+	// Step 8：Success=true happy path
 	return result, nil
 }
 
 // parseResult 双层 JSON 解析：外层 CLI 信封 → 内层 TestGenOutput → 不变量校验。
 // 失败将信息写入 result.ParseError（不返回 error，由调用方统一决策）。
+//
+// M4.2：Success=true 走 validateSuccessfulTestGenOutput（强约束）；
+// Success=false 额外走 validateFailureTestGenOutput（覆盖 FailureCategory 枚举
+// + InfoSufficient 一致性；违反视为数据不可信 → ParseError）。
 func (s *Service) parseResult(r *TestGenResult) {
 	var cliResp CLIResponse
 	if err := json.Unmarshal([]byte(r.RawOutput), &cliResp); err != nil {
@@ -273,6 +355,14 @@ func (s *Service) parseResult(r *TestGenResult) {
 	if err := validateSuccessfulTestGenOutput(&out); err != nil {
 		r.ParseError = err
 		return
+	}
+	// M4.2：Success=false 补充 failure_category 枚举 + InfoSufficient 一致性校验。
+	// 违反视为数据不可信 → ParseError，同等严重度，不走业务失败路径。
+	if !out.Success {
+		if err := validateFailureTestGenOutput(&out); err != nil {
+			r.ParseError = err
+			return
+		}
 	}
 	r.Output = &out
 }
@@ -423,19 +513,174 @@ func containsDotDotSegment(p string) bool {
 	return false
 }
 
-// createTestPR 在 Claude 完成 push 后创建 PR。
+// createTestPR 在 Claude 完成 push 后创建 / 复用 PR。
 //
-// M4.1：占位实现，直接返回零值；签名冻结（M4.2 不得修改）。
-// 签名冻结的原因：M4.1 单测以此签名验证调用链；M4.2 实装时若改签名会破坏既有测试。
+// M4.2 实装（与 fix.createFixPR 幂等模板对称）：
+//   - Output==nil / BranchName 空 / CommittedFiles 空 → 返回 (0,"",nil)，不建 PR
+//     （兼容 Success=false 且无产出的降级路径，不视为错误）
+//   - PRClient 未注入 → 返回明确错误（production 路径必须注入）
+//   - 幂等保护：先 ListRepoPullRequests 查询同 head 分支 open PR，存在则复用
+//   - title 固定为 `test: 补充 <module|整仓> 测试用例`，250 字符截断
+//   - body 由 FormatTestGenPRBody 渲染
 //
-// M4.2 实装计划：
-//   - 若 PRClient 未注入 → 返回明确错误
-//   - ListRepoPullRequests 做幂等检查，已存在同 head 分支的 open PR 则复用
-//   - 构造 title="test: gen_tests <module|all>"，body 含 GapAnalysis / TestResults
-//   - CreatePullRequest(head=result.Output.BranchName, base=result.BaseRef)
-func (s *Service) createTestPR(_ context.Context, _ model.TaskPayload,
-	_ *TestGenResult) (prNumber int64, prURL string, err error) {
-	return 0, "", nil
+// 关键语义：即使 Success=false，只要 len(CommittedFiles)>0 也建 PR——
+// 保留半成品供用户接管（D5 决策）。
+func (s *Service) createTestPR(ctx context.Context, payload model.TaskPayload,
+	result *TestGenResult) (prNumber int64, prURL string, err error) {
+	if result == nil || result.Output == nil {
+		return 0, "", nil
+	}
+	out := result.Output
+	if out.BranchName == "" || len(out.CommittedFiles) == 0 {
+		return 0, "", nil
+	}
+
+	if s.prClient == nil {
+		return 0, "", fmt.Errorf("PRClient 未注入")
+	}
+
+	// 1. 幂等：查同 head 分支 open PR
+	if num, url, ok := s.findExistingTestPR(ctx, payload.RepoOwner, payload.RepoName, out.BranchName); ok {
+		s.logger.InfoContext(ctx, "复用已存在的测试 PR（幂等）",
+			"repo", payload.RepoFullName, "module", payload.Module,
+			"branch", out.BranchName, "pr_number", num)
+		return num, url, nil
+	}
+
+	// 2. 构造 title
+	moduleLabel := payload.Module
+	if strings.TrimSpace(moduleLabel) == "" {
+		moduleLabel = "整仓"
+	}
+	title := fmt.Sprintf("test: 补充 %s 测试用例", moduleLabel)
+	if len(title) > 250 {
+		title = title[:250]
+	}
+
+	// 3. 构造 body（交由 pr_body.go 渲染，包含 GapAnalysis / TestResults 等）
+	body := FormatTestGenPRBody(out, payload, string(result.Framework))
+
+	pr, _, err := s.prClient.CreatePullRequest(ctx, payload.RepoOwner, payload.RepoName,
+		gitea.CreatePullRequestOption{
+			Head:  out.BranchName,
+			Base:  result.BaseRef,
+			Title: title,
+			Body:  body,
+		})
+	if err != nil {
+		return 0, "", err
+	}
+	if pr == nil {
+		return 0, "", fmt.Errorf("Gitea API 返回空 PR")
+	}
+	return pr.Number, pr.HTMLURL, nil
+}
+
+// findExistingTestPR 查询同 head 分支的 open PR；找到返回 (number, url, true)。
+//
+// 列表查询失败按 fail-open 处理（返回 false），让后续 CreatePullRequest 走原本路径，
+// 失败再处理——避免列表 API 短暂故障阻断主流程。模板对齐 fix.findExistingFixPR。
+func (s *Service) findExistingTestPR(ctx context.Context, owner, repo, headBranch string) (int64, string, bool) {
+	if headBranch == "" {
+		return 0, "", false
+	}
+	prs, _, err := s.prClient.ListRepoPullRequests(ctx, owner, repo,
+		gitea.ListPullRequestsOptions{
+			State:       "open",
+			ListOptions: gitea.ListOptions{PageSize: 50},
+		})
+	if err != nil {
+		s.logger.WarnContext(ctx, "查询既有 PR 失败，跳过幂等检查继续创建",
+			"owner", owner, "repo", repo, "head", headBranch, "error", err)
+		return 0, "", false
+	}
+	for _, pr := range prs {
+		if pr == nil || pr.Head == nil {
+			continue
+		}
+		if pr.Head.Ref == headBranch {
+			return pr.Number, pr.HTMLURL, true
+		}
+	}
+	return 0, "", false
+}
+
+// persistTestGenResult 向 test_gen_results 表写入一次 UPSERT。
+//
+// 调用语义（两阶段）：
+//   - 阶段 1：Execute Step 5，reviewEnqueued=false 占位写入
+//   - 阶段 2：Execute Step 6 review 入队成功后，reviewEnqueued=true 刷新同一行
+//
+// 失败仅 warn 不阻断主流程；store 未注入时静默跳过（便于单测聚焦主流程）。
+// 仅在 result.Output 非空时 persist——ParseError 路径没有结构化数据可存。
+func (s *Service) persistTestGenResult(ctx context.Context, payload model.TaskPayload,
+	result *TestGenResult, reviewEnqueued bool) {
+	if s.store == nil || result == nil || result.Output == nil {
+		return
+	}
+	rec := buildTestGenResultRecord(payload, result, reviewEnqueued)
+	if err := s.store.SaveTestGenResult(ctx, rec); err != nil {
+		s.logger.WarnContext(ctx, "持久化 test_gen_results 失败，忽略",
+			"task_id", payload.TaskID,
+			"repo", payload.RepoFullName,
+			"module", payload.Module,
+			"review_enqueued", reviewEnqueued,
+			"error", err)
+	}
+}
+
+// buildTestGenResultRecord 把 payload + result 映射为 store.TestGenResultRecord。
+//
+// 约定：
+//   - record.ID 留空交给 store 生成 UUID
+//   - record.OutputJSON = json.Marshal(result.Output)；序列化失败回退 "{}"
+//     并记 warn（不吞错）
+//   - failure_category 默认 "none"（Success=true 或未填场景；DB 默认值需要显式写入）
+//   - TestResults / CLIMeta 若为空则对应字段留 0
+//   - truncation 由 store 层负责（TestGenResultRecord 契约里 ≤2 KB 截断）
+func buildTestGenResultRecord(payload model.TaskPayload, result *TestGenResult,
+	reviewEnqueued bool) *store.TestGenResultRecord {
+	out := result.Output // 调用方确保非 nil
+	rec := &store.TestGenResultRecord{
+		TaskID:             payload.TaskID,
+		RepoFullName:       payload.RepoFullName,
+		Module:             payload.Module,
+		Framework:          string(result.Framework),
+		BaseRef:            result.BaseRef,
+		BranchName:         out.BranchName,
+		CommitSHA:          out.CommitSHA,
+		PRNumber:           result.PRNumber,
+		PRURL:              result.PRURL,
+		Success:            out.Success,
+		InfoSufficient:     out.InfoSufficient,
+		VerificationPassed: out.VerificationPassed,
+		FailureCategory:    string(out.FailureCategory),
+		FailureReason:      out.FailureReason,
+		GeneratedCount:     len(out.GeneratedFiles),
+		CommittedCount:     len(out.CommittedFiles),
+		SkippedCount:       len(out.SkippedTargets),
+		ReviewEnqueued:     reviewEnqueued,
+	}
+	// FailureCategory 空值归一为 "none"（与 SQL 列默认值对齐，便于查询）。
+	if rec.FailureCategory == "" {
+		rec.FailureCategory = string(FailureCategoryNone)
+	}
+	if out.TestResults != nil {
+		rec.TestPassed = out.TestResults.Passed
+		rec.TestFailed = out.TestResults.Failed
+		rec.TestDurationMs = out.TestResults.DurationMs
+	}
+	if result.CLIMeta != nil {
+		rec.CostUSD = result.CLIMeta.CostUSD
+		rec.DurationMs = result.CLIMeta.DurationMs
+	}
+	// OutputJSON 序列化失败回退空对象；真实错误通过调用方日志覆盖。
+	if b, err := json.Marshal(out); err == nil {
+		rec.OutputJSON = string(b)
+	} else {
+		rec.OutputJSON = "{}"
+	}
+	return rec
 }
 
 // WriteDegraded M4.1 no-op 实现（仅结构化日志）。
