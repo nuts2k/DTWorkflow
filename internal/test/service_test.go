@@ -181,6 +181,45 @@ func (m *mockStore) lastRecord() *store.TestGenResultRecord {
 	return m.records[len(m.records)-1]
 }
 
+// UpdateTestGenResultReviewEnqueued 模拟阶段 2 partial UPDATE：
+// 找到最近一条匹配 task_id 的记录，把 ReviewEnqueued 置为 true。
+// 这个方法被 test.Service.markReviewEnqueued 调用。
+func (m *mockStore) UpdateTestGenResultReviewEnqueued(_ context.Context, taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	if m.err != nil {
+		return m.err
+	}
+	if taskID == "" {
+		return store.ErrInvalidID
+	}
+	for i := len(m.records) - 1; i >= 0; i-- {
+		if m.records[i].TaskID == taskID {
+			m.records[i].ReviewEnqueued = true
+			return nil
+		}
+	}
+	return store.ErrTestGenResultNotFound
+}
+
+// GetTestGenResultByTaskID 模拟按 task_id 查询最近记录，供 Execute 的 review 入队
+// 幂等 guard（lookupPreviousEnqueueState）使用。未找到返回 (nil, nil)。
+func (m *mockStore) GetTestGenResultByTaskID(_ context.Context, taskID string) (*store.TestGenResultRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	for i := len(m.records) - 1; i >= 0; i-- {
+		if m.records[i].TaskID == taskID {
+			rec := *m.records[i]
+			return &rec, nil
+		}
+	}
+	return nil, nil
+}
+
 func notFoundErr() error {
 	return &gitea.ErrorResponse{StatusCode: http.StatusNotFound, Message: "not found"}
 }
@@ -1093,16 +1132,17 @@ func TestExecute_M42_SuccessHappyPath_TwoUpserts(t *testing.T) {
 	if result.PRNumber != 42 {
 		t.Errorf("PRNumber=%d, want 42", result.PRNumber)
 	}
+	// I6 修订：阶段 1 走 SaveTestGenResult（append record），阶段 2 走
+	// UpdateTestGenResultReviewEnqueued（partial UPDATE，原地改 ReviewEnqueued）。
+	// calls 计数两次（每次方法调用都 +1），records 仅 1 条（阶段 2 不 append）。
 	if st.calls != 2 {
-		t.Errorf("SaveTestGenResult 应调用 2 次（阶段 1+2），实际 %d", st.calls)
+		t.Errorf("store 方法应调用 2 次（Save + UpdateReviewEnqueued），实际 %d", st.calls)
 	}
-	if len(st.records) == 2 {
-		if st.records[0].ReviewEnqueued {
-			t.Errorf("阶段 1 UPSERT 的 review_enqueued 应为 false，实际 true")
-		}
-		if !st.records[1].ReviewEnqueued {
-			t.Errorf("阶段 2 UPSERT 的 review_enqueued 应为 true")
-		}
+	if len(st.records) != 1 {
+		t.Fatalf("records 数量应为 1（阶段 2 只做 partial UPDATE），实际 %d", len(st.records))
+	}
+	if !st.records[0].ReviewEnqueued {
+		t.Errorf("阶段 2 partial UPDATE 后 review_enqueued 应为 true")
 	}
 	if re.calls != 1 {
 		t.Errorf("EnqueueManualReview 应被调用 1 次，实际 %d", re.calls)
@@ -1289,10 +1329,14 @@ func TestExecute_M42_ReviewOnFailureTrue_EnqueuesOnFailure(t *testing.T) {
 	if re.calls != 1 {
 		t.Errorf("ReviewOnFailure=*true 应触发 1 次 EnqueueManualReview，实际 %d", re.calls)
 	}
+	// I6：阶段 1 Save + 阶段 2 UpdateReviewEnqueued = 2 次 store 调用；records 只有 1 条。
 	if st.calls != 2 {
-		t.Errorf("ReviewOnFailure=*true 成功入队应做 2 次 UPSERT，实际 %d", st.calls)
+		t.Errorf("ReviewOnFailure=*true 成功入队应做 2 次 store 调用（Save + UpdateReviewEnqueued），实际 %d", st.calls)
 	}
-	if st.calls == 2 && !st.records[1].ReviewEnqueued {
+	if len(st.records) != 1 {
+		t.Fatalf("records 数量应为 1，实际 %d", len(st.records))
+	}
+	if !st.records[0].ReviewEnqueued {
 		t.Errorf("阶段 2 review_enqueued 应为 true")
 	}
 }

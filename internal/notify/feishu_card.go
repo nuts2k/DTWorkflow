@@ -135,6 +135,15 @@ func resolveHeaderStyle(msg Message) (title, color string) {
 	}
 }
 
+// failure_category 枚举字面量与 internal/test.FailureCategory* 保持同步。
+// notify 包不直接 import internal/test 避免跨包循环；若未来 test 侧新增/重命名枚举，
+// 需同步更新本常量块与下方 switch。
+const (
+	genTestsCategoryInfrastructure   = "infrastructure"
+	genTestsCategoryTestQuality      = "test_quality"
+	genTestsCategoryInfoInsufficient = "info_insufficient"
+)
+
 // genTestsFailedHeader 根据 failure_category 返回 Failed 事件的标题与卡片颜色。
 // 映射规则（与 §4.9.2 一致）：
 //   - infrastructure    → Warning（orange）— 基础设施故障
@@ -147,11 +156,11 @@ func genTestsFailedHeader(msg Message) (title, color string) {
 		category = msg.Metadata[MetaKeyFailureCategory]
 	}
 	switch category {
-	case "infrastructure":
+	case genTestsCategoryInfrastructure:
 		return "测试生成失败（基础设施故障）", "orange"
-	case "test_quality":
+	case genTestsCategoryTestQuality:
 		return "测试生成未达标", "blue"
-	case "info_insufficient":
+	case genTestsCategoryInfoInsufficient:
 		return "测试生成信息不足", "blue"
 	default:
 		return "测试生成失败", "orange"
@@ -196,15 +205,15 @@ func genTestsFailureHint(msg Message) string {
 		return ""
 	}
 	switch msg.Metadata[MetaKeyFailureCategory] {
-	case "infrastructure":
+	case genTestsCategoryInfrastructure:
 		return "**提示**: 基础设施故障，建议重试或检查环境"
-	case "test_quality":
+	case genTestsCategoryTestQuality:
 		generated := msg.Metadata[MetaKeyGeneratedCount]
 		if generated == "" {
 			generated = "0"
 		}
 		return fmt.Sprintf("**提示**: 测试质量未达标，已生成的 %s 个测试可参考", generated)
-	case "info_insufficient":
+	case genTestsCategoryInfoInsufficient:
 		return "**提示**: 信息不足，请补充相关上下文后重试"
 	default:
 		return ""

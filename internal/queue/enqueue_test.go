@@ -187,6 +187,13 @@ func (m *mockStore) GetTestGenResultByTaskID(_ context.Context, _ string) (*stor
 	return nil, nil
 }
 
+// UpdateTestGenResultReviewEnqueued M4.2 I6 partial UPDATE 语义；测试 mock 只计数，
+// 统一复用 saveTestGenCalls 追踪 store 交互次数（避免多字段引入多 assertion）。
+func (m *mockStore) UpdateTestGenResultReviewEnqueued(_ context.Context, _ string) error {
+	m.saveTestGenCalls++
+	return nil
+}
+
 func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
 	if m.activeGenTestsModulesErr != nil {
 		return nil, m.activeGenTestsModulesErr

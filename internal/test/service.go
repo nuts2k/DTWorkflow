@@ -71,10 +71,16 @@ type ReviewEnqueuer interface {
 
 // TestGenResultStore Service 持久化测试生成结果所需的窄接口。
 //
-// *store.SQLiteStore 通过 SaveTestGenResult 天然满足此接口；
-// 保持窄接口便于单测 mock，避免在测试中实现完整 store.Store 的 20+ 方法。
+// *store.SQLiteStore 通过 SaveTestGenResult / UpdateTestGenResultReviewEnqueued /
+// GetTestGenResultByTaskID 天然满足此接口；保持窄接口便于单测 mock，避免在测试中
+// 实现完整 store.Store 的 20+ 方法。两阶段 UPSERT 的阶段 2 走
+// UpdateTestGenResultReviewEnqueued 的 partial UPDATE 语义，避免覆盖阶段 1
+// 之后可能由其它异步组件写入的字段；GetTestGenResultByTaskID 用于 Execute 重试
+// 时检查 review 入队幂等（I10）。
 type TestGenResultStore interface {
 	SaveTestGenResult(ctx context.Context, record *store.TestGenResultRecord) error
+	UpdateTestGenResultReviewEnqueued(ctx context.Context, taskID string) error
+	GetTestGenResultByTaskID(ctx context.Context, taskID string) (*store.TestGenResultRecord, error)
 }
 
 // ============================================================================
@@ -191,6 +197,12 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	if err != nil {
 		return nil, err
 	}
+	// M4.2 修订：resolveBaseRef 解析后**必须**把 baseRef 回写到 payload，
+	// 让 worker/container.go 的 buildContainerEnv 把 BASE_REF 注入容器环境。
+	// 否则整仓模式或新增触发入口（M4.3 Webhook PR merged）忘记提前填充 baseRef
+	// 时，entrypoint 看到空 BASE_REF 会在 `git rev-parse "origin/"` 上 set -e 退出，
+	// 失败信息极度误导。
+	payload.BaseRef = baseRef
 	if err := s.validateModuleExists(ctx, payload, baseRef); err != nil {
 		return nil, err
 	}
@@ -264,6 +276,17 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 
 	out := result.Output
 
+	// I7：在进入"对外产生副作用"的节点前检查 ctx.Err()。Cancel-and-Replace
+	// 会在新任务入队时 cancel 旧任务的 asynq ctx；被取消任务若继续 createTestPR
+	// / persistTestGenResult / EnqueueManualReview 就会留下僵尸 PR 与重复 review 任务。
+	// 此处主动返回 context.Canceled，让 Processor 的 errors.Is(runErr, context.Canceled)
+	// 分支把任务状态标记为 cancelled（见 processor.go:markTaskCancelled）。
+	if err := ctx.Err(); err != nil {
+		s.logger.InfoContext(ctx, "gen_tests 任务在 PR 创建前检测到 ctx 取消，跳过后续副作用",
+			"repo", payload.RepoFullName, "module", payload.Module, "error", err)
+		return result, err
+	}
+
 	// Step 4：createTestPR（Output==nil / BranchName 空 / CommittedFiles 空 → 返回 0）
 	// 关键 M4.2 行为：即使 Success=false 也建 PR（保留半成品供用户接管），
 	// 具体门控由 createTestPR 内部判定。
@@ -287,6 +310,19 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	reviewOnFailure := tgCfg.ReviewOnFailure != nil && *tgCfg.ReviewOnFailure
 	shouldEnqueue := s.reviewEnqueuer != nil && result.PRNumber > 0 &&
 		(out.Success || reviewOnFailure)
+	// I10 修订：检查 test_gen_results.review_enqueued 已为 1 则跳过（重试幂等）。
+	// gen_tests 任务被 asynq 重试时，同一 PRNumber 下的 review 已被前一轮入队，
+	// 再次入队会让 review 侧 Cancel-and-Replace 取消掉正在执行的 review，造成无谓
+	// 的容器抖动。PR 编号变更（例如旧 PR 被关闭 + 新 PR 创建）会对应新的 PRNumber
+	// 主键，这里的 guard 仍允许入队。
+	if shouldEnqueue && s.store != nil && payload.TaskID != "" {
+		if prev, err := s.lookupPreviousEnqueueState(ctx, payload.TaskID, result.PRNumber); err == nil && prev {
+			s.logger.InfoContext(ctx, "检测到本次任务已为同一 PR 入队过 review，跳过重复入队",
+				"task_id", payload.TaskID, "repo", payload.RepoFullName,
+				"pr_number", result.PRNumber)
+			shouldEnqueue = false
+		}
+	}
 	if shouldEnqueue {
 		reviewPayload := model.TaskPayload{
 			TaskType:     model.TaskTypeReviewPR,
@@ -306,8 +342,9 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 				"task_id", payload.TaskID, "repo", payload.RepoFullName,
 				"pr_number", result.PRNumber, "error", enqErr)
 		} else {
-			// 阶段 2 UPSERT：仅刷新 review_enqueued=1 / updated_at
-			s.persistTestGenResult(ctx, payload, result, true)
+			// 阶段 2：partial UPDATE 只翻转 review_enqueued 标志，不再走全字段 UPSERT
+			// （避免把阶段 1 之后可能已被更新的其它字段复写回阶段 1 的值）。
+			s.markReviewEnqueued(ctx, payload)
 		}
 	}
 
@@ -364,6 +401,10 @@ func (s *Service) parseResult(r *TestGenResult) {
 			return
 		}
 	}
+	// M4.2 安全加固：统一脱敏所有 Claude 自由文本字段（含 warnings 白名单过滤），
+	// 防止 prompt-injection 内容流入飞书卡片 / PR body / Gitea 评论。详见
+	// sanitizeTestGenOutput 函数说明。
+	sanitizeTestGenOutput(&out)
 	r.Output = &out
 }
 
@@ -420,11 +461,13 @@ func validateModule(module, scope string) error {
 		return fmt.Errorf("%w: module=%q 不能为绝对路径", ErrInvalidModule, module)
 	}
 	// 同时检查原字符串与 path.Clean 归一化结果：
-	//   - 原字符串含 "../" 或 ".." 尾：按语义拒绝（path.Clean 可能扁平化为合法路径，
-	//     如 "services/../etc" → "etc"，但用户意图可疑，一律视为非法）
+	//   - 原字符串含 ".." 段（如 "a/../b"）→ 按语义拒绝（path.Clean 会扁平化，
+	//     但用户意图可疑，一律视为非法）
 	//   - cleaned 含 "../" 或等于 ".."：防止扁平化后依然能走出仓库根
-	if containsDotDotSegment(module) || cleaned == ".." ||
-		strings.HasPrefix(cleaned, "../") || strings.Contains("/"+cleaned+"/", "/../") {
+	//
+	// 说明：path.Clean 后不会存在中间 "/../" 段，因此无需再额外检查
+	// strings.Contains("/"+cleaned+"/", "/../") —— containsDotDotSegment 已覆盖原字符串。
+	if containsDotDotSegment(module) || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return fmt.Errorf("%w: module=%q 不能包含 ..", ErrInvalidModule, module)
 	}
 	if scope != "" {
@@ -605,11 +648,10 @@ func (s *Service) findExistingTestPR(ctx context.Context, owner, repo, headBranc
 	return 0, "", false
 }
 
-// persistTestGenResult 向 test_gen_results 表写入一次 UPSERT。
+// persistTestGenResult 向 test_gen_results 表写入一次全字段 UPSERT（阶段 1 专用）。
 //
-// 调用语义（两阶段）：
-//   - 阶段 1：Execute Step 5，reviewEnqueued=false 占位写入
-//   - 阶段 2：Execute Step 6 review 入队成功后，reviewEnqueued=true 刷新同一行
+// 阶段 1：Execute Step 5，reviewEnqueued=false 占位写入主结果。
+// 阶段 2：走 markReviewEnqueued 的 partial UPDATE（见该方法说明）。
 //
 // 失败仅 warn 不阻断主流程；store 未注入时静默跳过（便于单测聚焦主流程）。
 // 仅在 result.Output 非空时 persist——ParseError 路径没有结构化数据可存。
@@ -625,6 +667,38 @@ func (s *Service) persistTestGenResult(ctx context.Context, payload model.TaskPa
 			"repo", payload.RepoFullName,
 			"module", payload.Module,
 			"review_enqueued", reviewEnqueued,
+			"error", err)
+	}
+}
+
+// lookupPreviousEnqueueState 查询本 task_id 是否已为同一 PRNumber 入队过 review。
+// 返回 true 表示需要跳过重复入队；查询失败（含未找到）一律返回 false（fail-open），
+// 确保重试时不会因为瞬时 DB 错误而永远不入队。
+func (s *Service) lookupPreviousEnqueueState(ctx context.Context, taskID string, prNumber int64) (bool, error) {
+	rec, err := s.store.GetTestGenResultByTaskID(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+	if rec == nil {
+		return false, nil
+	}
+	// PR 编号变化（例如旧 PR 被关闭 + 新 PR 创建）时不跳过：新 PRNumber 对应一次新的
+	// review 入队需求；只有完全相同的 PR 上 review 已入队才算重复。
+	return rec.ReviewEnqueued && rec.PRNumber == prNumber, nil
+}
+
+// markReviewEnqueued 阶段 2 专用：只把 review_enqueued 翻转为 true、刷新 updated_at。
+// 相比全字段 UPSERT 更安全：不会覆盖阶段 1 之后由其它异步组件写入的字段。
+// store 未注入 / task_id 空 / DB 错误均仅 warn，不阻断主流程。
+func (s *Service) markReviewEnqueued(ctx context.Context, payload model.TaskPayload) {
+	if s.store == nil || payload.TaskID == "" {
+		return
+	}
+	if err := s.store.UpdateTestGenResultReviewEnqueued(ctx, payload.TaskID); err != nil {
+		s.logger.WarnContext(ctx, "刷新 review_enqueued 失败，忽略",
+			"task_id", payload.TaskID,
+			"repo", payload.RepoFullName,
+			"module", payload.Module,
 			"error", err)
 	}
 }

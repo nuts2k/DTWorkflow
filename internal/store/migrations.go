@@ -196,12 +196,19 @@ var migrations = []migration{
 		`,
 	},
 	// M4.2: 新建 test_gen_results 表持久化 gen_tests 产出；task_id UNIQUE 支撑两阶段 UPSERT 幂等
+	//
+	// 历史记录（重要）：
+	//   v19 首次发布时把 task_id 定义为 NOT NULL + ON DELETE SET NULL，二者冲突
+	//   （级联 SET NULL 触发会违反 NOT NULL）。修复方案是新增 v20 重建表而非
+	//   修改 v19。本条 SQL 保留原始（错误的）NOT NULL 定义不动——迁移一旦发布
+	//   即不可修改，否则不同时点执行过不同版本 v19 的数据库会出现 schema 漂移。
+	//   修复路径：部署 v20 重建表（见下一条）。
 	{
 		Version: 19,
 		SQL: `
 			CREATE TABLE IF NOT EXISTS test_gen_results (
 				id                  TEXT PRIMARY KEY,
-				task_id             TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+				task_id             TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
 				repo_full_name      TEXT NOT NULL,
 				module              TEXT NOT NULL DEFAULT '',
 				framework           TEXT NOT NULL,
@@ -233,9 +240,9 @@ var migrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_test_gen_results_created ON test_gen_results(created_at);
 		`,
 	},
-	// M4.2 修复：test_gen_results.task_id 需要允许 ON DELETE SET NULL 生效。
-	// v19 将 task_id 定义为 NOT NULL + ON DELETE SET NULL，历史任务 purge 时会触发
-	// NOT NULL 约束冲突。本迁移重建表，把 task_id 改为可空，保留既有索引与数据。
+	// M4.2 修复：test_gen_results.task_id 原始 v19 NOT NULL + ON DELETE SET NULL 冲突。
+	// 本迁移重建表，把 task_id 改为可空；保留既有索引与数据。
+	// v19 原始 SQL 保持不变（见上一条注释），确保迁移不可变原则。
 	{
 		Version: 20,
 		SQL: `

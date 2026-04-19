@@ -188,25 +188,45 @@ do
 done
 HOOK
         chmod +x .git/hooks/pre-push
+        # 安全加固：hooks 目录设为只读（worker 用户移除写权限），
+        # 阻止 Claude 通过编辑 / 删除 hook 文件绕过 push 检查。
+        chmod -R a-w .git/hooks
         setup_build_cache
-        log "测试生成模式已启用（origin URL 已脱敏 + credential helper + git identity + auto-test push guard + build cache redirect；mvn 包装器由镜像提供）"
+        log "测试生成模式已启用（origin URL 已脱敏 + credential helper + git identity + auto-test push guard + hooks 目录只读 + build cache redirect；mvn 包装器由镜像提供）"
 
         # ---- M4.2 新增 (0)：先把 workdir 对齐到 BASE_REF ----
-        if [ -n "${BASE_REF:-}" ]; then
-            log "gen_tests: fetch + checkout BASE_REF=${BASE_REF}"
-            git fetch origin "${BASE_REF}" >&2 2>&1
-            git checkout FETCH_HEAD >&2 2>&1
+        if [ -z "${BASE_REF:-}" ]; then
+            log "ERROR: gen_tests 任务缺少 BASE_REF 环境变量，入队层未预先解析 base ref"
+            exit 2
         fi
+        log "gen_tests: fetch + checkout BASE_REF=${BASE_REF}"
+        git fetch origin "${BASE_REF}" >&2 2>&1
+        git checkout FETCH_HEAD >&2 2>&1
 
         # ---- M4.2 新增 (1)：稳定分支断点续传 ----
         AUTO_TEST_BRANCH="auto-test/${MODULE_SANITIZED:-all}"
-        BOT_EMAIL="dtworkflow-bot@noreply.local"
+        # BOT_EMAIL 允许通过环境变量覆盖（多实例部署可区分 bot 身份）；默认值保留兼容
+        BOT_EMAIL="${BOT_EMAIL:-dtworkflow-bot@noreply.local}"
         log "尝试 fetch 已存在的 ${AUTO_TEST_BRANCH} 分支以续传"
         if git fetch origin "${AUTO_TEST_BRANCH}" 2>/dev/null; then
-            BASE_SHA=$(git rev-parse "origin/${BASE_REF}")
-            BRANCH_SHA=$(git rev-parse "origin/${AUTO_TEST_BRANCH}")
+            # I8 修订：rev-parse 失败不能在 set -e 下静默 kill 整个脚本——
+            # 远程 base 分支消失 / fetch 成功但 rev-parse 失败都应 exit 2，
+            # 让 processor 走 SkipRetry 而非留下含糊的 "fatal: Needed a single revision"。
+            if ! BASE_SHA=$(git rev-parse "origin/${BASE_REF}" 2>/dev/null); then
+                log "ERROR: origin/${BASE_REF} 无法解析，base 分支可能已被删除"
+                exit 2
+            fi
+            if ! BRANCH_SHA=$(git rev-parse "origin/${AUTO_TEST_BRANCH}" 2>/dev/null); then
+                log "ERROR: origin/${AUTO_TEST_BRANCH} fetch 成功但 rev-parse 失败，降级为从 base 重建"
+                BRANCH_SHA=""
+            fi
+            # I9：把实际采用的 base SHA 回传给 Service 层做漂移对齐（通过 warnings 通道）
+            # 走 sanitizeWarnings 白名单，避免 prompt injection 污染。
+            echo "ENTRYPOINT_BASE_SHA=${BASE_SHA}" >> /tmp/.gen_tests_warnings
             RESET_REASON=""
-            if ! git merge-base --is-ancestor "${BASE_SHA}" "${BRANCH_SHA}" 2>/dev/null; then
+            if [ -z "${BRANCH_SHA}" ]; then
+                RESET_REASON="分支 SHA 解析失败"
+            elif ! git merge-base --is-ancestor "${BASE_SHA}" "${BRANCH_SHA}" 2>/dev/null; then
                 RESET_REASON="落后 base"
             else
                 NON_BOT=$(git log "${BASE_SHA}..${BRANCH_SHA}" --pretty=format:'%ae' 2>/dev/null \

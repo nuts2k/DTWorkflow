@@ -82,6 +82,15 @@ type Store interface {
 	// 避免 SQLite 单行过大。调用方无需预先判断记录是否存在。
 	SaveTestGenResult(ctx context.Context, record *TestGenResultRecord) error
 
+	// UpdateTestGenResultReviewEnqueued 把 test_gen_results.review_enqueued 单字段刷成 true
+	// 并更新 updated_at。若对应 task_id 记录不存在返回 ErrTestGenResultNotFound。
+	//
+	// 设计动机：两阶段 UPSERT 中，阶段 2（review 入队成功后）只需要翻转 review_enqueued
+	// 标志。用 SaveTestGenResult 走全字段 UPSERT 会把其它字段（例如 PR 编号、成功标志）
+	// 全部复写为阶段 1 的值，如果期间有其它异步组件（例如后续 M4.3 的 webhook 反查）
+	// 更新过同一行，这些变更会被阶段 2 静默覆盖。partial UPDATE 语义更安全。
+	UpdateTestGenResultReviewEnqueued(ctx context.Context, taskID string) error
+
 	// GetTestGenResultByTaskID 按 task_id 查询测试生成结果记录。
 	// 未找到时返回 (nil, nil)，与 GetTask 等既有查询接口保持一致。
 	GetTestGenResultByTaskID(ctx context.Context, taskID string) (*TestGenResultRecord, error)

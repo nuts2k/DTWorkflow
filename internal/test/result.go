@@ -3,10 +3,278 @@ package test
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
+
+// ============================================================================
+// Claude 自由文本脱敏 —— 防 prompt-injection 内容泄露到飞书 / PR 评论 / Gitea
+// ============================================================================
+//
+// 背景：TestGenOutput 有大量字段由 Claude 输出原样填充（failure_reason /
+// missing_info / analysis.priority_notes / skipped_targets.reason / warnings
+// 等）。攻击者可通过 Issue 标题 / PR 标题 / 仓库名等入口走 prompt injection
+// 让 Claude 往这些字段塞钓鱼链接、控制字符或超长文本，最终被 Processor 注入
+// 飞书卡片 / Gitea 评论 / PR body。
+//
+// 统一在 parseResult 成功路径调用 sanitizeTestGenOutput 做一次性过滤，避免
+// 每个渲染器重复防御、漏防。
+//
+// 设计决策：
+//   - Warnings：走白名单前缀匹配（只保留 entrypoint 已知写入的 KEY=1 格式），
+//     单条 ≤ maxWarningLen，总数 ≤ maxWarningCount。
+//   - 其他自由文本：统一经 sanitizeClaudeText —— 剥离 http(s)://ftp:// 链接、
+//     过滤控制字符、按 UTF-8 rune 硬截断到 maxClaudeFreeTextLen。
+const (
+	maxWarningCount       = 10
+	maxWarningLen         = 200
+	maxClaudeFreeTextLen  = 500
+	linkRedactedMarker    = "[link-redacted]"
+	maxClaudeListItems    = 20
+	// maxClaudeShortTextLen 用于较短字段（如 Path / Kind / Priority / Operation 等
+	// 名字化字段）截断长度，避免 Claude 往短字段里塞长文。
+	maxClaudeShortTextLen = 200
+)
+
+// allowedWarningPrefixes 是 warnings 字段允许的 KEY= 前缀白名单。
+// 与 build/docker/entrypoint.sh 在 gen_tests 分支写入 /tmp/.gen_tests_warnings
+// 的 KEY 同步；新增告警 KEY 必须同时更新此处。
+var allowedWarningPrefixes = []string{
+	"AUTO_TEST_BRANCH_RESET_PUSHED=",
+	"AUTO_TEST_BRANCH_RESET_REMOTE_FAILED=",
+	"ENTRYPOINT_BASE_SHA=",
+}
+
+// sanitizeClaudeText 过滤 Claude 自由文本：
+//  1. 去除控制字符（保留换行符不会被写入输出 —— 统一替换为空格，防止日志/卡片分行破坏）
+//  2. 掩蔽 http(s):// / ftp:// 链接（以 http/https/ftp:// 开头的 token 被替换为 marker）
+//  3. 按 UTF-8 rune 硬截断到 maxLen
+//  4. 去首尾空白
+func sanitizeClaudeText(s string, maxLen int) string {
+	if s == "" || maxLen <= 0 {
+		return ""
+	}
+	// 1. 控制字符过滤
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\x00':
+			// NUL 直接删除
+		case r == '\r' || r == '\n' || r == '\t':
+			b.WriteByte(' ')
+		case unicode.IsControl(r):
+			b.WriteByte(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	cleaned := b.String()
+
+	// 2. 链接掩蔽（不借助正则，保持纯文本扫描）
+	cleaned = redactURLScheme(cleaned, "http://")
+	cleaned = redactURLScheme(cleaned, "https://")
+	cleaned = redactURLScheme(cleaned, "ftp://")
+	cleaned = redactURLScheme(cleaned, "HTTP://")
+	cleaned = redactURLScheme(cleaned, "HTTPS://")
+	cleaned = redactURLScheme(cleaned, "FTP://")
+
+	// 3. UTF-8 安全截断
+	runes := []rune(cleaned)
+	if len(runes) > maxLen {
+		cleaned = string(runes[:maxLen]) + "…"
+	}
+
+	return strings.TrimSpace(cleaned)
+}
+
+// redactURLScheme 将 s 中以 scheme 开头的连续 non-whitespace token 替换为 marker。
+func redactURLScheme(s, scheme string) string {
+	if !strings.Contains(s, scheme) {
+		return s
+	}
+	var out strings.Builder
+	out.Grow(len(s))
+	for {
+		idx := strings.Index(s, scheme)
+		if idx < 0 {
+			out.WriteString(s)
+			break
+		}
+		out.WriteString(s[:idx])
+		// 跳过 URL token 直到下一个空白 / 结束
+		rest := s[idx+len(scheme):]
+		endIdx := len(rest)
+		for i, r := range rest {
+			if unicode.IsSpace(r) {
+				endIdx = i
+				break
+			}
+		}
+		out.WriteString(linkRedactedMarker)
+		s = rest[endIdx:]
+	}
+	return out.String()
+}
+
+// sanitizeWarnings 按白名单 + 长度 + 条数三重约束清洗 warnings，
+// 防止 Claude 被 prompt injection 后往 warnings 里塞恶意文本/链接。
+// 不匹配白名单前缀的告警一律丢弃（entrypoint 写入的 KEY=1 格式天然满足）。
+func sanitizeWarnings(ws []string) []string {
+	if len(ws) == 0 {
+		return ws
+	}
+	out := make([]string, 0, len(ws))
+	for _, raw := range ws {
+		if len(out) >= maxWarningCount {
+			break
+		}
+		// 先去控制字符
+		trimmed := strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7F {
+				return -1
+			}
+			return r
+		}, raw)
+		trimmed = strings.TrimSpace(trimmed)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > maxWarningLen {
+			trimmed = trimmed[:maxWarningLen]
+		}
+		matched := false
+		for _, p := range allowedWarningPrefixes {
+			if strings.HasPrefix(trimmed, p) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+// sanitizeTestGenOutput 对 TestGenOutput 里所有 Claude 可控的自由文本字段
+// 做一次性脱敏。由 parseResult 在成功解析后调用，确保下游所有渲染器
+// （pr_body / feishu_card / gitea_notifier / 日志）不再各自防御。
+//
+// 修改字段：
+//   - Warnings（白名单过滤）
+//   - FailureReason / TestStrategy
+//   - MissingInfo[i]
+//   - Analysis.ExistingStyle / PriorityNotes
+//   - Analysis.UntestedModules[i].Reason
+//   - Analysis.ExistingTests[i].Framework / Source / TestFile / TargetFiles[j]
+//   - GeneratedFiles[i].Description / Framework / Path / Operation / TargetFiles[j]
+//   - SkippedTargets[i].Reason / Path
+//   - CommittedFiles[i]（路径，不应含 URL）
+//   - BranchName / CommitSHA（git ref，短字段）
+//   - FailureCategory（枚举，但防御性截断）
+//   - TestResults.Framework
+//
+// 注意：sanitizeClaudeText 可能替换掉合法的链接 —— Claude 正常输出不应包含
+// 链接（prompt 明确要求中文描述），所以是可接受的 false-positive 代价。
+func sanitizeTestGenOutput(out *TestGenOutput) {
+	if out == nil {
+		return
+	}
+
+	// 保护 len(Warnings) > maxWarningCount 的情况，走白名单
+	out.Warnings = sanitizeWarnings(out.Warnings)
+
+	out.FailureReason = sanitizeClaudeText(out.FailureReason, maxClaudeFreeTextLen)
+	out.TestStrategy = sanitizeClaudeText(out.TestStrategy, maxClaudeFreeTextLen)
+	out.BranchName = sanitizeClaudeText(out.BranchName, maxClaudeShortTextLen)
+	out.CommitSHA = sanitizeClaudeText(out.CommitSHA, maxClaudeShortTextLen)
+	out.FailureCategory = FailureCategory(sanitizeClaudeText(string(out.FailureCategory), maxClaudeShortTextLen))
+
+	if len(out.MissingInfo) > maxClaudeListItems {
+		out.MissingInfo = out.MissingInfo[:maxClaudeListItems]
+	}
+	for i, m := range out.MissingInfo {
+		out.MissingInfo[i] = sanitizeClaudeText(m, maxClaudeFreeTextLen)
+	}
+
+	if out.Analysis != nil {
+		out.Analysis.ExistingStyle = sanitizeClaudeText(out.Analysis.ExistingStyle, maxClaudeFreeTextLen)
+		out.Analysis.PriorityNotes = sanitizeClaudeText(out.Analysis.PriorityNotes, maxClaudeFreeTextLen)
+		if len(out.Analysis.UntestedModules) > maxClaudeListItems {
+			out.Analysis.UntestedModules = out.Analysis.UntestedModules[:maxClaudeListItems]
+		}
+		for i := range out.Analysis.UntestedModules {
+			u := &out.Analysis.UntestedModules[i]
+			u.Path = sanitizeClaudeText(u.Path, maxClaudeShortTextLen)
+			u.Kind = sanitizeClaudeText(u.Kind, maxClaudeShortTextLen)
+			u.Priority = sanitizeClaudeText(u.Priority, maxClaudeShortTextLen)
+			u.Reason = sanitizeClaudeText(u.Reason, maxClaudeFreeTextLen)
+		}
+		if len(out.Analysis.ExistingTests) > maxClaudeListItems {
+			out.Analysis.ExistingTests = out.Analysis.ExistingTests[:maxClaudeListItems]
+		}
+		for i := range out.Analysis.ExistingTests {
+			e := &out.Analysis.ExistingTests[i]
+			e.TestFile = sanitizeClaudeText(e.TestFile, maxClaudeShortTextLen)
+			e.Framework = sanitizeClaudeText(e.Framework, maxClaudeShortTextLen)
+			e.Source = sanitizeClaudeText(e.Source, maxClaudeShortTextLen)
+			if len(e.TargetFiles) > maxClaudeListItems {
+				e.TargetFiles = e.TargetFiles[:maxClaudeListItems]
+			}
+			for j, t := range e.TargetFiles {
+				e.TargetFiles[j] = sanitizeClaudeText(t, maxClaudeShortTextLen)
+			}
+		}
+	}
+
+	if len(out.GeneratedFiles) > maxClaudeListItems {
+		out.GeneratedFiles = out.GeneratedFiles[:maxClaudeListItems]
+	}
+	for i := range out.GeneratedFiles {
+		g := &out.GeneratedFiles[i]
+		g.Path = sanitizeClaudeText(g.Path, maxClaudeShortTextLen)
+		g.Operation = sanitizeClaudeText(g.Operation, maxClaudeShortTextLen)
+		g.Description = sanitizeClaudeText(g.Description, maxClaudeFreeTextLen)
+		g.Framework = sanitizeClaudeText(g.Framework, maxClaudeShortTextLen)
+		if len(g.TargetFiles) > maxClaudeListItems {
+			g.TargetFiles = g.TargetFiles[:maxClaudeListItems]
+		}
+		for j, t := range g.TargetFiles {
+			g.TargetFiles[j] = sanitizeClaudeText(t, maxClaudeShortTextLen)
+		}
+	}
+
+	if len(out.CommittedFiles) > maxClaudeListItems {
+		out.CommittedFiles = out.CommittedFiles[:maxClaudeListItems]
+	}
+	for i, f := range out.CommittedFiles {
+		out.CommittedFiles[i] = sanitizeClaudeText(f, maxClaudeShortTextLen)
+	}
+
+	if len(out.SkippedTargets) > maxClaudeListItems {
+		out.SkippedTargets = out.SkippedTargets[:maxClaudeListItems]
+	}
+	for i := range out.SkippedTargets {
+		s := &out.SkippedTargets[i]
+		s.Path = sanitizeClaudeText(s.Path, maxClaudeShortTextLen)
+		s.Reason = sanitizeClaudeText(s.Reason, maxClaudeFreeTextLen)
+	}
+
+	if out.TestResults != nil {
+		out.TestResults.Framework = sanitizeClaudeText(out.TestResults.Framework, maxClaudeShortTextLen)
+	}
+}
+
+// SanitizeErrorMessage 对外暴露的 error 字符串脱敏工具，用于 Processor
+// 把 runErr.Error() 写入 record.Error 前兜底过滤，避免 ParseError 透传原始输出
+// 之外的场景仍然泄露 Claude 文本。
+func SanitizeErrorMessage(s string) string {
+	return sanitizeClaudeText(s, maxClaudeFreeTextLen)
+}
 
 // FailureCategory 标识 gen_tests 失败分类。
 //

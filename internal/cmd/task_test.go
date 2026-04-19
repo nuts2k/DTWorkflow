@@ -107,6 +107,11 @@ func (m *mockTaskStore) GetTestGenResultByTaskID(_ context.Context, _ string) (*
 	return nil, nil
 }
 
+// UpdateTestGenResultReviewEnqueued M4.2 I6 partial UPDATE 语义；mock 桩 no-op。
+func (m *mockTaskStore) UpdateTestGenResultReviewEnqueued(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *mockTaskStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }

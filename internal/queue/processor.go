@@ -363,7 +363,14 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		} else {
 			record.Status = model.TaskStatusFailed
 		}
-		record.Error = runErr.Error()
+		// gen_tests 任务的 runErr 可能由 test.ErrTestGenParseFailure 派生或
+		// 夹带仓库 / module 等 Claude 可间接控制的字段，统一走 SanitizeErrorMessage
+		// 兜底过滤控制字符 / URL，保证 record.Error 不成为 prompt injection 落点。
+		if payload.TaskType == model.TaskTypeGenTests {
+			record.Error = test.SanitizeErrorMessage(runErr.Error())
+		} else {
+			record.Error = runErr.Error()
+		}
 		if result != nil {
 			record.Result = result.Output
 		}
@@ -1008,7 +1015,8 @@ func (p *Processor) buildGenTestsMetadata(payload model.TaskPayload, testResult 
 //   - infrastructure   → Warning，"基础设施故障"
 //   - test_quality     → Info，"测试质量未达标"
 //   - info_insufficient → Info，"生成信息不足"
-//   - 其它（含 nil / 空）→ Warning，"自动测试生成失败"（保底）
+//   - 未知枚举值 / nil → Info，"自动测试生成失败"（默认 Info 避免误触发运维告警）
+//   - testResult 为 nil（极端情况，parseResult 未产出）→ Warning，保留可见性
 func genTestsFailedSeverity(testResult *test.TestGenResult) (notify.Severity, string) {
 	if testResult == nil || testResult.Output == nil {
 		return notify.SeverityWarning, "自动测试生成失败"
@@ -1021,7 +1029,9 @@ func genTestsFailedSeverity(testResult *test.TestGenResult) (notify.Severity, st
 	case test.FailureCategoryInfoInsufficient:
 		return notify.SeverityInfo, "生成信息不足"
 	default:
-		return notify.SeverityWarning, "自动测试生成失败"
+		// M7：未知 FailureCategory（例如未来 Claude 新增分类但后端未升级）默认走 Info，
+		// 避免误触发运维分页。若真的是基础设施问题会由 infrastructure 枚举命中。
+		return notify.SeverityInfo, "自动测试生成失败"
 	}
 }
 
@@ -1031,6 +1041,11 @@ func genTestsFailedSeverity(testResult *test.TestGenResult) (notify.Severity, st
 // 告警需单独 Severity，便于飞书卡片着色 / 运维专人处理。
 func (p *Processor) sendTestGenWarnings(ctx context.Context, record *model.TaskRecord, testResult *test.TestGenResult) {
 	if p.notifier == nil || record == nil || testResult == nil || testResult.Output == nil {
+		return
+	}
+	// 仅在最终态追加 Warnings 消息：retrying 态下 Warnings 可能随重试反复出现，
+	// 每次都发会让运维误以为出了事；主消息已走 EventSystemError 通道。
+	if record.Status != model.TaskStatusSucceeded && record.Status != model.TaskStatusFailed {
 		return
 	}
 	warnings := testResult.Output.Warnings
@@ -1143,7 +1158,11 @@ func adaptTestResult(r *test.TestGenResult) *worker.ExecutionResult {
 // 标记任务 failed、尽可能保留结构化结果、持久化、发送通知，并返回 SkipRetry 错误。
 func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, logMsg string) error {
 	record.Status = model.TaskStatusFailed
-	record.Error = runErr.Error()
+	if record.Payload.TaskType == model.TaskTypeGenTests {
+		record.Error = test.SanitizeErrorMessage(runErr.Error())
+	} else {
+		record.Error = runErr.Error()
+	}
 	switch {
 	case reviewResult != nil:
 		if result := adaptReviewResult(reviewResult); result != nil {

@@ -172,8 +172,8 @@ func writeFailureCategorySection(sb *strings.Builder, out *TestGenOutput) {
 		category = "(未填)"
 	}
 	sb.WriteString(fmt.Sprintf("| failure_category | `%s` |\n", escapePRMarkdown(category)))
-	sb.WriteString(fmt.Sprintf("| Success | %v |\n", out.Success))
-	sb.WriteString(fmt.Sprintf("| InfoSufficient | %v |\n", out.InfoSufficient))
+	sb.WriteString(fmt.Sprintf("| Success | %s |\n", boolDisplay(out.Success, "✅ 通过", "❌ 失败")))
+	sb.WriteString(fmt.Sprintf("| InfoSufficient | %s |\n", boolDisplay(out.InfoSufficient, "✅ 充足", "❌ 不足")))
 	if out.FailureReason != "" {
 		sb.WriteString(fmt.Sprintf("| failure_reason | %s |\n", escapePRMarkdown(out.FailureReason)))
 	}
@@ -213,6 +213,14 @@ func writeGapAnalysisSection(sb *strings.Builder, analysis *GapAnalysis) {
 			len(analysis.UntestedModules), prBodyMaxGapAnalysisItems))
 	}
 	sb.WriteString("\n")
+}
+
+// boolDisplay 把 bool 渲染成带图标的中文描述，提升 PR body 可读性。
+func boolDisplay(v bool, yes, no string) string {
+	if v {
+		return yes
+	}
+	return no
 }
 
 // finalizePRBody 把超长 body 按 prBodyMaxLen 截断（UTF-8 安全），并追加截断说明。

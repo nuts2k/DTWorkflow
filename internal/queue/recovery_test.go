@@ -96,6 +96,9 @@ func (m *mockStoreForRecovery) SaveTestGenResult(_ context.Context, _ *store.Tes
 func (m *mockStoreForRecovery) GetTestGenResultByTaskID(_ context.Context, _ string) (*store.TestGenResultRecord, error) {
 	return nil, nil
 }
+func (m *mockStoreForRecovery) UpdateTestGenResultReviewEnqueued(_ context.Context, _ string) error {
+	return nil
+}
 func (m *mockStoreForRecovery) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }

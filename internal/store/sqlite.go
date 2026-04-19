@@ -928,6 +928,33 @@ func (s *SQLiteStore) SaveTestGenResult(ctx context.Context, record *TestGenResu
 	return nil
 }
 
+// UpdateTestGenResultReviewEnqueued 把 review_enqueued 单字段刷成 true + 更新 updated_at。
+// 对应 task_id 记录不存在时返回 ErrTestGenResultNotFound，调用方可据此 warn（不阻断主流程）。
+//
+// 与 SaveTestGenResult 分离的原因：Execute 的阶段 2 只翻转 review_enqueued 标志，
+// 不应把其它字段（例如 PR 编号、成功标志、failure_category 等）复写为阶段 1 的值。
+// 详见 store.Store.UpdateTestGenResultReviewEnqueued 接口注释。
+func (s *SQLiteStore) UpdateTestGenResultReviewEnqueued(ctx context.Context, taskID string) error {
+	if taskID == "" {
+		return fmt.Errorf("更新 review_enqueued 失败: task_id 不能为空")
+	}
+	const query = `UPDATE test_gen_results
+		SET review_enqueued = 1, updated_at = datetime('now')
+		WHERE task_id = ?`
+	result, err := s.db.ExecContext(ctx, query, taskID)
+	if err != nil {
+		return fmt.Errorf("更新 review_enqueued 失败: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("获取更新影响行数失败: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("更新 review_enqueued 失败: %w", ErrTestGenResultNotFound)
+	}
+	return nil
+}
+
 // GetTestGenResultByTaskID 按 task_id 查询测试生成结果，未找到时返回 (nil, nil)。
 // 与 GetTask / FindByDeliveryID 的未找到语义保持一致，便于调用侧统一处理。
 func (s *SQLiteStore) GetTestGenResultByTaskID(ctx context.Context, taskID string) (*TestGenResultRecord, error) {
@@ -949,24 +976,30 @@ func (s *SQLiteStore) GetTestGenResultByTaskID(ctx context.Context, taskID strin
 	return rec, nil
 }
 
-// ListActiveGenTestsModules 返回指定仓库下活跃 gen_tests 任务（queued/running/retrying）的 module 列表。
+// ListActiveGenTestsModules 返回指定仓库下活跃 gen_tests 任务的 module 列表。
 //
-// 采用 COALESCE(json_extract(payload, '$.module'), ”) 与 FindActiveGenTestsTasks 保持一致：
-// TaskPayload.Module 使用 omitempty，整仓生成场景 JSON 中没有 module 字段，
-// json_extract 返回 NULL。若不归一化，调用侧 len(modules) 会遗漏整仓任务。
-// 原样返回（包含空字符串与重复项），由调用侧（已 import internal/test）
-// 用 test.ModuleKey 清洗比对，维持 store 包对业务的零依赖（见设计文档 §3.2）。
+// 活跃状态集与 FindActiveGenTestsTasks 对齐为 pending/queued/running/retrying
+// 四种：pending 态也算活跃（webhook 入队后 asynq enqueue 未完成由 RecoveryLoop
+// 兜底，这个窗口内仍应拦截同 module 的 review PR，保持 "gen_tests 与 review 互斥"
+// 的不变量）。原实现遗漏 pending 会导致 fail-open。
+//
+// 采用 COALESCE(json_extract(payload, '$.module'), ”)：TaskPayload.Module 使用
+// omitempty，整仓生成场景 JSON 中没有 module 字段，json_extract 返回 NULL。若
+// 不归一化，调用侧 len(modules) 会遗漏整仓任务。原样返回（包含空字符串与重复项），
+// 由调用侧（已 import internal/test）用 test.ModuleKey 清洗比对，维持 store 包
+// 对业务的零依赖（见设计文档 §3.2）。
 func (s *SQLiteStore) ListActiveGenTestsModules(ctx context.Context, repoFullName string) ([]string, error) {
 	query := `SELECT COALESCE(json_extract(payload, '$.module'), '') AS module
 	FROM tasks
 	WHERE task_type = ?
 	  AND repo_full_name = ?
-	  AND status IN (?, ?, ?)
+	  AND status IN (?, ?, ?, ?)
 	ORDER BY created_at ASC`
 
 	rows, err := s.db.QueryContext(ctx, query,
 		string(model.TaskTypeGenTests),
 		repoFullName,
+		string(model.TaskStatusPending),
 		string(model.TaskStatusQueued),
 		string(model.TaskStatusRunning),
 		string(model.TaskStatusRetrying),

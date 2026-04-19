@@ -564,6 +564,26 @@ func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload mode
 
 	activeTasks := h.listActiveGenTestsTasks(ctx, payload.RepoFullName, payload.Module)
 
+	// M4.2 修订：Cancel-and-Replace 按 "清理远程 → 取消旧任务 → 入队新任务" 顺序执行。
+	// 原顺序（先入队再清理）存在 race：新任务被 asynq 取出启动容器时，旧远程分支
+	// 可能还未删除，entrypoint fetch 到陈旧分支，后续建 PR 指向错位 ref。
+	// 清理远程资源优先让 Gitea 达成一致；cleanup 失败仅 warn，不阻断入队。
+	if len(activeTasks) > 0 && h.branchCleaner != nil {
+		branchName := test.BuildAutoTestBranchName(payload.Module)
+		if err := h.branchCleaner.CleanupAutoTestBranch(ctx, payload.RepoOwner, payload.RepoName, branchName); err != nil {
+			h.logger.WarnContext(ctx, "清理旧 auto-test 分支失败，继续入队新任务",
+				"repo", payload.RepoFullName,
+				"module", payload.Module,
+				"branch", branchName,
+				"error", err,
+			)
+		}
+	}
+
+	// 取消旧任务（含 context cancel 运行中容器）—— 必须在新任务入队前完成，
+	// 否则新任务从 asynq 取出时旧容器可能还持有工作目录 / 分支引用。
+	h.cancelTasks(ctx, activeTasks)
+
 	// 手动触发使用 PriorityNormal，确保不被 review/fix 队列饿死。
 	// 未来若新增 webhook / CronJob 自动触发入口，应改用 PriorityLow（背景任务语义）。
 	record := &model.TaskRecord{
@@ -576,22 +596,6 @@ func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload mode
 
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
 		return "", err
-	}
-	h.cancelTasks(ctx, activeTasks)
-
-	// M4.2: 替换旧任务后，尝试清理旧的 auto-test/{module} 远程分支与 open PR。
-	// 分支未注入 cleaner（例如测试环境 / 仅 CLI 本地验证）或 Gitea 临时故障都不
-	// 阻断入队——清理失败仅 warn，保证 gen_tests 的"先入队、后清理"语义。
-	if len(activeTasks) > 0 && h.branchCleaner != nil {
-		branchName := test.BuildAutoTestBranchName(payload.Module)
-		if err := h.branchCleaner.CleanupAutoTestBranch(ctx, payload.RepoOwner, payload.RepoName, branchName); err != nil {
-			h.logger.WarnContext(ctx, "清理旧 auto-test 分支失败，继续入队新任务",
-				"repo", payload.RepoFullName,
-				"module", payload.Module,
-				"branch", branchName,
-				"error", err,
-			)
-		}
 	}
 
 	h.logger.InfoContext(ctx, "手动 gen_tests 任务已入队",
