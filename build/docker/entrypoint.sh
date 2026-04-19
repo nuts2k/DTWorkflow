@@ -190,6 +190,51 @@ HOOK
         chmod +x .git/hooks/pre-push
         setup_build_cache
         log "测试生成模式已启用（origin URL 已脱敏 + credential helper + git identity + auto-test push guard + build cache redirect；mvn 包装器由镜像提供）"
+
+        # ---- M4.2 新增 (0)：先把 workdir 对齐到 BASE_REF ----
+        if [ -n "${BASE_REF:-}" ]; then
+            log "gen_tests: fetch + checkout BASE_REF=${BASE_REF}"
+            git fetch origin "${BASE_REF}" >&2 2>&1
+            git checkout FETCH_HEAD >&2 2>&1
+        fi
+
+        # ---- M4.2 新增 (1)：稳定分支断点续传 ----
+        AUTO_TEST_BRANCH="auto-test/${MODULE_SANITIZED:-all}"
+        BOT_EMAIL="dtworkflow-bot@noreply.local"
+        log "尝试 fetch 已存在的 ${AUTO_TEST_BRANCH} 分支以续传"
+        if git fetch origin "${AUTO_TEST_BRANCH}" 2>/dev/null; then
+            BASE_SHA=$(git rev-parse "origin/${BASE_REF}")
+            BRANCH_SHA=$(git rev-parse "origin/${AUTO_TEST_BRANCH}")
+            RESET_REASON=""
+            if ! git merge-base --is-ancestor "${BASE_SHA}" "${BRANCH_SHA}" 2>/dev/null; then
+                RESET_REASON="落后 base"
+            else
+                NON_BOT=$(git log "${BASE_SHA}..${BRANCH_SHA}" --pretty=format:'%ae' 2>/dev/null \
+                    | grep -v "^${BOT_EMAIL}$" | head -n 1 || true)
+                if [ -n "${NON_BOT}" ]; then
+                    RESET_REASON="检测到非 bot 提交者 ${NON_BOT}"
+                fi
+            fi
+            if [ -z "${RESET_REASON}" ]; then
+                log "复用现有 ${AUTO_TEST_BRANCH}（断点续传）"
+                git checkout -B "${AUTO_TEST_BRANCH}" "origin/${AUTO_TEST_BRANCH}"
+            else
+                log "${AUTO_TEST_BRANCH} 重置回 ${BASE_REF}（原因：${RESET_REASON}）"
+                git checkout -B "${AUTO_TEST_BRANCH}" "${BASE_SHA}"
+                # ---- M4.2 新增 (2)：重置后主动 force-with-lease 对齐远程 ----
+                log "重置后主动对齐远程 ${AUTO_TEST_BRANCH} 到 ${BASE_REF}（force-with-lease）"
+                if git push --force-with-lease="${AUTO_TEST_BRANCH}:${BRANCH_SHA}" \
+                    origin "${AUTO_TEST_BRANCH}" 2>&1 | sed "s|${GITEA_TOKEN:-__none__}|***|g" >&2; then
+                    echo "AUTO_TEST_BRANCH_RESET_PUSHED=1" >> /tmp/.gen_tests_warnings
+                else
+                    log "警告：远程对齐失败，后续 push 可能被拒"
+                    echo "AUTO_TEST_BRANCH_RESET_REMOTE_FAILED=1" >> /tmp/.gen_tests_warnings
+                fi
+            fi
+        else
+            log "未发现已有 ${AUTO_TEST_BRANCH}，从 ${BASE_REF} 创建"
+            git checkout -B "${AUTO_TEST_BRANCH}" "origin/${BASE_REF}"
+        fi
         ;;
     *)
         log "任务类型: ${TASK_TYPE:-<empty>}，使用默认分支"
