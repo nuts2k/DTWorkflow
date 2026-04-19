@@ -25,6 +25,13 @@ type TestGenOverride struct {
 	MaxRetryRounds int `mapstructure:"max_retry_rounds"`
 	// TestFramework 显式指定测试框架：空串 / "junit5" / "vitest"。
 	TestFramework string `mapstructure:"test_framework"`
+	// ReviewOnFailure M4.2 新增：失败时是否也自动触发 review（D5）。
+	//
+	// 指针语义，与 Enabled 一致：
+	//   - nil    = 未覆盖（回退到全局；全局未设时读取方按 false 处理）
+	//   - *false = 显式关闭（仅 Success=true 时入队 review）
+	//   - *true  = 显式启用（Success=false 且 PRNumber>0 时也入队 review）
+	ReviewOnFailure *bool `mapstructure:"review_on_failure"`
 }
 
 // NotifyOverride 仓库级通知配置覆盖。
@@ -163,6 +170,7 @@ func (c *Config) ResolveReviewConfig(repoFullName string) ReviewOverride {
 //   - ModuleScope: repo 非空字符串时覆盖
 //   - MaxRetryRounds: repo > 0 时覆盖（0 视为未设置，保留全局值）
 //   - TestFramework: repo 非空字符串时覆盖
+//   - ReviewOnFailure: repo 非 nil 时覆盖（nil 表示未覆盖，保留全局值）
 func (c *Config) ResolveTestGenConfig(repoFullName string) TestGenOverride {
 	if c == nil {
 		return TestGenOverride{}
@@ -183,6 +191,9 @@ func (c *Config) ResolveTestGenConfig(repoFullName string) TestGenOverride {
 		}
 		if repo.TestGen.TestFramework != "" {
 			merged.TestFramework = repo.TestGen.TestFramework
+		}
+		if repo.TestGen.ReviewOnFailure != nil {
+			merged.ReviewOnFailure = repo.TestGen.ReviewOnFailure
 		}
 		break
 	}

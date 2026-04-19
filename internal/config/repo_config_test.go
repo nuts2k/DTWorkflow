@@ -486,4 +486,140 @@ func TestResolveTestGenConfig(t *testing.T) {
 			t.Errorf("ModuleScope = %q，重复仓库应返回第一个匹配项", got.ModuleScope)
 		}
 	})
+
+	// M4.2 / D5：ReviewOnFailure *bool 指针三态覆盖行为。
+	t.Run("ReviewOnFailure 指针语义：仓库 nil 保留全局 *true", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{ReviewOnFailure: boolPtr(true)}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{ReviewOnFailure: nil},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ReviewOnFailure == nil || !*got.ReviewOnFailure {
+			t.Errorf("ReviewOnFailure = %v，仓库 nil 应保留全局 *true", got.ReviewOnFailure)
+		}
+	})
+
+	t.Run("ReviewOnFailure 指针语义：仓库 *false 覆盖全局 *true", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{ReviewOnFailure: boolPtr(true)}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{ReviewOnFailure: boolPtr(false)},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ReviewOnFailure == nil || *got.ReviewOnFailure {
+			t.Errorf("ReviewOnFailure = %v，仓库 *false 应显式覆盖全局 *true", got.ReviewOnFailure)
+		}
+	})
+
+	t.Run("ReviewOnFailure 指针语义：仓库 *true 覆盖全局 nil", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{} // 全局 ReviewOnFailure 保持 nil
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{ReviewOnFailure: boolPtr(true)},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ReviewOnFailure == nil || !*got.ReviewOnFailure {
+			t.Errorf("ReviewOnFailure = %v，仓库 *true 应覆盖全局 nil", got.ReviewOnFailure)
+		}
+	})
+
+	t.Run("ReviewOnFailure 指针语义：全局 nil 且仓库 nil 时结果仍为 nil", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.TestGen = TestGenOverride{}
+		cfg.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{},
+		}}
+		got := cfg.ResolveTestGenConfig("acme/repo")
+		if got.ReviewOnFailure != nil {
+			t.Errorf("ReviewOnFailure = %v，全局与仓库均未设时结果应为 nil（读取方按 false 处理）", got.ReviewOnFailure)
+		}
+	})
+}
+
+// TestConfigClone_TestGenReviewOnFailureDeepCopy 校验 ReviewOnFailure *bool 深拷贝独立性。
+//
+// 覆盖 config.go 两处分支：
+//   - 全局 TestGen.ReviewOnFailure（config.go:393 附近）
+//   - per-repo repo.TestGen.ReviewOnFailure（config.go:446 附近）
+//
+// 关键断言：修改 clone 不影响 source，且 clone 的指针地址与 source 不同。
+func TestConfigClone_TestGenReviewOnFailureDeepCopy(t *testing.T) {
+	t.Run("全局 TestGen.ReviewOnFailure 深拷贝独立", func(t *testing.T) {
+		source := validBaseConfig()
+		source.TestGen = TestGenOverride{ReviewOnFailure: boolPtr(true)}
+
+		clone := source.Clone()
+		if clone == nil {
+			t.Fatal("Clone() 返回 nil")
+		}
+		if clone.TestGen.ReviewOnFailure == nil || !*clone.TestGen.ReviewOnFailure {
+			t.Fatalf("clone 全局 ReviewOnFailure = %v，want *true", clone.TestGen.ReviewOnFailure)
+		}
+		// 指针必须是独立副本，不能共享
+		if clone.TestGen.ReviewOnFailure == source.TestGen.ReviewOnFailure {
+			t.Errorf("clone 与 source 共享全局 ReviewOnFailure 指针，未深拷贝")
+		}
+
+		// 修改 clone 的指向值：source 应保持不变
+		*clone.TestGen.ReviewOnFailure = false
+		if !*source.TestGen.ReviewOnFailure {
+			t.Errorf("修改 clone 值影响了 source：source=%v，应保持 *true", *source.TestGen.ReviewOnFailure)
+		}
+	})
+
+	t.Run("per-repo TestGen.ReviewOnFailure 深拷贝独立", func(t *testing.T) {
+		source := validBaseConfig()
+		source.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{ReviewOnFailure: boolPtr(true)},
+		}}
+
+		clone := source.Clone()
+		if clone == nil || len(clone.Repos) != 1 {
+			t.Fatalf("Clone() 结果异常: %+v", clone)
+		}
+		cloneRepo := clone.Repos[0]
+		if cloneRepo.TestGen == nil || cloneRepo.TestGen.ReviewOnFailure == nil || !*cloneRepo.TestGen.ReviewOnFailure {
+			t.Fatalf("clone repo ReviewOnFailure = %+v，want *true", cloneRepo.TestGen)
+		}
+		// 指针必须独立
+		if cloneRepo.TestGen.ReviewOnFailure == source.Repos[0].TestGen.ReviewOnFailure {
+			t.Errorf("clone 与 source 共享 per-repo ReviewOnFailure 指针，未深拷贝")
+		}
+		// 结构体指针也应独立（TestGen 整体深拷贝）
+		if cloneRepo.TestGen == source.Repos[0].TestGen {
+			t.Errorf("clone 与 source 共享 repo.TestGen 结构体指针")
+		}
+
+		// 修改 clone 值：source 保持不变
+		*cloneRepo.TestGen.ReviewOnFailure = false
+		if !*source.Repos[0].TestGen.ReviewOnFailure {
+			t.Errorf("修改 clone 的 per-repo 值影响了 source")
+		}
+	})
+
+	t.Run("nil ReviewOnFailure 克隆仍为 nil", func(t *testing.T) {
+		source := validBaseConfig()
+		source.TestGen = TestGenOverride{ReviewOnFailure: nil}
+		source.Repos = []RepoConfig{{
+			Name:    "acme/repo",
+			TestGen: &TestGenOverride{ReviewOnFailure: nil},
+		}}
+
+		clone := source.Clone()
+		if clone.TestGen.ReviewOnFailure != nil {
+			t.Errorf("nil 全局 ReviewOnFailure 克隆后应仍为 nil，得到: %v", clone.TestGen.ReviewOnFailure)
+		}
+		if clone.Repos[0].TestGen == nil {
+			t.Fatal("clone.Repos[0].TestGen 不应为 nil（只要源结构体非 nil）")
+		}
+		if clone.Repos[0].TestGen.ReviewOnFailure != nil {
+			t.Errorf("nil per-repo ReviewOnFailure 克隆后应仍为 nil，得到: %v", clone.Repos[0].TestGen.ReviewOnFailure)
+		}
+	})
 }

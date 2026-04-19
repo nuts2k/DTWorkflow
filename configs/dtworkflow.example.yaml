@@ -145,11 +145,14 @@ review:
 # - module_scope 是"允许做 gen_tests 的模块前缀白名单"（护栏）；留空表示允许任意合法 module 路径。
 # - max_retry_rounds 是容器内 Claude 自主修正测试失败的最大轮次，默认 3，合法范围 [1, 10]。
 # - test_framework 显式指定测试框架（"junit5" / "vitest"）；留空则 resolveFramework 自动探测。
+# - review_on_failure (M4.2/D5)：gen_tests 失败时是否也自动触发 review。默认 false（仅 Success=true 时触发）。
+#   指针语义：不设置 = 使用默认 false；true/false = 显式覆盖。可在 per-repo overrides 覆盖。
 test_gen:
   # enabled: true
   module_scope: ""          # 全局不限制；如 "backend" 表示仅允许 backend 前缀下的 module
   max_retry_rounds: 3       # 容器内 Claude 修正测试失败的最大轮次
   test_framework: ""        # 留空自动探测；可显式指定 "junit5" / "vitest"
+  # review_on_failure: false  # 失败时是否也自动触发 review（D5）；默认 false
 
 # 仓库级配置覆盖示例
 repos:
@@ -190,10 +193,12 @@ repos:
       # - enabled: 指针语义，未设置则继承全局；显式 false 时该仓库禁用 gen_tests。
       # - module_scope/test_framework: 非空字符串覆盖；空串表示继承全局。
       # - max_retry_rounds: > 0 时覆盖；= 0 时继承全局默认值 3。
+      # - review_on_failure: 指针语义，未设置则继承全局；显式 true/false 覆盖（D5）。
       enabled: true
       # module_scope: "backend"          # 仓库级 module 白名单前缀
       # max_retry_rounds: 5              # 仓库级覆盖，[1, 10]
       # test_framework: "junit5"         # 强制仓库使用 JUnit 5
+      # review_on_failure: true          # 仓库级：失败也触发 review（D5）
 
 # 每日评审统计报告
 # 定时通过飞书发送前一天的 PR 评审统计摘要。

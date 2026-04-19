@@ -432,6 +432,11 @@ func (c *Config) Clone() *Config {
 		v := *c.TestGen.Enabled
 		clone.TestGen.Enabled = &v
 	}
+	// M4.2：ReviewOnFailure *bool 同样需要单独深拷贝，避免共享底层指针
+	if c.TestGen.ReviewOnFailure != nil {
+		v := *c.TestGen.ReviewOnFailure
+		clone.TestGen.ReviewOnFailure = &v
+	}
 
 	// 深拷贝 API.Tokens
 	if c.API.Tokens != nil {
@@ -480,12 +485,17 @@ func (c *Config) Clone() *Config {
 				}
 				clone.Repos[i].Review = &reviewCopy
 			}
-			// 深拷贝 repo.TestGen（M4.1：Enabled 是 *bool 需单独深拷贝）
+			// 深拷贝 repo.TestGen（M4.1：Enabled 是 *bool 需单独深拷贝；
+			// M4.2：新增 ReviewOnFailure *bool 同步深拷贝）
 			if repo.TestGen != nil {
 				testGenCopy := *repo.TestGen
 				if repo.TestGen.Enabled != nil {
 					v := *repo.TestGen.Enabled
 					testGenCopy.Enabled = &v
+				}
+				if repo.TestGen.ReviewOnFailure != nil {
+					v := *repo.TestGen.ReviewOnFailure
+					testGenCopy.ReviewOnFailure = &v
 				}
 				clone.Repos[i].TestGen = &testGenCopy
 			}
