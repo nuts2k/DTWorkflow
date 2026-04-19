@@ -578,7 +578,9 @@ func TestProcessTask_FailedFixIssue_SendNotification(t *testing.T) {
 	}
 }
 
-func TestProcessTask_GenTests_NoNotification(t *testing.T) {
+// TestProcessTask_GenTests_SendsStartAndDoneNotification M4.2：gen_tests 成功路径
+// 应发送 2 条通知（Start + Done）。
+func TestProcessTask_GenTests_SendsStartAndDoneNotification(t *testing.T) {
 	s := newMockStore()
 	notifier := &stubNotifier{}
 	payload := model.TaskPayload{
@@ -587,6 +589,8 @@ func TestProcessTask_GenTests_NoNotification(t *testing.T) {
 		RepoOwner:    "org",
 		RepoName:     "repo",
 		RepoFullName: "org/repo",
+		Module:       "svc/user",
+		Framework:    "junit5",
 	}
 
 	now := time.Now()
@@ -605,8 +609,14 @@ func TestProcessTask_GenTests_NoNotification(t *testing.T) {
 	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
 		t.Fatalf("ProcessTask error: %v", err)
 	}
-	if len(notifier.messages) != 0 {
-		t.Fatalf("notification count = %d, want 0", len(notifier.messages))
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2 (start + done)", len(notifier.messages))
+	}
+	if notifier.messages[0].EventType != notify.EventGenTestsStarted {
+		t.Errorf("第 1 条通知 event = %q, want %q", notifier.messages[0].EventType, notify.EventGenTestsStarted)
+	}
+	if notifier.messages[1].EventType != notify.EventGenTestsDone {
+		t.Errorf("第 2 条通知 event = %q, want %q", notifier.messages[1].EventType, notify.EventGenTestsDone)
 	}
 }
 
@@ -949,7 +959,7 @@ func TestProcessTask_Retrying_SendsNotification(t *testing.T) {
 		},
 	}
 	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default())
-	p.sendCompletionNotification(context.Background(), record, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, nil)
 	if len(notifier.messages) != 1 {
 		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
 	}
@@ -1419,7 +1429,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 			PRNumber:     1,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil, nil)
 	if ok {
 		t.Error("RepoOwner 为空时不应生成通知消息")
 	}
@@ -1427,7 +1437,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 
 func TestBuildNotificationMessage_NilRecord(t *testing.T) {
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
-	_, ok := p.buildNotificationMessage(nil, nil, nil)
+	_, ok := p.buildNotificationMessage(nil, nil, nil, nil)
 	if ok {
 		t.Error("nil record 不应生成通知消息")
 	}
@@ -1447,7 +1457,7 @@ func TestBuildNotificationMessage_FixIssue_InvalidNumber(t *testing.T) {
 			IssueNumber: 0,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil, nil)
 	if ok {
 		t.Error("IssueNumber=0 不应生成通知消息")
 	}
@@ -2733,7 +2743,7 @@ func TestBuildNotificationMessage_FixIssue_SuccessInjectsPRMetadata(t *testing.T
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, fixResult)
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -2776,7 +2786,7 @@ func TestBuildNotificationMessage_FixIssue_FailureOmitsPRMetadata(t *testing.T) 
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, fixResult)
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -2861,7 +2871,7 @@ func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2904,7 +2914,7 @@ func TestBuildNotificationMessage_Failed_HasNotifyTimeNoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2942,7 +2952,7 @@ func TestBuildNotificationMessage_Retrying_HasNotifyTimeNoDuration(t *testing.T)
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2980,7 +2990,7 @@ func TestBuildNotificationMessage_FixIssue_Succeeded_HasDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3018,7 +3028,7 @@ func TestBuildNotificationMessage_FixIssue_Failed_NoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3031,5 +3041,279 @@ func TestBuildNotificationMessage_FixIssue_Failed_NoDuration(t *testing.T) {
 	assertNotifyTimeInShanghai(t, notifyTime, before, after)
 	if msg.Metadata[notify.MetaKeyDuration] != "" {
 		t.Errorf("FixIssue failed 通知不应包含 duration，got %q", msg.Metadata[notify.MetaKeyDuration])
+	}
+}
+
+// ==========================================================================
+// M4.2 gen_tests 通知路径测试
+// ==========================================================================
+
+// TestBuildStartMessage_GenTests_FailOpen：RepoFullName 空 → 不发；非空 → 发。
+func TestBuildStartMessage_GenTests_FailOpen(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
+
+	// 非空：返回 Start 消息
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		Framework:    "junit5",
+	}
+	msg, ok := p.buildStartMessage(payload)
+	if !ok {
+		t.Fatal("RepoFullName 非空应返回 true")
+	}
+	if msg.EventType != notify.EventGenTestsStarted {
+		t.Errorf("event = %q, want %q", msg.EventType, notify.EventGenTestsStarted)
+	}
+	if msg.Metadata[notify.MetaKeyModule] != "all" {
+		t.Errorf("空 module 应显示 all，实际 %q", msg.Metadata[notify.MetaKeyModule])
+	}
+	if msg.Metadata[notify.MetaKeyFramework] != "junit5" {
+		t.Errorf("framework metadata = %q, want junit5", msg.Metadata[notify.MetaKeyFramework])
+	}
+
+	// RepoFullName 空（实际场景少见，但 RepoOwner/RepoName 空会早退）：不发
+	empty := model.TaskPayload{TaskType: model.TaskTypeGenTests}
+	if _, ok := p.buildStartMessage(empty); ok {
+		t.Error("空 payload 应返回 false")
+	}
+}
+
+// TestBuildNotificationMessage_GenTests_SucceededMetadata：Succeeded 路径
+// 应回填 pr_url/pr_number/generated_count/committed_count/skipped_count 等。
+func TestBuildNotificationMessage_GenTests_SucceededMetadata(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
+
+	startedAt := time.Now().Add(-30 * time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:          "gen-task-done",
+		TaskType:    model.TaskTypeGenTests,
+		Status:      model.TaskStatusSucceeded,
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeGenTests,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			Module:       "svc/user",
+			Framework:    "junit5",
+		},
+	}
+	tr := &testgen.TestGenResult{
+		PRNumber: 99,
+		PRURL:    "https://gitea.example.com/org/repo/pulls/99",
+		Output: &testgen.TestGenOutput{
+			Success:        true,
+			InfoSufficient: true,
+			GeneratedFiles: []testgen.GeneratedFile{
+				{Path: "a_test.go", Operation: "create"},
+				{Path: "b_test.go", Operation: "create"},
+				{Path: "c_test.go", Operation: "create"},
+			},
+			CommittedFiles: []string{"a_test.go", "b_test.go"},
+			SkippedTargets: []testgen.SkippedTarget{{Path: "c", Reason: "time_budget_exhausted"}},
+		},
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil, nil, tr)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+	if msg.EventType != notify.EventGenTestsDone {
+		t.Errorf("event = %q, want %q", msg.EventType, notify.EventGenTestsDone)
+	}
+	if msg.Severity != notify.SeverityInfo {
+		t.Errorf("severity = %q, want %q", msg.Severity, notify.SeverityInfo)
+	}
+	if msg.Metadata[notify.MetaKeyPRURL] != tr.PRURL {
+		t.Errorf("pr_url = %q, want %q", msg.Metadata[notify.MetaKeyPRURL], tr.PRURL)
+	}
+	if msg.Metadata[notify.MetaKeyPRNumber] != "99" {
+		t.Errorf("pr_number = %q, want 99", msg.Metadata[notify.MetaKeyPRNumber])
+	}
+	if msg.Metadata[notify.MetaKeyGeneratedCount] != "3" {
+		t.Errorf("generated_count = %q, want 3", msg.Metadata[notify.MetaKeyGeneratedCount])
+	}
+	if msg.Metadata[notify.MetaKeyCommittedCount] != "2" {
+		t.Errorf("committed_count = %q, want 2", msg.Metadata[notify.MetaKeyCommittedCount])
+	}
+	if msg.Metadata[notify.MetaKeySkippedCount] != "1" {
+		t.Errorf("skipped_count = %q, want 1", msg.Metadata[notify.MetaKeySkippedCount])
+	}
+	if msg.Metadata[notify.MetaKeyModule] != "svc/user" {
+		t.Errorf("module = %q, want svc/user", msg.Metadata[notify.MetaKeyModule])
+	}
+	if msg.Metadata[notify.MetaKeyFramework] != "junit5" {
+		t.Errorf("framework = %q, want junit5", msg.Metadata[notify.MetaKeyFramework])
+	}
+}
+
+// TestBuildNotificationMessage_GenTests_FailureCategorySeverity：三态 severity 映射。
+func TestBuildNotificationMessage_GenTests_FailureCategorySeverity(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
+
+	cases := []struct {
+		name     string
+		category testgen.FailureCategory
+		wantSev  notify.Severity
+		wantTitle string
+	}{
+		{"infrastructure→Warning", testgen.FailureCategoryInfrastructure, notify.SeverityWarning, "基础设施故障"},
+		{"test_quality→Info", testgen.FailureCategoryTestQuality, notify.SeverityInfo, "测试质量未达标"},
+		{"info_insufficient→Info", testgen.FailureCategoryInfoInsufficient, notify.SeverityInfo, "生成信息不足"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			record := &model.TaskRecord{
+				ID:       "gen-task-fail",
+				TaskType: model.TaskTypeGenTests,
+				Status:   model.TaskStatusFailed,
+				Payload: model.TaskPayload{
+					TaskType:     model.TaskTypeGenTests,
+					RepoOwner:    "org",
+					RepoName:     "repo",
+					RepoFullName: "org/repo",
+					Module:       "svc/user",
+				},
+			}
+			output := &testgen.TestGenOutput{
+				Success:         false,
+				FailureCategory: tc.category,
+			}
+			if tc.category == testgen.FailureCategoryInfoInsufficient {
+				output.InfoSufficient = false
+			} else {
+				output.InfoSufficient = true
+			}
+			tr := &testgen.TestGenResult{Output: output}
+			msg, ok := p.buildNotificationMessage(record, nil, nil, tr)
+			if !ok {
+				t.Fatal("buildNotificationMessage 应返回 true")
+			}
+			if msg.EventType != notify.EventGenTestsFailed {
+				t.Errorf("event = %q, want %q", msg.EventType, notify.EventGenTestsFailed)
+			}
+			if msg.Severity != tc.wantSev {
+				t.Errorf("severity = %q, want %q", msg.Severity, tc.wantSev)
+			}
+			if msg.Title != tc.wantTitle {
+				t.Errorf("title = %q, want %q", msg.Title, tc.wantTitle)
+			}
+			if msg.Metadata[notify.MetaKeyFailureCategory] != string(tc.category) {
+				t.Errorf("failure_category = %q, want %q",
+					msg.Metadata[notify.MetaKeyFailureCategory], string(tc.category))
+			}
+		})
+	}
+}
+
+// TestBuildNotificationMessage_GenTests_Retrying：Retrying 路径走 EventSystemError + Warning。
+func TestBuildNotificationMessage_GenTests_Retrying(t *testing.T) {
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
+	record := &model.TaskRecord{
+		ID:         "gen-task-retrying",
+		TaskType:   model.TaskTypeGenTests,
+		Status:     model.TaskStatusRetrying,
+		RetryCount: 1,
+		MaxRetry:   3,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeGenTests,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			Module:       "svc/user",
+		},
+	}
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+	if msg.EventType != notify.EventSystemError {
+		t.Errorf("event = %q, want %q", msg.EventType, notify.EventSystemError)
+	}
+	if msg.Severity != notify.SeverityWarning {
+		t.Errorf("severity = %q, want %q", msg.Severity, notify.SeverityWarning)
+	}
+	if msg.Metadata[notify.MetaKeyTaskStatus] != string(model.TaskStatusRetrying) {
+		t.Errorf("task_status = %q, want retrying", msg.Metadata[notify.MetaKeyTaskStatus])
+	}
+}
+
+// TestSendCompletionNotification_GenTests_WarningsAppended：Warnings 非空时
+// 在主消息外追加一条 Warning 消息。
+func TestSendCompletionNotification_GenTests_WarningsAppended(t *testing.T) {
+	notifier := &stubNotifier{}
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), notifier, slog.Default())
+
+	startedAt := time.Now().Add(-30 * time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:          "gen-task-warnings",
+		TaskType:    model.TaskTypeGenTests,
+		Status:      model.TaskStatusSucceeded,
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeGenTests,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			Module:       "svc/user",
+		},
+	}
+	tr := &testgen.TestGenResult{
+		Output: &testgen.TestGenOutput{
+			Success:        true,
+			InfoSufficient: true,
+			Warnings:       []string{"AUTO_TEST_BRANCH_RESET_REMOTE_FAILED"},
+		},
+	}
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr)
+	if len(notifier.messages) != 2 {
+		t.Fatalf("应发出 2 条通知（Done + Warnings），实际 %d", len(notifier.messages))
+	}
+	if notifier.messages[0].EventType != notify.EventGenTestsDone {
+		t.Errorf("第 1 条应为 Done，实际 %q", notifier.messages[0].EventType)
+	}
+	if notifier.messages[1].Severity != notify.SeverityWarning {
+		t.Errorf("第 2 条应为 Warning severity，实际 %q", notifier.messages[1].Severity)
+	}
+	if !strings.Contains(notifier.messages[1].Body, "AUTO_TEST_BRANCH_RESET_REMOTE_FAILED") {
+		t.Errorf("第 2 条 body 应包含 warning 内容，实际 %q", notifier.messages[1].Body)
+	}
+}
+
+// TestSendCompletionNotification_ReviewStillWorksWithNilTestResult：
+// review 路径仍传 nil testResult，行为不变。
+func TestSendCompletionNotification_ReviewStillWorksWithNilTestResult(t *testing.T) {
+	notifier := &stubNotifier{}
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), notifier, slog.Default())
+
+	startedAt := time.Now().Add(-time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:          "review-task",
+		TaskType:    model.TaskTypeReviewPR,
+		Status:      model.TaskStatusSucceeded,
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeReviewPR,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			PRNumber:     1,
+		},
+	}
+	p.sendCompletionNotification(context.Background(), record, nil, nil, nil)
+	if len(notifier.messages) != 1 {
+		t.Fatalf("review 路径应发送 1 条通知，实际 %d", len(notifier.messages))
+	}
+	if notifier.messages[0].EventType != notify.EventPRReviewDone {
+		t.Errorf("event = %q, want %q", notifier.messages[0].EventType, notify.EventPRReviewDone)
 	}
 }

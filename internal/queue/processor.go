@@ -418,7 +418,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if finalStatePersisted {
-		p.sendCompletionNotification(ctx, record, reviewResult, fixResult)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult)
 	}
 
 	if runErr != nil {
@@ -569,6 +569,28 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 			Body:     fmt.Sprintf("正在修复 Issue #%d\n\n仓库：%s", payload.IssueNumber, payload.RepoFullName),
 			Metadata: metadata,
 		}
+	case model.TaskTypeGenTests:
+		// gen_tests 的 fail-open 判据为 RepoFullName 非空（非 Number>0：整仓
+		// 生成模式下 module 可空，不应因此屏蔽通知）。
+		if payload.RepoFullName == "" {
+			return notify.Message{}, false
+		}
+		metadata := map[string]string{
+			notify.MetaKeyModule:    genTestsModuleLabel(payload.Module),
+			notify.MetaKeyFramework: payload.Framework,
+		}
+		msg = notify.Message{
+			EventType: notify.EventGenTestsStarted,
+			Severity:  notify.SeverityInfo,
+			Target: notify.Target{
+				Owner: payload.RepoOwner,
+				Repo:  payload.RepoName,
+				IsPR:  false,
+			},
+			Title:    "自动测试生成开始",
+			Body:     fmt.Sprintf("正在生成测试\n\n仓库：%s\nmodule：%s", payload.RepoFullName, genTestsModuleLabel(payload.Module)),
+			Metadata: metadata,
+		}
 	default:
 		return notify.Message{}, false
 	}
@@ -584,12 +606,15 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 // sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知。
 // 内部创建独立后台 context，与 asynq 任务 ctx 的生命周期解耦，
 // 确保即使 asynq ctx 已过期（如任务超时）仍能发出通知。
-func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult) {
+func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult) {
 	if p.notifier == nil || record == nil {
 		return
 	}
-	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult)
+	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult, testResult)
 	if !ok {
+		// 主消息未构建成功（例如 gen_tests 缺 RepoFullName）仍尝试 Warnings 追加——
+		// 但无主消息时 Warnings 也无处附着，直接返回。
+		p.sendTestGenWarnings(ctx, record, testResult)
 		return
 	}
 	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -601,11 +626,15 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 			"error", err,
 		)
 	}
+	// 主消息发送后，如果 gen_tests 产出含 Warnings（例如分支强制对齐失败），
+	// 追加一条独立的 Warning 消息，保持主消息干净 + 告警信息可达。
+	p.sendTestGenWarnings(ctx, record, testResult)
 }
 
 // buildNotificationMessage 构建任务完成通知消息。
-// fixResult 预留给 M3.5，届时将注入 fix 结果的 PR 元数据。
-func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult) (notify.Message, bool) {
+// M4.2：新增 testResult 形参，用于 gen_tests 任务（EventGenTestsDone / EventGenTestsFailed）。
+// 其它类型调用时传 nil。
+func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult) (notify.Message, bool) {
 	if record == nil {
 		return notify.Message{}, false
 	}
@@ -781,6 +810,51 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 				Metadata:  metadata,
 			}
 		}
+	case model.TaskTypeGenTests:
+		// gen_tests 不绑定具体 PR/Issue 编号，Target 以整仓为单位。module 与 framework
+		// 通过 metadata 透传；Severity 依 FailureCategory 区分。
+		genTarget := notify.Target{
+			Owner: payload.RepoOwner,
+			Repo:  payload.RepoName,
+			IsPR:  false,
+		}
+		metadata := p.buildGenTestsMetadata(payload, testResult)
+		if record.Status == model.TaskStatusRetrying {
+			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
+			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
+			metadata[notify.MetaKeyTaskStatus] = string(record.Status)
+		}
+		switch record.Status {
+		case model.TaskStatusSucceeded:
+			msg = notify.Message{
+				EventType: notify.EventGenTestsDone,
+				Severity:  notify.SeverityInfo,
+				Target:    genTarget,
+				Title:     "自动测试生成完成",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		case model.TaskStatusRetrying:
+			// 对齐 review/fix：重试中统一走 EventSystemError + Warning severity
+			msg = notify.Message{
+				EventType: notify.EventSystemError,
+				Severity:  notify.SeverityWarning,
+				Target:    genTarget,
+				Title:     "自动测试生成重试中",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		default: // failed
+			severity, title := genTestsFailedSeverity(testResult)
+			msg = notify.Message{
+				EventType: notify.EventGenTestsFailed,
+				Severity:  severity,
+				Target:    genTarget,
+				Title:     title,
+				Body:      body,
+				Metadata:  metadata,
+			}
+		}
 	default:
 		return notify.Message{}, false
 	}
@@ -876,6 +950,112 @@ func adaptReviewResult(r *review.ReviewResult) *worker.ExecutionResult {
 	return result
 }
 
+// genTestsModuleLabel gen_tests 通知里 module 字段的显示值：空串回落 "all"
+// 以呼应 test.ModuleKey 的语义，避免飞书卡片出现空值。
+func genTestsModuleLabel(module string) string {
+	if strings.TrimSpace(module) == "" {
+		return "all"
+	}
+	return module
+}
+
+// buildGenTestsMetadata 为 gen_tests 通知消息构造 metadata。
+// testResult 为 nil 时仅回填 payload 维度字段（module / framework）；有输出时
+// 追加 PR 元数据 / 文件计数 / failure_category（若有）。
+func (p *Processor) buildGenTestsMetadata(payload model.TaskPayload, testResult *test.TestGenResult) map[string]string {
+	metadata := map[string]string{
+		notify.MetaKeyModule: genTestsModuleLabel(payload.Module),
+	}
+	framework := payload.Framework
+	if testResult != nil && testResult.Framework != "" {
+		framework = string(testResult.Framework)
+	}
+	if framework != "" {
+		metadata[notify.MetaKeyFramework] = framework
+	}
+	if testResult == nil {
+		return metadata
+	}
+	if testResult.PRURL != "" {
+		metadata[notify.MetaKeyPRURL] = testResult.PRURL
+	}
+	if testResult.PRNumber > 0 {
+		metadata[notify.MetaKeyPRNumber] = fmt.Sprintf("%d", testResult.PRNumber)
+	}
+	out := testResult.Output
+	if out == nil {
+		return metadata
+	}
+	metadata[notify.MetaKeyGeneratedCount] = fmt.Sprintf("%d", len(out.GeneratedFiles))
+	metadata[notify.MetaKeyCommittedCount] = fmt.Sprintf("%d", len(out.CommittedFiles))
+	metadata[notify.MetaKeySkippedCount] = fmt.Sprintf("%d", len(out.SkippedTargets))
+	if out.FailureCategory != "" && out.FailureCategory != test.FailureCategoryNone {
+		metadata[notify.MetaKeyFailureCategory] = string(out.FailureCategory)
+	}
+	return metadata
+}
+
+// genTestsFailedSeverity 按 FailureCategory 映射失败通知的 severity 与标题。
+// 映射来源 §4.9.4：
+//   - infrastructure   → Warning，"基础设施故障"
+//   - test_quality     → Info，"测试质量未达标"
+//   - info_insufficient → Info，"生成信息不足"
+//   - 其它（含 nil / 空）→ Warning，"自动测试生成失败"（保底）
+func genTestsFailedSeverity(testResult *test.TestGenResult) (notify.Severity, string) {
+	if testResult == nil || testResult.Output == nil {
+		return notify.SeverityWarning, "自动测试生成失败"
+	}
+	switch testResult.Output.FailureCategory {
+	case test.FailureCategoryInfrastructure:
+		return notify.SeverityWarning, "基础设施故障"
+	case test.FailureCategoryTestQuality:
+		return notify.SeverityInfo, "测试质量未达标"
+	case test.FailureCategoryInfoInsufficient:
+		return notify.SeverityInfo, "生成信息不足"
+	default:
+		return notify.SeverityWarning, "自动测试生成失败"
+	}
+}
+
+// sendTestGenWarnings 若 gen_tests 产出含 Warnings（例如 entrypoint 写的
+// AUTO_TEST_BRANCH_RESET_REMOTE_FAILED 提示），追加一条独立的 Warning 消息。
+// 与主消息拆分的原因：主消息在 Succeeded 时走 Info 语义，Warnings 作为附加
+// 告警需单独 Severity，便于飞书卡片着色 / 运维专人处理。
+func (p *Processor) sendTestGenWarnings(ctx context.Context, record *model.TaskRecord, testResult *test.TestGenResult) {
+	if p.notifier == nil || record == nil || testResult == nil || testResult.Output == nil {
+		return
+	}
+	warnings := testResult.Output.Warnings
+	if len(warnings) == 0 {
+		return
+	}
+	payload := record.Payload
+	if payload.RepoOwner == "" || payload.RepoName == "" {
+		return
+	}
+	metadata := p.buildGenTestsMetadata(payload, testResult)
+	metadata[notify.MetaKeyNotifyTime] = formatNotifyTime()
+	body := "gen_tests 产出附加告警：\n- " + strings.Join(warnings, "\n- ")
+	msg := notify.Message{
+		EventType: notify.EventGenTestsFailed,
+		Severity:  notify.SeverityWarning,
+		Target: notify.Target{
+			Owner: payload.RepoOwner,
+			Repo:  payload.RepoName,
+			IsPR:  false,
+		},
+		Title:    "自动测试生成存在告警",
+		Body:     body,
+		Metadata: metadata,
+	}
+	if err := p.notifier.Send(ctx, msg); err != nil {
+		p.logger.ErrorContext(ctx, "发送 gen_tests 附加告警消息失败",
+			"task_id", record.ID,
+			"error", err,
+		)
+	}
+}
+
 // adaptTestResult 将 test.TestGenResult 适配为 worker.ExecutionResult。
 // ParseError 仅保留到 Error 字段，不直接改写退出码；真正的重试策略由 Processor
 // 依据 ErrTestGenParseFailure 判断。
@@ -947,7 +1127,7 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 			"error", err,
 		)
 	} else {
-		p.sendCompletionNotification(ctx, record, reviewResult, fixResult)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult)
 	}
 	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
 }

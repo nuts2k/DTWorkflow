@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
 )
 
@@ -18,17 +20,29 @@ var _ webhook.Handler = (*EnqueueHandler)(nil)
 
 // EnqueueHandler 实现 webhook.Handler 接口，将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
-	client    Enqueuer
-	canceller TaskCanceller // M2.4: 任务取消能力
-	store     store.Store
-	logger    *slog.Logger
+	client        Enqueuer
+	canceller     TaskCanceller // M2.4: 任务取消能力
+	store         store.Store
+	logger        *slog.Logger
+	branchCleaner BranchCleaner // M4.2: 可选，Cancel-and-Replace 时清理旧 auto-test 分支
+}
+
+// EnqueueOption EnqueueHandler 可选配置。
+type EnqueueOption func(*EnqueueHandler)
+
+// WithBranchCleaner 注入 BranchCleaner 用于 M4.2 gen_tests Cancel-and-Replace 阶段
+// 清理旧 auto-test/{module} 远程分支。未注入时 EnqueueManualGenTests 会跳过清理。
+func WithBranchCleaner(c BranchCleaner) EnqueueOption {
+	return func(h *EnqueueHandler) {
+		h.branchCleaner = c
+	}
 }
 
 // NewEnqueueHandler 创建 EnqueueHandler 实例。
 // 参数 client 和 store 为必要依赖，传入 nil 属于编程错误（programming error），
 // 因此使用 panic 而非返回 error，与 Go 标准库（如 http.NewServeMux）的惯例一致。
 // canceller 为可选依赖，nil 时跳过取消逻辑。
-func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Store, logger *slog.Logger) *EnqueueHandler {
+func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Store, logger *slog.Logger, opts ...EnqueueOption) *EnqueueHandler {
 	if client == nil {
 		panic("NewEnqueueHandler: client 不能为 nil")
 	}
@@ -38,12 +52,16 @@ func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Sto
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &EnqueueHandler{
+	h := &EnqueueHandler{
 		client:    client,
 		canceller: canceller,
 		store:     store,
 		logger:    logger,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // HandlePullRequest 处理 PR 事件，执行幂等检查后创建任务并入队。
@@ -52,6 +70,14 @@ func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Sto
 // 提取通用模板方法反而会引入复杂的泛型或 interface 抽象，得不偿失。
 // 核心逻辑已下沉到 enqueueTask，当前的重复仅在 payload/record 构建和日志层面。
 func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.PullRequestEvent) error {
+	// M4.2: 拦截来自 auto-test/{moduleKey} 分支的 PR webhook——这些 PR 由 gen_tests
+	// 自己产出，上游已发过 gen_tests 完成通知，不应再为其触发自动评审。
+	// 仅在命中活跃 gen_tests 任务的 module 时拦截；查询失败 fail-open，继续原流程
+	// 保证评审能力不被 gen_tests 拖垮。
+	if h.shouldSkipAutoTestReview(ctx, event) {
+		return nil
+	}
+
 	// 幂等检查：相同 delivery_id + task_type 不重复创建
 	existing, err := h.store.FindByDeliveryID(ctx, event.DeliveryID, model.TaskTypeReviewPR)
 	if err != nil {
@@ -217,6 +243,52 @@ func buildAsynqTaskID(deliveryID string, taskType model.TaskType) string {
 		return fmt.Sprintf("%s:%s", deliveryID, taskType)
 	}
 	return "" // 让 asynq 自动生成
+}
+
+// autoTestBranchPrefix 标识由 gen_tests 产出的稳定工作分支前缀；
+// 与 test.BuildAutoTestBranchName 保持一致（auto-test/{moduleKey}）。
+const autoTestBranchPrefix = "auto-test/"
+
+// shouldSkipAutoTestReview 判断 PR webhook 是否来自 gen_tests 自己产出的
+// auto-test/{moduleKey} 分支；若同仓库当前仍有该 module 的活跃 gen_tests 任务，
+// 则拦截评审入队。其它情况（非 auto-test/* 前缀、查询失败等）均 fail-open。
+func (h *EnqueueHandler) shouldSkipAutoTestReview(ctx context.Context, event webhook.PullRequestEvent) bool {
+	head := event.PullRequest.HeadRef
+	if !strings.HasPrefix(head, autoTestBranchPrefix) {
+		return false
+	}
+	moduleKey := strings.TrimPrefix(head, autoTestBranchPrefix)
+	if moduleKey == "" {
+		return false
+	}
+
+	candidates, err := h.store.ListActiveGenTestsModules(ctx, event.Repository.FullName)
+	if err != nil {
+		// fail-open：查询失败时不阻断评审，只记日志。按 §4.5 要求，字段覆盖
+		// repo / module_key / pr / head / delivery_id / error 全量，便于排障。
+		h.logger.WarnContext(ctx, "查询活跃 gen_tests module 失败，auto-test PR 仍按评审流程放行",
+			"repo", event.Repository.FullName,
+			"module_key", moduleKey,
+			"pr", event.PullRequest.Number,
+			"head", head,
+			"delivery_id", event.DeliveryID,
+			"error", err,
+		)
+		return false
+	}
+	for _, candidate := range candidates {
+		if test.ModuleKey(candidate) == moduleKey {
+			h.logger.InfoContext(ctx, "拦截 auto-test PR 评审入队：存在活跃 gen_tests 任务",
+				"repo", event.Repository.FullName,
+				"module_key", moduleKey,
+				"pr", event.PullRequest.Number,
+				"head", head,
+				"delivery_id", event.DeliveryID,
+			)
+			return true
+		}
+	}
+	return false
 }
 
 // SupersededInfo 取消旧任务后的汇总信息
@@ -506,6 +578,21 @@ func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload mode
 		return "", err
 	}
 	h.cancelTasks(ctx, activeTasks)
+
+	// M4.2: 替换旧任务后，尝试清理旧的 auto-test/{module} 远程分支与 open PR。
+	// 分支未注入 cleaner（例如测试环境 / 仅 CLI 本地验证）或 Gitea 临时故障都不
+	// 阻断入队——清理失败仅 warn，保证 gen_tests 的"先入队、后清理"语义。
+	if len(activeTasks) > 0 && h.branchCleaner != nil {
+		branchName := test.BuildAutoTestBranchName(payload.Module)
+		if err := h.branchCleaner.CleanupAutoTestBranch(ctx, payload.RepoOwner, payload.RepoName, branchName); err != nil {
+			h.logger.WarnContext(ctx, "清理旧 auto-test 分支失败，继续入队新任务",
+				"repo", payload.RepoFullName,
+				"module", payload.Module,
+				"branch", branchName,
+				"error", err,
+			)
+		}
+	}
 
 	h.logger.InfoContext(ctx, "手动 gen_tests 任务已入队",
 		"task_id", record.ID,

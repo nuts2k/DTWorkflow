@@ -98,9 +98,72 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		if payload.Module != "" {
 			env = append(env, fmt.Sprintf("MODULE=%s", sanitizeEnvValue(payload.Module)))
 		}
+		// M4.2：注入 BASE_REF 给 entrypoint 做前置 checkout
+		// 空值允许：entrypoint 会回落到仓库默认分支
+		env = append(env, fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)))
+		// M4.2：注入清洗后的 module key（entrypoint 用作分支名），空 module → "all"
+		// 与 internal/test.ModuleKey 语义一致；由于 test → worker 已存在反向依赖，
+		// 不能在此 import test，改用本地等价实现 moduleKeyForContainer。
+		env = append(env, fmt.Sprintf("MODULE_SANITIZED=%s", moduleKeyForContainer(payload.Module)))
 	}
 
 	return env
+}
+
+// moduleKeyForContainer 将 module 路径映射为 auto-test 分支的稳定 key。
+// 语义与 internal/test.ModuleKey + sanitizeBranchRef 保持一致：
+//   - 空串（或清洗后全部被过滤）→ 回落 "all"
+//   - 其它 → 仅保留 [A-Za-z0-9._-]，其他字符统一替换为 -，连续 - 合并为单个，
+//     归一化 ".." / "-." / ".-" 序列，修剪首尾的 . 与 -
+//
+// 注意：worker 包不能 import internal/test（存在 test → worker 反向依赖），
+// 因此在此维护一份等价实现。任何修改必须同步到 internal/test.ModuleKey。
+func moduleKeyForContainer(module string) string {
+	key := module
+	if key == "" {
+		key = "all"
+	}
+	key = sanitizeModuleBranchRef(key)
+	if key == "" {
+		key = "all"
+	}
+	return key
+}
+
+// sanitizeModuleBranchRef 是 internal/test.sanitizeBranchRef 的本地等价实现。
+func sanitizeModuleBranchRef(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevDash := false
+	for _, r := range s {
+		switch {
+		case (r >= 'a' && r <= 'z'),
+			(r >= 'A' && r <= 'Z'),
+			(r >= '0' && r <= '9'),
+			r == '.', r == '_':
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	out := b.String()
+	// 迭代归一化：消除 ".."、"-."、".-"、"--" 序列直到字符串稳定
+	for {
+		prev := out
+		out = strings.ReplaceAll(out, "..", ".")
+		out = strings.ReplaceAll(out, "-.", "-")
+		out = strings.ReplaceAll(out, ".-", "-")
+		out = strings.ReplaceAll(out, "--", "-")
+		if out == prev {
+			break
+		}
+	}
+	out = strings.Trim(out, ".-")
+	return out
 }
 
 // 注意：prompt 使用英文以获得更好的 AI 理解效果

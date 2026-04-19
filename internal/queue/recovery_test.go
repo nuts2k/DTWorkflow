@@ -89,6 +89,17 @@ func (m *mockStoreForRecovery) GetLatestAnalysisByIssue(_ context.Context, _ str
 	return nil, nil
 }
 
+// M4.2: 新增 gen_tests 相关持久化接口，recovery 测试无需具体行为，返回零值即可。
+func (m *mockStoreForRecovery) SaveTestGenResult(_ context.Context, _ *store.TestGenResultRecord) error {
+	return nil
+}
+func (m *mockStoreForRecovery) GetTestGenResultByTaskID(_ context.Context, _ string) (*store.TestGenResultRecord, error) {
+	return nil, nil
+}
+func (m *mockStoreForRecovery) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
 // mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
 type mockEnqueuerForRecovery struct {
 	enqueueErr error

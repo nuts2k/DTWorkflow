@@ -24,6 +24,11 @@ type mockStore struct {
 	findErr              error
 	activePRTasks        []*model.TaskRecord // FindActivePRTasks 返回的任务列表
 	findActivePRTasksErr error               // FindActivePRTasks 返回的错误
+
+	// M4.2: gen_tests 相关
+	activeGenTestsModules    []string // ListActiveGenTestsModules 返回值
+	activeGenTestsModulesErr error    // ListActiveGenTestsModules 错误
+	saveTestGenCalls         int      // SaveTestGenResult 调用计数
 }
 
 func newMockStore() *mockStore {
@@ -167,6 +172,23 @@ func (m *mockStore) ListReviewResultsByTimeRange(_ context.Context, _, _ time.Ti
 
 func (m *mockStore) GetLatestAnalysisByIssue(_ context.Context, _ string, _ int64) (*model.TaskRecord, error) {
 	return nil, nil
+}
+
+// M4.2: gen_tests 产出持久化与 module 拦截查询（recorder 风格 mock）
+func (m *mockStore) SaveTestGenResult(_ context.Context, _ *store.TestGenResultRecord) error {
+	m.saveTestGenCalls++
+	return nil
+}
+
+func (m *mockStore) GetTestGenResultByTaskID(_ context.Context, _ string) (*store.TestGenResultRecord, error) {
+	return nil, nil
+}
+
+func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
+	if m.activeGenTestsModulesErr != nil {
+		return nil, m.activeGenTestsModulesErr
+	}
+	return m.activeGenTestsModules, nil
 }
 
 // mockEnqueuer 实现 Enqueuer 接口的 mock
@@ -1500,5 +1522,282 @@ func TestEnqueueManualGenTests_IncompletePayload(t *testing.T) {
 				t.Errorf("不应落库任何 task，实际有 %d 条", len(s.tasks))
 			}
 		})
+	}
+}
+
+// ==========================================================================
+// M4.2: BranchCleaner + HandlePullRequest auto-test/* 拦截测试
+// ==========================================================================
+
+// recordingBranchCleaner 满足 BranchCleaner 接口，记录每次调用及 branch。
+type recordingBranchCleaner struct {
+	calls   []string // 记录 branch 名
+	returnErr error
+}
+
+func (r *recordingBranchCleaner) CleanupAutoTestBranch(_ context.Context, _, _, branch string) error {
+	r.calls = append(r.calls, branch)
+	return r.returnErr
+}
+
+// TestEnqueueManualGenTests_TriggersBranchCleanerOnReplace：Cancel-and-Replace 时
+// cleaner 应被调用一次，branch = "auto-test/" + ModuleKey(payload.Module)。
+func TestEnqueueManualGenTests_TriggersBranchCleanerOnReplace(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	cleaner := &recordingBranchCleaner{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-replace"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(), WithBranchCleaner(cleaner))
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "svc/user",
+	}
+
+	first, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第一次触发失败: %v", err)
+	}
+	s.tasks[first].AsynqID = "asynq-first"
+
+	if _, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot"); err != nil {
+		t.Fatalf("第二次触发失败: %v", err)
+	}
+
+	if len(cleaner.calls) != 1 {
+		t.Fatalf("BranchCleaner 应被调用 1 次，实际 %d 次", len(cleaner.calls))
+	}
+	// ModuleKey("svc/user") = "svc-user" → branch = "auto-test/svc-user"
+	if cleaner.calls[0] != "auto-test/svc-user" {
+		t.Errorf("cleaner 收到的 branch = %q, want %q", cleaner.calls[0], "auto-test/svc-user")
+	}
+}
+
+// TestEnqueueManualGenTests_NoCleanupWhenNoActiveTasks：首次触发无旧任务，
+// 不应触发 cleaner。
+func TestEnqueueManualGenTests_NoCleanupWhenNoActiveTasks(t *testing.T) {
+	s := newMockStore()
+	cleaner := &recordingBranchCleaner{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-first-only"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(), WithBranchCleaner(cleaner))
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "svc/user",
+	}
+
+	if _, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot"); err != nil {
+		t.Fatalf("EnqueueManualGenTests error: %v", err)
+	}
+	if len(cleaner.calls) != 0 {
+		t.Errorf("无活跃旧任务时不应触发 cleaner，实际调用 %d 次", len(cleaner.calls))
+	}
+}
+
+// TestEnqueueManualGenTests_CleanupFailureDoesNotBlock：cleaner 返回 error 时
+// 入队仍成功，不向上冒泡。
+func TestEnqueueManualGenTests_CleanupFailureDoesNotBlock(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	cleaner := &recordingBranchCleaner{returnErr: errors.New("cleanup failed")}
+	mc := &mockEnqueuer{enqueuedID: "asynq-cleanup-err"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(), WithBranchCleaner(cleaner))
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "svc/user",
+	}
+
+	first, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第一次触发失败: %v", err)
+	}
+	s.tasks[first].AsynqID = "asynq-first"
+
+	secondID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("cleanup 失败不应阻断入队: %v", err)
+	}
+	if secondID == "" {
+		t.Fatal("第二次入队应成功并返回 taskID")
+	}
+	if s.tasks[secondID].Status != model.TaskStatusQueued {
+		t.Errorf("新任务 status = %q, want queued", s.tasks[secondID].Status)
+	}
+}
+
+// TestEnqueueManualGenTests_EmptyModuleBranchKey：整仓模式下 branch = auto-test/all。
+func TestEnqueueManualGenTests_EmptyModuleBranchKey(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	cleaner := &recordingBranchCleaner{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-empty-mod"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(), WithBranchCleaner(cleaner))
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+	}
+
+	first, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第一次触发失败: %v", err)
+	}
+	s.tasks[first].AsynqID = "asynq-first"
+
+	if _, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot"); err != nil {
+		t.Fatalf("第二次触发失败: %v", err)
+	}
+
+	if len(cleaner.calls) != 1 || cleaner.calls[0] != "auto-test/all" {
+		t.Errorf("空 module 应生成 auto-test/all，实际 calls=%v", cleaner.calls)
+	}
+}
+
+// TestHandlePullRequest_AutoTestInterceptWhenActive：auto-test/* 前缀 + 存在
+// 同 module 活跃 gen_tests → 返回 nil，不入队评审任务。
+func TestHandlePullRequest_AutoTestInterceptWhenActive(t *testing.T) {
+	s := newMockStore()
+	s.activeGenTestsModules = []string{"svc/user"} // ModuleKey("svc/user")="svc-user"
+	mc := &mockEnqueuer{enqueuedID: "asynq-should-not-enqueue"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID: "delivery-autotest-intercept",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  99,
+			HeadRef: "auto-test/svc-user",
+		},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("HandlePullRequest 拦截路径不应返回错误: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("拦截路径不应落库任何 task，实际 %d 条", len(s.tasks))
+	}
+}
+
+// TestHandlePullRequest_AutoTestDifferentModule：auto-test/* 但 module 不活跃 → 正常入队。
+func TestHandlePullRequest_AutoTestDifferentModule(t *testing.T) {
+	s := newMockStore()
+	s.activeGenTestsModules = []string{"svc/other"} // moduleKey 不匹配 "svc-user"
+	mc := &mockEnqueuer{enqueuedID: "asynq-diff-module"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID: "delivery-autotest-diff",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  77,
+			HeadRef: "auto-test/svc-user",
+		},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("HandlePullRequest error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Errorf("期望入队 1 条评审任务，实际 %d", len(s.tasks))
+	}
+}
+
+// TestHandlePullRequest_AutoTestNoActiveTasks：无活跃 gen_tests → 正常入队。
+func TestHandlePullRequest_AutoTestNoActiveTasks(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-no-active"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID: "delivery-autotest-inactive",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  55,
+			HeadRef: "auto-test/svc-user",
+		},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("HandlePullRequest error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Errorf("期望入队 1 条评审任务，实际 %d", len(s.tasks))
+	}
+}
+
+// TestHandlePullRequest_AutoTestStoreFailOpen：ListActiveGenTestsModules 失败时
+// fail-open，评审任务仍应入队。
+func TestHandlePullRequest_AutoTestStoreFailOpen(t *testing.T) {
+	s := newMockStore()
+	s.activeGenTestsModulesErr = errors.New("sqlite down")
+	mc := &mockEnqueuer{enqueuedID: "asynq-failopen"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID: "delivery-failopen",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  88,
+			HeadRef: "auto-test/svc-user",
+		},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("fail-open 路径不应返回错误: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Errorf("fail-open 时评审应正常入队，实际 %d 条", len(s.tasks))
+	}
+}
+
+// TestHandlePullRequest_NonAutoTestPrefixUnaffected：非 auto-test/* 分支完全不受影响，
+// 即便 ListActiveGenTestsModules 返回活跃 module 也不该被误拦。
+func TestHandlePullRequest_NonAutoTestPrefixUnaffected(t *testing.T) {
+	s := newMockStore()
+	s.activeGenTestsModules = []string{"svc/user"}
+	mc := &mockEnqueuer{enqueuedID: "asynq-regular"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID: "delivery-regular",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  44,
+			HeadRef: "feature/svc-user",
+		},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("HandlePullRequest error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Errorf("非 auto-test/* 应正常入队，实际 %d 条", len(s.tasks))
 	}
 }

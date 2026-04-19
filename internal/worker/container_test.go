@@ -149,6 +149,7 @@ func TestBuildContainerEnv_GenTests(t *testing.T) {
 		RepoFullName: "owner/repo",
 		CloneURL:     "http://gitea.example.com/owner/repo.git",
 		Module:       "internal/auth",
+		BaseRef:      "develop",
 	}
 
 	env := buildContainerEnv(config, payload)
@@ -156,6 +157,147 @@ func TestBuildContainerEnv_GenTests(t *testing.T) {
 
 	if envMap["MODULE"] != "internal/auth" {
 		t.Errorf("MODULE = %q, 期望 internal/auth", envMap["MODULE"])
+	}
+	// M4.2：gen_tests 必须注入 BASE_REF
+	if got, ok := envMap["BASE_REF"]; !ok {
+		t.Error("gen_tests 任务应注入 BASE_REF")
+	} else if got != "develop" {
+		t.Errorf("BASE_REF = %q, 期望 develop", got)
+	}
+	// M4.2：gen_tests 必须注入 MODULE_SANITIZED（"internal/auth" → "internal-auth"）
+	if got, ok := envMap["MODULE_SANITIZED"]; !ok {
+		t.Error("gen_tests 任务应注入 MODULE_SANITIZED")
+	} else if got != "internal-auth" {
+		t.Errorf("MODULE_SANITIZED = %q, 期望 internal-auth", got)
+	}
+}
+
+// M4.2：module 含 / 应清洗为 -
+func TestBuildContainerEnv_GenTests_ModuleSanitizedSlash(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		Module:       "srv/api",
+		BaseRef:      "main",
+	}
+
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	if envMap["MODULE_SANITIZED"] != "srv-api" {
+		t.Errorf("MODULE_SANITIZED = %q, 期望 srv-api", envMap["MODULE_SANITIZED"])
+	}
+	if envMap["BASE_REF"] != "main" {
+		t.Errorf("BASE_REF = %q, 期望 main", envMap["BASE_REF"])
+	}
+}
+
+// M4.2：module 为空应回落为 "all"
+func TestBuildContainerEnv_GenTests_ModuleSanitizedEmpty(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeGenTests,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "http://gitea.example.com/owner/repo.git",
+		Module:       "",
+		BaseRef:      "",
+	}
+
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	// 空 module → MODULE_SANITIZED=all
+	if got, ok := envMap["MODULE_SANITIZED"]; !ok {
+		t.Error("gen_tests 任务（空 module）应注入 MODULE_SANITIZED")
+	} else if got != "all" {
+		t.Errorf("MODULE_SANITIZED = %q, 期望 all", got)
+	}
+	// 空 BaseRef 也应注入（entrypoint 负责回落到默认分支）
+	if got, ok := envMap["BASE_REF"]; !ok {
+		t.Error("gen_tests 任务应注入 BASE_REF（即便为空）")
+	} else if got != "" {
+		t.Errorf("BASE_REF = %q, 期望空串", got)
+	}
+}
+
+// M4.2：review_pr / analyze_issue / fix_issue case 不应注入 MODULE_SANITIZED（避免污染其他任务类型）
+func TestBuildContainerEnv_NonGenTests_NoModuleSanitized(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "token",
+		ClaudeAPIKey: "key",
+	}
+	cases := []struct {
+		name    string
+		payload model.TaskPayload
+	}{
+		{
+			name: "review_pr",
+			payload: model.TaskPayload{
+				TaskType:     model.TaskTypeReviewPR,
+				RepoOwner:    "owner",
+				RepoName:     "repo",
+				RepoFullName: "owner/repo",
+				CloneURL:     "http://gitea.example.com/owner/repo.git",
+				PRNumber:     1,
+				BaseRef:      "main",
+			},
+		},
+		{
+			name: "analyze_issue",
+			payload: model.TaskPayload{
+				TaskType:     model.TaskTypeAnalyzeIssue,
+				RepoOwner:    "owner",
+				RepoName:     "repo",
+				RepoFullName: "owner/repo",
+				CloneURL:     "http://gitea.example.com/owner/repo.git",
+				IssueNumber:  1,
+				IssueTitle:   "t",
+			},
+		},
+		{
+			name: "fix_issue",
+			payload: model.TaskPayload{
+				TaskType:     model.TaskTypeFixIssue,
+				RepoOwner:    "owner",
+				RepoName:     "repo",
+				RepoFullName: "owner/repo",
+				CloneURL:     "http://gitea.example.com/owner/repo.git",
+				IssueNumber:  1,
+				IssueTitle:   "t",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := buildContainerEnv(config, tc.payload)
+			envMap := envSliceToMap(env)
+			if _, ok := envMap["MODULE_SANITIZED"]; ok {
+				t.Errorf("%s 任务不应注入 MODULE_SANITIZED，实际: %q", tc.name, envMap["MODULE_SANITIZED"])
+			}
+			// review_pr 本身就会注入 BASE_REF（既有行为），此处仅对非 review_pr
+			// 验证 gen_tests 专属注入不会泄漏到 analyze_issue / fix_issue
+			if tc.payload.TaskType != model.TaskTypeReviewPR {
+				if _, ok := envMap["BASE_REF"]; ok {
+					t.Errorf("%s 任务不应注入 BASE_REF，实际: %q", tc.name, envMap["BASE_REF"])
+				}
+			}
+		})
 	}
 }
 
