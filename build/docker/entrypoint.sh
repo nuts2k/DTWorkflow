@@ -242,8 +242,15 @@ HOOK
                 log "${AUTO_TEST_BRANCH} 重置回 ${BASE_REF}（原因：${RESET_REASON}）"
                 git checkout -B "${AUTO_TEST_BRANCH}" "${BASE_SHA}"
                 # ---- M4.2 新增 (2)：重置后主动 force-with-lease 对齐远程 ----
+                # 原因：prompt 禁止 Claude 做 force push；但本地重置后本地 HEAD 不是远程祖先，
+                # Claude 后续每文件 push 会被 Gitea 拒（non-fast-forward）导致任务死锁。
+                # 由 entrypoint（机制层）在 Claude 启动前主动对齐远程；使用 --force-with-lease
+                # 绑定 expected old sha：
+                #   BRANCH_SHA 非空 → --force-with-lease=refname:SHA（绑定具体 SHA，竞态安全上限）
+                #   BRANCH_SHA 为空（rev-parse 降级）→ --force-with-lease=refname（git 自动绑定
+                #     当前远程跟踪引用值；避免 refname: 空 expected sha 语义：要求分支不存在）
                 log "重置后主动对齐远程 ${AUTO_TEST_BRANCH} 到 ${BASE_REF}（force-with-lease）"
-                if git push --force-with-lease="${AUTO_TEST_BRANCH}:${BRANCH_SHA}" \
+                if git push --force-with-lease="${AUTO_TEST_BRANCH}${BRANCH_SHA:+:${BRANCH_SHA}}" \
                     origin "${AUTO_TEST_BRANCH}" 2>&1 | sed "s|${GITEA_TOKEN:-__none__}|***|g" >&2; then
                     echo "AUTO_TEST_BRANCH_RESET_PUSHED=1" >> /tmp/.gen_tests_warnings
                 else

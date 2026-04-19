@@ -93,6 +93,12 @@ func FormatTestGenPRBody(out *TestGenOutput, payload model.TaskPayload, framewor
 	sb.WriteString(fmt.Sprintf("| 跳过目标 | **%d** |\n", skippedCount))
 	sb.WriteString("\n")
 
+	// 部分交付提示：Success=false 但有文件已提交时，在概览后显式说明状态
+	// 避免 PR 审阅者误以为这是正常的成功 PR
+	if out != nil && !out.Success && committedCount > 0 {
+		sb.WriteString(fmt.Sprintf("> ⚠️ **部分交付**：测试生成执行失败，但已有 **%d** 个文件提交到分支。请查看下方「失败分类」了解原因，合并前需人工审查生成内容。\n\n", committedCount))
+	}
+
 	if out == nil {
 		sb.WriteString("> 本次任务未产出内层 TestGenOutput，详见任务记录与容器日志。\n\n")
 		sb.WriteString("---\n🤖 由 DTWorkflow 自动生成")

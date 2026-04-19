@@ -90,7 +90,7 @@ configs/        # 配置文件模板
 
 - **触发方式**（M4.1 + M4.2 仅手动；M4.3 扩展 Webhook PR merged 触发）：
   - CLI 触发：`./bin/dtw gen-tests --repo <owner/repo> [--module <path>] [--ref <branch>] [--framework junit5|vitest]`
-  - API 触发：`POST /api/v1/gen-tests`
+  - API 触发：`POST /api/v1/repos/{owner}/{repo}/gen-tests`
 - **镜像**：`gen_tests` 使用执行镜像（`worker-full`，含 JDK + Maven）
 - **执行流程（M4.2 §4.2 八步）**：`test.Service.Execute` —
   1. 前置校验（`Enabled` / `validateModule` / `resolveBaseRef` / `validateModuleExists`）

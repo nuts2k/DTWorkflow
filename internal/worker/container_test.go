@@ -783,3 +783,32 @@ func TestBuildContainerCmd_FixIssueWithRef(t *testing.T) {
 		t.Errorf("prompt 应包含 ref checkout 信息，实际: %s", prompt)
 	}
 }
+
+// TestModuleKeyForContainerParity 验证 moduleKeyForContainer 与 internal/test.ModuleKey 语义一致。
+// 由于 test → worker 反向依赖无法在此 import internal/test，手动维护等价期望值。
+// 若本测试失败，需同步检查 internal/test.ModuleKey 是否也有对应变更；
+// 若 moduleKeyForContainer 需要修改，必须同步更新 internal/test.ModuleKey。
+func TestModuleKeyForContainerParity(t *testing.T) {
+	cases := []struct {
+		module string
+		want   string
+	}{
+		{"", "all"},
+		{"services/api", "services-api"},
+		{"packages/web/ui", "packages-web-ui"},
+		{"   ", "all"},
+		{"中文module", "module"},
+		{"svc with space", "svc-with-space"},
+		{"svc:foo", "svc-foo"},
+		{"-foo-", "foo"},
+		{".foo.", "foo"},
+		{"a/../b", "a-b"},
+		{"foo..bar", "foo.bar"},
+		{"\x00\x00", "all"},
+	}
+	for _, c := range cases {
+		if got := moduleKeyForContainer(c.module); got != c.want {
+			t.Errorf("moduleKeyForContainer(%q)=%q, want %q (必须与 internal/test.ModuleKey 一致)", c.module, got, c.want)
+		}
+	}
+}

@@ -48,9 +48,14 @@ case "${1:-}" in
     ;;
   rev-parse)
     case "${2:-}" in
-      origin/auto-test/*) echo "branchsha" ;;
-      origin/*)           echo "basesha" ;;
-      *)                  echo "abc123" ;;
+      origin/auto-test/*)
+        if [ "${MOCK_REV_PARSE_BRANCH_FAIL:-}" = "1" ]; then
+          exit 1
+        fi
+        echo "branchsha"
+        ;;
+      origin/*) echo "basesha" ;;
+      *)        echo "abc123" ;;
     esac
     ;;
   merge-base)
@@ -327,11 +332,13 @@ echo ""
 echo "--- M4.2 gen_tests 断点续传断言 ---"
 
 # 运行 gen_tests 场景并收集输出；返回 log / stderr / warnings
-# 用法：run_gen_tests_resume <repo_tag> <module_san> <base_ref> <fetch_result> <merge_base> <log_authors> <push_result>
+# 用法：run_gen_tests_resume <repo_tag> <module_san> <base_ref> <fetch_result> <merge_base> <log_authors> <push_result> [rev_parse_branch_fail]
 # 约定：将 git.log、stderr、warnings 分别写入 TMPDIR 下带 tag 的文件
+# rev_parse_branch_fail：可选，"1" 表示 rev-parse origin/auto-test/* 返回非零（降级路径）
 run_gen_tests_resume() {
   local tag="$1" module_san="$2" base_ref="$3"
   local fetch_result="$4" merge_base="$5" log_authors="$6" push_result="$7"
+  local rev_parse_branch_fail="${8:-}"
   local repo_dir="${TMPDIR}/repo-resume-${tag}"
   rm -rf "${repo_dir}"
   : > "${TMPDIR}/git-${tag}.log"
@@ -351,6 +358,7 @@ run_gen_tests_resume() {
   MOCK_MERGE_BASE_RESULT="${merge_base}" \
   MOCK_LOG_AUTHORS="${log_authors}" \
   MOCK_GIT_PUSH_RESULT="${push_result}" \
+  MOCK_REV_PARSE_BRANCH_FAIL="${rev_parse_branch_fail}" \
   bash "${ENTRYPOINT}" true >/dev/null 2>"${stderr_file}" || true
 }
 
@@ -468,6 +476,28 @@ if [ -f "/tmp/.gen_tests_warnings" ]; then
   (( PASS++ ))
 else
   echo "FAIL: S10 — 预期 /tmp/.gen_tests_warnings 存在"
+  (( FAIL++ ))
+fi
+
+# ---- S11：rev-parse 失败降级 + force-with-lease 无 SHA 绑定 ----
+# 验证 Critical #1 修复：BRANCH_SHA="" 时不使用 refname: 空 expected SHA 语义
+run_gen_tests_resume "s11" "mymod" "main" "success" "not-ancestor" "" "success" "1"
+LOG_S11="$(cat "${TMPDIR}/git-s11.log")"
+# 重置应当发生（RESET_REASON="分支 SHA 解析失败"）
+assert_contains "S11 — rev-parse 失败：checkout -B auto-test/mymod basesha（重置发生）" \
+  "${LOG_S11}" "git checkout -B auto-test/mymod basesha"
+# force-with-lease 应不带 :SHA（仅绑定 refname，git 自动以远程跟踪值为期望）
+assert_contains "S11 — rev-parse 失败：force-with-lease 仅绑定 refname（无 :SHA）" \
+  "${LOG_S11}" "git push --force-with-lease=auto-test/mymod origin auto-test/mymod"
+assert_not_contains "S11 — rev-parse 失败：不应出现空 SHA 绑定（refname: 语义）" \
+  "${LOG_S11}" "git push --force-with-lease=auto-test/mymod: origin"
+# push 成功时应写入 AUTO_TEST_BRANCH_RESET_PUSHED=1
+if [ -f "${WARNINGS_FILE}" ] && grep -q "^AUTO_TEST_BRANCH_RESET_PUSHED=1$" "${WARNINGS_FILE}"; then
+  echo "PASS: S11 — rev-parse 失败降级写入 AUTO_TEST_BRANCH_RESET_PUSHED=1"
+  (( PASS++ ))
+else
+  echo "FAIL: S11 — 预期 ${WARNINGS_FILE} 含 AUTO_TEST_BRANCH_RESET_PUSHED=1"
+  [ -f "${WARNINGS_FILE}" ] && cat "${WARNINGS_FILE}" || echo "(warnings 文件不存在)"
   (( FAIL++ ))
 fi
 

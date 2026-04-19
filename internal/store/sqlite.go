@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -811,14 +812,20 @@ const testGenResultColumns = `id, task_id, repo_full_name, module, framework, ba
 		review_enqueued, cost_usd, duration_ms, output_json,
 		created_at, updated_at`
 
-// truncateFreeText 对自由文本做字节级截断，超过 limit 则截断前 limit 字节并追加标记。
-// 注意：以字节切片为单位，UTF-8 字符可能被截在中间 —— 只用于 SQLite 单行大小保护，
-// 读出后仅用于审计与 debug（不参与 prompt 或通知渲染），不强求字符完整性。
+// truncateFreeText 对自由文本做字节级截断，超过 limit 则截断并追加标记。
+// 截断点回退到最近的 UTF-8 字符起始边界，保证截断后字符串仍为合法 UTF-8。
+// 注意：仅用于 SQLite 单行大小保护；output_json 可能被截断在 JSON 结构中间，
+// 消费方应对 json.Unmarshal 的错误做容错处理，不能假设字段总是完整 JSON。
 func truncateFreeText(s string) string {
 	if len(s) <= testGenFreeTextLimit {
 		return s
 	}
-	return s[:testGenFreeTextLimit] + testGenTruncationSuffix
+	limit := testGenFreeTextLimit
+	// 向前回退直到找到 UTF-8 字符起始边界（非延续字节），避免截断多字节字符中间
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit] + testGenTruncationSuffix
 }
 
 // boolToInt 将 Go bool 映射为 SQLite 存储的 0/1
