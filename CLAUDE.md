@@ -98,19 +98,19 @@ configs/        # 配置文件模板
   3. `parseResult`（CLI 信封 → TestGenOutput，Success=true 走 `validateSuccessfulTestGenOutput`；Success=false 走 `validateFailureTestGenOutput` 弱校验）
   4. `len(CommittedFiles)>0` 即使 Success=false 也 `createTestPR`（D5 失败保留）
   5. 阶段 1 `SaveTestGenResult`（`review_enqueued=0`）
-  6. review 入队决策 + 成功时阶段 2 UPSERT（`review_enqueued=1`）
+  6. review 入队决策 + 成功时阶段 2 `UpdateTestGenResultReviewEnqueued` partial UPDATE（`review_enqueued=1`）
   7. 业务失败判定（`!InfoSufficient` / `!Success` → sentinel error）
   8. return result
 - **稳定分支 + 断点续传**：分支名 `auto-test/{moduleKey}`（`test.BuildAutoTestBranchName`，空 module 回落 `all`）；用户重触发即 Cancel-and-Replace（删分支删 PR + kill 容器 + `EnqueueHandler.WithBranchCleaner` 在 `EnqueueManualGenTests` 中清理）；`entrypoint.sh` 先 `fetch + checkout BASE_REF`，再 fetch / checkout 稳定分支，落后 base 或非 bot author 自动重置并 `git push --force-with-lease` 对齐远程（失败写 `/tmp/.gen_tests_warnings` → `TestGenOutput.Warnings` 追加到飞书 Warning）
-- **完成后自动 enqueue review（D6）**：`Success=true && PRNumber>0` 时 `test.Service` 主动调 `EnqueueManualReview`（`triggered_by="gen_tests:<taskID>"`）；`test_gen.review_on_failure=true` 时失败 + PRNumber>0 也入队；入队失败仅 warn 不阻断主流程
-- **review 拦截（D2）**：`enqueue.HandlePullRequest` 检测到 `auto-test/{moduleKey}` 分支时，用 `store.ListActiveGenTestsModules(repo)` 比对 moduleKey；命中活跃任务则跳过 review 入队；查询失败 fail-open
-- **通知三件套**：3 个 `EventType`（`EventGenTestsStarted` / `EventGenTestsDone` / `EventGenTestsFailed`）+ 飞书 card + Gitea PR 评论（锚点 `<!-- dtworkflow:gen_tests:done -->` 不带 task_id，跨任务覆盖语义；`giteaCommentAdapter` 实现 `notify.GiteaPRCommentManager` 打开 `ListIssueComments` / `EditIssueComment` upsert 路径）
+- **完成后自动 enqueue review（D6）**：`Success=true && PRNumber>0` 时 `test.Service` 主动调 `EnqueueManualReview`（`triggered_by="gen_tests:<taskID>"`）；`test_gen.review_on_failure=true` 时失败 + PRNumber>0 也入队；`lookupPreviousEnqueueState` 按 taskID+PRNumber 幂等 guard，重试不重复入队 review；入队失败仅 warn 不阻断主流程
+- **review 拦截（D2）**：`enqueue.HandlePullRequest` 检测到 `auto-test/{moduleKey}` 分支时，用 `store.ListActiveGenTestsModules(repo)` 比对 moduleKey（状态集含 pending）；命中活跃任务则跳过 review 入队；查询失败 fail-open
+- **通知三件套**：3 个 `EventType`（`EventGenTestsStarted` / `EventGenTestsDone` / `EventGenTestsFailed`）+ 飞书 card + Gitea PR 评论（锚点 `<!-- dtworkflow:gen_tests:done -->` 不带 task_id，跨任务覆盖语义）；PR 评论通过 `Processor.syncGenTestsPRComment`（走 `GenTestsPRCommenter` 接口）在 gen_tests 最终态写回，与路由配置解耦；gen_tests 三事件属 repo 级通知，`repoScopedGiteaNotifier` 包装防误投 Gitea 评论渠道（PR number 为空时静默跳过）
 - **failure_category 四枚举**：`infrastructure` / `test_quality` / `info_insufficient` / `none`；Success=true 必须 `none`，Success=false 必须非 `none`；飞书 severity 映射 infrastructure=Warning / test_quality=Info / info_insufficient=Info
-- **持久化**：迁移 v19 `test_gen_results` 表（`task_id UNIQUE` + 3 索引 + `review_enqueued` + `updated_at`）；`store.SaveTestGenResult` UPSERT + UUID 生成 + 自由文本 2KB 截断；Execute 两阶段 UPSERT（主结果 + `review_enqueued` 更新）；审计通过 `test_gen_results.task_id → tasks.id → tasks.triggered_by` 反查（表内不重复存 triggered_by）
+- **持久化**：迁移 v19 `test_gen_results` 表（`task_id NOT NULL UNIQUE` + 3 索引 + `review_enqueued` + `updated_at`）；迁移 v20 重建表，`task_id` 改为可空（使 `ON DELETE SET NULL` 在历史任务 purge 时正常生效，不触发 NOT NULL 约束冲突）；`store.SaveTestGenResult` UPSERT + UUID 生成 + 自由文本 2KB 截断；Execute 两阶段写入：阶段 1 UPSERT 主结果（`review_enqueued=0`），阶段 2 `UpdateTestGenResultReviewEnqueued` partial UPDATE（`review_enqueued=1`，不覆盖其它字段）；审计通过 `test_gen_results.task_id → tasks.id → tasks.triggered_by` 反查（表内不重复存 triggered_by）
 - **框架检测**：`resolveFramework` 扫描 `module/pom.xml`（Java）或 `package.json`（Vue）；两者并存返回 `ErrAmbiguousFramework`；可通过 `test_gen.test_framework` 显式配置
-- **分支保护**：`entrypoint.sh` gen_tests 分支含 pre-push hook，仅允许推送 `refs/heads/auto-test/*`；prompt 禁止 Claude 使用 `git push -f / --force / 重写历史`（`--force-with-lease` 仅由 entrypoint 在分支重置场景主动发起）
-- **Cancel-and-Replace**：按 `repo + module` 粒度替换；空 `module`（整仓生成）通过 SQL `COALESCE` 正确处理；cancel 旧任务后由 `queue.BranchCleaner`（注入 `gitea.ClosePullRequest` + `gitea.DeleteBranch`）清理远程 PR + 分支，cleanup 失败仅 warn
-- **错误脱敏**：`ErrTestGenParseFailure` 详情不进返回 error（防止 Claude 原始输出泄露到飞书/PR 评论），详情仅写结构化日志
+- **分支保护**：`entrypoint.sh` gen_tests 分支含 pre-push hook，仅允许推送 `refs/heads/auto-test/*`；hooks 目录 `chmod -R a-w` 加固，防止 Claude 在容器内修改 hook；prompt 禁止 Claude 使用 `git push -f / --force / 重写历史`（`--force-with-lease` 仅由 entrypoint 在分支重置场景主动发起）
+- **Cancel-and-Replace**：按 stable branch key（`test.ModuleKey(module)` 派生）聚合，`svc/api` 与 `svc-api` 等落到同一 `auto-test/*` 分支的请求互相替换（不再按原始 module 字符串精确匹配）；空 `module`（整仓生成）通过 SQL `COALESCE` 正确处理；cancel 旧任务后由 `queue.BranchCleaner`（注入 `gitea.ClosePullRequest` + `gitea.DeleteBranch`）清理远程 PR + 分支；CLI 手动触发路径同样装配 BranchCleaner，与 serve/API 语义对齐；cleanup 失败仅 warn
+- **错误脱敏**：`ErrTestGenParseFailure` 详情不进返回 error（防止 Claude 原始输出泄露到飞书/PR 评论），详情仅写结构化日志；`sanitizeTestGenOutput` 统一过滤 `Warnings / FailureReason / MissingInfo` 等自由文本字段（防 prompt-injection 内容流入飞书/PR/评论），`Processor.record.Error` 也走 `test.SanitizeErrorMessage` 兜底
 
 ## 测试服务器
 

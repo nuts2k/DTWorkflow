@@ -714,18 +714,20 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
   - PR 描述：`FormatTestGenPRBody`，含 GapAnalysis 摘要 + 生成文件列表 + 测试运行结果 + Warnings
   - `Success=false && CommittedFiles>0` 仍创建 PR（D5 失败保留）
 - [x] **review 拦截 + 自动入队 review（D2 + D6）**：
-  - `enqueue.HandlePullRequest` 检测到 `auto-test/{moduleKey}` 分支时，若存在同 repo + moduleKey 的活跃 gen_tests 任务则跳过 review 入队；查询失败 fail-open
-  - `test.Service.Execute` 完成时主动调 `EnqueueManualReview`（Success=true 或 `test_gen.review_on_failure=true` 且 PRNumber>0）
-- [x] **Cancel-and-Replace 主动清理**：`EnqueueManualGenTests` 在 cancel 旧任务后调用 `BranchCleaner` 关闭旧 PR + 删除远程分支（`gitea.ClosePullRequest` + `gitea.DeleteBranch`，cleanup 失败仅 warn）
+  - `enqueue.HandlePullRequest` 检测到 `auto-test/{moduleKey}` 分支时，若存在同 repo + moduleKey 的活跃 gen_tests 任务（状态集含 pending）则跳过 review 入队；查询失败 fail-open
+  - `test.Service.Execute` 完成时主动调 `EnqueueManualReview`（Success=true 或 `test_gen.review_on_failure=true` 且 PRNumber>0）；`lookupPreviousEnqueueState` 按 taskID+PRNumber 幂等 guard，重试不重复入队 review
+- [x] **Cancel-and-Replace 主动清理**：按 stable branch key（`test.ModuleKey(module)` 派生）聚合，落到同一 `auto-test/*` 分支的请求互相替换（不再按原始 module 字符串精确匹配）；`EnqueueManualGenTests` 在 cancel 旧任务后调用 `BranchCleaner` 关闭旧 PR + 删除远程分支（`gitea.ClosePullRequest` + `gitea.DeleteBranch`，cleanup 失败仅 warn）；CLI 手动触发路径也已装配 BranchCleaner，与 serve/API 语义一致
 - [x] 通知适配：Processor `buildStartMessage` / `buildNotificationMessage` / `sendCompletionNotification` 新增 `TaskTypeGenTests` case + `testResult *test.TestGenResult` 形参；`handleSkipRetryFailure` 同步透传
 - [x] 通知内容（Gitea + 飞书）：
   - 3 个 `EventType`：`EventGenTestsStarted` / `EventGenTestsDone` / `EventGenTestsFailed`
   - `feishu_card` 渲染三事件（含 failure_category → severity 映射：infrastructure=Warning / test_quality=Info / info_insufficient=Info）
-  - `gitea_notifier.CommentOnGenTestsPR` PR 评论 upsert（幂等锚点 `<!-- dtworkflow:gen_tests:done -->`，跨任务覆盖语义）
+  - PR 评论通过 `Processor.syncGenTestsPRComment`（`GenTestsPRCommenter` 接口）在 gen_tests 最终态写回，与路由配置解耦；幂等锚点 `<!-- dtworkflow:gen_tests:done -->`，跨任务覆盖语义
+  - gen_tests 三事件属 repo 级通知，`repoScopedGiteaNotifier` 包装防误投 Gitea 评论渠道（PR number 为空时静默跳过）
   - `TestGenOutput.Warnings` 非空时飞书追加 Warning 消息
 - [x] 验证失败处理：`FailureCategory` 四枚举（`infrastructure` / `test_quality` / `info_insufficient` / `none`）区分基础设施故障与测试质量问题
-- [x] 结果持久化：迁移 v19 `test_gen_results` 表（`task_id UNIQUE` + 3 个索引 + `review_enqueued` + `updated_at`）+ `store.SaveTestGenResult` / `GetTestGenResultByTaskID` / `ListActiveGenTestsModules` + 自由文本字段 2 KB 截断；Execute 两阶段 UPSERT（主结果 → `review_enqueued=1`）
-- [x] 单元测试覆盖：`internal/test` 覆盖率 95.2%；`entrypoint_test.sh` 33 项断言；`enqueue_test.go` 补 Cancel-and-Replace 与 review 拦截路径
+- [x] 结果持久化：迁移 v19 `test_gen_results` 表（`task_id NOT NULL UNIQUE` + 3 个索引 + `review_enqueued` + `updated_at`）；迁移 v20 重建表，`task_id` 改为可空（ON DELETE SET NULL 在历史任务 purge 时不触发 NOT NULL 冲突）；`store.SaveTestGenResult` / `GetTestGenResultByTaskID` / `ListActiveGenTestsModules` + 自由文本字段 2 KB 截断（UTF-8 字符边界）；Execute 两阶段写入：阶段 1 UPSERT 主结果，阶段 2 `UpdateTestGenResultReviewEnqueued` partial UPDATE（不覆盖其它字段）
+- [x] **安全加固**：`sanitizeTestGenOutput` 统一过滤 `Warnings / FailureReason / MissingInfo` 等自由文本字段，防 prompt-injection 内容流入飞书/PR/评论；`Processor.record.Error` 走 `test.SanitizeErrorMessage` 兜底；hooks 目录 `chmod -R a-w` 加固防容器内修改 hook；已知风险登记于 `docs/SECURITY.md`
+- [x] 单元测试覆盖：`internal/test` 覆盖率 95.2%；`entrypoint_test.sh` 33 项断言（含 rev-parse 失败降级路径 S11）；`enqueue_test.go` 补 Cancel-and-Replace（按 branch key 聚合）与 review 拦截路径
 
 ---
 
