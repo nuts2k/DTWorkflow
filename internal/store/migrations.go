@@ -195,6 +195,44 @@ var migrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_tasks_repo_pr ON tasks(repo_full_name, pr_number, task_type, status);
 		`,
 	},
+	// M4.2: 新建 test_gen_results 表持久化 gen_tests 产出；task_id UNIQUE 支撑两阶段 UPSERT 幂等
+	{
+		Version: 19,
+		SQL: `
+			CREATE TABLE IF NOT EXISTS test_gen_results (
+				id                  TEXT PRIMARY KEY,
+				task_id             TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+				repo_full_name      TEXT NOT NULL,
+				module              TEXT NOT NULL DEFAULT '',
+				framework           TEXT NOT NULL,
+				base_ref            TEXT NOT NULL,
+				branch_name         TEXT NOT NULL DEFAULT '',
+				commit_sha          TEXT NOT NULL DEFAULT '',
+				pr_number           INTEGER NOT NULL DEFAULT 0,
+				pr_url              TEXT NOT NULL DEFAULT '',
+				success             INTEGER NOT NULL DEFAULT 0,
+				info_sufficient     INTEGER NOT NULL DEFAULT 0,
+				verification_passed INTEGER NOT NULL DEFAULT 0,
+				failure_category    TEXT NOT NULL DEFAULT 'none',
+				failure_reason      TEXT NOT NULL DEFAULT '',
+				generated_count     INTEGER NOT NULL DEFAULT 0,
+				committed_count     INTEGER NOT NULL DEFAULT 0,
+				skipped_count       INTEGER NOT NULL DEFAULT 0,
+				test_passed         INTEGER NOT NULL DEFAULT 0,
+				test_failed         INTEGER NOT NULL DEFAULT 0,
+				test_duration_ms    INTEGER NOT NULL DEFAULT 0,
+				review_enqueued     INTEGER NOT NULL DEFAULT 0,
+				cost_usd            REAL NOT NULL DEFAULT 0,
+				duration_ms         INTEGER NOT NULL DEFAULT 0,
+				output_json         TEXT NOT NULL DEFAULT '{}',
+				created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
+				updated_at          DATETIME NOT NULL DEFAULT (datetime('now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_test_gen_results_repo ON test_gen_results(repo_full_name);
+			CREATE INDEX IF NOT EXISTS idx_test_gen_results_repo_module ON test_gen_results(repo_full_name, module);
+			CREATE INDEX IF NOT EXISTS idx_test_gen_results_created ON test_gen_results(created_at);
+		`,
+	},
 }
 
 // RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本

@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrTaskNotFound = errors.New("任务不存在")
-	ErrInvalidID    = errors.New("任务 ID 不能为空")
-	ErrNilRecord    = errors.New("record 不能为 nil")
+	ErrTaskNotFound          = errors.New("任务不存在")
+	ErrInvalidID             = errors.New("任务 ID 不能为空")
+	ErrNilRecord             = errors.New("record 不能为 nil")
+	ErrTestGenResultNotFound = errors.New("测试生成结果不存在")
 )
 
 // Store 任务持久化接口
@@ -74,11 +75,58 @@ type Store interface {
 	// start inclusive, end exclusive。按 created_at DESC 排序。硬上限 2000 条。
 	ListReviewResultsByTimeRange(ctx context.Context, start, end time.Time) ([]*model.ReviewRecord, error)
 
+	// SaveTestGenResult 以 UPSERT 方式持久化 gen_tests 任务产出记录。
+	// 当 record.ID 为空时内部生成 UUID；以 task_id 为冲突键保证同一 task 最多一行。
+	// 自由文本字段（failure_reason / output_json）超过 2 KB 将被截断并追加 "...(truncated)" 标记，
+	// 避免 SQLite 单行过大。调用方无需预先判断记录是否存在。
+	SaveTestGenResult(ctx context.Context, record *TestGenResultRecord) error
+
+	// GetTestGenResultByTaskID 按 task_id 查询测试生成结果记录。
+	// 未找到时返回 (nil, nil)，与 GetTask 等既有查询接口保持一致。
+	GetTestGenResultByTaskID(ctx context.Context, taskID string) (*TestGenResultRecord, error)
+
+	// ListActiveGenTestsModules 返回指定仓库下所有活跃 gen_tests 任务（status IN queued/running/retrying）
+	// 的 module 列表（包含空字符串，表示整仓粒度），供 webhook 拦截层与 test.ModuleKey 比对使用。
+	// 原样返回不去重，由调用侧负责规范化。
+	ListActiveGenTestsModules(ctx context.Context, repoFullName string) ([]string, error)
+
 	// Ping 检测数据库连接是否可用，用于健康检查
 	Ping(ctx context.Context) error
 
 	// Close 关闭底层连接
 	Close() error
+}
+
+// TestGenResultRecord 对应 test_gen_results 表的单行，用于 M4.2 gen_tests 任务产出持久化。
+// 字段与 SQL 列一一对齐；SQLite 无 boolean 类型，bool 字段在存储层映射为 0/1。
+type TestGenResultRecord struct {
+	ID                 string
+	TaskID             string
+	RepoFullName       string
+	Module             string
+	Framework          string
+	BaseRef            string
+	BranchName         string
+	CommitSHA          string
+	PRNumber           int64
+	PRURL              string
+	Success            bool
+	InfoSufficient     bool
+	VerificationPassed bool
+	FailureCategory    string
+	FailureReason      string
+	GeneratedCount     int
+	CommittedCount     int
+	SkippedCount       int
+	TestPassed         int
+	TestFailed         int
+	TestDurationMs     int64
+	ReviewEnqueued     bool
+	CostUSD            float64
+	DurationMs         int64
+	OutputJSON         string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // ListOptions 列表查询选项

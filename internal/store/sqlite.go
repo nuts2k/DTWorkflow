@@ -12,10 +12,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 
 	_ "modernc.org/sqlite" // 注册 SQLite 驱动
 )
+
+// testGenFreeTextLimit 为 test_gen_results 自由文本字段（failure_reason / output_json）
+// 的字节上限；超过则截断并追加 truncation 标记，避免 SQLite 单行过大影响性能。
+const testGenFreeTextLimit = 2048
+
+// testGenTruncationSuffix 截断后的标记后缀，仅作审计用途
+const testGenTruncationSuffix = "...(truncated)"
 
 // 编译时确保 SQLiteStore 实现了 Store 接口
 var _ Store = (*SQLiteStore)(nil)
@@ -789,6 +797,234 @@ func (s *SQLiteStore) HasNewerReviewTask(ctx context.Context, repoFullName strin
 		return false, fmt.Errorf("检查更新评审任务失败: %w", err)
 	}
 	return exists, nil
+}
+
+// testGenResultColumns 是 test_gen_results 表的 SELECT 列列表
+const testGenResultColumns = `id, task_id, repo_full_name, module, framework, base_ref,
+		branch_name, commit_sha, pr_number, pr_url,
+		success, info_sufficient, verification_passed,
+		failure_category, failure_reason,
+		generated_count, committed_count, skipped_count,
+		test_passed, test_failed, test_duration_ms,
+		review_enqueued, cost_usd, duration_ms, output_json,
+		created_at, updated_at`
+
+// truncateFreeText 对自由文本做字节级截断，超过 limit 则截断前 limit 字节并追加标记。
+// 注意：以字节切片为单位，UTF-8 字符可能被截在中间 —— 只用于 SQLite 单行大小保护，
+// 读出后仅用于审计与 debug（不参与 prompt 或通知渲染），不强求字符完整性。
+func truncateFreeText(s string) string {
+	if len(s) <= testGenFreeTextLimit {
+		return s
+	}
+	return s[:testGenFreeTextLimit] + testGenTruncationSuffix
+}
+
+// boolToInt 将 Go bool 映射为 SQLite 存储的 0/1
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// SaveTestGenResult 以 UPSERT 方式写入 test_gen_results。
+//
+// 实现要点：
+//  1. record.ID 为空时生成 UUID；`id` 字段仅作主键，无业务语义
+//  2. `task_id` UNIQUE：同一 task 多次 Execute（重试 / 两阶段）统一落在同一行，
+//     由 ON CONFLICT(task_id) DO UPDATE 刷新所有业务字段与 updated_at
+//  3. failure_reason / output_json 做 2 KB 截断（testGenFreeTextLimit），
+//     仅限制 SQLite 单行体积；脱敏由上层调用侧负责（见 CLAUDE.md 错误脱敏章节）
+func (s *SQLiteStore) SaveTestGenResult(ctx context.Context, record *TestGenResultRecord) error {
+	if record == nil {
+		return fmt.Errorf("保存测试生成结果失败: %w", ErrNilRecord)
+	}
+	if record.TaskID == "" {
+		return fmt.Errorf("保存测试生成结果失败: task_id 不能为空")
+	}
+	if record.ID == "" {
+		record.ID = uuid.NewString()
+	}
+
+	// 自由文本 2 KB 截断，防止 SQLite 单行过大
+	record.FailureReason = truncateFreeText(record.FailureReason)
+	record.OutputJSON = truncateFreeText(record.OutputJSON)
+
+	const query = `INSERT INTO test_gen_results (
+		id, task_id, repo_full_name, module, framework, base_ref,
+		branch_name, commit_sha, pr_number, pr_url,
+		success, info_sufficient, verification_passed,
+		failure_category, failure_reason,
+		generated_count, committed_count, skipped_count,
+		test_passed, test_failed, test_duration_ms,
+		review_enqueued, cost_usd, duration_ms, output_json
+	) VALUES (
+		?, ?, ?, ?, ?, ?,
+		?, ?, ?, ?,
+		?, ?, ?,
+		?, ?,
+		?, ?, ?,
+		?, ?, ?,
+		?, ?, ?, ?
+	)
+	ON CONFLICT(task_id) DO UPDATE SET
+		repo_full_name      = excluded.repo_full_name,
+		module              = excluded.module,
+		framework           = excluded.framework,
+		base_ref            = excluded.base_ref,
+		branch_name         = excluded.branch_name,
+		commit_sha          = excluded.commit_sha,
+		pr_number           = excluded.pr_number,
+		pr_url              = excluded.pr_url,
+		success             = excluded.success,
+		info_sufficient     = excluded.info_sufficient,
+		verification_passed = excluded.verification_passed,
+		failure_category    = excluded.failure_category,
+		failure_reason      = excluded.failure_reason,
+		generated_count     = excluded.generated_count,
+		committed_count     = excluded.committed_count,
+		skipped_count       = excluded.skipped_count,
+		test_passed         = excluded.test_passed,
+		test_failed         = excluded.test_failed,
+		test_duration_ms    = excluded.test_duration_ms,
+		review_enqueued     = excluded.review_enqueued,
+		cost_usd            = excluded.cost_usd,
+		duration_ms         = excluded.duration_ms,
+		output_json         = excluded.output_json,
+		updated_at          = datetime('now')`
+
+	_, err := s.db.ExecContext(ctx, query,
+		record.ID,
+		record.TaskID,
+		record.RepoFullName,
+		record.Module,
+		record.Framework,
+		record.BaseRef,
+		record.BranchName,
+		record.CommitSHA,
+		record.PRNumber,
+		record.PRURL,
+		boolToInt(record.Success),
+		boolToInt(record.InfoSufficient),
+		boolToInt(record.VerificationPassed),
+		record.FailureCategory,
+		record.FailureReason,
+		record.GeneratedCount,
+		record.CommittedCount,
+		record.SkippedCount,
+		record.TestPassed,
+		record.TestFailed,
+		record.TestDurationMs,
+		boolToInt(record.ReviewEnqueued),
+		record.CostUSD,
+		record.DurationMs,
+		record.OutputJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("写入测试生成结果失败: %w", err)
+	}
+	return nil
+}
+
+// GetTestGenResultByTaskID 按 task_id 查询测试生成结果，未找到时返回 (nil, nil)。
+// 与 GetTask / FindByDeliveryID 的未找到语义保持一致，便于调用侧统一处理。
+func (s *SQLiteStore) GetTestGenResultByTaskID(ctx context.Context, taskID string) (*TestGenResultRecord, error) {
+	if taskID == "" {
+		return nil, fmt.Errorf("查询测试生成结果失败: task_id 不能为空")
+	}
+
+	query := `SELECT ` + testGenResultColumns + `
+	FROM test_gen_results WHERE task_id = ?`
+
+	row := s.db.QueryRowContext(ctx, query, taskID)
+	rec, err := scanTestGenResultRecord(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询测试生成结果失败: %w", err)
+	}
+	return rec, nil
+}
+
+// ListActiveGenTestsModules 返回指定仓库下活跃 gen_tests 任务（queued/running/retrying）的 module 列表。
+//
+// 采用 COALESCE(json_extract(payload, '$.module'), '') 与 FindActiveGenTestsTasks 保持一致：
+// TaskPayload.Module 使用 omitempty，整仓生成场景 JSON 中没有 module 字段，
+// json_extract 返回 NULL —— 若不归一化，调用侧 len(modules) 会遗漏整仓任务。
+// 原样返回（包含空字符串与重复项），由调用侧（已 import internal/test）
+// 用 test.ModuleKey 清洗比对，维持 store 包对业务的零依赖（见设计文档 §3.2）。
+func (s *SQLiteStore) ListActiveGenTestsModules(ctx context.Context, repoFullName string) ([]string, error) {
+	query := `SELECT COALESCE(json_extract(payload, '$.module'), '') AS module
+	FROM tasks
+	WHERE task_type = ?
+	  AND repo_full_name = ?
+	  AND status IN (?, ?, ?)
+	ORDER BY created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, query,
+		string(model.TaskTypeGenTests),
+		repoFullName,
+		string(model.TaskStatusQueued),
+		string(model.TaskStatusRunning),
+		string(model.TaskStatusRetrying),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("查询活跃 gen_tests module 列表失败: %w", err)
+	}
+	defer rows.Close()
+
+	var modules []string
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, fmt.Errorf("扫描 gen_tests module 失败: %w", err)
+		}
+		modules = append(modules, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历 gen_tests module 失败: %w", err)
+	}
+	return modules, nil
+}
+
+// scanTestGenResultRecord 从单行结果扫描 TestGenResultRecord
+func scanTestGenResultRecord(row rowScanner) (*TestGenResultRecord, error) {
+	var (
+		r                                             TestGenResultRecord
+		successInt, infoSufficientInt, verifiedInt    int
+		reviewEnqueuedInt                             int
+		createdAt, updatedAt                          string
+	)
+
+	err := row.Scan(
+		&r.ID, &r.TaskID, &r.RepoFullName, &r.Module, &r.Framework, &r.BaseRef,
+		&r.BranchName, &r.CommitSHA, &r.PRNumber, &r.PRURL,
+		&successInt, &infoSufficientInt, &verifiedInt,
+		&r.FailureCategory, &r.FailureReason,
+		&r.GeneratedCount, &r.CommittedCount, &r.SkippedCount,
+		&r.TestPassed, &r.TestFailed, &r.TestDurationMs,
+		&reviewEnqueuedInt, &r.CostUSD, &r.DurationMs, &r.OutputJSON,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	r.Success = successInt != 0
+	r.InfoSufficient = infoSufficientInt != 0
+	r.VerificationPassed = verifiedInt != 0
+	r.ReviewEnqueued = reviewEnqueuedInt != 0
+
+	r.CreatedAt, err = parseTime(createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("解析 created_at 失败: %w", err)
+	}
+	r.UpdatedAt, err = parseTime(updatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("解析 updated_at 失败: %w", err)
+	}
+	return &r, nil
 }
 
 // parseTime 尝试多种格式解析时间字符串，优先使用高精度格式

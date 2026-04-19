@@ -1738,3 +1738,461 @@ func TestFindActiveGenTestsTasks_Empty(t *testing.T) {
 		t.Errorf("期望空切片，得到 %d 条", len(records))
 	}
 }
+
+// TestMigration_V19_TestGenResults 验证迁移 v19 应用后表结构可查询（包括 count / 索引）
+func TestMigration_V19_TestGenResults(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// schema_migrations 中存在版本 19
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM schema_migrations WHERE version = ?", 19).Scan(&exists); err != nil {
+		t.Fatalf("迁移 v19 未登记: %v", err)
+	}
+
+	// 空表可查询，不报错
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_gen_results").Scan(&count); err != nil {
+		t.Fatalf("test_gen_results 空表查询失败: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("空表期望 count=0，得到 %d", count)
+	}
+
+	// 索引存在（使用 sqlite_master 检查）
+	expectedIdx := []string{
+		"idx_test_gen_results_repo",
+		"idx_test_gen_results_repo_module",
+		"idx_test_gen_results_created",
+	}
+	for _, name := range expectedIdx {
+		var got string
+		err := s.db.QueryRowContext(ctx,
+			"SELECT name FROM sqlite_master WHERE type='index' AND name=?", name).Scan(&got)
+		if err != nil {
+			t.Errorf("索引 %s 缺失: %v", name, err)
+		}
+	}
+}
+
+// newTestGenResultRecord 构造 TestGenResultRecord，便于测试填充字段后 UPSERT
+func newTestGenResultRecord(taskID, repoFullName, module string) *TestGenResultRecord {
+	return &TestGenResultRecord{
+		TaskID:             taskID,
+		RepoFullName:       repoFullName,
+		Module:             module,
+		Framework:          "junit5",
+		BaseRef:            "main",
+		BranchName:         "auto-test/" + module,
+		CommitSHA:          "deadbeef",
+		PRNumber:           42,
+		PRURL:              "https://gitea.example.com/o/r/pulls/42",
+		Success:            true,
+		InfoSufficient:     true,
+		VerificationPassed: true,
+		FailureCategory:    "none",
+		FailureReason:      "",
+		GeneratedCount:     5,
+		CommittedCount:     5,
+		SkippedCount:       1,
+		TestPassed:         20,
+		TestFailed:         0,
+		TestDurationMs:     12000,
+		ReviewEnqueued:     false,
+		CostUSD:            1.23,
+		DurationMs:         900_000,
+		OutputJSON:         `{"success":true}`,
+	}
+}
+
+// TestSaveTestGenResult_InsertAndGet 首次插入 + 读回验证所有字段正确映射
+func TestSaveTestGenResult_InsertAndGet(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 先创建关联 task 以满足 FK 约束
+	task := newTestRecord("task-gen-001", "", model.TaskTypeGenTests)
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	rec := newTestGenResultRecord("task-gen-001", "owner/repo", "backend")
+	if err := s.SaveTestGenResult(ctx, rec); err != nil {
+		t.Fatalf("SaveTestGenResult 失败: %v", err)
+	}
+	// ID 由 Save 内部生成
+	if rec.ID == "" {
+		t.Fatal("SaveTestGenResult 未填充 record.ID（期望自动生成 UUID）")
+	}
+
+	got, err := s.GetTestGenResultByTaskID(ctx, "task-gen-001")
+	if err != nil {
+		t.Fatalf("GetTestGenResultByTaskID 失败: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetTestGenResultByTaskID 命中期望返回记录，得到 nil")
+	}
+	if got.ID != rec.ID {
+		t.Errorf("ID 不匹配: got %s, want %s", got.ID, rec.ID)
+	}
+	if got.TaskID != "task-gen-001" {
+		t.Errorf("TaskID 不匹配: got %s, want task-gen-001", got.TaskID)
+	}
+	if got.Module != "backend" {
+		t.Errorf("Module 不匹配: got %s", got.Module)
+	}
+	if !got.Success || !got.InfoSufficient || !got.VerificationPassed {
+		t.Errorf("bool 字段映射失败: %+v", got)
+	}
+	if got.ReviewEnqueued {
+		t.Errorf("ReviewEnqueued 期望 false")
+	}
+	if got.PRNumber != 42 || got.PRURL == "" {
+		t.Errorf("PR 字段不匹配: number=%d url=%q", got.PRNumber, got.PRURL)
+	}
+	if got.CostUSD != 1.23 {
+		t.Errorf("CostUSD 不匹配: got %f", got.CostUSD)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Error("时间戳未正确填充")
+	}
+}
+
+// TestSaveTestGenResult_UpsertByTaskID 同 task_id 两次 Save → 仅一行，字段被最新值覆盖
+func TestSaveTestGenResult_UpsertByTaskID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	task := newTestRecord("task-gen-upsert", "", model.TaskTypeGenTests)
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 阶段 1：review_enqueued=false，附带 failure 标记
+	first := newTestGenResultRecord("task-gen-upsert", "owner/repo", "svc")
+	first.ReviewEnqueued = false
+	first.Success = false
+	first.FailureCategory = "infrastructure"
+	first.FailureReason = "maven failed"
+	if err := s.SaveTestGenResult(ctx, first); err != nil {
+		t.Fatalf("第一次 SaveTestGenResult 失败: %v", err)
+	}
+	firstID := first.ID
+
+	// 阶段 2：刷新 review_enqueued=true，成功路径
+	second := newTestGenResultRecord("task-gen-upsert", "owner/repo", "svc")
+	second.ReviewEnqueued = true
+	second.Success = true
+	second.FailureCategory = "none"
+	second.FailureReason = ""
+	second.OutputJSON = `{"success":true,"second":true}`
+	if err := s.SaveTestGenResult(ctx, second); err != nil {
+		t.Fatalf("第二次 SaveTestGenResult 失败: %v", err)
+	}
+
+	// 行数仍为 1
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_gen_results WHERE task_id=?", "task-gen-upsert").Scan(&count); err != nil {
+		t.Fatalf("count 查询失败: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("UPSERT 后期望 1 行，得到 %d", count)
+	}
+
+	// 回读应反映第二次的字段值
+	got, err := s.GetTestGenResultByTaskID(ctx, "task-gen-upsert")
+	if err != nil {
+		t.Fatalf("GetTestGenResultByTaskID 失败: %v", err)
+	}
+	if got == nil {
+		t.Fatal("期望命中，得到 nil")
+	}
+	if !got.ReviewEnqueued {
+		t.Error("ReviewEnqueued 未被刷新为 true")
+	}
+	if !got.Success {
+		t.Error("Success 未被刷新为 true")
+	}
+	if got.FailureCategory != "none" {
+		t.Errorf("FailureCategory 未被覆盖: got %s", got.FailureCategory)
+	}
+	if got.OutputJSON != `{"success":true,"second":true}` {
+		t.Errorf("OutputJSON 未被覆盖: got %s", got.OutputJSON)
+	}
+	// 主键 id 以第一次为准（UPSERT 不修改 id 字段）
+	if got.ID != firstID {
+		t.Errorf("id 应保持为首次插入的 UUID，got %s want %s", got.ID, firstID)
+	}
+	// UpdatedAt 应刷新至晚于 CreatedAt（ON CONFLICT DO UPDATE SET updated_at = datetime('now')）
+	if got.UpdatedAt.Before(got.CreatedAt) {
+		t.Errorf("UpdatedAt 应刷新至不早于 CreatedAt: updated=%v created=%v", got.UpdatedAt, got.CreatedAt)
+	}
+}
+
+// TestGetTestGenResultByTaskID_NotFound 未命中时返回 (nil, nil)
+func TestGetTestGenResultByTaskID_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	got, err := s.GetTestGenResultByTaskID(ctx, "no-such-task")
+	if err != nil {
+		t.Fatalf("未命中期望 nil error，得到: %v", err)
+	}
+	if got != nil {
+		t.Fatal("未命中期望 nil record")
+	}
+}
+
+// TestGetTestGenResultByTaskID_EmptyTaskID 空 task_id 返回错误
+func TestGetTestGenResultByTaskID_EmptyTaskID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.GetTestGenResultByTaskID(ctx, "")
+	if err == nil {
+		t.Fatal("空 task_id 应返回错误")
+	}
+}
+
+// TestSaveTestGenResult_FreeTextTruncation 自由文本字段超过 2 KB 时被截断并追加标记
+func TestSaveTestGenResult_FreeTextTruncation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	task := newTestRecord("task-gen-trunc", "", model.TaskTypeGenTests)
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	// 构造 3 KB 的 output_json 与 failure_reason
+	big := make([]byte, 3072)
+	for i := range big {
+		big[i] = 'x'
+	}
+	rec := newTestGenResultRecord("task-gen-trunc", "owner/repo", "svc")
+	rec.OutputJSON = string(big)
+	rec.FailureReason = string(big)
+
+	if err := s.SaveTestGenResult(ctx, rec); err != nil {
+		t.Fatalf("SaveTestGenResult 失败: %v", err)
+	}
+
+	got, err := s.GetTestGenResultByTaskID(ctx, "task-gen-trunc")
+	if err != nil {
+		t.Fatalf("GetTestGenResultByTaskID 失败: %v", err)
+	}
+	if got == nil {
+		t.Fatal("未命中")
+	}
+
+	// 预期值 = 2048 字节 + "...(truncated)"
+	wantLen := 2048 + len("...(truncated)")
+	if len(got.OutputJSON) != wantLen {
+		t.Errorf("OutputJSON 截断长度不符: got %d, want %d", len(got.OutputJSON), wantLen)
+	}
+	if got.OutputJSON[len(got.OutputJSON)-len("...(truncated)"):] != "...(truncated)" {
+		t.Error("OutputJSON 结尾缺少 truncation 标记")
+	}
+	if len(got.FailureReason) != wantLen {
+		t.Errorf("FailureReason 截断长度不符: got %d, want %d", len(got.FailureReason), wantLen)
+	}
+	if got.FailureReason[len(got.FailureReason)-len("...(truncated)"):] != "...(truncated)" {
+		t.Error("FailureReason 结尾缺少 truncation 标记")
+	}
+}
+
+// TestSaveTestGenResult_NoTruncationUnderLimit 边界：恰好 2048 字节不触发截断
+func TestSaveTestGenResult_NoTruncationUnderLimit(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	task := newTestRecord("task-gen-boundary", "", model.TaskTypeGenTests)
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	exact := make([]byte, 2048)
+	for i := range exact {
+		exact[i] = 'a'
+	}
+	rec := newTestGenResultRecord("task-gen-boundary", "owner/repo", "svc")
+	rec.OutputJSON = string(exact)
+
+	if err := s.SaveTestGenResult(ctx, rec); err != nil {
+		t.Fatalf("SaveTestGenResult 失败: %v", err)
+	}
+
+	got, err := s.GetTestGenResultByTaskID(ctx, "task-gen-boundary")
+	if err != nil {
+		t.Fatalf("GetTestGenResultByTaskID 失败: %v", err)
+	}
+	if len(got.OutputJSON) != 2048 {
+		t.Errorf("边界长度期望 2048，得到 %d", len(got.OutputJSON))
+	}
+}
+
+// TestSaveTestGenResult_NilRecord nil 记录应返回错误
+func TestSaveTestGenResult_NilRecord(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SaveTestGenResult(ctx, nil); err == nil {
+		t.Fatal("SaveTestGenResult(nil) 应返回错误")
+	} else if !errors.Is(err, ErrNilRecord) {
+		t.Errorf("期望 ErrNilRecord，得到 %v", err)
+	}
+}
+
+// TestSaveTestGenResult_EmptyTaskID 空 task_id 应返回错误
+func TestSaveTestGenResult_EmptyTaskID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rec := newTestGenResultRecord("", "owner/repo", "svc")
+	if err := s.SaveTestGenResult(ctx, rec); err == nil {
+		t.Fatal("空 task_id 应返回错误")
+	}
+}
+
+// TestListActiveGenTestsModules_ActiveStatuses 覆盖 queued/running/retrying 三态均命中
+func TestListActiveGenTestsModules_ActiveStatuses(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	queued := newTestGenTestsRecord("gen-queued", "org/repo", "mod-queued", model.TaskStatusQueued, base)
+	running := newTestGenTestsRecord("gen-running", "org/repo", "mod-running", model.TaskStatusRunning, base.Add(time.Second))
+	retrying := newTestGenTestsRecord("gen-retrying", "org/repo", "mod-retrying", model.TaskStatusRetrying, base.Add(2*time.Second))
+	// 非活跃状态，不应出现
+	succeeded := newTestGenTestsRecord("gen-succeeded", "org/repo", "mod-succeeded", model.TaskStatusSucceeded, base.Add(3*time.Second))
+	failed := newTestGenTestsRecord("gen-failed", "org/repo", "mod-failed", model.TaskStatusFailed, base.Add(4*time.Second))
+	cancelled := newTestGenTestsRecord("gen-cancelled", "org/repo", "mod-cancelled", model.TaskStatusCancelled, base.Add(5*time.Second))
+
+	for _, r := range []*model.TaskRecord{queued, running, retrying, succeeded, failed, cancelled} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask %s 失败: %v", r.ID, err)
+		}
+	}
+
+	mods, err := s.ListActiveGenTestsModules(ctx, "org/repo")
+	if err != nil {
+		t.Fatalf("ListActiveGenTestsModules 失败: %v", err)
+	}
+	if len(mods) != 3 {
+		t.Fatalf("期望 3 个活跃 module，得到 %d: %v", len(mods), mods)
+	}
+	want := map[string]bool{"mod-queued": true, "mod-running": true, "mod-retrying": true}
+	for _, m := range mods {
+		if !want[m] {
+			t.Errorf("意外 module: %s", m)
+		}
+	}
+}
+
+// TestListActiveGenTestsModules_ExcludesOtherTaskTypes 非 gen_tests 任务不混入
+func TestListActiveGenTestsModules_ExcludesOtherTaskTypes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	// gen_tests 活跃：module=be
+	gen := newTestGenTestsRecord("gen-be", "org/repo", "be", model.TaskStatusQueued, base)
+	// review_pr 活跃：与 gen_tests 同仓，payload.module 字段不应被选出
+	review := newTestRecord("review-active", "", model.TaskTypeReviewPR)
+	review.RepoFullName = "org/repo"
+	review.Payload.RepoFullName = "org/repo"
+	review.Status = model.TaskStatusRunning
+	review.CreatedAt = base.Add(time.Second)
+	review.UpdatedAt = review.CreatedAt
+
+	for _, r := range []*model.TaskRecord{gen, review} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask %s 失败: %v", r.ID, err)
+		}
+	}
+
+	mods, err := s.ListActiveGenTestsModules(ctx, "org/repo")
+	if err != nil {
+		t.Fatalf("ListActiveGenTestsModules 失败: %v", err)
+	}
+	if len(mods) != 1 || mods[0] != "be" {
+		t.Errorf("期望 [be]，得到 %v", mods)
+	}
+}
+
+// TestListActiveGenTestsModules_EmptyModulePreserved 空 module（整仓生成）原样返回为 ""
+func TestListActiveGenTestsModules_EmptyModulePreserved(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	// module="" 由于 omitempty，JSON 中无 module 字段；COALESCE 应归一化为 ""
+	whole := newTestGenTestsRecord("gen-whole", "org/repo", "", model.TaskStatusQueued, base)
+	partial := newTestGenTestsRecord("gen-be", "org/repo", "be", model.TaskStatusRunning, base.Add(time.Second))
+
+	for _, r := range []*model.TaskRecord{whole, partial} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask %s 失败: %v", r.ID, err)
+		}
+	}
+
+	mods, err := s.ListActiveGenTestsModules(ctx, "org/repo")
+	if err != nil {
+		t.Fatalf("ListActiveGenTestsModules 失败: %v", err)
+	}
+	if len(mods) != 2 {
+		t.Fatalf("期望 2 个 module（含空串），得到 %d: %v", len(mods), mods)
+	}
+	var seenEmpty, seenBE bool
+	for _, m := range mods {
+		if m == "" {
+			seenEmpty = true
+		}
+		if m == "be" {
+			seenBE = true
+		}
+	}
+	if !seenEmpty {
+		t.Error("未看到空 module，COALESCE 未正确归一化 NULL → ''")
+	}
+	if !seenBE {
+		t.Error("未看到 be module")
+	}
+}
+
+// TestListActiveGenTestsModules_FilterByRepo 仓库维度过滤
+func TestListActiveGenTestsModules_FilterByRepo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	a := newTestGenTestsRecord("gen-a", "org/a", "m1", model.TaskStatusQueued, base)
+	b := newTestGenTestsRecord("gen-b", "org/b", "m2", model.TaskStatusQueued, base.Add(time.Second))
+	for _, r := range []*model.TaskRecord{a, b} {
+		if err := s.CreateTask(ctx, r); err != nil {
+			t.Fatalf("CreateTask %s 失败: %v", r.ID, err)
+		}
+	}
+
+	mods, err := s.ListActiveGenTestsModules(ctx, "org/a")
+	if err != nil {
+		t.Fatalf("ListActiveGenTestsModules 失败: %v", err)
+	}
+	if len(mods) != 1 || mods[0] != "m1" {
+		t.Errorf("期望 [m1]，得到 %v", mods)
+	}
+}
+
+// TestListActiveGenTestsModules_Empty 无匹配时返回空切片 + nil error
+func TestListActiveGenTestsModules_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	mods, err := s.ListActiveGenTestsModules(ctx, "no/such-repo")
+	if err != nil {
+		t.Fatalf("期望 nil error，得到 %v", err)
+	}
+	if len(mods) != 0 {
+		t.Errorf("期望空切片，得到 %v", mods)
+	}
+}
