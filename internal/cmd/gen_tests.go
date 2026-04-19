@@ -162,7 +162,9 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 
 	// 4. 构造 EnqueueHandler
 	//    qClient 同时实现 Enqueuer 与 TaskCanceller 接口（cancellation 能力可用）。
-	handler := queue.NewEnqueueHandler(qClient, qClient, s, slog.Default())
+	//    CLI 手动触发路径也需要注入 BranchCleaner，与 serve/API 的 rerun 语义对齐：
+	//    旧 auto-test 分支与残留 PR 需要在新任务入队前被收尾清理。
+	handler := queue.NewEnqueueHandler(qClient, qClient, s, slog.Default(), buildGenTestsEnqueueOptions(gc)...)
 
 	// 5. 生成 triggeredBy（CLI 本地触发）
 	triggeredBy := buildGenTestsTriggeredBy()
@@ -225,3 +227,14 @@ func buildGenTestsTriggeredBy() string {
 	return fmt.Sprintf("cli:%s", hostname)
 }
 
+// buildGenTestsEnqueueOptions 为本地 gen-tests CLI 构造 EnqueueHandler 选项。
+// 当前唯一装配项是 BranchCleaner：非 nil GiteaClient 时启用，保持与 serve/API 的
+// Cancel-and-Replace 清理语义一致；nil 时返回空切片，调用方可安全展开。
+func buildGenTestsEnqueueOptions(giteaClient *gitea.Client) []queue.EnqueueOption {
+	if giteaClient == nil {
+		return nil
+	}
+	return []queue.EnqueueOption{
+		queue.WithBranchCleaner(queue.NewBranchCleaner(giteaClient, slog.Default())),
+	}
+}

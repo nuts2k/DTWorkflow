@@ -562,7 +562,10 @@ func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload mode
 	payload.TaskType = model.TaskTypeGenTests
 	payload.DeliveryID = generateManualDeliveryID()
 
-	activeTasks := h.listActiveGenTestsTasks(ctx, payload.RepoFullName, payload.Module)
+	// Cancel-and-Replace 按 stable branch key（auto-test/{ModuleKey(module)}）聚合，
+	// 而不是按原始 module 字符串精确匹配。这样 `svc/api` 与 `svc-api` 等会命中同一
+	// 稳定分支的请求能互相替换，避免并发写同一 auto-test 分支。
+	activeTasks := h.listActiveGenTestsTasksByBranchKey(ctx, payload.RepoFullName, payload.Module)
 
 	// M4.2 修订：Cancel-and-Replace 按 "清理远程 → 取消旧任务 → 入队新任务" 顺序执行。
 	// 原顺序（先入队再清理）存在 race：新任务被 asynq 取出启动容器时，旧远程分支
@@ -617,6 +620,62 @@ func (h *EnqueueHandler) listActiveGenTestsTasks(ctx context.Context, repoFullNa
 		return nil
 	}
 	return tasks
+}
+
+// listActiveGenTestsTasksByBranchKey 查找会落到同一 stable branch 的活跃 gen_tests 任务。
+//
+// 设计背景：stable branch 名由 test.ModuleKey(module) 派生，原始 module 字符串不同但
+// branch key 相同（例如 "svc/api" 与 "svc-api"）时，本质上会写同一 remote branch。
+// 若仍按原始 module 精确匹配 Cancel-and-Replace，会放行两条任务并发写同一分支。
+//
+// 实现上先取活跃 module 列表，再按 ModuleKey 过滤并回查具体任务。若列表查询失败则回退
+// 到旧的“按原始 module 精确匹配”逻辑，保持 fail-open 行为与既有兼容性。
+func (h *EnqueueHandler) listActiveGenTestsTasksByBranchKey(ctx context.Context,
+	repoFullName, module string) []*model.TaskRecord {
+	targetKey := test.ModuleKey(module)
+
+	modules, err := h.store.ListActiveGenTestsModules(ctx, repoFullName)
+	if err != nil {
+		h.logger.WarnContext(ctx, "查询活跃 gen_tests module 列表失败，回退到原始 module 精确匹配",
+			"repo", repoFullName, "module", module, "module_key", targetKey, "error", err)
+		return h.listActiveGenTestsTasks(ctx, repoFullName, module)
+	}
+
+	seenModule := make(map[string]struct{}, len(modules))
+	seenTask := make(map[string]struct{})
+	var merged []*model.TaskRecord
+	for _, candidate := range modules {
+		if test.ModuleKey(candidate) != targetKey {
+			continue
+		}
+		if _, ok := seenModule[candidate]; ok {
+			continue
+		}
+		seenModule[candidate] = struct{}{}
+
+		tasks, err := h.store.FindActiveGenTestsTasks(ctx, repoFullName, candidate)
+		if err != nil {
+			h.logger.WarnContext(ctx, "按 stable branch key 回查活跃 gen_tests 任务失败，跳过该 module",
+				"repo", repoFullName,
+				"module", module,
+				"candidate_module", candidate,
+				"module_key", targetKey,
+				"error", err,
+			)
+			continue
+		}
+		for _, task := range tasks {
+			if task == nil {
+				continue
+			}
+			if _, ok := seenTask[task.ID]; ok {
+				continue
+			}
+			seenTask[task.ID] = struct{}{}
+			merged = append(merged, task)
+		}
+	}
+	return merged
 }
 
 // generateManualDeliveryID 生成手动触发的合成 delivery ID

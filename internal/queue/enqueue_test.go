@@ -198,7 +198,23 @@ func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]st
 	if m.activeGenTestsModulesErr != nil {
 		return nil, m.activeGenTestsModulesErr
 	}
-	return m.activeGenTestsModules, nil
+	if m.activeGenTestsModules != nil {
+		return m.activeGenTestsModules, nil
+	}
+	var modules []string
+	for _, task := range m.tasks {
+		if task.TaskType != model.TaskTypeGenTests {
+			continue
+		}
+		if task.Status != model.TaskStatusPending &&
+			task.Status != model.TaskStatusQueued &&
+			task.Status != model.TaskStatusRunning &&
+			task.Status != model.TaskStatusRetrying {
+			continue
+		}
+		modules = append(modules, task.Payload.Module)
+	}
+	return modules, nil
 }
 
 // mockEnqueuer 实现 Enqueuer 接口的 mock
@@ -1335,6 +1351,54 @@ func TestEnqueueManualGenTests_CancelAndReplace(t *testing.T) {
 	// 第二条应为 queued
 	if s.tasks[secondID].Status != model.TaskStatusQueued {
 		t.Errorf("第二条任务状态 = %q, want %q", s.tasks[secondID].Status, model.TaskStatusQueued)
+	}
+}
+
+// TestEnqueueManualGenTests_ModuleKeyCollisionCancelsExistingTask 验证不同 module 字符串若
+// 映射到同一 stable branch key，也必须触发 Cancel-and-Replace，避免并发写同一
+// auto-test 分支。
+func TestEnqueueManualGenTests_ModuleKeyCollisionCancelsExistingTask(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	cleaner := &recordingBranchCleaner{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-gen-tests-collision"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(), WithBranchCleaner(cleaner))
+
+	firstPayload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "services/api",
+	}
+	secondPayload := firstPayload
+	secondPayload.Module = "services-api"
+
+	firstID, err := h.EnqueueManualGenTests(context.Background(), firstPayload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第一次触发失败: %v", err)
+	}
+	s.tasks[firstID].AsynqID = "asynq-gen-tests-first-collision"
+
+	secondID, err := h.EnqueueManualGenTests(context.Background(), secondPayload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第二次触发失败: %v", err)
+	}
+	if secondID == firstID {
+		t.Fatal("两次触发的 taskID 不应相同")
+	}
+
+	if s.tasks[firstID].Status != model.TaskStatusCancelled {
+		t.Errorf("第一条任务状态 = %q, want %q", s.tasks[firstID].Status, model.TaskStatusCancelled)
+	}
+	if s.tasks[secondID].Status != model.TaskStatusQueued {
+		t.Errorf("第二条任务状态 = %q, want %q", s.tasks[secondID].Status, model.TaskStatusQueued)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-gen-tests-first-collision" {
+		t.Errorf("deleteCalls = %v, want [asynq-gen-tests-first-collision]", canceller.deleteCalls)
+	}
+	if len(cleaner.calls) != 1 || cleaner.calls[0] != "auto-test/services-api" {
+		t.Errorf("cleaner.calls = %v, want [auto-test/services-api]", cleaner.calls)
 	}
 }
 

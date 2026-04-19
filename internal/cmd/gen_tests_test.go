@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 )
 
 // 注：flag 级别的框架 / 模块校验已抽出到 internal/validation 包统一维护，
@@ -22,6 +24,21 @@ func TestBuildGenTestsTriggeredBy_PrefixedWithCLI(t *testing.T) {
 	// 但最终字符串必然长于 "cli:" 本身。
 	if len(got) <= len("cli:") {
 		t.Fatalf("triggeredBy = %q, 期望至少包含 hostname 后缀", got)
+	}
+}
+
+func TestBuildGenTestsEnqueueOptions(t *testing.T) {
+	if opts := buildGenTestsEnqueueOptions(nil); len(opts) != 0 {
+		t.Fatalf("nil gitea client 不应注入任何 enqueue option，实际 %d 个", len(opts))
+	}
+
+	client, err := gitea.NewClient("https://gitea.example.com", gitea.WithToken("test-token"))
+	if err != nil {
+		t.Fatalf("NewClient error: %v", err)
+	}
+	opts := buildGenTestsEnqueueOptions(client)
+	if len(opts) != 1 {
+		t.Fatalf("非 nil gitea client 应注入 1 个 enqueue option，实际 %d 个", len(opts))
 	}
 }
 
