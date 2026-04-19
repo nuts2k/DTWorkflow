@@ -102,6 +102,34 @@ func (c *Client) CreateIssueComment(ctx context.Context, owner, repo string, ind
 	return &comment, resp, nil
 }
 
+// EditIssueCommentOption 编辑 Issue 评论的选项。
+//
+// 与 CreateIssueCommentOption 同 shape，为语义清晰独立定义。Gitea API
+// PATCH /repos/{owner}/{repo}/issues/comments/{id} 只接受 body 字段。
+type EditIssueCommentOption struct {
+	Body string `json:"body"`
+}
+
+// EditIssueComment 编辑 Issue/PR 评论内容（按评论 ID 定位，不依赖 Issue index）。
+//
+// 用于 gen_tests Done 事件 PR 评论的幂等 upsert 场景：首次 Create，
+// 再次调用时发现含锚点的旧评论 → 走 Edit 覆盖，避免重复评论堆积。
+func (c *Client) EditIssueComment(ctx context.Context, owner, repo string, commentID int64, opts EditIssueCommentOption) (*Comment, *Response, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/%d",
+		url.PathEscape(owner), url.PathEscape(repo), commentID)
+	req, err := c.newRequest(ctx, http.MethodPatch, path, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var comment Comment
+	resp, err := c.doRequest(req, &comment)
+	if err != nil {
+		return nil, resp, err
+	}
+	return &comment, resp, nil
+}
+
 // GetIssueLabels 获取 Issue 的标签列表
 func (c *Client) GetIssueLabels(ctx context.Context, owner, repo string, index int64) ([]*Label, *Response, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels",

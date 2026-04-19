@@ -119,6 +119,30 @@ func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, opts
 	return &result, resp, nil
 }
 
+// ClosePullRequest 关闭指定 PR（state=closed），用于 Cancel-and-Replace 清理。
+// Gitea API: PATCH /repos/{owner}/{repo}/pulls/{index} body {"state":"closed"}
+//
+// 幂等语义：
+//   - 404（PR 不存在或分支已删）→ 返回 nil
+//   - 200（包括原本已是 closed 状态的 PR）→ 返回 nil
+//   - 403 / 5xx / 网络错误 → 返回非 nil error
+func (c *Client) ClosePullRequest(ctx context.Context, owner, repo string, index int64) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d",
+		url.PathEscape(owner), url.PathEscape(repo), index)
+	body := map[string]string{"state": "closed"}
+	req, err := c.newRequest(ctx, "PATCH", path, body)
+	if err != nil {
+		return err
+	}
+	if _, err := c.doRequest(req, nil); err != nil {
+		if IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // CreatePullReview 创建 PR 评审
 // POST /api/v1/repos/{owner}/{repo}/pulls/{index}/reviews
 func (c *Client) CreatePullReview(ctx context.Context, owner, repo string, index int64, opts CreatePullReviewOptions) (*PullReview, *Response, error) {

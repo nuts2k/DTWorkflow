@@ -175,6 +175,36 @@ func TestCreateIssueComment(t *testing.T) {
 	}
 }
 
+// TestEditIssueComment 验证按评论 ID 编辑评论（M4.2 upsert 场景用）。
+func TestEditIssueComment(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/issues/comments/42", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "PATCH")
+		testHeader(t, r, "Content-Type", "application/json")
+
+		var opts EditIssueCommentOption
+		if err := json.NewDecoder(r.Body).Decode(&opts); err != nil {
+			t.Errorf("解析请求体失败: %v", err)
+		}
+		if opts.Body != "覆盖后的评论内容" {
+			t.Errorf("请求体 body = %q, 期望 %q", opts.Body, "覆盖后的评论内容")
+		}
+
+		writeJSON(w, loadFixture(t, "comment.json"))
+	})
+
+	comment, _, err := client.EditIssueComment(context.Background(), "owner", "repo", 42, EditIssueCommentOption{
+		Body: "覆盖后的评论内容",
+	})
+	if err != nil {
+		t.Fatalf("EditIssueComment 失败: %v", err)
+	}
+	if comment == nil || comment.ID != 1 {
+		t.Errorf("期望非空 Comment.ID=1, 得到 %+v", comment)
+	}
+}
+
 func TestGetIssueLabels(t *testing.T) {
 	mux, client := setup(t)
 

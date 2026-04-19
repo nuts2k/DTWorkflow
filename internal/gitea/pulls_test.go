@@ -197,6 +197,80 @@ func TestCreatePullRequest(t *testing.T) {
 	}
 }
 
+func TestClosePullRequest(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/pulls/42", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "PATCH")
+		testHeader(t, r, "Authorization", "token test-token")
+		testHeader(t, r, "Content-Type", "application/json")
+
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("解析请求体失败: %v", err)
+		}
+		if body["state"] != "closed" {
+			t.Errorf("body.state = %q, 期望 %q", body["state"], "closed")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		writeJSON(w, []byte(`{"number":42,"state":"closed"}`))
+	})
+
+	if err := client.ClosePullRequest(context.Background(), "owner", "repo", 42); err != nil {
+		t.Fatalf("ClosePullRequest 返回错误: %v", err)
+	}
+}
+
+func TestClosePullRequest_AlreadyClosed(t *testing.T) {
+	// 对已是 closed 状态的 PR 再次 PATCH state=closed，Gitea 仍返回 200 + PR 对象；客户端应返回 nil
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/pulls/43", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "PATCH")
+		w.WriteHeader(http.StatusOK)
+		writeJSON(w, []byte(`{"number":43,"state":"closed"}`))
+	})
+
+	if err := client.ClosePullRequest(context.Background(), "owner", "repo", 43); err != nil {
+		t.Fatalf("ClosePullRequest 返回错误: %v", err)
+	}
+}
+
+func TestClosePullRequest_NotFound(t *testing.T) {
+	// PR 不存在（可能分支已被删除或 PR ID 无效），应返回 nil 保证幂等
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/pulls/999", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "PATCH")
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, []byte(`{"message":"pull request not found"}`))
+	})
+
+	if err := client.ClosePullRequest(context.Background(), "owner", "repo", 999); err != nil {
+		t.Fatalf("期望 nil，实际错误: %v", err)
+	}
+}
+
+func TestClosePullRequest_Forbidden(t *testing.T) {
+	// 权限不足应返回非 nil error
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v1/repos/owner/repo/pulls/42", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "PATCH")
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(w, []byte(`{"message":"forbidden"}`))
+	})
+
+	err := client.ClosePullRequest(context.Background(), "owner", "repo", 42)
+	if err == nil {
+		t.Fatal("期望返回错误，但没有")
+	}
+	if !IsForbidden(err) {
+		t.Errorf("期望 IsForbidden 为 true，实际错误: %v", err)
+	}
+}
+
 func TestCreatePullReview_WithInlineComments(t *testing.T) {
 	mux, client := setup(t)
 
