@@ -48,6 +48,9 @@ func buildNotifyRules(cfg *config.Config, repoFullName string) ([]notify.Routing
 type configDrivenNotifier struct {
 	cfg            *config.Config
 	giteaNotifier  notify.Notifier
+	giteaCommenter interface {
+		CommentOnGenTestsPR(ctx context.Context, owner, repo string, prNumber int64, body string) error
+	}
 	feishuNotifier notify.Notifier // 飞书通知器（可选）
 	logger         *slog.Logger
 
@@ -70,6 +73,51 @@ func (n *configDrivenNotifier) Send(ctx context.Context, msg notify.Message) err
 		return err
 	}
 	return router.Send(ctx, msg)
+}
+
+// CommentOnGenTestsPR 透传到底层 GiteaNotifier 的专用 PR 评论 upsert 能力。
+// 未启用 Gitea 渠道时静默跳过，避免把 gen_tests 主流程绑死在通知配置上。
+func (n *configDrivenNotifier) CommentOnGenTestsPR(ctx context.Context, owner, repo string, prNumber int64, body string) error {
+	if n == nil || n.giteaCommenter == nil {
+		return nil
+	}
+	return n.giteaCommenter.CommentOnGenTestsPR(ctx, owner, repo, prNumber, body)
+}
+
+// repoScopedGiteaNotifier 在路由层屏蔽 repo 级消息到 Gitea 评论接口的误投递。
+//
+// Gitea 评论天然需要 Issue/PR 编号，而 gen_tests started/done/failed 是 repo 级消息。
+// 默认配置若把 "*" 路由到 gitea，不应因此让 Processor 在每次 gen_tests 通知时打错误日志。
+type repoScopedGiteaNotifier struct {
+	inner  notify.Notifier
+	logger *slog.Logger
+}
+
+func (n *repoScopedGiteaNotifier) Name() string {
+	return n.inner.Name()
+}
+
+func (n *repoScopedGiteaNotifier) Send(ctx context.Context, msg notify.Message) error {
+	if msg.Target.Number <= 0 && isRepoScopedGiteaUnsupportedEvent(msg.EventType) {
+		if n.logger != nil {
+			n.logger.InfoContext(ctx, "跳过 repo 级 Gitea 评论通知",
+				"event", msg.EventType,
+				"owner", msg.Target.Owner,
+				"repo", msg.Target.Repo,
+			)
+		}
+		return nil
+	}
+	return n.inner.Send(ctx, msg)
+}
+
+func isRepoScopedGiteaUnsupportedEvent(event notify.EventType) bool {
+	switch event {
+	case notify.EventGenTestsStarted, notify.EventGenTestsDone, notify.EventGenTestsFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (n *configDrivenNotifier) getRouter(repoFullName string) (*notify.Router, error) {
@@ -182,12 +230,19 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 	}
 
 	var giteaNotifier notify.Notifier
+	var giteaCommenter interface {
+		CommentOnGenTestsPR(ctx context.Context, owner, repo string, prNumber int64, body string) error
+	}
 	if giteaEnabled && giteaClient != nil {
 		gn, err := notify.NewGiteaNotifier(&giteaCommentAdapter{client: giteaClient}, notify.WithLogger(slog.Default()))
 		if err != nil {
 			return nil, fmt.Errorf("构造 GiteaNotifier 失败: %w", err)
 		}
-		giteaNotifier = gn
+		giteaCommenter = gn
+		giteaNotifier = &repoScopedGiteaNotifier{
+			inner:  gn,
+			logger: slog.Default(),
+		}
 	}
 
 	// 按配置构造飞书通知器（可选）
@@ -215,6 +270,7 @@ func buildNotifier(cfg *config.Config, giteaClient *gitea.Client) (queue.TaskNot
 	return &configDrivenNotifier{
 		cfg:            cfg,
 		giteaNotifier:  giteaNotifier,
+		giteaCommenter: giteaCommenter,
 		feishuNotifier: feishuNotifier,
 		logger:         slog.Default(),
 	}, nil

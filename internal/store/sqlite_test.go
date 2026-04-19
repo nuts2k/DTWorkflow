@@ -639,6 +639,49 @@ func TestPurgeTasks(t *testing.T) {
 	}
 }
 
+func TestPurgeTasks_WithTestGenResults(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	oldTask := newTestRecord("purge-gen-old", "", model.TaskTypeGenTests)
+	oldTask.Status = model.TaskStatusSucceeded
+	oldTask.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	oldTask.UpdatedAt = oldTask.CreatedAt
+	if err := s.CreateTask(ctx, oldTask); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+	rec := newTestGenResultRecord(oldTask.ID, "org/repo", "backend")
+	if err := s.SaveTestGenResult(ctx, rec); err != nil {
+		t.Fatalf("SaveTestGenResult 失败: %v", err)
+	}
+
+	affected, err := s.PurgeTasks(ctx, 1*time.Hour, model.TaskStatusSucceeded)
+	if err != nil {
+		t.Fatalf("PurgeTasks 不应被 test_gen_results 外键阻塞，实际: %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf("期望删除 1 条任务，实际删除 %d 条", affected)
+	}
+
+	got, err := s.GetTestGenResultByTaskID(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("GetTestGenResultByTaskID 不应报错: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("任务被 purge 后，按原 task_id 不应再查到结果，实际: %+v", got)
+	}
+
+	var nullCount int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM test_gen_results WHERE id = ? AND task_id IS NULL",
+		rec.ID).Scan(&nullCount); err != nil {
+		t.Fatalf("NULL task_id 查询失败: %v", err)
+	}
+	if nullCount != 1 {
+		t.Fatalf("期望保留 1 条 task_id 已置空的结果记录，实际 %d 条", nullCount)
+	}
+}
+
 func TestPurgeTasks_NoMatch(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -1656,7 +1699,7 @@ func TestFindActiveGenTestsTasks_FilterByModule(t *testing.T) {
 
 // TestFindActiveGenTestsTasks_EmptyModuleCOALESCE 验证空 module（整仓生成）
 // 与具体 module 任务不混淆；omitempty 导致 JSON 中无 module 字段时，
-// COALESCE(json_extract(payload, '$.module'), '') 必须把 NULL 归一化为 ''。
+// COALESCE(json_extract(payload, '$.module'), ”) 必须把 NULL 归一化为 ”。
 func TestFindActiveGenTestsTasks_EmptyModuleCOALESCE(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -1702,12 +1745,14 @@ func TestFindActiveGenTestsTasks_FilterByRepoAndStatus(t *testing.T) {
 
 	// org/repo 下一条活跃任务
 	active := newTestGenTestsRecord("active-repo1", "org/repo", "svc", model.TaskStatusPending, base)
+	// retrying 也属于活跃任务，Cancel-and-Replace 要覆盖 asynq backoff 窗口
+	retrying := newTestGenTestsRecord("retrying-repo1", "org/repo", "svc", model.TaskStatusRetrying, base.Add(500*time.Millisecond))
 	// org/repo 下一条已完成任务，不应被返回
 	done := newTestGenTestsRecord("done-repo1", "org/repo", "svc", model.TaskStatusSucceeded, base.Add(time.Second))
 	// 不同仓库的任务
 	otherRepo := newTestGenTestsRecord("other-repo", "other/repo", "svc", model.TaskStatusQueued, base.Add(2*time.Second))
 
-	for _, r := range []*model.TaskRecord{active, done, otherRepo} {
+	for _, r := range []*model.TaskRecord{active, retrying, done, otherRepo} {
 		if err := s.CreateTask(ctx, r); err != nil {
 			t.Fatalf("CreateTask 失败: %v", err)
 		}
@@ -1717,11 +1762,12 @@ func TestFindActiveGenTestsTasks_FilterByRepoAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindActiveGenTestsTasks 失败: %v", err)
 	}
-	if len(records) != 1 {
-		t.Fatalf("期望 1 条活跃任务，得到 %d: %v", len(records), records)
+	if len(records) != 2 {
+		t.Fatalf("期望 2 条活跃任务（pending + retrying），得到 %d: %v", len(records), records)
 	}
-	if records[0].ID != "active-repo1" {
-		t.Errorf("期望 active-repo1，得到 %s", records[0].ID)
+	if records[0].ID != "active-repo1" || records[1].ID != "retrying-repo1" {
+		t.Errorf("期望按 created_at 升序返回 [active-repo1 retrying-repo1]，得到 [%s %s]",
+			records[0].ID, records[1].ID)
 	}
 }
 
@@ -1739,15 +1785,19 @@ func TestFindActiveGenTestsTasks_Empty(t *testing.T) {
 	}
 }
 
-// TestMigration_V19_TestGenResults 验证迁移 v19 应用后表结构可查询（包括 count / 索引）
-func TestMigration_V19_TestGenResults(t *testing.T) {
+// TestMigration_V20_TestGenResults 验证 test_gen_results 表在最新迁移后可查询且
+// task_id 列允许 ON DELETE SET NULL。
+func TestMigration_V20_TestGenResults(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// schema_migrations 中存在版本 19
+	// schema_migrations 中存在版本 19 / 20
 	var exists int
 	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM schema_migrations WHERE version = ?", 19).Scan(&exists); err != nil {
 		t.Fatalf("迁移 v19 未登记: %v", err)
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM schema_migrations WHERE version = ?", 20).Scan(&exists); err != nil {
+		t.Fatalf("迁移 v20 未登记: %v", err)
 	}
 
 	// 空表可查询，不报错
@@ -1772,6 +1822,15 @@ func TestMigration_V19_TestGenResults(t *testing.T) {
 		if err != nil {
 			t.Errorf("索引 %s 缺失: %v", name, err)
 		}
+	}
+
+	var notNull int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT \"notnull\" FROM pragma_table_info('test_gen_results') WHERE name = 'task_id'").Scan(&notNull); err != nil {
+		t.Fatalf("查询 task_id 列定义失败: %v", err)
+	}
+	if notNull != 0 {
+		t.Fatalf("task_id 应允许 NULL 以匹配 ON DELETE SET NULL，实际 notnull=%d", notNull)
 	}
 }
 

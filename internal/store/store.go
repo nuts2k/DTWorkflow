@@ -49,7 +49,8 @@ type Store interface {
 	// 返回按 created_at 升序排列的任务列表（最旧的在前）
 	FindActiveIssueTasks(ctx context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) ([]*model.TaskRecord, error)
 
-	// FindActiveGenTestsTasks 查找同一仓库 + module 粒度的活跃 gen_tests 任务（pending/queued/running）。
+	// FindActiveGenTestsTasks 查找同一仓库 + module 粒度的活跃 gen_tests 任务
+	// （pending/queued/running/retrying）。
 	// module 为空时匹配"整仓生成"的任务（payload.module 字段缺失的记录）。
 	// 返回按 created_at 升序排列的任务列表（最旧的在前）。
 	FindActiveGenTestsTasks(ctx context.Context, repoFullName, module string) ([]*model.TaskRecord, error)
@@ -101,7 +102,7 @@ type Store interface {
 // 字段与 SQL 列一一对齐；SQLite 无 boolean 类型，bool 字段在存储层映射为 0/1。
 type TestGenResultRecord struct {
 	ID                 string
-	TaskID             string
+	TaskID             string // 任务 purge 后可能因 ON DELETE SET NULL 变为空
 	RepoFullName       string
 	Module             string
 	Framework          string

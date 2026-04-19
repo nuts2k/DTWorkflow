@@ -167,6 +167,44 @@ func TestBuildNotifier_WithClientAndConfig(t *testing.T) {
 	}
 }
 
+func TestBuildNotifier_GenTestsRepoScopedMessageSkipsGitea(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Notify: config.NotifyConfig{
+			DefaultChannel: "gitea",
+			Channels: map[string]config.ChannelConfig{
+				"gitea": {Enabled: true},
+			},
+			Routes: []config.RouteConfig{{Repo: "*", Events: []string{"*"}, Channels: []string{"gitea"}}},
+		},
+	}
+	client, err := gitea.NewClient(srv.URL, gitea.WithToken("test-token"))
+	if err != nil {
+		t.Fatalf("NewClient error: %v", err)
+	}
+	notifier, err := buildNotifier(cfg, client)
+	if err != nil {
+		t.Fatalf("buildNotifier error: %v", err)
+	}
+
+	err = notifier.Send(context.Background(), notify.Message{
+		EventType: notify.EventGenTestsDone,
+		Target:    notify.Target{Owner: "acme", Repo: "repo"},
+	})
+	if err != nil {
+		t.Fatalf("repo 级 gen_tests 消息不应因 gitea 渠道报错: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("repo 级 gen_tests 消息应跳过 Gitea 评论 API，实际请求 %d 次", calls)
+	}
+}
+
 func TestBuildNotifier_FeishuOnlyConfig(t *testing.T) {
 	cfg := &config.Config{
 		Notify: config.NotifyConfig{

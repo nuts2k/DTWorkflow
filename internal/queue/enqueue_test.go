@@ -150,7 +150,10 @@ func (m *mockStore) FindActiveGenTestsTasks(_ context.Context, repoFullName, mod
 		if task.TaskType != model.TaskTypeGenTests {
 			continue
 		}
-		if task.Status != model.TaskStatusPending && task.Status != model.TaskStatusQueued && task.Status != model.TaskStatusRunning {
+		if task.Status != model.TaskStatusPending &&
+			task.Status != model.TaskStatusQueued &&
+			task.Status != model.TaskStatusRunning &&
+			task.Status != model.TaskStatusRetrying {
 			continue
 		}
 		// 模拟 COALESCE(json_extract(payload, '$.module'), '') = module 的匹配语义
@@ -1408,6 +1411,48 @@ func TestEnqueueManualGenTests_EmptyModuleCancelAndReplace(t *testing.T) {
 	}
 }
 
+// TestEnqueueManualGenTests_RetryingTaskAlsoReplaced 验证处于 retrying backoff 窗口的旧任务
+// 仍被视作活跃任务，手动重触发时应执行 Cancel-and-Replace。
+func TestEnqueueManualGenTests_RetryingTaskAlsoReplaced(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-gen-tests-retrying"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "backend",
+	}
+
+	firstID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第一次触发失败: %v", err)
+	}
+	s.tasks[firstID].AsynqID = "asynq-gen-tests-retrying-first"
+	s.tasks[firstID].Status = model.TaskStatusRetrying
+
+	secondID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("第二次触发失败: %v", err)
+	}
+
+	if s.tasks[firstID].Status != model.TaskStatusCancelled {
+		t.Errorf("retrying 旧任务状态 = %q, want %q", s.tasks[firstID].Status, model.TaskStatusCancelled)
+	}
+	if len(canceller.deleteCalls) != 0 {
+		t.Errorf("retrying 任务不应走 Delete，实际 deleteCalls = %v", canceller.deleteCalls)
+	}
+	if len(canceller.cancelCalls) != 0 {
+		t.Errorf("retrying 任务不应走 CancelProcessing，实际 cancelCalls = %v", canceller.cancelCalls)
+	}
+	if s.tasks[secondID].Status != model.TaskStatusQueued {
+		t.Errorf("新任务状态 = %q, want %q", s.tasks[secondID].Status, model.TaskStatusQueued)
+	}
+}
+
 // TestListActiveGenTestsTasks_FiltersByTaskType 过滤 task_type='gen_tests'，
 // 不误伤 review_pr / fix_issue 的同 repo 任务。
 func TestListActiveGenTestsTasks_FiltersByTaskType(t *testing.T) {
@@ -1531,7 +1576,7 @@ func TestEnqueueManualGenTests_IncompletePayload(t *testing.T) {
 
 // recordingBranchCleaner 满足 BranchCleaner 接口，记录每次调用及 branch。
 type recordingBranchCleaner struct {
-	calls   []string // 记录 branch 名
+	calls     []string // 记录 branch 名
 	returnErr error
 }
 

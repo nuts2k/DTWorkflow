@@ -116,6 +116,8 @@ notify:
         secret: ""       # 签名密钥，留空则不启用签名校验（建议开启）
   routes:
     # 全局兜底：所有仓库/事件都发送到 gitea
+    # 注意：gen_tests 的 started/done/failed 属于仓库级事件，没有 Issue/PR 编号，
+    # Gitea 渠道会自动跳过；如需接收这类通知，建议额外配置 feishu 路由。
     - repo: "*"
       events: ["*"]
       channels: ["gitea"]

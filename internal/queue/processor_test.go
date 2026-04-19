@@ -33,13 +33,32 @@ func (m *mockPoolRunner) Run(_ context.Context, _ model.TaskPayload) (*worker.Ex
 }
 
 type stubNotifier struct {
-	messages []notify.Message
-	err      error
+	messages     []notify.Message
+	err          error
+	commentErr   error
+	commentCalls []genTestsPRCommentCall
 }
 
 func (s *stubNotifier) Send(_ context.Context, msg notify.Message) error {
 	s.messages = append(s.messages, msg)
 	return s.err
+}
+
+type genTestsPRCommentCall struct {
+	owner string
+	repo  string
+	pr    int64
+	body  string
+}
+
+func (s *stubNotifier) CommentOnGenTestsPR(_ context.Context, owner, repo string, prNumber int64, body string) error {
+	s.commentCalls = append(s.commentCalls, genTestsPRCommentCall{
+		owner: owner,
+		repo:  repo,
+		pr:    prNumber,
+		body:  body,
+	})
+	return s.commentErr
 }
 
 type mockReviewExecutor struct {
@@ -3157,9 +3176,9 @@ func TestBuildNotificationMessage_GenTests_FailureCategorySeverity(t *testing.T)
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
 
 	cases := []struct {
-		name     string
-		category testgen.FailureCategory
-		wantSev  notify.Severity
+		name      string
+		category  testgen.FailureCategory
+		wantSev   notify.Severity
 		wantTitle string
 	}{
 		{"infrastructure→Warning", testgen.FailureCategoryInfrastructure, notify.SeverityWarning, "基础设施故障"},
@@ -3284,6 +3303,109 @@ func TestSendCompletionNotification_GenTests_WarningsAppended(t *testing.T) {
 	}
 	if !strings.Contains(notifier.messages[1].Body, "AUTO_TEST_BRANCH_RESET_REMOTE_FAILED") {
 		t.Errorf("第 2 条 body 应包含 warning 内容，实际 %q", notifier.messages[1].Body)
+	}
+}
+
+func TestSendCompletionNotification_GenTests_SyncsPRComment(t *testing.T) {
+	notifier := &stubNotifier{}
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), notifier, slog.Default())
+
+	startedAt := time.Now().Add(-20 * time.Second)
+	completedAt := time.Now()
+	record := &model.TaskRecord{
+		ID:          "gen-task-comment",
+		TaskType:    model.TaskTypeGenTests,
+		Status:      model.TaskStatusSucceeded,
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeGenTests,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+			Module:       "svc/user",
+			BaseRef:      "main",
+		},
+	}
+	tr := &testgen.TestGenResult{
+		Framework: testgen.FrameworkJUnit5,
+		PRNumber:  42,
+		Output: &testgen.TestGenOutput{
+			Success:            true,
+			InfoSufficient:     true,
+			VerificationPassed: true,
+			BranchName:         "auto-test/svc-user",
+			CommitSHA:          "deadbeef",
+			GeneratedFiles: []testgen.GeneratedFile{{
+				Path:      "svc/user/UserServiceTest.java",
+				Operation: "create",
+				Framework: "junit5",
+				TestCount: 3,
+			}},
+			CommittedFiles: []string{"svc/user/UserServiceTest.java"},
+			TestResults: &testgen.TestRunResults{
+				Passed:    3,
+				AllPassed: true,
+			},
+		},
+	}
+
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr)
+
+	if len(notifier.commentCalls) != 1 {
+		t.Fatalf("应同步 1 条 PR 评论，实际 %d 条", len(notifier.commentCalls))
+	}
+	got := notifier.commentCalls[0]
+	if got.owner != "org" || got.repo != "repo" || got.pr != 42 {
+		t.Fatalf("PR 评论目标错误: %+v", got)
+	}
+	if !strings.Contains(got.body, "DTWorkflow gen_tests") {
+		t.Fatalf("评论正文应包含格式化结果摘要，实际: %q", got.body)
+	}
+}
+
+func TestSendCompletionNotification_GenTests_RetryingDoesNotSyncPRComment(t *testing.T) {
+	notifier := &stubNotifier{}
+	p := NewProcessor(&mockPoolRunner{}, newMockStore(), notifier, slog.Default())
+
+	record := &model.TaskRecord{
+		ID:       "gen-task-retrying-comment",
+		TaskType: model.TaskTypeGenTests,
+		Status:   model.TaskStatusRetrying,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeGenTests,
+			RepoOwner:    "org",
+			RepoName:     "repo",
+			RepoFullName: "org/repo",
+		},
+	}
+	tr := &testgen.TestGenResult{
+		Framework: testgen.FrameworkJUnit5,
+		PRNumber:  42,
+		Output: &testgen.TestGenOutput{
+			Success:            true,
+			InfoSufficient:     true,
+			VerificationPassed: true,
+			BranchName:         "auto-test/svc-user",
+			CommitSHA:          "deadbeef",
+			GeneratedFiles: []testgen.GeneratedFile{{
+				Path:      "svc/user/UserServiceTest.java",
+				Operation: "create",
+				Framework: "junit5",
+				TestCount: 3,
+			}},
+			CommittedFiles: []string{"svc/user/UserServiceTest.java"},
+			TestResults: &testgen.TestRunResults{
+				Passed:    3,
+				AllPassed: true,
+			},
+		},
+	}
+
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr)
+
+	if len(notifier.commentCalls) != 0 {
+		t.Fatalf("retrying 阶段不应同步 PR 评论，实际 %d 条", len(notifier.commentCalls))
 	}
 }
 

@@ -201,7 +201,7 @@ var migrations = []migration{
 		SQL: `
 			CREATE TABLE IF NOT EXISTS test_gen_results (
 				id                  TEXT PRIMARY KEY,
-				task_id             TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+				task_id             TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
 				repo_full_name      TEXT NOT NULL,
 				module              TEXT NOT NULL DEFAULT '',
 				framework           TEXT NOT NULL,
@@ -228,6 +228,69 @@ var migrations = []migration{
 				created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
 				updated_at          DATETIME NOT NULL DEFAULT (datetime('now'))
 			);
+			CREATE INDEX IF NOT EXISTS idx_test_gen_results_repo ON test_gen_results(repo_full_name);
+			CREATE INDEX IF NOT EXISTS idx_test_gen_results_repo_module ON test_gen_results(repo_full_name, module);
+			CREATE INDEX IF NOT EXISTS idx_test_gen_results_created ON test_gen_results(created_at);
+		`,
+	},
+	// M4.2 修复：test_gen_results.task_id 需要允许 ON DELETE SET NULL 生效。
+	// v19 将 task_id 定义为 NOT NULL + ON DELETE SET NULL，历史任务 purge 时会触发
+	// NOT NULL 约束冲突。本迁移重建表，把 task_id 改为可空，保留既有索引与数据。
+	{
+		Version: 20,
+		SQL: `
+			DROP TABLE IF EXISTS test_gen_results_new;
+			CREATE TABLE test_gen_results_new (
+				id                  TEXT PRIMARY KEY,
+				task_id             TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+				repo_full_name      TEXT NOT NULL,
+				module              TEXT NOT NULL DEFAULT '',
+				framework           TEXT NOT NULL,
+				base_ref            TEXT NOT NULL,
+				branch_name         TEXT NOT NULL DEFAULT '',
+				commit_sha          TEXT NOT NULL DEFAULT '',
+				pr_number           INTEGER NOT NULL DEFAULT 0,
+				pr_url              TEXT NOT NULL DEFAULT '',
+				success             INTEGER NOT NULL DEFAULT 0,
+				info_sufficient     INTEGER NOT NULL DEFAULT 0,
+				verification_passed INTEGER NOT NULL DEFAULT 0,
+				failure_category    TEXT NOT NULL DEFAULT 'none',
+				failure_reason      TEXT NOT NULL DEFAULT '',
+				generated_count     INTEGER NOT NULL DEFAULT 0,
+				committed_count     INTEGER NOT NULL DEFAULT 0,
+				skipped_count       INTEGER NOT NULL DEFAULT 0,
+				test_passed         INTEGER NOT NULL DEFAULT 0,
+				test_failed         INTEGER NOT NULL DEFAULT 0,
+				test_duration_ms    INTEGER NOT NULL DEFAULT 0,
+				review_enqueued     INTEGER NOT NULL DEFAULT 0,
+				cost_usd            REAL NOT NULL DEFAULT 0,
+				duration_ms         INTEGER NOT NULL DEFAULT 0,
+				output_json         TEXT NOT NULL DEFAULT '{}',
+				created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
+				updated_at          DATETIME NOT NULL DEFAULT (datetime('now'))
+			);
+			INSERT INTO test_gen_results_new (
+				id, task_id, repo_full_name, module, framework, base_ref,
+				branch_name, commit_sha, pr_number, pr_url,
+				success, info_sufficient, verification_passed,
+				failure_category, failure_reason,
+				generated_count, committed_count, skipped_count,
+				test_passed, test_failed, test_duration_ms,
+				review_enqueued, cost_usd, duration_ms, output_json,
+				created_at, updated_at
+			)
+			SELECT
+				id, task_id, repo_full_name, module, framework, base_ref,
+				branch_name, commit_sha, pr_number, pr_url,
+				success, info_sufficient, verification_passed,
+				failure_category, failure_reason,
+				generated_count, committed_count, skipped_count,
+				test_passed, test_failed, test_duration_ms,
+				review_enqueued, cost_usd, duration_ms, output_json,
+				created_at, updated_at
+			FROM test_gen_results;
+			DROP TABLE test_gen_results;
+			ALTER TABLE test_gen_results_new RENAME TO test_gen_results;
 			CREATE INDEX IF NOT EXISTS idx_test_gen_results_repo ON test_gen_results(repo_full_name);
 			CREATE INDEX IF NOT EXISTS idx_test_gen_results_repo_module ON test_gen_results(repo_full_name, module);
 			CREATE INDEX IF NOT EXISTS idx_test_gen_results_created ON test_gen_results(created_at);

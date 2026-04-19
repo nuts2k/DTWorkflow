@@ -43,6 +43,13 @@ type TaskNotifier interface {
 	Send(ctx context.Context, msg notify.Message) error
 }
 
+// GenTestsPRCommenter 是可选扩展接口：
+// 当通知装配层具备 Gitea PR 评论 upsert 能力时，Processor 会在 gen_tests 终态
+// 额外同步一条带锚点的 PR 评论，用于刷新稳定分支上的最新测试生成结果。
+type GenTestsPRCommenter interface {
+	CommentOnGenTestsPR(ctx context.Context, owner, repo string, prNumber int64, body string) error
+}
+
 // ReviewExecutor 窄接口，解耦 review 包
 type ReviewExecutor interface {
 	Execute(ctx context.Context, payload model.TaskPayload) (*review.ReviewResult, error)
@@ -629,6 +636,7 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 	// 主消息发送后，如果 gen_tests 产出含 Warnings（例如分支强制对齐失败），
 	// 追加一条独立的 Warning 消息，保持主消息干净 + 告警信息可达。
 	p.sendTestGenWarnings(ctx, record, testResult)
+	p.syncGenTestsPRComment(ctx, record, testResult)
 }
 
 // buildNotificationMessage 构建任务完成通知消息。
@@ -1051,6 +1059,44 @@ func (p *Processor) sendTestGenWarnings(ctx context.Context, record *model.TaskR
 	if err := p.notifier.Send(ctx, msg); err != nil {
 		p.logger.ErrorContext(ctx, "发送 gen_tests 附加告警消息失败",
 			"task_id", record.ID,
+			"error", err,
+		)
+	}
+}
+
+// syncGenTestsPRComment 在 gen_tests 最终态时，把最新结果 upsert 到目标 PR 评论中。
+//
+// 与通用 Router.Send 分离的原因：
+//   - gen_tests started/done/failed 属于 repo 级通知，目标可能没有 PR/Issue 编号
+//   - gen_tests PR 评论是显式的 Gitea 写回能力，应直接走专用接口，而非经路由配置
+func (p *Processor) syncGenTestsPRComment(ctx context.Context, record *model.TaskRecord, testResult *test.TestGenResult) {
+	if p.notifier == nil || record == nil || testResult == nil || testResult.Output == nil {
+		return
+	}
+	if record.Payload.TaskType != model.TaskTypeGenTests {
+		return
+	}
+	if record.Status != model.TaskStatusSucceeded && record.Status != model.TaskStatusFailed {
+		return
+	}
+	if testResult.PRNumber <= 0 {
+		return
+	}
+	payload := record.Payload
+	if payload.RepoOwner == "" || payload.RepoName == "" {
+		return
+	}
+	commenter, ok := p.notifier.(GenTestsPRCommenter)
+	if !ok {
+		return
+	}
+
+	body := test.FormatTestGenPRBody(testResult.Output, payload, string(testResult.Framework))
+	if err := commenter.CommentOnGenTestsPR(ctx, payload.RepoOwner, payload.RepoName, testResult.PRNumber, body); err != nil {
+		p.logger.ErrorContext(ctx, "同步 gen_tests PR 评论失败",
+			"task_id", record.ID,
+			"repo", payload.RepoFullName,
+			"pr_number", testResult.PRNumber,
 			"error", err,
 		)
 	}
