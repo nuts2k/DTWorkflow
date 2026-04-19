@@ -15,6 +15,12 @@ import (
 // 编译时断言 giteaCommentAdapter 实现 notify.GiteaCommentCreator 接口
 var _ notify.GiteaCommentCreator = (*giteaCommentAdapter)(nil)
 
+// 编译时断言 giteaCommentAdapter 同时实现 notify.GiteaPRCommentManager 扩展接口，
+// 打开 M4.2 gen_tests PR 评论幂等 upsert 路径（跨任务覆盖语义）。
+// 若此断言失败（未来 notify 接口变动），CommentOnGenTestsPR 会退化为仅 Create 并告警，
+// 但不影响编译通过——保留断言是为了明确装配层对接口升级的承诺。
+var _ notify.GiteaPRCommentManager = (*giteaCommentAdapter)(nil)
+
 // giteaCommentAdapter 将 gitea.Client 适配为 notify.GiteaCommentCreator 窄接口。
 //
 // notify 包定义的窄接口签名为：
@@ -36,6 +42,46 @@ type giteaCommentAdapter struct {
 
 func (a *giteaCommentAdapter) CreateIssueComment(ctx context.Context, owner, repo string, index int64, body string) error {
 	_, resp, err := a.client.CreateIssueComment(ctx, owner, repo, index, gitea.CreateIssueCommentOption{
+		Body: body,
+	})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	return err
+}
+
+// ListIssueComments 实现 notify.GiteaPRCommentManager 接口：
+// 拉取指定 Issue/PR 下的全部评论并裁剪为 notify.GiteaCommentInfo 窄视图。
+//
+// 分页说明：当前仅请求首页，PageSize=50（Gitea 默认）。gen_tests 评论锚点
+// 基本只在最近几条——PR 第一条评论就是本服务发出的；若评论超出首页未命中锚点，
+// CommentOnGenTestsPR 会退化为 Create，产生一条新评论（可接受）。后续如有更严格
+// 覆盖需求，可在此处扩展分页遍历或服务端过滤。
+func (a *giteaCommentAdapter) ListIssueComments(ctx context.Context, owner, repo string, index int64) ([]notify.GiteaCommentInfo, error) {
+	comments, resp, err := a.client.ListIssueComments(ctx, owner, repo, index, gitea.ListOptions{})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]notify.GiteaCommentInfo, 0, len(comments))
+	for _, c := range comments {
+		if c == nil {
+			continue
+		}
+		out = append(out, notify.GiteaCommentInfo{
+			ID:   c.ID,
+			Body: c.Body,
+		})
+	}
+	return out, nil
+}
+
+// EditIssueComment 实现 notify.GiteaPRCommentManager 接口：
+// 按评论 ID 覆盖评论正文，用于 gen_tests Done 事件的幂等 upsert。
+func (a *giteaCommentAdapter) EditIssueComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
+	_, resp, err := a.client.EditIssueComment(ctx, owner, repo, commentID, gitea.EditIssueCommentOption{
 		Body: body,
 	})
 	if resp != nil && resp.Body != nil {

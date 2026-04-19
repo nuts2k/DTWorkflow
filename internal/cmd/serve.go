@@ -243,6 +243,11 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		)
 		processorOpts = append(processorOpts, queue.WithFixService(fixSvc))
 
+		// M4.2：test.Service 新增 ReviewEnqueuer + TestGenResultStore 两个可选依赖。
+		// - ReviewEnqueuer：gen_tests Success（或 ReviewOnFailure=true 且失败）且 PRNumber>0 时
+		//   主动 enqueue 一次 review。queue.EnqueueHandler.EnqueueManualReview 天然满足该接口，
+		//   依赖方向 queue → test（接口定义在 internal/test，避免反向 import）。
+		// - TestGenResultStore：两阶段 UPSERT 写 test_gen_results 表。*store.SQLiteStore 天然满足。
 		testSvc := testgen.NewService(
 			deps.GiteaClient,
 			deps.Pool,
@@ -250,6 +255,8 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 			testgen.WithServiceLogger(slog.Default()),
 			testgen.WithPRClient(deps.GiteaClient),
 			testgen.WithFileChecker(&giteaRepoFileChecker{client: deps.GiteaClient}),
+			testgen.WithReviewEnqueuer(deps.EnqueueHandler),
+			testgen.WithStore(deps.Store),
 		)
 		processorOpts = append(processorOpts, queue.WithTestService(testSvc))
 	}

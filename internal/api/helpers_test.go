@@ -183,6 +183,19 @@ func (m *mockStore) Close() error {
 	return nil
 }
 
+// M4.2 test_gen_results 相关方法（mock 桩，当前 api 测试不关心）
+func (m *mockStore) SaveTestGenResult(_ context.Context, _ *store.TestGenResultRecord) error {
+	return nil
+}
+
+func (m *mockStore) GetTestGenResultByTaskID(_ context.Context, _ string) (*store.TestGenResultRecord, error) {
+	return nil, nil
+}
+
+func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
 // mockEnqueuer 实现 queue.Enqueuer 接口
 type mockEnqueuer struct{}
 

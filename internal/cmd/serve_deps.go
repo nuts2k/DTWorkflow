@@ -235,8 +235,17 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 		},
 	})
 
-	// 6. 构建 EnqueueHandler（M2.4: 注入 TaskCanceller）
-	handler := queue.NewEnqueueHandler(queueClient, queueClient, s, slog.Default())
+	// 6. 构建 EnqueueHandler（M2.4: 注入 TaskCanceller；M4.2: 注入 BranchCleaner）
+	//
+	// M4.2：gen_tests Cancel-and-Replace 流程需要主动清理旧 auto-test/{module} 远程分支
+	// 与残留 PR，避免新一轮任务被 non-fast-forward push 阻塞。BranchCleaner 依赖
+	// gitea.Client，仅在 giteaClient != nil 时注入；nil 时 EnqueueHandler 会跳过清理
+	// 并记录 warn 日志（见 internal/queue/enqueue.go 注入点注释）。
+	var enqueueOpts []queue.EnqueueOption
+	if giteaClient != nil {
+		enqueueOpts = append(enqueueOpts, queue.WithBranchCleaner(queue.NewBranchCleaner(giteaClient, slog.Default())))
+	}
+	handler := queue.NewEnqueueHandler(queueClient, queueClient, s, slog.Default(), enqueueOpts...)
 
 	// 7. 构建 RecoveryLoop
 	recovery := queue.NewRecoveryLoop(s, queueClient, slog.Default(), 60*time.Second, 120*time.Second)

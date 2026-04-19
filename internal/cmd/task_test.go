@@ -98,6 +98,19 @@ func (m *mockTaskStore) GetLatestAnalysisByIssue(_ context.Context, _ string, _ 
 	return nil, nil
 }
 
+// M4.2 test_gen_results 相关方法（mock 桩，当前 task_test 不关心）
+func (m *mockTaskStore) SaveTestGenResult(_ context.Context, _ *store.TestGenResultRecord) error {
+	return nil
+}
+
+func (m *mockTaskStore) GetTestGenResultByTaskID(_ context.Context, _ string) (*store.TestGenResultRecord, error) {
+	return nil, nil
+}
+
+func (m *mockTaskStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
 type stubTaskEnqueuer struct {
 	asynqID     string
 	enqueueErr  error
