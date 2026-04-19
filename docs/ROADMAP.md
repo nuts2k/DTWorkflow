@@ -701,22 +701,31 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 ##### M4.2 容器执行 + 测试验证 + PR 创建 + 通知
 - [x] Processor 集成（`WithTestService` 注入 + `case TaskTypeGenTests` 路由）**——已在 M4.1 落地（决策 D11）**
-- [ ] 容器执行流程（执行镜像，读写权限）：
-  - Clone 仓库 + checkout 目标分支
-  - Claude 分析测试缺口
-  - 生成测试代码文件
-  - 运行测试套件验证
-  - 容器内 prompt 级自动修正：测试失败时 Claude 在同一容器会话中根据错误信息修改测试代码并重新运行（最多 N 轮，`test_gen.max_retry_rounds` 可配置，默认 3）。注意：此为单次容器调用内的 prompt 重试，与 asynq 的跨容器重试是独立机制；需确保总耗时在 `worker.timeouts.gen_tests` 范围内
-  - 全部通过后创建分支（命名规范：`auto-test/{module}-{timestamp}`）+ commit + push
-- [ ] 双层 JSON 解析（同 Phase 2/3）：CLI 信封 → TestGenOutput
-- [ ] PR 创建（复用 M3.5 能力）：
+- [x] 容器执行流程（执行镜像，读写权限）：
+  - `internal/worker/container.go` 为 gen_tests 注入 `BASE_REF` + `MODULE_SANITIZED` 两个 env
+  - `entrypoint.sh` gen_tests 分支先 `fetch + checkout BASE_REF`，再 fetch / checkout `auto-test/${MODULE_SANITIZED}`（见决策 D3）
+  - Claude 按 prompt 分析测试缺口 → 生成测试 → `mvn test` / `vitest run` 验证 → **每文件 commit + push**（断点续传 D1）
+  - 分支污染（落后 base / 非 bot author）自动重置并 `git push --force-with-lease` 对齐远程
+  - 重置 / 远程对齐失败通过 `/tmp/.gen_tests_warnings` 写入，Claude 读取后追加到 `TestGenOutput.Warnings`
+- [x] **稳定分支命名**：`auto-test/{moduleKey}`（`test.BuildAutoTestBranchName` + `ModuleKey`，空 module 回落 `all`），**禁用 timestamp 后缀**；中断任务重跑时远程分支天然续传
+- [x] 双层 JSON 解析（同 Phase 2/3）：CLI 信封 → TestGenOutput（失败路径弱校验 `FailureCategory` 枚举 + `InfoSufficient` 一致性）
+- [x] PR 创建（复用 M3.5 幂等模板）：
   - PR 标题：`test: 补充 {module} 测试用例`
-  - PR 描述模板：测试缺口分析摘要 + 生成的测试文件列表 + 测试运行结果 + 覆盖的模块/方法
-- [ ] 通知适配：Processor 的 `buildStartMessage` / `buildNotificationMessage` 新增 `TaskTypeGenTests` case 分支（当前仅 review_pr / fix_issue，gen_tests 落入 default 不发通知）
-- [ ] 通知内容（Gitea + 飞书）：测试生成开始/完成/失败通知
-- [ ] 验证失败处理：所有容器内重试耗尽后，在通知中报告失败原因（编译错误、断言失败等），区分基础设施故障（依赖下载失败、构建工具异常）与测试质量问题
-- [ ] 结果持久化到数据库（`test_gen_results` 表，字段设计在 M4.2 实施阶段详细定义，参考 `review_results` 表结构）
-- [ ] 单元测试覆盖
+  - PR 描述：`FormatTestGenPRBody`，含 GapAnalysis 摘要 + 生成文件列表 + 测试运行结果 + Warnings
+  - `Success=false && CommittedFiles>0` 仍创建 PR（D5 失败保留）
+- [x] **review 拦截 + 自动入队 review（D2 + D6）**：
+  - `enqueue.HandlePullRequest` 检测到 `auto-test/{moduleKey}` 分支时，若存在同 repo + moduleKey 的活跃 gen_tests 任务则跳过 review 入队；查询失败 fail-open
+  - `test.Service.Execute` 完成时主动调 `EnqueueManualReview`（Success=true 或 `test_gen.review_on_failure=true` 且 PRNumber>0）
+- [x] **Cancel-and-Replace 主动清理**：`EnqueueManualGenTests` 在 cancel 旧任务后调用 `BranchCleaner` 关闭旧 PR + 删除远程分支（`gitea.ClosePullRequest` + `gitea.DeleteBranch`，cleanup 失败仅 warn）
+- [x] 通知适配：Processor `buildStartMessage` / `buildNotificationMessage` / `sendCompletionNotification` 新增 `TaskTypeGenTests` case + `testResult *test.TestGenResult` 形参；`handleSkipRetryFailure` 同步透传
+- [x] 通知内容（Gitea + 飞书）：
+  - 3 个 `EventType`：`EventGenTestsStarted` / `EventGenTestsDone` / `EventGenTestsFailed`
+  - `feishu_card` 渲染三事件（含 failure_category → severity 映射：infrastructure=Warning / test_quality=Info / info_insufficient=Info）
+  - `gitea_notifier.CommentOnGenTestsPR` PR 评论 upsert（幂等锚点 `<!-- dtworkflow:gen_tests:done -->`，跨任务覆盖语义）
+  - `TestGenOutput.Warnings` 非空时飞书追加 Warning 消息
+- [x] 验证失败处理：`FailureCategory` 四枚举（`infrastructure` / `test_quality` / `info_insufficient` / `none`）区分基础设施故障与测试质量问题
+- [x] 结果持久化：迁移 v19 `test_gen_results` 表（`task_id UNIQUE` + 3 个索引 + `review_enqueued` + `updated_at`）+ `store.SaveTestGenResult` / `GetTestGenResultByTaskID` / `ListActiveGenTestsModules` + 自由文本字段 2 KB 截断；Execute 两阶段 UPSERT（主结果 → `review_enqueued=1`）
+- [x] 单元测试覆盖：`internal/test` 覆盖率 95.2%；`entrypoint_test.sh` 33 项断言；`enqueue_test.go` 补 Cancel-and-Replace 与 review 拦截路径
 
 ---
 

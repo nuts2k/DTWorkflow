@@ -86,18 +86,31 @@ configs/        # 配置文件模板
 - **错误脱敏**：`executeFix` 返回的 error 不携带 ParseError 详情（可能含 Claude 原始输出），详情仅写结构化日志，防止 prompt-injection 内容泄露到飞书通知或 Issue 评论
 - **失败处理**：信息不足 / Claude 返回失败 → SkipRetry + Issue 评论；Push 成功但 PR 创建失败 → 允许重试
 
-## 测试生成功能（M4.1）
+## 测试生成功能（M4.1 + M4.2）
 
-- **触发方式**（M4.1 仅手动；M4.3 扩展 Webhook PR merged 触发）：
+- **触发方式**（M4.1 + M4.2 仅手动；M4.3 扩展 Webhook PR merged 触发）：
   - CLI 触发：`./bin/dtw gen-tests --repo <owner/repo> [--module <path>] [--ref <branch>] [--framework junit5|vitest]`
   - API 触发：`POST /api/v1/gen-tests`
 - **镜像**：`gen_tests` 使用执行镜像（`worker-full`，含 JDK + Maven）
-- **执行流程**：`test.Service.Execute` 9 步 — 前置校验（module 白名单）→ `resolveBaseRef` → `resolveFramework` → `buildPrompt` → 容器执行 → `parseResult` → `validateSuccessfulTestGenOutput` → `createTestPR`（M4.1 占位，不真实创建 PR）
-- **路由状态（M4.1）**：Processor 已装配 `WithTestService`，`gen_tests` 任务走 `test.Service.Execute`；`createTestPR` 占位返回零值——即**路由已通，PR 创建未通**（M4.2 实装）
+- **执行流程（M4.2 §4.2 八步）**：`test.Service.Execute` —
+  1. 前置校验（`Enabled` / `validateModule` / `resolveBaseRef` / `validateModuleExists`）
+  2. `resolveFramework` / `buildPrompt` / 容器执行
+  3. `parseResult`（CLI 信封 → TestGenOutput，Success=true 走 `validateSuccessfulTestGenOutput`；Success=false 走 `validateFailureTestGenOutput` 弱校验）
+  4. `len(CommittedFiles)>0` 即使 Success=false 也 `createTestPR`（D5 失败保留）
+  5. 阶段 1 `SaveTestGenResult`（`review_enqueued=0`）
+  6. review 入队决策 + 成功时阶段 2 UPSERT（`review_enqueued=1`）
+  7. 业务失败判定（`!InfoSufficient` / `!Success` → sentinel error）
+  8. return result
+- **稳定分支 + 断点续传**：分支名 `auto-test/{moduleKey}`（`test.BuildAutoTestBranchName`，空 module 回落 `all`）；用户重触发即 Cancel-and-Replace（删分支删 PR + kill 容器 + `EnqueueHandler.WithBranchCleaner` 在 `EnqueueManualGenTests` 中清理）；`entrypoint.sh` 先 `fetch + checkout BASE_REF`，再 fetch / checkout 稳定分支，落后 base 或非 bot author 自动重置并 `git push --force-with-lease` 对齐远程（失败写 `/tmp/.gen_tests_warnings` → `TestGenOutput.Warnings` 追加到飞书 Warning）
+- **完成后自动 enqueue review（D6）**：`Success=true && PRNumber>0` 时 `test.Service` 主动调 `EnqueueManualReview`（`triggered_by="gen_tests:<taskID>"`）；`test_gen.review_on_failure=true` 时失败 + PRNumber>0 也入队；入队失败仅 warn 不阻断主流程
+- **review 拦截（D2）**：`enqueue.HandlePullRequest` 检测到 `auto-test/{moduleKey}` 分支时，用 `store.ListActiveGenTestsModules(repo)` 比对 moduleKey；命中活跃任务则跳过 review 入队；查询失败 fail-open
+- **通知三件套**：3 个 `EventType`（`EventGenTestsStarted` / `EventGenTestsDone` / `EventGenTestsFailed`）+ 飞书 card + Gitea PR 评论（锚点 `<!-- dtworkflow:gen_tests:done -->` 不带 task_id，跨任务覆盖语义；`giteaCommentAdapter` 实现 `notify.GiteaPRCommentManager` 打开 `ListIssueComments` / `EditIssueComment` upsert 路径）
+- **failure_category 四枚举**：`infrastructure` / `test_quality` / `info_insufficient` / `none`；Success=true 必须 `none`，Success=false 必须非 `none`；飞书 severity 映射 infrastructure=Warning / test_quality=Info / info_insufficient=Info
+- **持久化**：迁移 v19 `test_gen_results` 表（`task_id UNIQUE` + 3 索引 + `review_enqueued` + `updated_at`）；`store.SaveTestGenResult` UPSERT + UUID 生成 + 自由文本 2KB 截断；Execute 两阶段 UPSERT（主结果 + `review_enqueued` 更新）；审计通过 `test_gen_results.task_id → tasks.id → tasks.triggered_by` 反查（表内不重复存 triggered_by）
 - **框架检测**：`resolveFramework` 扫描 `module/pom.xml`（Java）或 `package.json`（Vue）；两者并存返回 `ErrAmbiguousFramework`；可通过 `test_gen.test_framework` 显式配置
-- **分支保护**：`entrypoint.sh` gen_tests 分支含 pre-push hook，仅允许推送 `refs/heads/auto-test/*`，防止 Claude 误推默认分支
-- **Cancel-and-Replace**：按 `repo + module` 粒度替换；空 `module`（整仓生成）通过 SQL `COALESCE` 正确处理，避免 `NULL = ''` 恒假导致并发放行
-- **错误脱敏**：`ErrTestGenParseFailure` 详情不进返回 error（防止 Claude 原始输出泄露）；飞书 gen_tests 通知事件在 M4.2 落地（M4.1 无通知）
+- **分支保护**：`entrypoint.sh` gen_tests 分支含 pre-push hook，仅允许推送 `refs/heads/auto-test/*`；prompt 禁止 Claude 使用 `git push -f / --force / 重写历史`（`--force-with-lease` 仅由 entrypoint 在分支重置场景主动发起）
+- **Cancel-and-Replace**：按 `repo + module` 粒度替换；空 `module`（整仓生成）通过 SQL `COALESCE` 正确处理；cancel 旧任务后由 `queue.BranchCleaner`（注入 `gitea.ClosePullRequest` + `gitea.DeleteBranch`）清理远程 PR + 分支，cleanup 失败仅 warn
+- **错误脱敏**：`ErrTestGenParseFailure` 详情不进返回 error（防止 Claude 原始输出泄露到飞书/PR 评论），详情仅写结构化日志
 
 ## 测试服务器
 
