@@ -18,6 +18,14 @@ const (
 	EventIssueAnalyzeStarted EventType = "issue.analyze.started" // M3.4
 	EventIssueAnalyzeDone    EventType = "issue.analyze.done"    // M3.4
 	EventSystemError         EventType = "system.error"
+	// M4.2：测试生成任务的通知事件。
+	// Failed 事件的 Severity 由调用方根据 metadata.failure_category 在 Processor 侧决定：
+	//   - infrastructure   → Warning
+	//   - test_quality     → Info
+	//   - info_insufficient → Info
+	EventGenTestsStarted EventType = "gen_tests.started"
+	EventGenTestsDone    EventType = "gen_tests.done"
+	EventGenTestsFailed  EventType = "gen_tests.failed"
 )
 
 // Metadata key 常量，用于 Message.Metadata 的键名，确保生产端和消费端类型安全。
@@ -34,6 +42,14 @@ const (
 	MetaKeyDuration      = "duration"       // 任务耗时（仅 succeeded）
 	MetaKeyPRNumber      = "pr_number"      // M3.5: 修复任务创建的 PR 编号
 	MetaKeyModifiedFiles = "modified_files" // M3.5: 修复任务改动文件数
+
+	// M4.2 gen_tests 事件专用 metadata key。
+	MetaKeyModule          = "module"           // 模块路径（整仓模式为 "all"）
+	MetaKeyFramework       = "framework"        // 测试框架（junit5 / vitest）
+	MetaKeyGeneratedCount  = "generated_count"  // 本次生成的测试文件数
+	MetaKeyCommittedCount  = "committed_count"  // 实际提交到分支的文件数
+	MetaKeySkippedCount    = "skipped_count"    // 跳过的目标数
+	MetaKeyFailureCategory = "failure_category" // gen_tests 失败分类
 )
 
 // Severity 通知紧急程度

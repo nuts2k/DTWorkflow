@@ -308,6 +308,225 @@ func TestGiteaNotifier_Send_EmptyTitle(t *testing.T) {
 	}
 }
 
+// --- M4.2 CommentOnGenTestsPR 测试 ---
+
+// stubCommentManager 实现 GiteaPRCommentManager，用于 upsert 路径测试。
+type stubCommentManager struct {
+	listReturn []GiteaCommentInfo
+	listErr    error
+	editErr    error
+	createErr  error
+
+	editCalls   []editCall
+	createCalls []createIssueCommentCall
+}
+
+type editCall struct {
+	owner     string
+	repo      string
+	commentID int64
+	body      string
+}
+
+func (s *stubCommentManager) CreateIssueComment(_ context.Context, owner, repo string, index int64, body string) error {
+	s.createCalls = append(s.createCalls, createIssueCommentCall{owner, repo, index, body})
+	return s.createErr
+}
+
+func (s *stubCommentManager) ListIssueComments(_ context.Context, _, _ string, _ int64) ([]GiteaCommentInfo, error) {
+	return s.listReturn, s.listErr
+}
+
+func (s *stubCommentManager) EditIssueComment(_ context.Context, owner, repo string, commentID int64, body string) error {
+	s.editCalls = append(s.editCalls, editCall{owner, repo, commentID, body})
+	return s.editErr
+}
+
+// TestCommentOnGenTestsPR_FirstTimeCreate 首次调用：PR 上无含锚点评论 → 走 Create。
+func TestCommentOnGenTestsPR_FirstTimeCreate(t *testing.T) {
+	mgr := &stubCommentManager{listReturn: nil}
+	n, err := NewGiteaNotifier(mgr)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	err = n.CommentOnGenTestsPR(context.Background(), "org", "repo", 42, "body-content")
+	if err != nil {
+		t.Fatalf("CommentOnGenTestsPR error: %v", err)
+	}
+	if len(mgr.createCalls) != 1 {
+		t.Fatalf("期望 Create 调用 1 次，实际 %d", len(mgr.createCalls))
+	}
+	if len(mgr.editCalls) != 0 {
+		t.Errorf("首次发送不应调用 Edit，实际 %d", len(mgr.editCalls))
+	}
+	got := mgr.createCalls[0]
+	if got.owner != "org" || got.repo != "repo" || got.index != 42 {
+		t.Errorf("Create 目标错误：%+v", got)
+	}
+	if !strings.HasPrefix(got.body, genTestsDoneAnchor) {
+		t.Errorf("Create body 未以锚点开头：%q", got.body)
+	}
+	if !strings.Contains(got.body, "body-content") {
+		t.Errorf("Create body 未包含原始内容：%q", got.body)
+	}
+}
+
+// TestCommentOnGenTestsPR_SecondTimeEdit 同 PR 已存在含锚点的旧评论 → 走 Edit 覆盖。
+func TestCommentOnGenTestsPR_SecondTimeEdit(t *testing.T) {
+	oldBody := genTestsDoneAnchor + "\n\n旧的评论内容（由上一次 gen_tests 任务写入）"
+	mgr := &stubCommentManager{
+		listReturn: []GiteaCommentInfo{
+			{ID: 99, Body: "人类评论，与本服务无关"},
+			{ID: 100, Body: oldBody},
+		},
+	}
+	n, err := NewGiteaNotifier(mgr)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	err = n.CommentOnGenTestsPR(context.Background(), "org", "repo", 42, "新的评论内容")
+	if err != nil {
+		t.Fatalf("CommentOnGenTestsPR error: %v", err)
+	}
+	if len(mgr.createCalls) != 0 {
+		t.Errorf("命中锚点不应调用 Create，实际 %d", len(mgr.createCalls))
+	}
+	if len(mgr.editCalls) != 1 {
+		t.Fatalf("期望 Edit 调用 1 次，实际 %d", len(mgr.editCalls))
+	}
+	got := mgr.editCalls[0]
+	if got.commentID != 100 {
+		t.Errorf("Edit 应命中 commentID=100（带锚点的那条），实际 %d", got.commentID)
+	}
+	if !strings.HasPrefix(got.body, genTestsDoneAnchor) {
+		t.Errorf("Edit body 未以锚点开头：%q", got.body)
+	}
+	if !strings.Contains(got.body, "新的评论内容") {
+		t.Errorf("Edit body 未包含新内容：%q", got.body)
+	}
+}
+
+// TestCommentOnGenTestsPR_NoAnchorMatch 其它 bot/人类评论不含锚点 → 不误命中，仍走 Create。
+func TestCommentOnGenTestsPR_NoAnchorMatch(t *testing.T) {
+	mgr := &stubCommentManager{
+		listReturn: []GiteaCommentInfo{
+			{ID: 1, Body: "这是一条人类评论，里面可能提到 gen_tests 关键词但无 HTML 锚点"},
+			{ID: 2, Body: "<!-- 其它工具锚点 --> 某个 CI 插件发的"},
+			{ID: 3, Body: "<!-- dtworkflow:review:done -->\n\nPR 评审完成"}, // 另一种锚点，不应被误命中
+		},
+	}
+	n, err := NewGiteaNotifier(mgr)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	err = n.CommentOnGenTestsPR(context.Background(), "org", "repo", 42, "body")
+	if err != nil {
+		t.Fatalf("CommentOnGenTestsPR error: %v", err)
+	}
+	if len(mgr.editCalls) != 0 {
+		t.Errorf("其它锚点不应误命中，实际调用 Edit %d 次", len(mgr.editCalls))
+	}
+	if len(mgr.createCalls) != 1 {
+		t.Errorf("应走 Create 路径，实际 %d", len(mgr.createCalls))
+	}
+}
+
+// TestCommentOnGenTestsPR_StrictAnchorSubstring 验证锚点匹配是严格子串（出现即命中，位置无关）。
+func TestCommentOnGenTestsPR_StrictAnchorSubstring(t *testing.T) {
+	// 锚点出现在评论中段也应命中（子串匹配）
+	embedded := "标题\n\n" + genTestsDoneAnchor + "\n\n正文"
+	mgr := &stubCommentManager{
+		listReturn: []GiteaCommentInfo{
+			{ID: 5, Body: embedded},
+		},
+	}
+	n, err := NewGiteaNotifier(mgr)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	err = n.CommentOnGenTestsPR(context.Background(), "org", "repo", 42, "body")
+	if err != nil {
+		t.Fatalf("CommentOnGenTestsPR error: %v", err)
+	}
+	if len(mgr.editCalls) != 1 || mgr.editCalls[0].commentID != 5 {
+		t.Errorf("子串锚点应命中 commentID=5，实际 edit=%+v", mgr.editCalls)
+	}
+}
+
+// TestCommentOnGenTestsPR_NarrowClientFallback 当 client 只实现 GiteaCommentCreator 时退化为仅 Create。
+func TestCommentOnGenTestsPR_NarrowClientFallback(t *testing.T) {
+	stub := &stubCommentCreator{}
+	n, err := NewGiteaNotifier(stub)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	err = n.CommentOnGenTestsPR(context.Background(), "org", "repo", 42, "body")
+	if err != nil {
+		t.Fatalf("CommentOnGenTestsPR error: %v", err)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("期望 Create 调用 1 次，实际 %d", len(stub.calls))
+	}
+	if !strings.HasPrefix(stub.calls[0].body, genTestsDoneAnchor) {
+		t.Errorf("fallback body 未以锚点开头：%q", stub.calls[0].body)
+	}
+}
+
+// TestCommentOnGenTestsPR_InvalidTarget 参数校验：owner/repo 空、prNumber <= 0。
+func TestCommentOnGenTestsPR_InvalidTarget(t *testing.T) {
+	mgr := &stubCommentManager{}
+	n, err := NewGiteaNotifier(mgr)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		owner  string
+		repo   string
+		prNum  int64
+	}{
+		{"空 owner", "", "repo", 1},
+		{"空 repo", "org", "", 1},
+		{"零 pr", "org", "repo", 0},
+		{"负 pr", "org", "repo", -1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := n.CommentOnGenTestsPR(context.Background(), c.owner, c.repo, c.prNum, "body")
+			if !errors.Is(err, ErrInvalidTarget) {
+				t.Errorf("期望 ErrInvalidTarget，得到 %v", err)
+			}
+		})
+	}
+}
+
+// TestCommentOnGenTestsPR_ListError List 调用失败应传播错误且不发评论。
+func TestCommentOnGenTestsPR_ListError(t *testing.T) {
+	listErr := errors.New("gitea API 5xx")
+	mgr := &stubCommentManager{listErr: listErr}
+	n, _ := NewGiteaNotifier(mgr)
+
+	err := n.CommentOnGenTestsPR(context.Background(), "org", "repo", 1, "body")
+	if err == nil {
+		t.Fatal("期望返回错误")
+	}
+	if !errors.Is(err, listErr) {
+		t.Errorf("错误链未包裹原始 list 错误：%v", err)
+	}
+	if !errors.Is(err, ErrSendFailed) {
+		t.Errorf("错误链未包裹 ErrSendFailed：%v", err)
+	}
+	if len(mgr.createCalls) != 0 || len(mgr.editCalls) != 0 {
+		t.Errorf("list 失败不应发评论")
+	}
+}
+
 // TestGiteaNotifier_Send_WithDiscardLogger 验证传入 discard logger 不影响正常发送（LOW-2）
 func TestGiteaNotifier_Send_WithDiscardLogger(t *testing.T) {
 	stub := &stubCommentCreator{}

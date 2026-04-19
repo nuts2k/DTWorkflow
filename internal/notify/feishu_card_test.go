@@ -365,6 +365,229 @@ func TestFormatFeishuCard_IssueAnalyzeStarted_Blue(t *testing.T) {
 	}
 }
 
+// --- M4.2 gen_tests 事件渲染测试 ---
+
+// TestFormatFeishuCard_GenTestsStarted_Blue 验证 gen_tests 开始事件为蓝色卡片且渲染基础字段。
+func TestFormatFeishuCard_GenTestsStarted_Blue(t *testing.T) {
+	msg := Message{
+		EventType: EventGenTestsStarted,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo"},
+		Title:     "ignored in favor of event mapping",
+		Body:      "正在为仓库 org/repo 生成测试",
+		Metadata: map[string]string{
+			MetaKeyModule:    "service/user",
+			MetaKeyFramework: "junit5",
+		},
+	}
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "blue" {
+		t.Errorf("template = %v, want blue (gen_tests started)", header["template"])
+	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "测试生成开始" {
+		t.Errorf("title = %q, want %q", title["content"], "测试生成开始")
+	}
+
+	elements := card["elements"].([]any)
+	md := elements[0].(map[string]any)["content"].(string)
+	if !strings.Contains(md, "**模块**: service/user") {
+		t.Errorf("markdown 缺少 module 字段: %s", md)
+	}
+	if !strings.Contains(md, "**框架**: junit5") {
+		t.Errorf("markdown 缺少 framework 字段: %s", md)
+	}
+}
+
+// TestFormatFeishuCard_GenTestsDone_GreenWithPR 验证 Done 事件为绿色卡片且包含 PR 按钮。
+func TestFormatFeishuCard_GenTestsDone_GreenWithPR(t *testing.T) {
+	msg := Message{
+		EventType: EventGenTestsDone,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo"},
+		Body:      "测试生成成功",
+		Metadata: map[string]string{
+			MetaKeyPRURL:          "https://gitea.example.com/org/repo/pulls/99",
+			MetaKeyModule:         "all",
+			MetaKeyFramework:      "vitest",
+			MetaKeyGeneratedCount: "12",
+			MetaKeyCommittedCount: "10",
+			MetaKeySkippedCount:   "2",
+		},
+	}
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "green" {
+		t.Errorf("template = %v, want green (gen_tests done)", header["template"])
+	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "测试生成完成" {
+		t.Errorf("title = %q, want %q", title["content"], "测试生成完成")
+	}
+
+	elements := card["elements"].([]any)
+	md := elements[0].(map[string]any)["content"].(string)
+	for _, want := range []string{
+		"**模块**: all",
+		"**框架**: vitest",
+		"**生成文件数**: 12",
+		"**提交文件数**: 10",
+		"**跳过数**: 2",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown 缺少字段 %q：%s", want, md)
+		}
+	}
+
+	if len(elements) < 2 {
+		t.Fatalf("Done 事件应包含 PR 按钮 action element")
+	}
+	action := elements[1].(map[string]any)
+	actions := action["actions"].([]any)
+	btn := actions[0].(map[string]any)
+	if btn["url"] != "https://gitea.example.com/org/repo/pulls/99" {
+		t.Errorf("按钮 URL = %v, want pr_url", btn["url"])
+	}
+	if btn["type"] != "primary" {
+		t.Errorf("按钮 type = %v, want primary", btn["type"])
+	}
+	btnText := btn["text"].(map[string]string)["content"]
+	if btnText != "查看测试 PR" {
+		t.Errorf("按钮文案 = %q, want %q", btnText, "查看测试 PR")
+	}
+}
+
+// TestFormatFeishuCard_GenTestsFailed_Infrastructure 验证 infrastructure 失败 → orange (Warning) + 对应提示。
+func TestFormatFeishuCard_GenTestsFailed_Infrastructure(t *testing.T) {
+	msg := Message{
+		EventType: EventGenTestsFailed,
+		Severity:  SeverityWarning,
+		Target:    Target{Owner: "org", Repo: "repo"},
+		Body:      "容器执行失败",
+		Metadata: map[string]string{
+			MetaKeyModule:          "service/user",
+			MetaKeyFailureCategory: "infrastructure",
+		},
+	}
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "orange" {
+		t.Errorf("template = %v, want orange (infrastructure → Warning)", header["template"])
+	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "测试生成失败（基础设施故障）" {
+		t.Errorf("title = %q", title["content"])
+	}
+
+	elements := card["elements"].([]any)
+	md := elements[0].(map[string]any)["content"].(string)
+	if !strings.Contains(md, "基础设施故障，建议重试或检查环境") {
+		t.Errorf("markdown 缺少 infrastructure 提示文案: %s", md)
+	}
+	if !strings.Contains(md, "**失败分类**: infrastructure") {
+		t.Errorf("markdown 缺少 failure_category 字段: %s", md)
+	}
+}
+
+// TestFormatFeishuCard_GenTestsFailed_TestQuality 验证 test_quality 失败 → blue (Info) + 带 generated_count 的提示。
+func TestFormatFeishuCard_GenTestsFailed_TestQuality(t *testing.T) {
+	msg := Message{
+		EventType: EventGenTestsFailed,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo"},
+		Metadata: map[string]string{
+			MetaKeyFailureCategory: "test_quality",
+			MetaKeyGeneratedCount:  "7",
+		},
+	}
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "blue" {
+		t.Errorf("template = %v, want blue (test_quality → Info)", header["template"])
+	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "测试生成未达标" {
+		t.Errorf("title = %q", title["content"])
+	}
+
+	elements := card["elements"].([]any)
+	md := elements[0].(map[string]any)["content"].(string)
+	if !strings.Contains(md, "测试质量未达标，已生成的 7 个测试可参考") {
+		t.Errorf("markdown 缺少 test_quality 提示（含 generated_count=7）: %s", md)
+	}
+}
+
+// TestFormatFeishuCard_GenTestsFailed_InfoInsufficient 验证 info_insufficient → blue (Info) + 补充信息提示。
+func TestFormatFeishuCard_GenTestsFailed_InfoInsufficient(t *testing.T) {
+	msg := Message{
+		EventType: EventGenTestsFailed,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo"},
+		Metadata: map[string]string{
+			MetaKeyFailureCategory: "info_insufficient",
+		},
+	}
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "blue" {
+		t.Errorf("template = %v, want blue (info_insufficient → Info)", header["template"])
+	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "测试生成信息不足" {
+		t.Errorf("title = %q", title["content"])
+	}
+
+	elements := card["elements"].([]any)
+	md := elements[0].(map[string]any)["content"].(string)
+	if !strings.Contains(md, "信息不足，请补充相关上下文后重试") {
+		t.Errorf("markdown 缺少 info_insufficient 提示: %s", md)
+	}
+}
+
+// TestFormatFeishuCard_GenTestsFailed_Fallback 验证 failure_category 为空或未知时走兜底 orange。
+func TestFormatFeishuCard_GenTestsFailed_Fallback(t *testing.T) {
+	msg := Message{
+		EventType: EventGenTestsFailed,
+		Severity:  SeverityWarning,
+		Target:    Target{Owner: "org", Repo: "repo"},
+		// failure_category 缺失
+	}
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+	card := result["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	if header["template"] != "orange" {
+		t.Errorf("template = %v, want orange (fallback)", header["template"])
+	}
+	title := header["title"].(map[string]string)
+	if title["content"] != "测试生成失败" {
+		t.Errorf("title = %q", title["content"])
+	}
+}
+
 // TestFormatFeishuCard_IssueFixStarted_Blue 验证修复开始事件应蓝色卡片 + "查看 Issue" 按钮。
 func TestFormatFeishuCard_IssueFixStarted_Blue(t *testing.T) {
 	msg := Message{
