@@ -4,6 +4,19 @@
 
 ## 待处理
 
+### TD-003: 飞书限流时"开始"通知静默丢失
+
+- **位置**: `internal/queue/processor.go` — `sendStartNotification`
+- **问题**: `sendStartNotification` 在飞书返回限流错误（code=11232 `frequency limited`）时仅记录日志，不重试、不降级。生产复现：2026-04-19 PR #114（wangzhiyong/sunrate）"评审开始"飞书卡片丢失，"评审完成"卡片正常送达。
+- **根因**: 飞书 Webhook bot 存在调用频率上限，短时间多 PR 并发评审时首通知即触碰限流；`sendCompletionNotification` 在任务执行完（约 4 分钟后）发出时限流窗口已过，因此完成通知成功。
+- **风险**: 用户无感知评审已启动，在高并发场景（多 PR 同时推送）下概率更高
+- **建议修复方向**:
+  - 方案 A：为 `sendStartNotification` 加指数退避重试（1s/2s/4s，最多 3 次）
+  - 方案 B：飞书限流时降级为 Gitea PR 评论（"⏳ 评审已开始，飞书通知受限流影响未送达"）
+- **记录时间**: 2026-04-20
+
+---
+
 ### TD-002: 三个 Issue 相关通知事件已定义但未使用
 
 - **位置**: `internal/notify/notifier.go`
