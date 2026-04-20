@@ -346,8 +346,11 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		record.CompletedAt = &completedAt
 	}
 
+	// 使用后台 context 写最终状态，避免 asynq ctx 超时后 DB 更新失败
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer persistCancel()
 	finalStatePersisted := true
-	if err := p.store.UpdateTask(ctx, record); err != nil {
+	if err := p.store.UpdateTask(persistCtx, record); err != nil {
 		finalStatePersisted = false
 		p.logger.ErrorContext(ctx, "更新任务最终状态失败",
 			"task_id", taskID,
@@ -520,7 +523,9 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 	return msg, true
 }
 
-// sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知
+// sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知。
+// 内部创建独立后台 context，与 asynq 任务 ctx 的生命周期解耦，
+// 确保即使 asynq ctx 已过期（如任务超时）仍能发出通知。
 func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult) {
 	if p.notifier == nil || record == nil {
 		return
@@ -529,7 +534,9 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 	if !ok {
 		return
 	}
-	if err := p.notifier.Send(ctx, msg); err != nil {
+	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer notifyCancel()
+	if err := p.notifier.Send(notifyCtx, msg); err != nil {
 		p.logger.ErrorContext(ctx, "发送任务完成通知失败",
 			"task_id", record.ID,
 			"status", record.Status,
@@ -822,7 +829,9 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 		"task_id", record.ID,
 		"error", runErr,
 	)
-	if err := p.store.UpdateTask(ctx, record); err != nil {
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer persistCancel()
+	if err := p.store.UpdateTask(persistCtx, record); err != nil {
 		p.logger.ErrorContext(ctx, "更新任务最终状态失败",
 			"task_id", record.ID,
 			"status", record.Status,
