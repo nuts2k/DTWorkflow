@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -164,14 +166,36 @@ type stubPRClient struct {
 	getRepoResult *gitea.Repository
 	getRepoErr    error
 
+	// createSeq（可选）：按调用顺序返回的结果序列。非空时优先于 createResult/createErr。
+	// 超出序列长度的调用回退到最后一项。
+	createSeq []stubPRResult
+
+	// 记录最后一次 CreatePullRequest 传入的 Title/Body，供测试断言。
+	lastCreateTitle string
+	lastCreateBody  string
+
 	// 幂等检查：listResult 为 ListRepoPullRequests 返回结果，listErr 为返回错误
 	listResult []*gitea.PullRequest
 	listErr    error
 	listCalls  int
 }
 
-func (s *stubPRClient) CreatePullRequest(_ context.Context, _, _ string, _ gitea.CreatePullRequestOption) (*gitea.PullRequest, *gitea.Response, error) {
+type stubPRResult struct {
+	pr  *gitea.PullRequest
+	err error
+}
+
+func (s *stubPRClient) CreatePullRequest(_ context.Context, _, _ string, opts gitea.CreatePullRequestOption) (*gitea.PullRequest, *gitea.Response, error) {
+	idx := s.createCalls
 	s.createCalls++
+	s.lastCreateTitle = opts.Title
+	s.lastCreateBody = opts.Body
+	if len(s.createSeq) > 0 {
+		if idx >= len(s.createSeq) {
+			idx = len(s.createSeq) - 1
+		}
+		return s.createSeq[idx].pr, nil, s.createSeq[idx].err
+	}
 	return s.createResult, nil, s.createErr
 }
 
@@ -1748,5 +1772,248 @@ func TestExecute_RefsTagsPrefix_ValidatesCorrectly(t *testing.T) {
 
 	if queriedTag != "v1.0.0" {
 		t.Errorf("validateRef 应剥离 refs/tags/ 前缀，实际查询 tag 名: %q", queriedTag)
+	}
+}
+
+// withShortBackoffs 测试辅助：临时把 createFixPR 的退避序列替换为近零延迟，
+// 避免单元测试被生产退避（10s / 20s ...）拖成几分钟。
+func withShortBackoffs(t *testing.T) {
+	t.Helper()
+	orig := prCreateBackoffs
+	prCreateBackoffs = []time.Duration{
+		1 * time.Millisecond,
+		1 * time.Millisecond,
+		1 * time.Millisecond,
+		1 * time.Millisecond,
+		1 * time.Millisecond,
+		1 * time.Millisecond,
+	}
+	t.Cleanup(func() { prCreateBackoffs = orig })
+}
+
+// TestCreateFixPR_RetryOn5xxUntilSuccess 验证 Gitea 返回 500 时按退避重试；
+// 第 N 次成功后不再继续重试，整体返回成功。场景对应 post-receive 索引延迟后 Gitea 恢复正常。
+func TestCreateFixPR_RetryOn5xxUntilSuccess(t *testing.T) {
+	withShortBackoffs(t)
+
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"all_passed\":true}}"}`
+	pool := &mockFixPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: envelope}}
+	prClient := &stubPRClient{
+		createSeq: []stubPRResult{
+			{err: &gitea.ErrorResponse{StatusCode: 500, Method: "POST", Path: "/pulls"}},
+			{err: &gitea.ErrorResponse{StatusCode: 500, Method: "POST", Path: "/pulls"}},
+			{pr: &gitea.PullRequest{Number: 42, HTMLURL: "https://g/o/r/pulls/42"}},
+		},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	result, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("执行应最终成功: %v", err)
+	}
+	if result.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, 期望 42", result.PRNumber)
+	}
+	if prClient.createCalls != 3 {
+		t.Errorf("CreatePullRequest 应调用 3 次（2 次 500 + 1 次成功），实际 %d", prClient.createCalls)
+	}
+}
+
+// TestCreateFixPR_NoRetryOn4xx 验证 4xx 返回立即失败不进入退避重试循环。
+func TestCreateFixPR_NoRetryOn4xx(t *testing.T) {
+	withShortBackoffs(t)
+
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"all_passed\":true}}"}`
+	pool := &mockFixPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: envelope}}
+	prClient := &stubPRClient{
+		createErr: &gitea.ErrorResponse{StatusCode: 422, Method: "POST", Path: "/pulls", Message: "validation failed"},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	_, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err == nil {
+		t.Fatal("422 应返回错误")
+	}
+	if prClient.createCalls != 1 {
+		t.Errorf("4xx 应只调用 1 次 CreatePullRequest，实际 %d", prClient.createCalls)
+	}
+}
+
+// TestCreateFixPR_DiagnosticInErrorMessage 验证穷尽重试后 error 带结构化诊断段。
+// 该段会最终落到 tasks.error（SQLite 持久化），容器销毁后仍可追查。
+func TestCreateFixPR_DiagnosticInErrorMessage(t *testing.T) {
+	withShortBackoffs(t)
+
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"all_passed\":true}}"}`
+	pool := &mockFixPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: envelope}}
+	prClient := &stubPRClient{
+		createErr: &gitea.ErrorResponse{StatusCode: 500, Method: "POST", Path: "/pulls"},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	_, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err == nil {
+		t.Fatal("穷尽退避后应返回错误")
+	}
+	msg := err.Error()
+	// 必含诊断段关键字段，便于事后从 SQLite tasks.error 列直接 grep 定位。
+	for _, needle := range []string{"[diag]", "attempts=", "title_len=", "body_len=",
+		"body_has_ctrl=", "last_status=500", "head=auto-fix/issue-15", "base=main"} {
+		if !strings.Contains(msg, needle) {
+			t.Errorf("error 应包含诊断字段 %q，实际: %s", needle, msg)
+		}
+	}
+	if prClient.createCalls != len(prCreateBackoffs)+1 {
+		t.Errorf("500 穷尽退避应调用 %d 次，实际 %d",
+			len(prCreateBackoffs)+1, prClient.createCalls)
+	}
+}
+
+// TestCreateFixPR_TitleTruncatedByRune 验证长中文标题按 rune 截断，
+// 不产生 UTF-8 半码点（该半码点在 MySQL utf8mb4 下会触发 Gitea 500）。
+func TestCreateFixPR_TitleTruncatedByRune(t *testing.T) {
+	withShortBackoffs(t)
+
+	longChinese := strings.Repeat("中", 500)
+
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: longChinese}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"all_passed\":true}}"}`
+	pool := &mockFixPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: envelope}}
+	prClient := &stubPRClient{
+		createResult: &gitea.PullRequest{Number: 1, HTMLURL: "https://x"},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	_, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	title := prClient.lastCreateTitle
+	if !utf8.ValidString(title) {
+		t.Errorf("title 含非法 UTF-8 序列: %q", title)
+	}
+	if strings.ContainsRune(title, '\uFFFD') {
+		t.Errorf("title 含 U+FFFD 替换符（意味着 rune 边界被破坏）: %q", title)
+	}
+}
+
+// TestTruncateByRune 纯函数测试。
+func TestTruncateByRune(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		maxRunes int
+		want     string
+	}{
+		{"short ascii", "abc", 10, "abc"},
+		{"exact ascii", "abc", 3, "abc"},
+		{"trunc ascii", "abcdef", 3, "abc"},
+		{"zero runes", "abc", 0, ""},
+		{"negative", "abc", -1, ""},
+		{"chinese no trunc", "中文", 3, "中文"},
+		{"chinese trunc", "中文测试", 2, "中文"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateByRune(tc.input, tc.maxRunes)
+			if got != tc.want {
+				t.Errorf("truncateByRune(%q, %d) = %q, want %q",
+					tc.input, tc.maxRunes, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("结果含非法 UTF-8: %q", got)
+			}
+		})
 	}
 }

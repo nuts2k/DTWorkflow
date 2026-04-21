@@ -8,11 +8,27 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
+
+// prCreateBackoffs 是 createFixPR 对 5xx 错误的重试退避序列（指数增长）。
+// 场景：Gitea `git push` 返回成功后，post-receive hook / PR 队列 / indexer
+// 仍在后台处理；期间 `POST /pulls` 会走到 "半状态" 的 git 仓库读取路径，
+// 返回 500 Internal Server Error（且错误体非 JSON，message 为空）。
+// 生产观测：延迟可达数分钟量级，故内层退避总窗口拉长到 ~10 分钟，
+// 减少将整个 fix_issue 任务重启（asynq 外层会重跑 Claude 容器）的代价。
+var prCreateBackoffs = []time.Duration{
+	10 * time.Second,
+	20 * time.Second,
+	40 * time.Second,
+	80 * time.Second,
+	160 * time.Second,
+	300 * time.Second,
+}
 
 // IssueClient 窄接口，仅暴露 fix 所需的 Gitea API。
 type IssueClient interface {
@@ -718,28 +734,38 @@ func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fi
 	}
 
 	title := fmt.Sprintf("fix: #%d %s", payload.IssueNumber, issueTitle)
-	// PR 标题 Gitea 上限约 255，安全截断
-	if len(title) > 250 {
-		title = title[:250]
-	}
+	// PR 标题 Gitea 上限约 255，按 rune 截断以保证 UTF-8 完整性（中文标题被按字节切断会
+	// 产生半码点，经 json.Marshal 替换为 U+FFFD 后，部分 Gitea + MySQL 配置在写库时
+	// 会触发 utf8 校验错误而返回 500）。
+	title = truncateByRune(title, 240)
 
 	body := FormatFixPRBody(fix, payload.IssueNumber, refKind, base)
 
-	// 对 5xx 错误最多重试 2 次（每次间隔 3s），规避 Gitea 在分支刚推送后的短暂索引延迟。
-	// 4xx 及非 HTTP 错误视为确定性失败，不重试。
-	const maxRetries = 3
+	// 5xx 错误指数退避重试；4xx 及非 HTTP 错误视为确定性失败，不重试。
 	var (
-		pr  *gitea.PullRequest
-		err error
+		pr         *gitea.PullRequest
+		err        error
+		lastStatus int
+		attempts   int
+		totalTries = len(prCreateBackoffs) + 1 // 首次 + 退避次数
 	)
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt < totalTries; attempt++ {
+		attempts = attempt + 1
 		if attempt > 0 {
-			s.logger.WarnContext(ctx, "创建 PR 失败，等待重试",
-				"attempt", attempt, "max_retries", maxRetries,
+			backoff := prCreateBackoffs[attempt-1]
+			s.logger.WarnContext(ctx, "创建 PR 失败，按退避等待重试",
+				"attempt", attempt, "max_attempts", totalTries,
+				"backoff", backoff,
 				"issue", payload.IssueNumber, "branch", fix.BranchName,
+				"last_status", lastStatus,
 				"error", err)
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				return 0, "", fmt.Errorf("等待重试时 ctx 取消: %w", ctx.Err())
+			case <-time.After(backoff):
+			}
 		}
+
 		pr, _, err = s.prClient.CreatePullRequest(ctx, payload.RepoOwner, payload.RepoName,
 			gitea.CreatePullRequestOption{
 				Head:  fix.BranchName,
@@ -750,22 +776,59 @@ func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fi
 		if err == nil {
 			break
 		}
-		// 仅对 5xx 错误重试
-		var errResp *gitea.ErrorResponse
-		if !errors.As(err, &errResp) || errResp.StatusCode < 500 {
+		lastStatus = extractStatusCode(err)
+		// 仅对 5xx 错误重试；4xx / 网络错误停止
+		if lastStatus < 500 {
 			break
 		}
 	}
 	if err != nil {
-		return 0, "", err
+		// 追加结构化诊断段：持久化到 tasks.error（SQLite，已 mount 到宿主），
+		// 即使容器销毁导致 stdout 日志丢失也能事后追查。
+		// 注意：不携带 title/body 原文，避免 prompt injection 内容回灌到飞书/Issue 评论。
+		diag := fmt.Sprintf(
+			" [diag] attempts=%d title_len=%d body_len=%d body_has_ctrl=%v last_status=%d head=%s base=%s",
+			attempts,
+			len(title),
+			len(body),
+			containsControlChars(body),
+			lastStatus,
+			fix.BranchName,
+			base,
+		)
+		return 0, "", fmt.Errorf("%w%s", err, diag)
 	}
 	if pr == nil {
 		return 0, "", fmt.Errorf("Gitea API 返回空 PR")
 	}
 	s.logger.InfoContext(ctx, "修复 PR 已创建",
 		"issue", payload.IssueNumber, "branch", fix.BranchName,
-		"pr_number", pr.Number, "pr_url", pr.HTMLURL)
+		"pr_number", pr.Number, "pr_url", pr.HTMLURL,
+		"attempts", attempts)
 	return pr.Number, pr.HTMLURL, nil
+}
+
+// truncateByRune 按 rune 截断字符串到最多 maxRunes 个 rune，保证 UTF-8 完整性。
+// maxRunes <= 0 时返回空串。
+func truncateByRune(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:maxRunes])
+}
+
+// extractStatusCode 从 error 里解出 Gitea 返回的 HTTP 状态码。
+// 非 *gitea.ErrorResponse 时返回 0。
+func extractStatusCode(err error) int {
+	var errResp *gitea.ErrorResponse
+	if errors.As(err, &errResp) {
+		return errResp.StatusCode
+	}
+	return 0
 }
 
 // findExistingFixPR 查询同 head 分支的 open PR；找到返回 (number, url, true)。

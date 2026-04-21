@@ -43,6 +43,41 @@ func truncateString(s string, maxBytes int) string {
 	return s[:maxBytes] + "…"
 }
 
+// stripControlChars 移除 ASCII 控制字符（\x00–\x08, \x0B, \x0C, \x0E–\x1F, \x7F），
+// 保留 \t (\x09) 和 \n (\x0A) 以维持格式。
+//
+// 背景：Gitea 1.21 及部分版本在 PR/Issue body 含 NUL 等控制字符时，
+// 写库阶段（MySQL utf8mb4 拒 NUL；Postgres TEXT 拒 \x00）会抛出
+// 未 JSON 化的内部错误 → HTTP 500 Internal Server Error（message 为空）。
+// Claude 输出偶发夹带控制字符，此处统一清洗做最终防线。
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t', r == '\n':
+			return r
+		case r < 0x20:
+			return -1
+		case r == 0x7F:
+			return -1
+		default:
+			return r
+		}
+	}, s)
+}
+
+// containsControlChars 判断字符串是否包含需要清洗的控制字符，仅用于诊断日志。
+func containsControlChars(s string) bool {
+	for _, r := range s {
+		if r == '\t' || r == '\n' {
+			continue
+		}
+		if r < 0x20 || r == 0x7F {
+			return true
+		}
+	}
+	return false
+}
+
 // FormatAnalysisComment 根据分析结果生成 Issue 评论 Markdown。
 // 三场景分支：正常 / 信息不足 / 降级。
 func FormatAnalysisComment(result *FixResult) string {
@@ -201,6 +236,9 @@ func FormatFixPRBody(fix *FixOutput, issueNum int64, refKind RefKind, baseBranch
 	sb.WriteString("🤖 由 DTWorkflow 自动生成")
 
 	body := sb.String()
+	// 清洗控制字符：Gitea 1.21 对含 NUL 等字符的 body 会 500（未 JSON 化的内部错误）。
+	// 清洗在截断之前做，避免清洗后长度变化触发二次截断判断偏差。
+	body = stripControlChars(body)
 	if len(body) > bodyMaxLen {
 		body = truncateString(body, bodyMaxLen)
 	}

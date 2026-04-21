@@ -335,3 +335,73 @@ func TestFormatAnalysisComment_NilCLIMeta(t *testing.T) {
 		t.Errorf("CLIMeta 为 nil 时耗时应为 0s，body=%s", body)
 	}
 }
+
+// TestStripControlChars 验证控制字符清洗：过滤 NUL/SOH/ESC 等，保留 \t \n 及多字节字符。
+func TestStripControlChars(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain ascii", "hello world", "hello world"},
+		{"keep tab", "a\tb", "a\tb"},
+		{"keep newline", "a\nb", "a\nb"},
+		{"strip NUL", "a\x00b", "ab"},
+		{"strip SOH", "a\x01b", "ab"},
+		{"strip ESC", "a\x1bb", "ab"},
+		{"strip DEL", "a\x7fb", "ab"},
+		{"keep chinese", "中文\tabc", "中文\tabc"},
+		{"mixed", "a\x00中\x01文\x7fb\n", "a中文b\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripControlChars(tc.in)
+			if got != tc.want {
+				t.Errorf("stripControlChars(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestContainsControlChars 验证诊断用的控制字符检测。
+func TestContainsControlChars(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"normal text", false},
+		{"中文 abc", false},
+		{"tab\tand\nnewline", false},
+		{"has NUL \x00 char", true},
+		{"has DEL \x7f char", true},
+		{"has ESC \x1b char", true},
+	}
+	for _, tc := range cases {
+		got := containsControlChars(tc.in)
+		if got != tc.want {
+			t.Errorf("containsControlChars(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestFormatFixPRBody_StripsControlChars 验证 PR body 在格式化阶段
+// 会被清洗掉控制字符，不会把 Claude 偶发的 NUL 等字符带到 Gitea 请求中。
+func TestFormatFixPRBody_StripsControlChars(t *testing.T) {
+	fix := &FixOutput{
+		Success:    true,
+		BranchName: "auto-fix/issue-1",
+		CommitSHA:  "abc",
+		Analysis:   "分析包含\x00NUL\x01和\x1bESC",
+		FixApproach: "方案含\x7fDEL",
+	}
+	body := FormatFixPRBody(fix, 1, RefKindBranch, "")
+	for _, bad := range []string{"\x00", "\x01", "\x1b", "\x7f"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("body 应剔除控制字符 %q，实际仍含: %q", bad, body)
+		}
+	}
+	// 保留正常文本
+	if !strings.Contains(body, "分析包含") || !strings.Contains(body, "方案含") {
+		t.Errorf("正常文本应保留: %s", body)
+	}
+}
