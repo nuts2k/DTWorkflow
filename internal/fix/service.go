@@ -267,8 +267,13 @@ func (s *Service) parseResult(output string) *FixResult {
 	jsonText := extractJSON(cliResp.Result)
 	var analysis AnalysisOutput
 	if err := json.Unmarshal([]byte(jsonText), &analysis); err != nil {
-		result.ParseError = fmt.Errorf("分析 JSON 解析失败: %w", err)
-		return result
+		// 兜底：尝试修复字符串值内的未转义双引号后重新解析
+		repaired := repairInnerQuotes(jsonText)
+		if err2 := json.Unmarshal([]byte(repaired), &analysis); err2 != nil {
+			result.ParseError = fmt.Errorf("分析 JSON 解析失败: %w", err)
+			return result
+		}
+		s.logger.Warn("分析 JSON 经修复后解析成功（原始输出含未转义双引号）")
 	}
 	result.Analysis = &analysis
 	return result
@@ -304,8 +309,13 @@ func (s *Service) parseFixResult(output string) *FixResult {
 	jsonText := extractJSON(cliResp.Result)
 	var fix FixOutput
 	if err := json.Unmarshal([]byte(jsonText), &fix); err != nil {
-		result.ParseError = fmt.Errorf("FixOutput JSON 解析失败: %w", err)
-		return result
+		// 兜底：尝试修复字符串值内的未转义双引号后重新解析
+		repaired := repairInnerQuotes(jsonText)
+		if err2 := json.Unmarshal([]byte(repaired), &fix); err2 != nil {
+			result.ParseError = fmt.Errorf("FixOutput JSON 解析失败: %w", err)
+			return result
+		}
+		s.logger.Warn("FixOutput JSON 经修复后解析成功（原始输出含未转义双引号）")
 	}
 
 	// 成功不变量校验：success=true 必须具备完整的可交付修复结果。

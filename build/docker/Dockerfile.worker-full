@@ -2,6 +2,9 @@
 # 用于 fix_issue 和 gen_tests 任务（需运行 mvn test / npm test）
 FROM dtworkflow-worker:latest AS base
 
+# 基础镜像以 USER worker 结尾，安装系统包需切回 root
+USER root
+
 # Java 工具链
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-17-jdk-headless \
@@ -17,3 +20,6 @@ RUN curl -fsSL https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/bi
 # 运行时通过环境变量重定向到 /workspace（避免 /tmp tmpfs 溢出）
 ENV MAVEN_OPTS="-Dmaven.repo.local=/workspace/.m2/repository"
 ENV GRADLE_USER_HOME="/workspace/.gradle"
+
+# 切回非 root 用户（与基础镜像保持一致）
+USER worker

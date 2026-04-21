@@ -69,6 +69,7 @@ const analysisJSONSchemaInstruction = `
 你必须将分析结果输出为如下结构的单个 JSON 对象。
 不要用 markdown 代码块包裹，只输出原始 JSON。
 **所有文本字段必须使用中文书写。**
+**严禁在 JSON 字符串值内使用未转义的英文双引号。引用词语时改用中文引号「」或转义形式 \"。**
 
 {
   "info_sufficient": true,
@@ -175,6 +176,7 @@ const fixJSONSchemaInstruction = `
 你必须将修复结果输出为如下结构的单个 JSON 对象。
 不要用 markdown 代码块包裹，只输出原始 JSON。
 **analysis / fix_approach / failure_reason 字段必须使用中文书写。**
+**严禁在 JSON 字符串值内使用未转义的英文双引号。引用词语时改用中文引号「」或转义形式 \"。**
 
 成功场景示例：
 {
@@ -382,6 +384,7 @@ func (s *Service) buildFixCommand() []string {
 	cmd := []string{
 		"claude", "-p", "-",
 		"--output-format", "json",
+		"--dangerously-skip-permissions",
 	}
 	if s.cfgProv != nil {
 		if model := s.cfgProv.GetClaudeModel(); model != "" {
@@ -423,6 +426,61 @@ func safeOutput(r *worker.ExecutionResult) string {
 		return ""
 	}
 	return r.Output
+}
+
+// repairInnerQuotes 修复 JSON 字符串值内的未转义英文双引号。
+// 场景：Claude 在中文文本中用 "word" 做引用标记，导致 JSON 解析失败。
+// 算法：状态机扫描；在字符串值内遇到 " 时，向后跳过空白查找第一个非空白字符；
+// 若为 JSON 结构字符（: , } ]），视为合法闭合引号；否则转义为 \"。
+func repairInnerQuotes(text string) string {
+	var buf strings.Builder
+	buf.Grow(len(text) + 16)
+	inString := false
+	i := 0
+	for i < len(text) {
+		ch := text[i]
+		// 处理转义序列：原样保留，跳过下一个字节
+		if inString && ch == '\\' && i+1 < len(text) {
+			buf.WriteByte(ch)
+			buf.WriteByte(text[i+1])
+			i += 2
+			continue
+		}
+		if ch == '"' {
+			if !inString {
+				inString = true
+				buf.WriteByte(ch)
+				i++
+				continue
+			}
+			// 在字符串内遇到 "：向后查找最近非空白字符
+			j := i + 1
+			for j < len(text) && isJSONWhitespace(text[j]) {
+				j++
+			}
+			if j >= len(text) || isJSONStructural(text[j]) {
+				// 合法闭合引号
+				buf.WriteByte(ch)
+				inString = false
+			} else {
+				// 内部未转义引号，转义
+				buf.WriteString(`\"`)
+			}
+			i++
+			continue
+		}
+		buf.WriteByte(ch)
+		i++
+	}
+	return buf.String()
+}
+
+func isJSONWhitespace(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+}
+
+func isJSONStructural(ch byte) bool {
+	return ch == ':' || ch == ',' || ch == '}' || ch == ']'
 }
 
 // truncate 按 rune 截断字符串，避免截断 UTF-8 多字节字符
