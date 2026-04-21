@@ -603,6 +603,20 @@ func TestExtractJSON(t *testing.T) {
 			input: "Here is my review:\n```json\n{\"key\":\"value\"}\n```",
 			want:  `{"key":"value"}`,
 		},
+		{
+			// 回归测试：suggestion 字段内含 ```java 代码块时，不应被误判为外层 code fence。
+			// 此前 extractJSON 会把 ``` 当作 code fence 入口，提取出 Java 代码而非 JSON，
+			// 导致 json.Unmarshal 失败（"invalid character '`' looking for beginning of value"）。
+			name: "JSON 内嵌 code fence（suggestion 字段含代码示例）",
+			input: `{"verdict":"comment","issues":[{"suggestion":"示例：\n` + "```java\n`method()` call\n```" + `"}]}`,
+			want:  `{"verdict":"comment","issues":[{"suggestion":"示例：\n` + "```java\n`method()` call\n```" + `"}]}`,
+		},
+		{
+			// suggestion 字段含 ```java 且 JSON 本身无外层 code fence
+			name:  "纯 JSON 含内嵌 java code block",
+			input: "{\"summary\":\"fix BCrypt\",\"verdict\":\"comment\",\"issues\":[{\"suggestion\":\"Use:\\n```java\\nBCrypt.checkpw(p, s);\\n```\"}]}",
+			want:  "{\"summary\":\"fix BCrypt\",\"verdict\":\"comment\",\"issues\":[{\"suggestion\":\"Use:\\n```java\\nBCrypt.checkpw(p, s);\\n```\"}]}",
+		},
 	}
 
 	for _, tc := range tests {

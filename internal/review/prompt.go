@@ -280,9 +280,12 @@ func safeOutput(r *worker.ExecutionResult) string {
 // 包括 code fence 前有前导文本的情况（如 "Here is my review:\n```json\n..."）。
 func extractJSON(text string) string {
 	text = strings.TrimSpace(text)
-	// 查找 code fence 起始位置（可能不在开头）
+	// 只有当 ``` 出现在第一个 '{' 之前时才视为外层 code fence。
+	// 若 ``` 出现在 JSON 内部（如 suggestion 字段的代码示例），不应进入此分支，
+	// 否则会把代码示例内容误作 JSON 解析，导致 "invalid character '`'" 等错误。
 	fenceStart := strings.Index(text, "```")
-	if fenceStart >= 0 {
+	jsonStart := strings.Index(text, "{")
+	if fenceStart >= 0 && (jsonStart < 0 || fenceStart < jsonStart) {
 		// 从 fence 开始处理
 		fenced := text[fenceStart:]
 		// 跳过 ``` 后的语言标识行（如 ```json）
@@ -459,6 +462,12 @@ func (s *Service) buildPrompt(pr *gitea.PullRequest, files []*gitea.ChangedFile,
 	b.WriteString("- Do NOT attempt to submit reviews, comments, or status updates to Gitea or any other platform\n")
 	b.WriteString("- Do NOT run curl, wget, python requests, or any other network commands\n")
 	b.WriteString("- Your ONLY task is to analyze the code and output the JSON result to stdout\n\n")
+
+	// 0.5 Git 环境说明：避免 Claude 浪费 turns 尝试 git fetch
+	b.WriteString("GIT ENVIRONMENT: The repository is already cloned with the PR branch checked out.\n")
+	b.WriteString(fmt.Sprintf("The base branch '%s' has also been fetched locally.\n", pr.Base.Ref))
+	b.WriteString(fmt.Sprintf("Use 'git diff origin/%s...HEAD' to see all changes in this PR.\n", pr.Base.Ref))
+	b.WriteString("Do NOT run 'git fetch' or 'git pull' — remote access is unavailable by design.\n\n")
 
 	// 1. 任务上下文
 	b.WriteString(fmt.Sprintf("You are reviewing PR #%d in repository %s.\n", pr.Number, pr.Base.Repo.FullName))
