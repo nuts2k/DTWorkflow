@@ -727,7 +727,7 @@ func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fi
 
 	// 对 5xx 错误最多重试 2 次（每次间隔 3s），规避 Gitea 在分支刚推送后的短暂索引延迟。
 	// 4xx 及非 HTTP 错误视为确定性失败，不重试。
-	const maxRetries = 2
+	const maxRetries = 3
 	var (
 		pr  *gitea.PullRequest
 		err error
@@ -738,7 +738,7 @@ func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fi
 				"attempt", attempt, "max_retries", maxRetries,
 				"issue", payload.IssueNumber, "branch", fix.BranchName,
 				"error", err)
-			time.Sleep(3 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 		pr, _, err = s.prClient.CreatePullRequest(ctx, payload.RepoOwner, payload.RepoName,
 			gitea.CreatePullRequestOption{
