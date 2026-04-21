@@ -59,7 +59,8 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 	}
 	if cfg.AppCfg != nil {
 		pcfg.GiteaInsecureSkipVerify = cfg.AppCfg.Gitea.InsecureSkipVerify
-		pcfg.ImageFull = cfg.AppCfg.Worker.ImageFull // M3.4
+		pcfg.ImageFull = cfg.AppCfg.Worker.ImageFull               // M3.4
+		pcfg.MavenCacheVolume = cfg.AppCfg.Worker.MavenCacheVolume // M3.5
 	}
 	return pcfg
 }

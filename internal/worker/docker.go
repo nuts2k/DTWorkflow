@@ -68,6 +68,7 @@ type ContainerConfig struct {
 	NetworkName string            // Docker 网络名称
 	WorkDir     string            // 容器内工作目录
 	OpenStdin   bool              // 是否开启 stdin（配合 stdin 数据传入使用）
+	Binds       []string          // 额外挂载（bind mount 或 named volume，格式：src:dst 或 volume-name:dst）
 }
 
 // ContainerLogs 保存解复用后的容器 stdout/stderr。
@@ -173,6 +174,7 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 			"/tmp":       "rw,noexec,nosuid,size=256m,mode=1777",
 			"/workspace": "rw,nosuid,size=2g,mode=1777",
 		},
+		Binds: cfg.Binds,
 		Resources: container.Resources{
 			NanoCPUs:  nanoCPUs,
 			Memory:    memBytes,

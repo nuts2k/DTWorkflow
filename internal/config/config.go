@@ -76,8 +76,9 @@ type WorkerConfig struct {
 	Concurrency int           `mapstructure:"concurrency"`
 	Timeout     time.Duration `mapstructure:"timeout"`
 
-	Image       string `mapstructure:"image"`
-	ImageFull   string `mapstructure:"image_full"`     // M3.4: 执行镜像（可选）
+	Image            string `mapstructure:"image"`
+	ImageFull        string `mapstructure:"image_full"`        // M3.4: 执行镜像（可选）
+	MavenCacheVolume string `mapstructure:"maven_cache_volume"` // M3.5: Maven 缓存 named volume，挂载到 fix/gen_tests 容器
 	CPULimit    string `mapstructure:"cpu_limit"`
 	MemoryLimit string `mapstructure:"memory_limit"`
 	NetworkName string `mapstructure:"network_name"`

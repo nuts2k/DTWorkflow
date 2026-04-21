@@ -166,6 +166,7 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 		NetworkName: p.config.NetworkName,
 		WorkDir:     p.config.WorkDir,
 		OpenStdin:   useStdin,
+		Binds:       p.buildBinds(payload.TaskType),
 	}
 
 	// 确保 Docker 网络存在（支持失败后重试）
@@ -578,6 +579,20 @@ func (p *Pool) Stats() PoolStats {
 		Active:    int(p.active.Load()),
 		Completed: p.total.Load(),
 	}
+}
+
+// buildBinds 根据任务类型构建额外的容器挂载列表。
+// fix_issue / gen_tests 使用 ImageFull 时，若配置了 MavenCacheVolume，
+// 将其挂载到 /workspace/.m2/repository，实现跨容器 Maven 依赖缓存复用。
+func (p *Pool) buildBinds(taskType model.TaskType) []string {
+	if p.config.MavenCacheVolume == "" || p.config.ImageFull == "" {
+		return nil
+	}
+	switch taskType {
+	case model.TaskTypeFixIssue, model.TaskTypeGenTests:
+		return []string{p.config.MavenCacheVolume + ":/workspace/.m2/repository"}
+	}
+	return nil
 }
 
 // resolveImage 根据任务类型选择合适的容器镜像。
