@@ -133,6 +133,36 @@ run_stdout_case() {
   fi
 }
 
+run_build_cache_case() {
+  local desc="$1" task_type="$2"
+  local repo_dir="${TMPDIR}/repo-cache-${task_type}-$$"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  local stdout_file="${TMPDIR}/cache-${task_type}.out"
+  local stderr_file="${TMPDIR}/cache-${task_type}.err"
+
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="${task_type}" \
+  ISSUE_REF="feature/auth" \
+  bash "${ENTRYPOINT}" bash -lc 'printf "%s\n" "$MAVEN_OPTS"; printf "%s\n" "$GRADLE_USER_HOME"; command -v mvn' >"${stdout_file}" 2>"${stderr_file}" || true
+
+  if grep -qx -- '-Dmaven.repo.local=/workspace/.m2/repository' "${stdout_file}" &&
+     grep -qx -- '/workspace/.gradle' "${stdout_file}" &&
+     grep -qx -- '/tmp/bin/mvn' "${stdout_file}"; then
+    echo "PASS: ${desc} — build cache redirect enabled"
+    (( PASS++ ))
+  else
+    echo "FAIL: ${desc} — expected build cache env/wrapper in stdout:"
+    cat "${stdout_file}"
+    (( FAIL++ ))
+  fi
+}
+
 echo "=== Entrypoint Behavior Tests ==="
 
 run_case "fix_issue with ISSUE_REF=feature/auth" "fix_issue" "feature/auth" "yes"
@@ -140,6 +170,8 @@ run_case "fix_issue with empty ISSUE_REF" "fix_issue" "" "no"
 run_case "analyze_issue with ISSUE_REF=feature/auth" "analyze_issue" "feature/auth" "yes"
 run_stdout_case "fix_issue should not leak git output to stdout" "fix_issue"
 run_stdout_case "analyze_issue should not leak git output to stdout" "analyze_issue"
+run_build_cache_case "fix_issue should enable build cache redirect" "fix_issue"
+run_build_cache_case "gen_tests should enable build cache redirect" "gen_tests"
 
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"

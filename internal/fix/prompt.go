@@ -1,6 +1,8 @@
 package fix
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -428,59 +430,194 @@ func safeOutput(r *worker.ExecutionResult) string {
 	return r.Output
 }
 
+const maxInnerQuoteRepairs = 16
+
+type jsonScanPhase uint8
+
+const (
+	jsonScanValue jsonScanPhase = iota
+	jsonScanEnd
+	jsonScanObjectKeyOrEnd
+	jsonScanObjectColon
+	jsonScanObjectValue
+	jsonScanObjectCommaOrEnd
+	jsonScanArrayValueOrEnd
+	jsonScanArrayCommaOrEnd
+)
+
+type jsonContainerKind uint8
+
+const (
+	jsonContainerObject jsonContainerKind = iota
+	jsonContainerArray
+)
+
+type jsonStringRole uint8
+
+const (
+	jsonStringKey jsonStringRole = iota
+	jsonStringValue
+)
+
 // repairInnerQuotes 修复 JSON 字符串值内的未转义英文双引号。
-// 场景：Claude 在中文文本中用 "word" 做引用标记，导致 JSON 解析失败。
-// 算法：状态机扫描；在字符串值内遇到 " 时，向后跳过空白查找第一个非空白字符；
-// 若为 JSON 结构字符（: , } ]），视为合法闭合引号；否则转义为 \"。
+// 做法：借助 encoding/json 的语法错误 offset，回溯到出错前最近一次“值字符串闭合引号”，
+// 将其转义后重试。这样可避免把 value 中的 ":" / "," 误判为合法闭合后的结构字符。
 func repairInnerQuotes(text string) string {
-	var buf strings.Builder
-	buf.Grow(len(text) + 16)
-	inString := false
-	i := 0
-	for i < len(text) {
-		ch := text[i]
-		// 处理转义序列：原样保留，跳过下一个字节
-		if inString && ch == '\\' && i+1 < len(text) {
-			buf.WriteByte(ch)
-			buf.WriteByte(text[i+1])
-			i += 2
-			continue
+	repaired := text
+	for attempt := 0; attempt < maxInnerQuoteRepairs; attempt++ {
+		if json.Valid([]byte(repaired)) {
+			return repaired
 		}
-		if ch == '"' {
-			if !inString {
-				inString = true
-				buf.WriteByte(ch)
-				i++
-				continue
-			}
-			// 在字符串内遇到 "：向后查找最近非空白字符
-			j := i + 1
-			for j < len(text) && isJSONWhitespace(text[j]) {
-				j++
-			}
-			if j >= len(text) || isJSONStructural(text[j]) {
-				// 合法闭合引号
-				buf.WriteByte(ch)
-				inString = false
-			} else {
-				// 内部未转义引号，转义
-				buf.WriteString(`\"`)
-			}
+		quoteIdx, ok := findRepairQuote(repaired)
+		if !ok {
+			return repaired
+		}
+		repaired = repaired[:quoteIdx] + `\` + repaired[quoteIdx:]
+	}
+	return repaired
+}
+
+func findRepairQuote(text string) (int, bool) {
+	var raw json.RawMessage
+	err := json.Unmarshal([]byte(text), &raw)
+	if err == nil {
+		return -1, false
+	}
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		return -1, false
+	}
+	limit := int(syntaxErr.Offset) - 1
+	if limit <= 0 {
+		return -1, false
+	}
+	return findLastValueQuoteBefore(text, limit)
+}
+
+func findLastValueQuoteBefore(text string, limit int) (int, bool) {
+	if limit > len(text) {
+		limit = len(text)
+	}
+	phase := jsonScanValue
+	stack := make([]jsonContainerKind, 0, 8)
+	lastQuote := -1
+
+	for i := 0; i < limit; {
+		ch := text[i]
+		if isJSONWhitespace(ch) {
 			i++
 			continue
 		}
-		buf.WriteByte(ch)
-		i++
+
+		switch ch {
+		case '{':
+			if phaseExpectsValue(phase) {
+				stack = append(stack, jsonContainerObject)
+				phase = jsonScanObjectKeyOrEnd
+			}
+			i++
+		case '[':
+			if phaseExpectsValue(phase) {
+				stack = append(stack, jsonContainerArray)
+				phase = jsonScanArrayValueOrEnd
+			}
+			i++
+		case '}':
+			if len(stack) > 0 && stack[len(stack)-1] == jsonContainerObject &&
+				(phase == jsonScanObjectKeyOrEnd || phase == jsonScanObjectCommaOrEnd) {
+				stack = stack[:len(stack)-1]
+				phase = afterValuePhase(stack)
+			}
+			i++
+		case ']':
+			if len(stack) > 0 && stack[len(stack)-1] == jsonContainerArray &&
+				(phase == jsonScanArrayValueOrEnd || phase == jsonScanArrayCommaOrEnd) {
+				stack = stack[:len(stack)-1]
+				phase = afterValuePhase(stack)
+			}
+			i++
+		case ':':
+			if phase == jsonScanObjectColon {
+				phase = jsonScanObjectValue
+			}
+			i++
+		case ',':
+			if len(stack) > 0 {
+				switch stack[len(stack)-1] {
+				case jsonContainerObject:
+					if phase == jsonScanObjectCommaOrEnd {
+						phase = jsonScanObjectKeyOrEnd
+					}
+				case jsonContainerArray:
+					if phase == jsonScanArrayCommaOrEnd {
+						phase = jsonScanArrayValueOrEnd
+					}
+				}
+			}
+			i++
+		case '"':
+			role := jsonStringValue
+			if phase == jsonScanObjectKeyOrEnd {
+				role = jsonStringKey
+			}
+			i++
+			for i < limit {
+				if text[i] == '\\' && i+1 < limit {
+					i += 2
+					continue
+				}
+				if text[i] == '"' {
+					if role == jsonStringValue {
+						lastQuote = i
+						phase = afterValuePhase(stack)
+					} else {
+						phase = jsonScanObjectColon
+					}
+					i++
+					break
+				}
+				i++
+			}
+		default:
+			if !phaseExpectsValue(phase) {
+				i++
+				continue
+			}
+			start := i
+			for i < limit {
+				ch = text[i]
+				if isJSONWhitespace(ch) || ch == ',' || ch == '}' || ch == ']' {
+					break
+				}
+				i++
+			}
+			if i > start {
+				phase = afterValuePhase(stack)
+				continue
+			}
+			i++
+		}
 	}
-	return buf.String()
+
+	return lastQuote, lastQuote >= 0
+}
+
+func phaseExpectsValue(phase jsonScanPhase) bool {
+	return phase == jsonScanValue || phase == jsonScanObjectValue || phase == jsonScanArrayValueOrEnd
+}
+
+func afterValuePhase(stack []jsonContainerKind) jsonScanPhase {
+	if len(stack) == 0 {
+		return jsonScanEnd
+	}
+	if stack[len(stack)-1] == jsonContainerObject {
+		return jsonScanObjectCommaOrEnd
+	}
+	return jsonScanArrayCommaOrEnd
 }
 
 func isJSONWhitespace(ch byte) bool {
 	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
-}
-
-func isJSONStructural(ch byte) bool {
-	return ch == ':' || ch == ',' || ch == '}' || ch == ']'
 }
 
 // truncate 按 rune 截断字符串，避免截断 UTF-8 多字节字符

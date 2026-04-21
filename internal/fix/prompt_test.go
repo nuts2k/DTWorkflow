@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -408,5 +409,40 @@ func TestBuildFixPrompt_FourSegments(t *testing.T) {
 	// 不应含只读模式独有文本
 	if strings.Contains(prompt, "READ-ONLY code analysis mode") {
 		t.Error("fix prompt 不应包含 READ-ONLY 只读约束（修复需要写权限）")
+	}
+}
+
+func TestRepairInnerQuotes_ColonInStringValue(t *testing.T) {
+	input := `{"analysis":"建议检查 "foo": bar 配置","fix_suggestion":"补充校验"}`
+	repaired := repairInnerQuotes(input)
+	if !json.Valid([]byte(repaired)) {
+		t.Fatalf("repairInnerQuotes 后应为合法 JSON，got: %s", repaired)
+	}
+	var payload struct {
+		Analysis      string `json:"analysis"`
+		FixSuggestion string `json:"fix_suggestion"`
+	}
+	if err := json.Unmarshal([]byte(repaired), &payload); err != nil {
+		t.Fatalf("json.Unmarshal 失败: %v", err)
+	}
+	if payload.Analysis != `建议检查 "foo": bar 配置` {
+		t.Fatalf("analysis = %q, want %q", payload.Analysis, `建议检查 "foo": bar 配置`)
+	}
+}
+
+func TestRepairInnerQuotes_MultipleQuotedSegmentsBeforeComma(t *testing.T) {
+	input := `{"analysis":"日志提示 "hello", ok","fix_suggestion":"继续观察"}`
+	repaired := repairInnerQuotes(input)
+	if !json.Valid([]byte(repaired)) {
+		t.Fatalf("repairInnerQuotes 后应为合法 JSON，got: %s", repaired)
+	}
+	var payload struct {
+		Analysis string `json:"analysis"`
+	}
+	if err := json.Unmarshal([]byte(repaired), &payload); err != nil {
+		t.Fatalf("json.Unmarshal 失败: %v", err)
+	}
+	if payload.Analysis != `日志提示 "hello", ok` {
+		t.Fatalf("analysis = %q, want %q", payload.Analysis, `日志提示 "hello", ok`)
 	}
 }

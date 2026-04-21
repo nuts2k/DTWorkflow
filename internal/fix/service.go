@@ -290,7 +290,9 @@ func (s *Service) parseResult(output string) *FixResult {
 			result.ParseError = fmt.Errorf("分析 JSON 解析失败: %w", err)
 			return result
 		}
-		s.logger.Warn("分析 JSON 经修复后解析成功（原始输出含未转义双引号）")
+		if s.logger != nil {
+			s.logger.Warn("分析 JSON 经修复后解析成功（原始输出含未转义双引号）")
+		}
 	}
 	result.Analysis = &analysis
 	return result
@@ -332,7 +334,9 @@ func (s *Service) parseFixResult(output string) *FixResult {
 			result.ParseError = fmt.Errorf("FixOutput JSON 解析失败: %w", err)
 			return result
 		}
-		s.logger.Warn("FixOutput JSON 经修复后解析成功（原始输出含未转义双引号）")
+		if s.logger != nil {
+			s.logger.Warn("FixOutput JSON 经修复后解析成功（原始输出含未转义双引号）")
+		}
 	}
 
 	// 成功不变量校验：success=true 必须具备完整的可交付修复结果。
@@ -777,6 +781,12 @@ func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fi
 			break
 		}
 		lastStatus = extractStatusCode(err)
+		if num, url, ok := s.findExistingFixPR(ctx, payload.RepoOwner, payload.RepoName, fix.BranchName); ok {
+			s.logger.WarnContext(ctx, "创建 PR 返回错误，但检测到已存在 PR，转为复用",
+				"issue", payload.IssueNumber, "branch", fix.BranchName,
+				"pr_number", num, "last_status", lastStatus, "error", err)
+			return num, url, nil
+		}
 		// 仅对 5xx 错误重试；4xx / 网络错误停止
 		if lastStatus < 500 {
 			break

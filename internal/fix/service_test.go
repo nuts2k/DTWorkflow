@@ -170,6 +170,10 @@ type stubPRClient struct {
 	// 超出序列长度的调用回退到最后一项。
 	createSeq []stubPRResult
 
+	// listSeq（可选）：按调用顺序返回的 PR 查询结果序列。非空时优先于 listResult/listErr。
+	// 超出序列长度的调用回退到最后一项。
+	listSeq []stubPRListResult
+
 	// 记录最后一次 CreatePullRequest 传入的 Title/Body，供测试断言。
 	lastCreateTitle string
 	lastCreateBody  string
@@ -182,6 +186,11 @@ type stubPRClient struct {
 
 type stubPRResult struct {
 	pr  *gitea.PullRequest
+	err error
+}
+
+type stubPRListResult struct {
+	prs []*gitea.PullRequest
 	err error
 }
 
@@ -211,7 +220,14 @@ func (s *stubPRClient) GetRepo(_ context.Context, _, _ string) (*gitea.Repositor
 
 func (s *stubPRClient) ListRepoPullRequests(_ context.Context, _, _ string,
 	_ gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error) {
+	idx := s.listCalls
 	s.listCalls++
+	if len(s.listSeq) > 0 {
+		if idx >= len(s.listSeq) {
+			idx = len(s.listSeq) - 1
+		}
+		return s.listSeq[idx].prs, nil, s.listSeq[idx].err
+	}
 	return s.listResult, nil, s.listErr
 }
 
@@ -677,6 +693,24 @@ func TestParseResult_Success(t *testing.T) {
 	}
 	if result.Analysis.Confidence != "high" {
 		t.Errorf("Confidence = %q, want %q", result.Analysis.Confidence, "high")
+	}
+}
+
+func TestParseResult_RepairsInnerQuotesWithColon(t *testing.T) {
+	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
+	cliJSON := `{
+		"type": "result",
+		"subtype": "success",
+		"is_error": false,
+		"result": "{\"info_sufficient\":true,\"root_cause\":{\"file\":\"main.go\",\"function\":\"handler\",\"start_line\":42,\"end_line\":55,\"description\":\"空指针引用\"},\"analysis\":\"建议检查 \"foo\": bar 配置\",\"fix_suggestion\":\"补充校验\",\"confidence\":\"high\",\"related_files\":[\"util.go\"]}"
+	}`
+
+	result := svc.parseResult(cliJSON)
+	if result.ParseError != nil {
+		t.Fatalf("ParseError 应为 nil，实际: %v", result.ParseError)
+	}
+	if got := result.Analysis.Analysis; got != `建议检查 "foo": bar 配置` {
+		t.Fatalf("Analysis = %q, want %q", got, `建议检查 "foo": bar 配置`)
 	}
 }
 
@@ -1560,6 +1594,21 @@ func TestService_ParseFixResult_Success(t *testing.T) {
 	}
 }
 
+func TestService_ParseFixResult_RepairsMultipleInnerQuotes(t *testing.T) {
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc123\",\"modified_files\":[\"a.java\"],\"test_results\":{\"passed\":5,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"日志提示 \"hello\", ok\",\"fix_approach\":\"建议保留 \\\"safe\\\" 模式\"}"}`
+	s := &Service{}
+	result := s.parseFixResult(envelope)
+	if result.ParseError != nil {
+		t.Fatalf("解析不应失败: %v", result.ParseError)
+	}
+	if result.Fix == nil {
+		t.Fatal("Fix 不应为 nil")
+	}
+	if result.Fix.Analysis != `日志提示 "hello", ok` {
+		t.Fatalf("Analysis = %q, want %q", result.Fix.Analysis, `日志提示 "hello", ok`)
+	}
+}
+
 func TestService_ParseFixResult_SuccessInvariantViolation(t *testing.T) {
 	// success=true 但 branch_name 为空 → 视为解析异常
 	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"analysis\":\"x\"}"}`
@@ -1935,6 +1984,64 @@ func TestCreateFixPR_DiagnosticInErrorMessage(t *testing.T) {
 	if prClient.createCalls != len(prCreateBackoffs)+1 {
 		t.Errorf("500 穷尽退避应调用 %d 次，实际 %d",
 			len(prCreateBackoffs)+1, prClient.createCalls)
+	}
+}
+
+// TestCreateFixPR_ReuseExistingPROnAlreadyExists 验证 CreatePullRequest 返回重复/校验错误后，
+// 会再次查询同 head 分支的 open PR 并直接复用，避免误报“PR 创建失败”。
+func TestCreateFixPR_ReuseExistingPROnAlreadyExists(t *testing.T) {
+	withShortBackoffs(t)
+
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"all_passed\":true}}"}`
+	pool := &mockFixPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: envelope}}
+	prClient := &stubPRClient{
+		createErr: &gitea.ErrorResponse{StatusCode: 422, Method: "POST", Path: "/pulls", Message: "pull request already exists"},
+		listSeq: []stubPRListResult{
+			{prs: nil},
+			{prs: []*gitea.PullRequest{{
+				Number:  42,
+				HTMLURL: "https://g/o/r/pulls/42",
+				Head:    &gitea.PRBranch{Ref: "auto-fix/issue-15"},
+			}}},
+		},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	result, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("应复用已存在 PR，实际返回错误: %v", err)
+	}
+	if result.PRNumber != 42 {
+		t.Fatalf("PRNumber = %d, want 42", result.PRNumber)
+	}
+	if prClient.createCalls != 1 {
+		t.Fatalf("CreatePullRequest 应只调用 1 次，实际 %d", prClient.createCalls)
+	}
+	if prClient.listCalls != 2 {
+		t.Fatalf("ListRepoPullRequests 应调用 2 次（预检查 + 失败后复查），实际 %d", prClient.listCalls)
 	}
 }
 
