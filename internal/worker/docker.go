@@ -191,6 +191,21 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 
 	resp, err := d.cli.ContainerCreate(ctx, containerCfg, hostCfg, networkCfg, nil, cfg.Name)
 	if err != nil {
+		if errdefs.IsConflict(err) {
+			// 同名容器已存在（dtworkflow 重启或重复投递场景）：强制删除后重建。
+			// 运行中的孤儿容器（前一实例遗留）也在此被清理。
+			if rmErr := d.cli.ContainerRemove(ctx, cfg.Name, container.RemoveOptions{
+				Force:         true,
+				RemoveVolumes: true,
+			}); rmErr != nil && !client.IsErrNotFound(rmErr) {
+				return "", fmt.Errorf("清理冲突容器 %s 失败: %w", cfg.Name, rmErr)
+			}
+			resp, err = d.cli.ContainerCreate(ctx, containerCfg, hostCfg, networkCfg, nil, cfg.Name)
+			if err != nil {
+				return "", fmt.Errorf("创建容器 %s 失败（重试后）: %w", cfg.Name, err)
+			}
+			return resp.ID, nil
+		}
 		return "", fmt.Errorf("创建容器 %s 失败: %w", cfg.Name, err)
 	}
 	return resp.ID, nil
