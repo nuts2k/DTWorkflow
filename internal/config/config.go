@@ -250,6 +250,8 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("worker.concurrency", 3)
 		m.v.SetDefault("worker.timeout", 30*time.Minute)
 		m.v.SetDefault("worker.image", "dtworkflow-worker:1.0")
+		m.v.SetDefault("worker.image_full", "")
+		m.v.SetDefault("worker.maven_cache_volume", "")
 		m.v.SetDefault("worker.cpu_limit", "2.0")
 		m.v.SetDefault("worker.memory_limit", "4g")
 		m.v.SetDefault("worker.network_name", "dtworkflow-net")
