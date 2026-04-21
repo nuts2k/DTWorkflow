@@ -211,6 +211,30 @@ func TestExtractJSON_NakedWithLeadingText(t *testing.T) {
 	}
 }
 
+func TestExtractJSON_EmbeddedCodeFenceInJSONString(t *testing.T) {
+	input := `{"success":false,"info_sufficient":true,"analysis":"建议检查如下示例：\n` +
+		"```java\nservice.call();\n```" +
+		`","failure_reason":"测试未通过"}`
+	got := extractJSON(input)
+	if got != input {
+		t.Errorf("extractJSON = %q, want %q", got, input)
+	}
+}
+
+func TestExtractJSON_EmbeddedCodeFenceWithOuterLeadingText(t *testing.T) {
+	input := "修复结果如下：\n" +
+		`{"success":false,"info_sufficient":true,"fix_approach":"可参考：\n` +
+		"```bash\ngo test ./...\n```" +
+		`","failure_reason":"仍有失败用例"}`
+	want := `{"success":false,"info_sufficient":true,"fix_approach":"可参考：\n` +
+		"```bash\ngo test ./...\n```" +
+		`","failure_reason":"仍有失败用例"}`
+	got := extractJSON(input)
+	if got != want {
+		t.Errorf("extractJSON = %q, want %q", got, want)
+	}
+}
+
 func TestBuildCommand_Default(t *testing.T) {
 	svc := NewService(&mockIssueClient{}, &mockFixPoolRunner{})
 	cmd := svc.buildCommand()

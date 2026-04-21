@@ -403,7 +403,11 @@ func (s *Service) buildFixCommand() []string {
 func extractJSON(text string) string {
 	text = strings.TrimSpace(text)
 	fenceStart := strings.Index(text, "```")
-	if fenceStart >= 0 {
+	jsonStart := strings.Index(text, "{")
+	// 只有当 ``` 出现在第一个 '{' 之前时，才视为外层 code fence。
+	// 若 ``` 出现在 JSON 字符串内部（如 analysis/fix_approach 中的代码示例），
+	// 不应进入此分支，否则会把内嵌代码块误提取为整个 JSON。
+	if fenceStart >= 0 && (jsonStart < 0 || fenceStart < jsonStart) {
 		fenced := text[fenceStart:]
 		lines := strings.SplitN(fenced, "\n", 2)
 		if len(lines) == 2 {
