@@ -111,7 +111,24 @@ HELPER
         # Maven/Gradle 缓存重定向到 /workspace（避免 /tmp tmpfs 溢出）
         export MAVEN_OPTS="${MAVEN_OPTS:--Dmaven.repo.local=/workspace/.m2/repository}"
         export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/workspace/.gradle}"
-        log "修复模式已启用（origin URL 已脱敏 + credential helper + git identity + build cache redirect）"
+        # 创建 mvn 包装器：强制忽略 Claude 可能传入的 -Dmaven.repo.local=<其他路径>
+        # 确保依赖始终写入持久化 volume（/workspace/.m2/repository）
+        mkdir -p /tmp/bin
+        cat > /tmp/bin/mvn <<'MVN_WRAPPER'
+#!/bin/bash
+# 过滤掉所有 -Dmaven.repo.local= 参数，强制使用持久化 volume 路径
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        -Dmaven.repo.local=*) ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+exec /usr/local/bin/mvn -Dmaven.repo.local=/workspace/.m2/repository "${ARGS[@]}"
+MVN_WRAPPER
+        chmod +x /tmp/bin/mvn
+        export PATH="/tmp/bin:${PATH}"
+        log "修复模式已启用（origin URL 已脱敏 + credential helper + git identity + build cache redirect + mvn 包装器）"
         ;;
     gen_tests)
         log "测试生成任务，使用默认分支"

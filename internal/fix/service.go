@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -645,7 +646,11 @@ func (s *Service) executeFix(ctx context.Context, payload model.TaskPayload) (*F
 	}
 	prNum, prURL, prErr := s.createFixPR(ctx, payload, fix, refKind, issue.Title)
 	if prErr != nil {
-		// push 成功但 PR 失败 → 发送提醒评论 + 允许重试
+		// push 成功但 PR 失败 → 记录结构化日志 + 发送提醒评论 + 允许重试
+		s.logger.ErrorContext(ctx, "创建修复 PR 失败（分支已 push）",
+			"issue", issueNum, "branch", fix.BranchName,
+			"base", stripRefPrefix(payload.IssueRef),
+			"repo", owner+"/"+repo, "error", prErr)
 		body := FormatFixPushButNoPRComment(fix.BranchName, prErr.Error())
 		if _, _, commentErr := s.gitea.CreateIssueComment(ctx, owner, repo, issueNum,
 			gitea.CreateIssueCommentOption{Body: body}); commentErr != nil {
@@ -720,19 +725,46 @@ func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fi
 
 	body := FormatFixPRBody(fix, payload.IssueNumber, refKind, base)
 
-	pr, _, err := s.prClient.CreatePullRequest(ctx, payload.RepoOwner, payload.RepoName,
-		gitea.CreatePullRequestOption{
-			Head:  fix.BranchName,
-			Base:  base,
-			Title: title,
-			Body:  body,
-		})
+	// 对 5xx 错误最多重试 2 次（每次间隔 3s），规避 Gitea 在分支刚推送后的短暂索引延迟。
+	// 4xx 及非 HTTP 错误视为确定性失败，不重试。
+	const maxRetries = 2
+	var (
+		pr  *gitea.PullRequest
+		err error
+	)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			s.logger.WarnContext(ctx, "创建 PR 失败，等待重试",
+				"attempt", attempt, "max_retries", maxRetries,
+				"issue", payload.IssueNumber, "branch", fix.BranchName,
+				"error", err)
+			time.Sleep(3 * time.Second)
+		}
+		pr, _, err = s.prClient.CreatePullRequest(ctx, payload.RepoOwner, payload.RepoName,
+			gitea.CreatePullRequestOption{
+				Head:  fix.BranchName,
+				Base:  base,
+				Title: title,
+				Body:  body,
+			})
+		if err == nil {
+			break
+		}
+		// 仅对 5xx 错误重试
+		var errResp *gitea.ErrorResponse
+		if !errors.As(err, &errResp) || errResp.StatusCode < 500 {
+			break
+		}
+	}
 	if err != nil {
 		return 0, "", err
 	}
 	if pr == nil {
 		return 0, "", fmt.Errorf("Gitea API 返回空 PR")
 	}
+	s.logger.InfoContext(ctx, "修复 PR 已创建",
+		"issue", payload.IssueNumber, "branch", fix.BranchName,
+		"pr_number", pr.Number, "pr_url", pr.HTMLURL)
 	return pr.Number, pr.HTMLURL, nil
 }
 

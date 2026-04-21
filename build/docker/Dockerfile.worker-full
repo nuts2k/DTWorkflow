@@ -12,12 +12,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Maven
 ARG MAVEN_VERSION=3.9.9
-RUN curl -fsSL https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+RUN curl -fsSL --retry 3 \
+    "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
     | tar xz -C /opt \
     && ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-# Maven/Gradle 缓存目录预创建
-# 运行时通过环境变量重定向到 /workspace（避免 /tmp tmpfs 溢出）
+# Maven/Gradle 缓存目录预创建（named volume 挂载时 Docker 会复制此结构及权限）
+RUN mkdir -p /workspace/.m2/repository /workspace/.gradle \
+    && chown -R worker:worker /workspace
+
 ENV MAVEN_OPTS="-Dmaven.repo.local=/workspace/.m2/repository"
 ENV GRADLE_USER_HOME="/workspace/.gradle"
 
