@@ -15,11 +15,19 @@ ARG MAVEN_VERSION=3.9.9
 RUN curl -fsSL --retry 3 \
     "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
     | tar xz -C /opt \
-    && ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+    && ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn.real
 
 # Maven/Gradle 缓存目录预创建（named volume 挂载时 Docker 会复制此结构及权限）
 RUN mkdir -p /workspace/.m2/repository /workspace/.gradle \
     && chown -R worker:worker /workspace
+
+# mvn 包装器：强制 -Dmaven.repo.local=/workspace/.m2/repository，过滤 Claude 可能传入的覆盖参数。
+# 烘焙到镜像的原因：容器 /tmp 为 noexec tmpfs，entrypoint 无法在运行时把包装器写到可执行位置。
+# 镜像层自带的 /usr/local/bin/mvn 不受运行时挂载 noexec 影响，PATH 中优先命中本包装器。
+# 构建期执行 `mvn --version` 作为烟囱测试：语法错 / mvn.real 链接损坏会让构建直接失败。
+COPY build/docker/mvn-wrapper.sh /usr/local/bin/mvn
+RUN chmod 0755 /usr/local/bin/mvn \
+    && /usr/local/bin/mvn --version >/dev/null
 
 ENV MAVEN_OPTS="-Dmaven.repo.local=/workspace/.m2/repository"
 ENV GRADLE_USER_HOME="/workspace/.gradle"
