@@ -88,6 +88,54 @@ func TestBuildContainerEnv_FixIssue(t *testing.T) {
 	}
 }
 
+// TestBuildContainerEnv_TokenSelectionByTaskType 验证按任务类型注入正确的 GITEA_TOKEN。
+// fix_issue 走 GiteaTokenFix；其他任务（review_pr / analyze_issue / gen_tests）走 GiteaToken。
+// 设计目标：拆账号后 fix 创建的 PR 可以被 review 账号评审，规避 Gitea 自评审限制。
+func TestBuildContainerEnv_TokenSelectionByTaskType(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:      "http://gitea.example.com",
+		GiteaToken:    "tok-review",
+		GiteaTokenFix: "tok-fix",
+		ClaudeAPIKey:  "key",
+	}
+	cases := []struct {
+		name     string
+		taskType model.TaskType
+		wantTok  string
+	}{
+		{"review_pr 用 review token", model.TaskTypeReviewPR, "tok-review"},
+		{"analyze_issue 用 review token", model.TaskTypeAnalyzeIssue, "tok-review"},
+		{"gen_tests 用 review token", model.TaskTypeGenTests, "tok-review"},
+		{"fix_issue 用 fix token", model.TaskTypeFixIssue, "tok-fix"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := model.TaskPayload{TaskType: tc.taskType, RepoFullName: "o/r"}
+			env := buildContainerEnv(config, payload)
+			envMap := envSliceToMap(env)
+			if envMap["GITEA_TOKEN"] != tc.wantTok {
+				t.Errorf("GITEA_TOKEN = %q, 期望 %q", envMap["GITEA_TOKEN"], tc.wantTok)
+			}
+		})
+	}
+}
+
+// TestBuildContainerEnv_FixTokenFallback 验证 GiteaTokenFix 为空时回退到 GiteaToken，
+// 保持向后兼容（单 token 部署）。
+func TestBuildContainerEnv_FixTokenFallback(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "only-token",
+		// GiteaTokenFix 留空
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoFullName: "o/r"}
+	env := buildContainerEnv(config, payload)
+	if envSliceToMap(env)["GITEA_TOKEN"] != "only-token" {
+		t.Errorf("fix_issue 在 GiteaTokenFix 为空时应回退到 GiteaToken")
+	}
+}
+
 func TestBuildContainerEnv_GenTests(t *testing.T) {
 	config := PoolConfig{
 		GiteaURL:     "http://gitea.example.com",

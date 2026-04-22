@@ -50,7 +50,13 @@ type serveConfig struct {
 	ClaudeAPIKey  string
 	ClaudeBaseURL string
 	GiteaURL      string
-	GiteaToken    string
+	GiteaToken    string // 兜底 token：review/fix 专属 token 留空时使用
+	// GiteaTokenReview 评审账号 token（review.Service / review.Writer / 只读 API / Gitea 通知）；
+	// 空字符串表示回退到 GiteaToken。
+	GiteaTokenReview string
+	// GiteaTokenFix 修复账号 token（fix.Service 的 PRClient/IssueClient + 容器内 git push）；
+	// 空字符串表示回退到 GiteaToken。
+	GiteaTokenFix string
 	MaxWorkers    int
 	WorkerImage   string
 
@@ -223,13 +229,15 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		processorOpts = append(processorOpts, queue.WithReviewEnabledChecker(cfgAdapter))
 
 		// M3.2: 装配 fix.Service
+		// 使用修复账号（GiteaFixClient）：Issue 评论 + 创建 auto-fix PR + 读 ref；
+		// 拆账号后，fix 创建的 PR 可以被 review 账号评审，规避 Gitea 自评审限制。
 		fixSvc := fix.NewService(
-			deps.GiteaClient,
+			deps.GiteaFixClient,
 			deps.Pool,
 			fix.WithServiceLogger(slog.Default()),
 			fix.WithConfigProvider(cfgAdapter),
-			fix.WithRefClient(deps.GiteaClient),
-			fix.WithPRClient(deps.GiteaClient),  // M3.5: 修复 PR 创建
+			fix.WithRefClient(deps.GiteaFixClient),
+			fix.WithPRClient(deps.GiteaFixClient),
 			fix.WithFixStaleChecker(deps.Store), // M3.5: 前序分析"信息不足"检查
 		)
 		processorOpts = append(processorOpts, queue.WithFixService(fixSvc))

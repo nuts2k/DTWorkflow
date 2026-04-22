@@ -20,8 +20,15 @@ import (
 
 // ServiceDeps 封装 serve 命令运行时的所有依赖
 type ServiceDeps struct {
-	Store              store.Store
-	GiteaClient        *gitea.Client
+	Store store.Store
+	// GiteaClient 评审账号持有的客户端。
+	// 用于：review.Service / review.Writer、只读 API handlers、Gitea 通知评论。
+	// 保留原字段名以免影响大量调用点；fix 专用客户端通过 GiteaFixClient 暴露。
+	GiteaClient *gitea.Client
+	// GiteaFixClient 修复账号持有的客户端。
+	// 用于：fix.Service 的 PRClient / IssueClient / RefClient（创建 PR + Issue 评论 + 读 ref）。
+	// 当 review/fix 两个 token 相同（未拆账号）时，与 GiteaClient 指向同一实例。
+	GiteaFixClient     *gitea.Client
 	QueueClient        *queue.Client
 	AsynqServer        *asynq.Server
 	Pool               *worker.Pool
@@ -45,12 +52,23 @@ type readinessSnapshot struct {
 }
 
 func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
+	// 容器内默认 GITEA_TOKEN 走 review 账号（review_pr / analyze_issue / gen_tests 都是
+	// 只读 clone）；fix_issue 需要在容器内 push 到 auto-fix/* 分支，单独走 GiteaTokenFix。
+	reviewTok := cfg.GiteaTokenReview
+	if reviewTok == "" {
+		reviewTok = cfg.GiteaToken
+	}
+	fixTok := cfg.GiteaTokenFix
+	if fixTok == "" {
+		fixTok = cfg.GiteaToken
+	}
 	pcfg := worker.PoolConfig{
 		Image:         cfg.WorkerImage,
 		CPULimit:      cfg.CPULimit,
 		MemoryLimit:   cfg.MemoryLimit,
 		GiteaURL:      cfg.GiteaURL,
-		GiteaToken:    worker.SecretString(cfg.GiteaToken),
+		GiteaToken:    worker.SecretString(reviewTok),
+		GiteaTokenFix: worker.SecretString(fixTok),
 		ClaudeAPIKey:  worker.SecretString(cfg.ClaudeAPIKey),
 		ClaudeBaseURL: cfg.ClaudeBaseURL,
 		NetworkName:   cfg.NetworkName,
@@ -106,23 +124,49 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	}
 	cleanups = append(cleanups, func() { _ = s.Close() })
 
-	// 2. 初始化 Gitea Client
+	// 2. 初始化 Gitea Client（按职能拆两个账号）
+	//   - giteaClient: 评审账号（review.Service/Writer、通知评论、只读 API handlers）
+	//   - giteaFixClient: 修复账号（fix.Service 的 PRClient/IssueClient/RefClient）
+	// 两个 token 相同时回退到同一实例，避免重复初始化。
 	giteaConfigured := cfg.GiteaURL != "" && cfg.GiteaToken != ""
 	var giteaClient *gitea.Client
+	var giteaFixClient *gitea.Client
 	if giteaConfigured {
-		giteaOpts := []gitea.ClientOption{gitea.WithToken(cfg.GiteaToken)}
-		if cfg.AppCfg != nil && cfg.AppCfg.Gitea.InsecureSkipVerify {
-			giteaOpts = append(giteaOpts, gitea.WithHTTPClient(&http.Client{
-				Timeout: 30 * time.Second,
-				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12}, //nolint:gosec
-				},
-			}))
+		reviewTok := cfg.GiteaTokenReview
+		if reviewTok == "" {
+			reviewTok = cfg.GiteaToken
 		}
-		giteaClient, err = gitea.NewClient(cfg.GiteaURL, giteaOpts...)
+		fixTok := cfg.GiteaTokenFix
+		if fixTok == "" {
+			fixTok = cfg.GiteaToken
+		}
+
+		newClient := func(token string) (*gitea.Client, error) {
+			opts := []gitea.ClientOption{gitea.WithToken(token)}
+			if cfg.AppCfg != nil && cfg.AppCfg.Gitea.InsecureSkipVerify {
+				opts = append(opts, gitea.WithHTTPClient(&http.Client{
+					Timeout: 30 * time.Second,
+					Transport: &http.Transport{
+						TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12}, //nolint:gosec
+					},
+				}))
+			}
+			return gitea.NewClient(cfg.GiteaURL, opts...)
+		}
+
+		giteaClient, err = newClient(reviewTok)
 		if err != nil {
 			cleanup()
-			return nil, nil, fmt.Errorf("初始化 Gitea Client 失败: %w", err)
+			return nil, nil, fmt.Errorf("初始化评审用 Gitea Client 失败: %w", err)
+		}
+		if fixTok == reviewTok {
+			giteaFixClient = giteaClient // 同账号复用，避免双连接池
+		} else {
+			giteaFixClient, err = newClient(fixTok)
+			if err != nil {
+				cleanup()
+				return nil, nil, fmt.Errorf("初始化修复用 Gitea Client 失败: %w", err)
+			}
 		}
 	}
 
@@ -202,6 +246,7 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	return &ServiceDeps{
 		Store:              s,
 		GiteaClient:        giteaClient,
+		GiteaFixClient:     giteaFixClient,
 		QueueClient:        queueClient,
 		AsynqServer:        asynqServer,
 		Pool:               pool,
@@ -234,9 +279,11 @@ func buildServeConfigFromManager(mgr *config.Manager) (serveConfig, error) {
 		WebhookSecret: cfg.Webhook.Secret,
 		ClaudeAPIKey:  cfg.Claude.APIKey,
 		ClaudeBaseURL: cfg.Claude.BaseURL,
-		GiteaURL:      cfg.Gitea.URL,
-		GiteaToken:    cfg.Gitea.Token,
-		MaxWorkers:    cfg.Worker.Concurrency,
+		GiteaURL:         cfg.Gitea.URL,
+		GiteaToken:       cfg.Gitea.Token,
+		GiteaTokenReview: cfg.Gitea.Tokens.Review,
+		GiteaTokenFix:    cfg.Gitea.Tokens.Fix,
+		MaxWorkers:       cfg.Worker.Concurrency,
 		WorkerImage:   cfg.Worker.Image,
 		CPULimit:      cfg.Worker.CPULimit,
 		MemoryLimit:   cfg.Worker.MemoryLimit,

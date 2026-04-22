@@ -86,7 +86,13 @@ type PoolConfig struct {
 	CPULimit     string // 容器 CPU 限制，如 "2.0"
 	MemoryLimit  string // 容器内存限制，如 "4g"
 	GiteaURL     string // Gitea 实例地址
-	GiteaToken   SecretString `json:"-"` // Gitea API Token
+	// GiteaToken 默认 Gitea API Token（review/analyze_issue/gen_tests 容器内 git clone/push 使用）。
+	// 该字段对应评审账号（review token），也作为兜底使用。
+	GiteaToken   SecretString `json:"-"`
+	// GiteaTokenFix fix_issue 任务专用的 Gitea API Token（容器内 git push 到 auto-fix/* 分支使用）。
+	// 与 GiteaToken 拆分为独立账号可以规避 Gitea"同一账号不能评审自己创建的 PR"的限制。
+	// 留空时 buildContainerEnv 回退到 GiteaToken。
+	GiteaTokenFix SecretString `json:"-"`
 	ClaudeAPIKey  SecretString `json:"-"` // Claude API Key
 	ClaudeBaseURL string       // Claude API 代理地址，留空使用官方地址
 	WorkDir       string       // 容器内工作目录

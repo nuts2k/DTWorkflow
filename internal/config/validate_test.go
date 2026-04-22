@@ -213,8 +213,55 @@ func TestValidate_MissingGiteaToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("空 gitea.token 应返回错误")
 	}
-	if !strings.Contains(err.Error(), "gitea.token") {
-		t.Errorf("错误应包含 gitea.token，得到: %v", err)
+	if !strings.Contains(err.Error(), "gitea.tokens.review") &&
+		!strings.Contains(err.Error(), "gitea.tokens.fix") {
+		t.Errorf("错误应提示 gitea.tokens.{review,fix} 或兜底 gitea.token，得到: %v", err)
+	}
+}
+
+// TestValidate_SplitGiteaTokens 验证显式拆分 review/fix token 时，兜底 gitea.token 可以留空。
+func TestValidate_SplitGiteaTokens(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Gitea.Token = ""
+	cfg.Gitea.Tokens.Review = "tok-review"
+	cfg.Gitea.Tokens.Fix = "tok-fix"
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("显式配置 review/fix token 时应通过校验，错误: %v", err)
+	}
+	if got := cfg.Gitea.ReviewToken(); got != "tok-review" {
+		t.Errorf("ReviewToken()=%q, 期望 tok-review", got)
+	}
+	if got := cfg.Gitea.FixToken(); got != "tok-fix" {
+		t.Errorf("FixToken()=%q, 期望 tok-fix", got)
+	}
+}
+
+// TestValidate_PartialSplitTokenFallback 验证仅拆一个 token 时，另一种用途回退到兜底 gitea.token。
+func TestValidate_PartialSplitTokenFallback(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Gitea.Token = "tok-fallback"
+	cfg.Gitea.Tokens.Review = "tok-review"
+	// Tokens.Fix 留空
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("部分拆分应通过校验，错误: %v", err)
+	}
+	if got := cfg.Gitea.FixToken(); got != "tok-fallback" {
+		t.Errorf("FixToken() 未回退到兜底 token, 得到 %q", got)
+	}
+}
+
+// TestValidate_MissingFixTokenAndFallback 验证 fix 用途无可用 token 时校验失败。
+func TestValidate_MissingFixTokenAndFallback(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Gitea.Token = ""
+	cfg.Gitea.Tokens.Review = "tok-review"
+	// Tokens.Fix 留空，兜底也为空
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("fix 用途无可用 token 时应返回错误")
+	}
+	if !strings.Contains(err.Error(), "gitea.tokens.fix") {
+		t.Errorf("错误应提示 gitea.tokens.fix, 得到: %v", err)
 	}
 }
 

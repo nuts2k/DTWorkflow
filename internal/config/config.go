@@ -52,9 +52,39 @@ type ServerConfig struct {
 }
 
 type GiteaConfig struct {
-	URL                string `mapstructure:"url"`
-	Token              string `mapstructure:"token"`
-	InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
+	URL                string       `mapstructure:"url"`
+	Token              string       `mapstructure:"token"` // 兜底 token：当 tokens.{review,fix} 为空时回退使用
+	Tokens             GiteaTokens  `mapstructure:"tokens"`
+	InsecureSkipVerify bool         `mapstructure:"insecure_skip_verify"`
+}
+
+// GiteaTokens 按职能拆分的 Gitea Token。
+//
+// 背景：Gitea 禁止 PR 创建者用自己的账号给自己的 PR 发 approve/request-changes 类型的 Review。
+// 因此需要区分"创建修复 PR 的账号"与"评审 PR 的账号"：
+//   - Review：评审 PR（review.Writer 用于 CreatePullReview）+ 只读 API 预校验 + 通知评论
+//   - Fix：修复 Issue（fix.Service 用于 CreatePullRequest + Issue 评论）+ 容器内 git push
+//
+// 任一字段为空时回退到 GiteaConfig.Token。
+type GiteaTokens struct {
+	Review string `mapstructure:"review"`
+	Fix    string `mapstructure:"fix"`
+}
+
+// ReviewToken 返回评审用 token（空时回退到 GiteaConfig.Token）。
+func (c GiteaConfig) ReviewToken() string {
+	if strings.TrimSpace(c.Tokens.Review) != "" {
+		return c.Tokens.Review
+	}
+	return c.Token
+}
+
+// FixToken 返回修复用 token（空时回退到 GiteaConfig.Token）。
+func (c GiteaConfig) FixToken() string {
+	if strings.TrimSpace(c.Tokens.Fix) != "" {
+		return c.Tokens.Fix
+	}
+	return c.Token
 }
 
 type RedisConfig struct {
@@ -264,6 +294,8 @@ func WithDefaults() ManagerOption {
 		// 让环境变量覆盖可被 Unmarshal 感知：这些 key 必须出现在 viper 的 AllKeys() 中。
 		m.v.SetDefault("gitea.url", "")
 		m.v.SetDefault("gitea.token", "")
+		m.v.SetDefault("gitea.tokens.review", "")
+		m.v.SetDefault("gitea.tokens.fix", "")
 		m.v.SetDefault("claude.api_key", "")
 		m.v.SetDefault("claude.model", "claude-sonnet-4-6")
 		m.v.SetDefault("claude.effort", "high")

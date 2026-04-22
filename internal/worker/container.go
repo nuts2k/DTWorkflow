@@ -26,6 +26,19 @@ func sanitizeEnvValue(s string) string {
 	return sanitizeInput(s)
 }
 
+// selectGiteaToken 根据任务类型选择注入到容器的 Gitea Token。
+//
+// fix_issue 任务需要在容器内 git push 到 auto-fix/* 分支并随后由 host 侧创建 PR，
+// 为规避 Gitea"同一账号不能评审自己创建的 PR"的限制，单独走 fix 账号（GiteaTokenFix）；
+// 其他任务（review_pr / analyze_issue / gen_tests 等）使用默认 GiteaToken。
+// GiteaTokenFix 为空时回退到 GiteaToken，保持向后兼容。
+func selectGiteaToken(config PoolConfig, taskType model.TaskType) string {
+	if taskType == model.TaskTypeFixIssue && config.GiteaTokenFix != "" {
+		return string(config.GiteaTokenFix)
+	}
+	return string(config.GiteaToken)
+}
+
 // sanitizePromptInput 清理用于 CLI prompt 的用户输入。
 // 基于 sanitizeInput 去除换行和 NUL 字符后，按 []rune 截断到 maxLen，
 // 避免截断 UTF-8 多字节字符。用于构建传给 Claude CLI 的 prompt 参数。
@@ -43,7 +56,7 @@ func sanitizePromptInput(s string, maxLen int) string {
 func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	env := []string{
 		fmt.Sprintf("GITEA_URL=%s", sanitizeEnvValue(config.GiteaURL)),
-		fmt.Sprintf("GITEA_TOKEN=%s", sanitizeEnvValue(string(config.GiteaToken))),
+		fmt.Sprintf("GITEA_TOKEN=%s", sanitizeEnvValue(selectGiteaToken(config, payload.TaskType))),
 		fmt.Sprintf("ANTHROPIC_API_KEY=%s", sanitizeEnvValue(string(config.ClaudeAPIKey))),
 	}
 	if config.ClaudeBaseURL != "" {

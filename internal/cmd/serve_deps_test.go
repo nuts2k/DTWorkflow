@@ -310,3 +310,39 @@ func TestComputeReadyStatus_OkWhenAllCriticalDepsPresent(t *testing.T) {
 		t.Fatalf("active_workers = %v, want 1", payload["active_workers"])
 	}
 }
+
+// TestBuildWorkerPoolConfig_SplitTokens 验证 serveConfig 中拆分的 review/fix token
+// 被正确映射到 PoolConfig 的 GiteaToken / GiteaTokenFix 字段。
+func TestBuildWorkerPoolConfig_SplitTokens(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.GiteaURL = "https://gitea.example.com"
+	cfg.GiteaToken = "tok-fallback"
+	cfg.GiteaTokenReview = "tok-review"
+	cfg.GiteaTokenFix = "tok-fix"
+
+	poolCfg := buildWorkerPoolConfigFromServeConfig(cfg)
+	if string(poolCfg.GiteaToken) != "tok-review" {
+		t.Fatalf("PoolConfig.GiteaToken = %q, want tok-review（review 账号）", poolCfg.GiteaToken)
+	}
+	if string(poolCfg.GiteaTokenFix) != "tok-fix" {
+		t.Fatalf("PoolConfig.GiteaTokenFix = %q, want tok-fix（fix 账号）", poolCfg.GiteaTokenFix)
+	}
+}
+
+// TestBuildWorkerPoolConfig_TokenFallback 验证只填兜底 gitea.token 时，
+// 两个 PoolConfig token 字段都回退到它（保持向后兼容）。
+func TestBuildWorkerPoolConfig_TokenFallback(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.GiteaURL = "https://gitea.example.com"
+	cfg.GiteaToken = "tok-fallback"
+	cfg.GiteaTokenReview = ""
+	cfg.GiteaTokenFix = ""
+
+	poolCfg := buildWorkerPoolConfigFromServeConfig(cfg)
+	if string(poolCfg.GiteaToken) != "tok-fallback" {
+		t.Fatalf("PoolConfig.GiteaToken = %q, want tok-fallback", poolCfg.GiteaToken)
+	}
+	if string(poolCfg.GiteaTokenFix) != "tok-fallback" {
+		t.Fatalf("PoolConfig.GiteaTokenFix 未回退到兜底 token, 得到 %q", poolCfg.GiteaTokenFix)
+	}
+}

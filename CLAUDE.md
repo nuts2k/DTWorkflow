@@ -95,6 +95,10 @@ configs/        # 配置文件模板
 
 - **禁止在 Gitea API 请求体中使用 4 字节 emoji（U+10000 及以上）**：目标 Gitea 实例的 MySQL 使用 `utf8` charset（非 `utf8mb4`），写入 4 字节字符会触发数据库内部错误并返回 HTTP 500（无 message）。可用字符范围：仅限 BMP（U+0000–U+FFFF）内的 emoji，如 `✅`（U+2705）、`⚠️`（U+26A0）、`‼️`（U+203C）。禁用示例：`🤖`（U+1F916）、`🚨`（U+1F6A8）、`🚀`（U+1F680）等。
 - 新增涉及 Gitea 写入的代码（PR body、Issue 评论、评审内容）时，必须用 `python3 -c "for ch in s: print(hex(ord(ch)))"` 或等效方式确认无 U+10000 以上字符。
+- **Token 拆分（规避自评审限制）**：Gitea 禁止同一账号对自己创建的 PR 发 approve/request-changes 类型的 Review。因此 `gitea.tokens` 按职能拆为 `review` 与 `fix` 两个账号，装配层构造两个独立 `*gitea.Client`：
+  - review 账号（`ServiceDeps.GiteaClient`）：`review.Service` / `review.Writer`、只读 API handlers、`GiteaNotifier` 通知评论；同时作为非 fix 类任务容器内 git 凭证。
+  - fix 账号（`ServiceDeps.GiteaFixClient`）：`fix.Service` 的 `PRClient` / `IssueClient` / `RefClient`；同时作为 `fix_issue` 任务容器内 git push 凭证（`buildContainerEnv` → `selectGiteaToken` 按 `TaskType` 注入）。
+  - 兜底：`gitea.tokens.{review,fix}` 留空时回退 `gitea.token`，单账号部署保持向后兼容。新增会"创建 PR 的任务类型"（如 `gen_tests` 接入 PR 创建后）需在 `worker.PoolConfig` + `selectGiteaToken` + `buildContainerEnv` 同步扩展。
 
 ## 编码规范
 

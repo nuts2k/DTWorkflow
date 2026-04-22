@@ -76,8 +76,14 @@ func Validate(cfg *Config) error {
 			errs = append(errs, fmt.Errorf("gitea.url 格式不合法，需以 http:// 或 https:// 开头: %q", cfg.Gitea.URL))
 		}
 	}
-	if strings.TrimSpace(cfg.Gitea.Token) == "" {
-		errs = append(errs, fmt.Errorf("gitea.token 不能为空"))
+	// 评审和修复可以分别使用独立的 Gitea 账号（规避 Gitea 禁止自评审的限制）；
+	// gitea.token 作为兜底：当 gitea.tokens.{review,fix} 留空时回退到 gitea.token。
+	// 只要每种用途最终都能拿到非空 token 即可通过校验。
+	if strings.TrimSpace(cfg.Gitea.ReviewToken()) == "" {
+		errs = append(errs, fmt.Errorf("gitea.tokens.review 或兜底 gitea.token 必须至少填一个"))
+	}
+	if strings.TrimSpace(cfg.Gitea.FixToken()) == "" {
+		errs = append(errs, fmt.Errorf("gitea.tokens.fix 或兜底 gitea.token 必须至少填一个"))
 	}
 
 	// claude 必填
