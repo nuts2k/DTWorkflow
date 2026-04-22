@@ -50,7 +50,7 @@ type serveConfig struct {
 	ClaudeAPIKey  string
 	ClaudeBaseURL string
 	GiteaURL      string
-	GiteaToken    string // 兜底 token：review/fix 专属 token 留空时使用
+	GiteaToken    string // 基础 token（必填）：review/fix 专属 token 留空时使用
 	// GiteaTokenReview 评审账号 token（review.Service / review.Writer / 只读 API / Gitea 通知）；
 	// 空字符串表示回退到 GiteaToken。
 	GiteaTokenReview string

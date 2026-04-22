@@ -213,20 +213,20 @@ func TestValidate_MissingGiteaToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("空 gitea.token 应返回错误")
 	}
-	if !strings.Contains(err.Error(), "gitea.tokens.review") &&
-		!strings.Contains(err.Error(), "gitea.tokens.fix") {
-		t.Errorf("错误应提示 gitea.tokens.{review,fix} 或兜底 gitea.token，得到: %v", err)
+	if !strings.Contains(err.Error(), "gitea.token") {
+		t.Errorf("错误应包含 gitea.token，得到: %v", err)
 	}
 }
 
-// TestValidate_SplitGiteaTokens 验证显式拆分 review/fix token 时，兜底 gitea.token 可以留空。
+// TestValidate_SplitGiteaTokens 验证显式拆分 review/fix token 时，仍要求基础 gitea.token 必填；
+// 同时 ReviewToken/FixToken 应优先返回专属 token。
 func TestValidate_SplitGiteaTokens(t *testing.T) {
 	cfg := validBaseConfig()
-	cfg.Gitea.Token = ""
+	cfg.Gitea.Token = "tok-base"
 	cfg.Gitea.Tokens.Review = "tok-review"
 	cfg.Gitea.Tokens.Fix = "tok-fix"
 	if err := Validate(cfg); err != nil {
-		t.Fatalf("显式配置 review/fix token 时应通过校验，错误: %v", err)
+		t.Fatalf("显式配置 review/fix token 且基础 token 存在时应通过校验，错误: %v", err)
 	}
 	if got := cfg.Gitea.ReviewToken(); got != "tok-review" {
 		t.Errorf("ReviewToken()=%q, 期望 tok-review", got)
@@ -250,18 +250,18 @@ func TestValidate_PartialSplitTokenFallback(t *testing.T) {
 	}
 }
 
-// TestValidate_MissingFixTokenAndFallback 验证 fix 用途无可用 token 时校验失败。
-func TestValidate_MissingFixTokenAndFallback(t *testing.T) {
+// TestValidate_SplitTokensWithoutBaseToken 验证即使显式配置 review/fix token，基础 gitea.token 仍不可省略。
+func TestValidate_SplitTokensWithoutBaseToken(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.Gitea.Token = ""
 	cfg.Gitea.Tokens.Review = "tok-review"
-	// Tokens.Fix 留空，兜底也为空
+	cfg.Gitea.Tokens.Fix = "tok-fix"
 	err := Validate(cfg)
 	if err == nil {
-		t.Fatal("fix 用途无可用 token 时应返回错误")
+		t.Fatal("缺少基础 gitea.token 时应返回错误")
 	}
-	if !strings.Contains(err.Error(), "gitea.tokens.fix") {
-		t.Errorf("错误应提示 gitea.tokens.fix, 得到: %v", err)
+	if !strings.Contains(err.Error(), "gitea.token") {
+		t.Errorf("错误应提示 gitea.token, 得到: %v", err)
 	}
 }
 

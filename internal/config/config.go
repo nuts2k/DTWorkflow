@@ -52,10 +52,10 @@ type ServerConfig struct {
 }
 
 type GiteaConfig struct {
-	URL                string       `mapstructure:"url"`
-	Token              string       `mapstructure:"token"` // 兜底 token：当 tokens.{review,fix} 为空时回退使用
-	Tokens             GiteaTokens  `mapstructure:"tokens"`
-	InsecureSkipVerify bool         `mapstructure:"insecure_skip_verify"`
+	URL                string      `mapstructure:"url"`
+	Token              string      `mapstructure:"token"` // 基础 token（必填）；tokens.{review,fix} 留空时回退使用
+	Tokens             GiteaTokens `mapstructure:"tokens"`
+	InsecureSkipVerify bool        `mapstructure:"insecure_skip_verify"`
 }
 
 // GiteaTokens 按职能拆分的 Gitea Token。
@@ -65,7 +65,7 @@ type GiteaConfig struct {
 //   - Review：评审 PR（review.Writer 用于 CreatePullReview）+ 只读 API 预校验 + 通知评论
 //   - Fix：修复 Issue（fix.Service 用于 CreatePullRequest + Issue 评论）+ 容器内 git push
 //
-// 任一字段为空时回退到 GiteaConfig.Token。
+// 任一字段为空时回退到必填的 GiteaConfig.Token。
 type GiteaTokens struct {
 	Review string `mapstructure:"review"`
 	Fix    string `mapstructure:"fix"`
@@ -107,11 +107,11 @@ type WorkerConfig struct {
 	Timeout     time.Duration `mapstructure:"timeout"`
 
 	Image            string `mapstructure:"image"`
-	ImageFull        string `mapstructure:"image_full"`        // M3.4: 执行镜像（可选）
+	ImageFull        string `mapstructure:"image_full"`         // M3.4: 执行镜像（可选）
 	MavenCacheVolume string `mapstructure:"maven_cache_volume"` // M3.5: Maven 缓存 named volume，挂载到 fix/gen_tests 容器
-	CPULimit    string `mapstructure:"cpu_limit"`
-	MemoryLimit string `mapstructure:"memory_limit"`
-	NetworkName string `mapstructure:"network_name"`
+	CPULimit         string `mapstructure:"cpu_limit"`
+	MemoryLimit      string `mapstructure:"memory_limit"`
+	NetworkName      string `mapstructure:"network_name"`
 
 	Timeouts      TaskTimeouts      `mapstructure:"timeouts"`       // 按任务类型的硬超时
 	StreamMonitor StreamMonitorConf `mapstructure:"stream_monitor"` // 流式心跳监控配置
