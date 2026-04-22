@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // GiteaCommentCreator Gitea 评论创建窄接口
@@ -91,12 +92,29 @@ func (n *GiteaNotifier) Send(ctx context.Context, msg Message) error {
 // 即便包含 HTML 标签，Gitea 服务端在渲染 Markdown 时会自行做 HTML sanitize，XSS 风险可接受。
 func formatGiteaComment(msg Message) string {
 	emoji := severityEmoji(msg.Severity)
-	title := msg.Title
+	title := sanitizeGiteaText(msg.Title)
 	if title == "" {
 		title = string(msg.EventType)
 	}
-	return fmt.Sprintf("## %s %s\n\n%s\n\n---\n_由 DTWorkflow 自动发送 | 事件类型: %s_",
-		emoji, title, msg.Body, string(msg.EventType))
+	return sanitizeGiteaText(fmt.Sprintf("## %s %s\n\n%s\n\n---\n_由 DTWorkflow 自动发送 | 事件类型: %s_",
+		emoji, title, msg.Body, string(msg.EventType)))
+}
+
+func sanitizeGiteaText(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t', r == '\n':
+			return r
+		case r < 0x20:
+			return -1
+		case r == 0x7F:
+			return -1
+		case r > 0xFFFF:
+			return -1
+		default:
+			return r
+		}
+	}, s)
 }
 
 // severityEmoji 根据紧急程度返回对应的 emoji

@@ -16,6 +16,23 @@ const (
 	messageMaxLen = 800
 )
 
+func sanitizeGiteaText(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t', r == '\n':
+			return r
+		case r < 0x20:
+			return -1
+		case r == 0x7F:
+			return -1
+		case r > 0xFFFF:
+			return -1
+		default:
+			return r
+		}
+	}, s)
+}
+
 // FormatOptions formatReviewBody 的输入参数
 type FormatOptions struct {
 	Review          *ReviewOutput
@@ -61,7 +78,7 @@ func formatReviewBody(opts FormatOptions) string {
 		sb.WriteString(raw)
 		sb.WriteString("\n```\n\n---\n")
 		sb.WriteString(footer)
-		result := sb.String()
+		result := sanitizeGiteaText(sb.String())
 		if len(result) > bodyMaxLen {
 			result = truncateString(result, bodyMaxLen)
 		}
@@ -180,7 +197,7 @@ func formatReviewBody(opts FormatOptions) string {
 	sb.WriteString("---\n")
 	sb.WriteString(footer)
 
-	result := sb.String()
+	result := sanitizeGiteaText(sb.String())
 	if len(result) > bodyMaxLen {
 		truncMsg := "\n\n_（内容过长，已截断）_"
 		result = truncateToUTF8(result, bodyMaxLen-len(truncMsg)) + truncMsg
@@ -201,7 +218,7 @@ func formatCommentBody(issue ReviewIssue) string {
 	if issue.Suggestion != "" {
 		sb.WriteString(fmt.Sprintf("\n\n> 建议：%s", escapeMarkdown(issue.Suggestion)))
 	}
-	result := sb.String()
+	result := sanitizeGiteaText(sb.String())
 	if len(result) > commentMaxLen {
 		truncMsg := "\n\n_（内容过长，已截断）_"
 		result = truncateToUTF8(result, commentMaxLen-len(truncMsg)) + truncMsg

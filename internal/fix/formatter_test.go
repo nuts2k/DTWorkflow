@@ -388,10 +388,10 @@ func TestContainsControlChars(t *testing.T) {
 // 会被清洗掉控制字符，不会把 Claude 偶发的 NUL 等字符带到 Gitea 请求中。
 func TestFormatFixPRBody_StripsControlChars(t *testing.T) {
 	fix := &FixOutput{
-		Success:    true,
-		BranchName: "auto-fix/issue-1",
-		CommitSHA:  "abc",
-		Analysis:   "分析包含\x00NUL\x01和\x1bESC",
+		Success:     true,
+		BranchName:  "auto-fix/issue-1",
+		CommitSHA:   "abc",
+		Analysis:    "分析包含\x00NUL\x01和\x1bESC",
 		FixApproach: "方案含\x7fDEL",
 	}
 	body := FormatFixPRBody(fix, 1, RefKindBranch, "")
@@ -402,6 +402,26 @@ func TestFormatFixPRBody_StripsControlChars(t *testing.T) {
 	}
 	// 保留正常文本
 	if !strings.Contains(body, "分析包含") || !strings.Contains(body, "方案含") {
+		t.Errorf("正常文本应保留: %s", body)
+	}
+}
+
+func TestFormatFixPRBody_StripsNonBMPChars(t *testing.T) {
+	fix := &FixOutput{
+		Success:     true,
+		BranchName:  "auto-fix/issue-1",
+		CommitSHA:   "abc",
+		Analysis:    "分析包含🤖机器人提示",
+		FixApproach: "方案包含🚀发布符号",
+	}
+	body := FormatFixPRBody(fix, 1, RefKindBranch, "")
+
+	for _, bad := range []string{"🤖", "🚀"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("body 应剔除非 BMP 字符 %q，实际仍含: %q", bad, body)
+		}
+	}
+	if !strings.Contains(body, "分析包含机器人提示") || !strings.Contains(body, "方案包含发布符号") {
 		t.Errorf("正常文本应保留: %s", body)
 	}
 }

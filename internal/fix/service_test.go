@@ -2095,6 +2095,55 @@ func TestCreateFixPR_TitleTruncatedByRune(t *testing.T) {
 	}
 }
 
+func TestCreateFixPR_TitleStripsNonBMPChars(t *testing.T) {
+	withShortBackoffs(t)
+
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "登录修复 🤖🚀"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	envelope := `{"type":"result","result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"all_passed\":true}}"}`
+	pool := &mockFixPoolRunner{result: &worker.ExecutionResult{ExitCode: 0, Output: envelope}}
+	prClient := &stubPRClient{
+		createResult: &gitea.PullRequest{Number: 1, HTMLURL: "https://x"},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	_, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+
+	title := prClient.lastCreateTitle
+	for _, bad := range []string{"🤖", "🚀"} {
+		if strings.Contains(title, bad) {
+			t.Errorf("title 应剔除非 BMP 字符 %q，实际: %q", bad, title)
+		}
+	}
+	if !strings.Contains(title, "登录修复") {
+		t.Errorf("title 应保留正常文本，实际: %q", title)
+	}
+}
+
 // TestTruncateByRune 纯函数测试。
 func TestTruncateByRune(t *testing.T) {
 	cases := []struct {

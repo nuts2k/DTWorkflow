@@ -65,6 +65,24 @@ func stripControlChars(s string) string {
 	}, s)
 }
 
+// stripNonBMPChars 移除 U+10000 以上的非 BMP 字符。
+//
+// 背景：目标 Gitea 实例底层 MySQL 使用 utf8（非 utf8mb4），
+// 写入 4 字节字符会在服务端触发 500。这里做最后一层兜底清洗，
+// 避免 Issue 标题或 Claude 输出中的非 BMP 字符直接进入 Gitea 请求体。
+func stripNonBMPChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r > 0xFFFF {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func sanitizeGiteaText(s string) string {
+	return stripNonBMPChars(stripControlChars(s))
+}
+
 // containsControlChars 判断字符串是否包含需要清洗的控制字符，仅用于诊断日志。
 func containsControlChars(s string) bool {
 	for _, r := range s {
@@ -153,6 +171,7 @@ func formatNormalReport(analysis *AnalysisOutput, durationSec, costUSD float64) 
 	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))
 
 	body := sb.String()
+	body = sanitizeGiteaText(body)
 	if len(body) > bodyMaxLen {
 		truncMsg := "\n\n_（内容过长，已截断）_"
 		body = truncateString(body, bodyMaxLen-len(truncMsg)) + truncMsg
@@ -185,6 +204,7 @@ func formatInsufficientInfo(analysis *AnalysisOutput, durationSec, costUSD float
 	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))
 
 	body := sb.String()
+	body = sanitizeGiteaText(body)
 	if len(body) > bodyMaxLen {
 		body = truncateString(body, bodyMaxLen)
 	}
@@ -237,8 +257,9 @@ func FormatFixPRBody(fix *FixOutput, issueNum int64, refKind RefKind, baseBranch
 
 	body := sb.String()
 	// 清洗控制字符：Gitea 1.21 对含 NUL 等字符的 body 会 500（未 JSON 化的内部错误）。
+	// 也同步移除非 BMP 字符，规避目标 MySQL utf8 charset 对 4 字节字符的写库失败。
 	// 清洗在截断之前做，避免清洗后长度变化触发二次截断判断偏差。
-	body = stripControlChars(body)
+	body = sanitizeGiteaText(body)
 	if len(body) > bodyMaxLen {
 		body = truncateString(body, bodyMaxLen)
 	}
@@ -247,12 +268,12 @@ func FormatFixPRBody(fix *FixOutput, issueNum int64, refKind RefKind, baseBranch
 
 // FormatFixSuccessComment M3.5: 修复成功后发送给 Issue 的评论。
 func FormatFixSuccessComment(prNumber int64, prURL string, modifiedFileCount int) string {
-	return fmt.Sprintf(
+	return sanitizeGiteaText(fmt.Sprintf(
 		"✅ 已创建修复 PR [#%d](%s)\n\n"+
 			"修改了 **%d 个文件**，测试全部通过。\n"+
 			"PR 将自动进入评审流程。\n\n"+
 			"---\n_由 DTWorkflow 自动生成_",
-		prNumber, prURL, modifiedFileCount)
+		prNumber, prURL, modifiedFileCount))
 }
 
 // FormatFixFailureComment M3.5: 修复失败（测试未通过、分支未创建等）。
@@ -285,6 +306,7 @@ func FormatFixFailureComment(fix *FixOutput, durationSec, costUSD float64) strin
 	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))
 
 	body := sb.String()
+	body = sanitizeGiteaText(body)
 	if len(body) > bodyMaxLen {
 		body = truncateString(body, bodyMaxLen)
 	}
@@ -312,6 +334,7 @@ func FormatFixInfoInsufficientComment(missingInfo []string) string {
 	sb.WriteString("_由 DTWorkflow 自动生成_")
 
 	body := sb.String()
+	body = sanitizeGiteaText(body)
 	if len(body) > bodyMaxLen {
 		body = truncateString(body, bodyMaxLen)
 	}
@@ -320,14 +343,14 @@ func FormatFixInfoInsufficientComment(missingInfo []string) string {
 
 // FormatFixPushButNoPRComment M3.5: 容器 push 成功但容器外 PR 创建失败。
 func FormatFixPushButNoPRComment(branchName, apiError string) string {
-	return fmt.Sprintf(
+	return sanitizeGiteaText(fmt.Sprintf(
 		"⚠️ 修复分支 `%s` 已推送成功，但 PR 创建失败。\n\n"+
 			"错误：%s\n\n"+
 			"系统将自动重试。如持续失败，请人工从 `%s` 分支手动创建 PR。\n\n"+
 			"---\n_由 DTWorkflow 自动生成_",
 		escapeMarkdown(branchName),
 		escapeMarkdown(apiError),
-		escapeMarkdown(branchName))
+		escapeMarkdown(branchName)))
 }
 
 // FormatFixDegradedComment M3.5: 修复结果解析失败后的降级评论。
@@ -382,6 +405,7 @@ func formatRawOutputFallback(title, lead, rawOutput string, durationSec, costUSD
 	sb.WriteString(fmt.Sprintf("_由 DTWorkflow 自动生成 | 耗时 %.0fs | 费用 $%.4f_", durationSec, costUSD))
 
 	body := sb.String()
+	body = sanitizeGiteaText(body)
 	if len(body) > bodyMaxLen {
 		body = truncateString(body, bodyMaxLen)
 	}

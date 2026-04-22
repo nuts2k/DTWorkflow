@@ -193,6 +193,47 @@ func TestFormatCommentBody_Truncated(t *testing.T) {
 	}
 }
 
+func TestFormatReviewBody_StripsNonBMPChars(t *testing.T) {
+	output := &ReviewOutput{
+		Summary: "总结含🤖符号",
+		Verdict: VerdictComment,
+	}
+	unmapped := []ReviewIssue{
+		{File: "a.go", Line: 1, Severity: "WARNING", Category: "logic", Message: "消息含🚀符号"},
+	}
+
+	body := formatReviewBody(FormatOptions{Review: output, Unmapped: unmapped, ParseFailed: false, DurationSec: 1, CostUSD: 0})
+
+	for _, bad := range []string{"🤖", "🚀"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("body 应剔除非 BMP 字符 %q，实际: %q", bad, body)
+		}
+	}
+	if !strings.Contains(body, "总结含符号") || !strings.Contains(body, "消息含符号") {
+		t.Errorf("正常文本应保留，实际: %q", body)
+	}
+}
+
+func TestFormatCommentBody_StripsNonBMPChars(t *testing.T) {
+	issue := ReviewIssue{
+		Severity:   "ERROR",
+		Category:   "logic",
+		Message:    "消息含🤖符号",
+		Suggestion: "建议含🚀符号",
+	}
+
+	body := formatCommentBody(issue)
+
+	for _, bad := range []string{"🤖", "🚀"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("comment body 应剔除非 BMP 字符 %q，实际: %q", bad, body)
+		}
+	}
+	if !strings.Contains(body, "消息含符号") || !strings.Contains(body, "建议含符号") {
+		t.Errorf("正常文本应保留，实际: %q", body)
+	}
+}
+
 // TestEscapeTableCell Markdown 表格转义
 func TestEscapeTableCell(t *testing.T) {
 	input := "a|b|c"
@@ -357,8 +398,8 @@ func TestTruncateString(t *testing.T) {
 		},
 		{
 			name:     "中文截断不破坏字符",
-			input:    "你好世界",       // 每个中文 3 字节，总共 12 字节
-			maxBytes: 7,             // 截断在第 3 个字符中间
+			input:    "你好世界", // 每个中文 3 字节，总共 12 字节
+			maxBytes: 7,      // 截断在第 3 个字符中间
 			wantSafe: true,
 		},
 		{

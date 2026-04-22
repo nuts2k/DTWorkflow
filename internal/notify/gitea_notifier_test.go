@@ -240,6 +240,25 @@ func TestFormatGiteaComment_Critical(t *testing.T) {
 	}
 }
 
+func TestFormatGiteaComment_StripsNonBMPChars(t *testing.T) {
+	msg := Message{
+		EventType: EventSystemError,
+		Severity:  SeverityCritical,
+		Title:     "严重错误 🤖",
+		Body:      "系统出现严重故障 🚀",
+	}
+	comment := formatGiteaComment(msg)
+
+	for _, bad := range []string{"🤖", "🚀"} {
+		if strings.Contains(comment, bad) {
+			t.Errorf("comment 应剔除非 BMP 字符 %q，实际: %q", bad, comment)
+		}
+	}
+	if !strings.Contains(comment, "严重错误 ") || !strings.Contains(comment, "系统出现严重故障 ") {
+		t.Errorf("正常文本应保留，实际: %q", comment)
+	}
+}
+
 // TestGiteaNotifier_Send_NegativeNumber 验证负数 Number 返回 ErrInvalidTarget（MEDIUM-1）
 func TestGiteaNotifier_Send_NegativeNumber(t *testing.T) {
 	stub := &stubCommentCreator{}

@@ -19,7 +19,7 @@ import (
 // 场景：Gitea `git push` 返回成功后，post-receive hook / PR 队列 / indexer
 // 仍在后台处理；期间 `POST /pulls` 会走到 "半状态" 的 git 仓库读取路径，
 // 返回 500 Internal Server Error（且错误体非 JSON，message 为空）。
-// 生产观测：低负载环境下延迟可达 10 分钟以上，故内层退避总窗口扩展到 ~25 分钟，
+// 生产观测：延迟可达数分钟量级，故内层退避总窗口控制在 ~10 分钟，
 // 减少将整个 fix_issue 任务重启（asynq 外层会重跑 Claude 容器）的代价。
 var prCreateBackoffs = []time.Duration{
 	10 * time.Second,
@@ -28,8 +28,6 @@ var prCreateBackoffs = []time.Duration{
 	80 * time.Second,
 	160 * time.Second,
 	300 * time.Second,
-	300 * time.Second,
-	600 * time.Second,
 }
 
 // IssueClient 窄接口，仅暴露 fix 所需的 Gitea API。
@@ -743,6 +741,7 @@ func (s *Service) createFixPR(ctx context.Context, payload model.TaskPayload, fi
 	// PR 标题 Gitea 上限约 255，按 rune 截断以保证 UTF-8 完整性（中文标题被按字节切断会
 	// 产生半码点，经 json.Marshal 替换为 U+FFFD 后，部分 Gitea + MySQL 配置在写库时
 	// 会触发 utf8 校验错误而返回 500）。
+	title = sanitizeGiteaText(title)
 	title = truncateByRune(title, 240)
 
 	body := FormatFixPRBody(fix, payload.IssueNumber, refKind, base)
