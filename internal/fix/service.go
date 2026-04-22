@@ -19,7 +19,7 @@ import (
 // 场景：Gitea `git push` 返回成功后，post-receive hook / PR 队列 / indexer
 // 仍在后台处理；期间 `POST /pulls` 会走到 "半状态" 的 git 仓库读取路径，
 // 返回 500 Internal Server Error（且错误体非 JSON，message 为空）。
-// 生产观测：延迟可达数分钟量级，故内层退避总窗口拉长到 ~10 分钟，
+// 生产观测：低负载环境下延迟可达 10 分钟以上，故内层退避总窗口扩展到 ~25 分钟，
 // 减少将整个 fix_issue 任务重启（asynq 外层会重跑 Claude 容器）的代价。
 var prCreateBackoffs = []time.Duration{
 	10 * time.Second,
@@ -28,6 +28,8 @@ var prCreateBackoffs = []time.Duration{
 	80 * time.Second,
 	160 * time.Second,
 	300 * time.Second,
+	300 * time.Second,
+	600 * time.Second,
 }
 
 // IssueClient 窄接口，仅暴露 fix 所需的 Gitea API。

@@ -105,7 +105,7 @@ func severityEmoji(s Severity) string {
 	case SeverityWarning:
 		return "⚠️"
 	case SeverityCritical:
-		return "🚨"
+		return "‼️"
 	default:
 		// info 及其他未知类型均使用 info emoji
 		return "ℹ️"

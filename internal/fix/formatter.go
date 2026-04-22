@@ -233,7 +233,7 @@ func FormatFixPRBody(fix *FixOutput, issueNum int64, refKind RefKind, baseBranch
 	}
 
 	sb.WriteString("---\n")
-	sb.WriteString("🤖 由 DTWorkflow 自动生成")
+	sb.WriteString("由 DTWorkflow 自动生成")
 
 	body := sb.String()
 	// 清洗控制字符：Gitea 1.21 对含 NUL 等字符的 body 会 500（未 JSON 化的内部错误）。

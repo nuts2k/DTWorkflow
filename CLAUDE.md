@@ -91,6 +91,11 @@ configs/        # 配置文件模板
 - 本机可创建 `deploy/local.env`（已被 `.gitignore` 排除）覆盖默认 Host，参考 `deploy/local.env.example`
 - 部署目录：`/opt/dtworkflow`
 
+## Gitea 兼容性约束
+
+- **禁止在 Gitea API 请求体中使用 4 字节 emoji（U+10000 及以上）**：目标 Gitea 实例的 MySQL 使用 `utf8` charset（非 `utf8mb4`），写入 4 字节字符会触发数据库内部错误并返回 HTTP 500（无 message）。可用字符范围：仅限 BMP（U+0000–U+FFFF）内的 emoji，如 `✅`（U+2705）、`⚠️`（U+26A0）、`‼️`（U+203C）。禁用示例：`🤖`（U+1F916）、`🚨`（U+1F6A8）、`🚀`（U+1F680）等。
+- 新增涉及 Gitea 写入的代码（PR body、Issue 评论、评审内容）时，必须用 `python3 -c "for ch in s: print(hex(ord(ch)))"` 或等效方式确认无 U+10000 以上字符。
+
 ## 编码规范
 
 - 遵循 Go 官方代码规范和 Effective Go

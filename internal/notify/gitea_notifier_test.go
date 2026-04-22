@@ -235,8 +235,8 @@ func TestFormatGiteaComment_Critical(t *testing.T) {
 	}
 	comment := formatGiteaComment(msg)
 
-	if !strings.HasPrefix(comment, "## 🚨") {
-		t.Errorf("critical comment should start with 🚨, got: %q", comment)
+	if !strings.HasPrefix(comment, "## ‼️") {
+		t.Errorf("critical comment should start with ‼️, got: %q", comment)
 	}
 }
 
