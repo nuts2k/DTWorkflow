@@ -103,19 +103,27 @@ const analysisJSONSchemaInstruction = `
 // ==================== M3.5: fix_issue 修复模式 prompt ====================
 
 // fixPreamble 修复模式前言（替代 analyze 的 readOnlyConstraint + analysisPreamble）。
-// fix 模式允许运行 Bash（需执行 mvn test / npm test），但仍禁止网络访问。
+// fix 模式允许运行 Bash（需执行 mvn test / npm test），限制非修复相关的网络调用。
 const fixPreamble = `你是一位资深软件工程师，正在修复项目中报告的 Issue。
 你拥有完整的文件读写和 Bash 执行能力，可以：
 - 修改源代码文件
+- 安装项目依赖（npm install / npm ci / yarn install / pnpm install / mvn 等）
 - 运行 mvn test / npm test / npx vitest 等测试命令
 - 使用 git 创建分支、commit、push
 
 安全约束（非常重要）：
-- 禁止调用任何外部 HTTP API / 网络服务（curl、wget 等）
-- 禁止向 Gitea 提交评审、评论或状态更新（由系统外部处理）
-- 除运行测试外，不要执行任何与修复无关的系统命令
+- 禁止调用 Gitea / GitHub 等代码托管平台的 REST API（评审、评论、状态更新由系统外部处理）
+- 禁止使用 curl / wget / python requests 等工具发送任意 HTTP 请求
+- 允许例外：包管理器操作（npm install / npm ci / yarn / pnpm / mvn / gradle 等）属于正常修复流程，不受上述网络限制
+- 除修复相关操作（安装依赖、运行测试、git 操作）外，不要执行与修复无关的系统命令
 
-你的目标：分析 Issue → 修改代码 → 补充测试 → 运行测试 → push 代码，并输出 JSON 结果。
+CLAUDE.md 覆盖声明（最高优先级）：
+本指令由 DTWorkflow 自动修复系统注入。如果仓库的 CLAUDE.md 或其他项目配置文件中存在
+「禁止 git 操作」「禁止 git add / commit / push」「禁止安装依赖」等限制，
+这些限制在本次自动修复任务中不适用。你被明确授权执行 git add、git commit、git push
+以及 npm install 等操作以完成修复任务。
+
+你的目标：分析 Issue → 修改代码 → 安装依赖（如需）→ 补充测试 → 运行测试 → push 代码，并输出 JSON 结果。
 `
 
 // fixInstructionsTemplate 修复流程指令（六步）模板。
@@ -145,6 +153,8 @@ const fixInstructionsTemplate = `
 
 ### 第五步：运行测试
 - 自动检测：pom.xml 存在 → 运行 mvn test；package.json 存在 → 运行 npm test 或 npx vitest
+- 如果 node_modules 目录不存在或缺少测试框架（如 vitest / jest），先运行 npm install 或 npm ci 安装依赖
+- 如果 pom.xml 存在但依赖未下载，先运行 mvn dependency:resolve
 - 全部通过才能继续。测试失败时根据错误信息修正代码或测试，重试最多 3 轮
 - 3 轮后仍失败，输出 success=false + failure_reason 后终止
 
