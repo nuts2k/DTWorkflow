@@ -35,6 +35,7 @@ services:
       DTWORKFLOW_REDIS_ADDR: redis:6379
       DTWORKFLOW_DATABASE_PATH: /app/data/dtworkflow.db
       DTWORKFLOW_WORKER_IMAGE: ${WORKER_IMAGE}
+      DTWORKFLOW_WORKER_IMAGE_FULL: ${WORKER_FULL_IMAGE}
       DTWORKFLOW_WORKER_MAVEN_CACHE_VOLUME: dtworkflow-maven-cache
     volumes:
       - ${DEPLOY_DIR}/dtworkflow.yaml:/app/dtworkflow.yaml:ro

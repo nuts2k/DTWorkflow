@@ -28,6 +28,7 @@ fi
 
 APP_IMAGE="dtworkflow:${VERSION}"
 WORKER_IMAGE="dtworkflow-worker:${VERSION}"
+WORKER_FULL_IMAGE="dtworkflow-worker-full:${VERSION}"
 RELEASE_DIR="$PROJECT_ROOT/.releases/${VERSION}"
 
 echo "=== DTWorkflow 部署 ==="
@@ -40,8 +41,9 @@ echo ""
 echo "[1/7] 校验发布产物..."
 APP_TAR="$RELEASE_DIR/dtworkflow-${VERSION}.tar"
 WORKER_TAR="$RELEASE_DIR/dtworkflow-worker-${VERSION}.tar"
+WORKER_FULL_TAR="$RELEASE_DIR/dtworkflow-worker-full-${VERSION}.tar"
 
-for f in "$APP_TAR" "$WORKER_TAR"; do
+for f in "$APP_TAR" "$WORKER_TAR" "$WORKER_FULL_TAR"; do
     if [ ! -f "$f" ]; then
         echo "错误: 发布产物不存在: $f"
         echo "请先运行: scripts/build-release.sh $VERSION"
@@ -71,6 +73,7 @@ echo "[3/7] 上传发布产物..."
 ssh "$DEPLOY_HOST" "mkdir -p $DEPLOY_DIR/releases"
 scp "$APP_TAR" "$DEPLOY_HOST:$DEPLOY_DIR/releases/"
 scp "$WORKER_TAR" "$DEPLOY_HOST:$DEPLOY_DIR/releases/"
+scp "$WORKER_FULL_TAR" "$DEPLOY_HOST:$DEPLOY_DIR/releases/"
 scp "$PROJECT_ROOT/deploy/docker-compose.prod.yml" "$DEPLOY_HOST:$DEPLOY_DIR/docker-compose.yml"
 echo "  上传完成"
 
@@ -78,13 +81,17 @@ echo "  上传完成"
 echo "[4/7] 导入镜像..."
 ssh "$DEPLOY_HOST" "docker load -i $DEPLOY_DIR/releases/dtworkflow-${VERSION}.tar"
 ssh "$DEPLOY_HOST" "docker load -i $DEPLOY_DIR/releases/dtworkflow-worker-${VERSION}.tar"
+ssh "$DEPLOY_HOST" "docker load -i $DEPLOY_DIR/releases/dtworkflow-worker-full-${VERSION}.tar"
 echo "  镜像导入完成"
 
 # --- 5. 更新 .env 中的镜像版本（仅更新 APP_IMAGE 和 WORKER_IMAGE） ---
 echo "[5/7] 更新镜像版本..."
 ssh "$DEPLOY_HOST" "cd $DEPLOY_DIR && \
     sed -i 's|^APP_IMAGE=.*|APP_IMAGE=${APP_IMAGE}|' .env && \
-    sed -i 's|^WORKER_IMAGE=.*|WORKER_IMAGE=${WORKER_IMAGE}|' .env"
+    sed -i 's|^WORKER_IMAGE=.*|WORKER_IMAGE=${WORKER_IMAGE}|' .env && \
+    (grep -q '^WORKER_FULL_IMAGE=' .env \
+        && sed -i 's|^WORKER_FULL_IMAGE=.*|WORKER_FULL_IMAGE=${WORKER_FULL_IMAGE}|' .env \
+        || echo 'WORKER_FULL_IMAGE=${WORKER_FULL_IMAGE}' >> .env)"
 echo "  .env 已更新"
 
 # --- 6. 记录版本并重启服务 ---
