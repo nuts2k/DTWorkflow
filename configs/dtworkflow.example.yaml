@@ -64,6 +64,8 @@ worker:
   timeout: "30m"
   image: "dtworkflow-worker:1.0"
   image_full: "dtworkflow-worker-full:latest"  # M3.4: 执行镜像（可选，不配则所有任务用 image）
+  # maven_cache_volume: "dtworkflow-maven-cache"  # Maven 缓存 named volume（通常由 compose 环境变量注入）
+  # npm_cache_volume: "dtworkflow-npm-cache"       # npm 缓存 named volume（通常由 compose 环境变量注入）
   cpu_limit: "2.0"
   memory_limit: "4g"
   network_name: "dtworkflow-net"

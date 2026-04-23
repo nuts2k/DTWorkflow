@@ -582,15 +582,22 @@ func (p *Pool) Stats() PoolStats {
 }
 
 // buildBinds 根据任务类型构建额外的容器挂载列表。
-// fix_issue / gen_tests 使用 ImageFull 时，若配置了 MavenCacheVolume，
-// 将其挂载到 /workspace/.m2/repository，实现跨容器 Maven 依赖缓存复用。
+// fix_issue / gen_tests 使用 ImageFull 时，若配置了 MavenCacheVolume / NpmCacheVolume，
+// 将其挂载到对应路径，实现跨容器依赖缓存复用。
 func (p *Pool) buildBinds(taskType model.TaskType) []string {
-	if p.config.MavenCacheVolume == "" || p.config.ImageFull == "" {
+	if p.config.ImageFull == "" {
 		return nil
 	}
 	switch taskType {
 	case model.TaskTypeFixIssue, model.TaskTypeGenTests:
-		return []string{p.config.MavenCacheVolume + ":/workspace/.m2/repository"}
+		var binds []string
+		if p.config.MavenCacheVolume != "" {
+			binds = append(binds, p.config.MavenCacheVolume+":/workspace/.m2/repository")
+		}
+		if p.config.NpmCacheVolume != "" {
+			binds = append(binds, p.config.NpmCacheVolume+":/workspace/.npm")
+		}
+		return binds
 	}
 	return nil
 }

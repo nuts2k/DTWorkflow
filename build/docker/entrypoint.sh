@@ -18,6 +18,14 @@ setup_build_cache() {
     # 此处仅冗余导出环境变量，防御镜像 ENV 被外部 docker run -e 覆盖为空的情况。
     export MAVEN_OPTS="${MAVEN_OPTS:--Dmaven.repo.local=/workspace/.m2/repository}"
     export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/workspace/.gradle}"
+
+    # npm 缓存重定向到持久化 volume（/workspace/.npm）。
+    # 配置 NpmCacheVolume 后，named volume 挂载到 /workspace/.npm，
+    # npm install 的下载缓存跨容器复用，避免每次重新下载所有依赖。
+    if [ -d /workspace/.npm ]; then
+        export npm_config_cache="/workspace/.npm"
+        log "npm 缓存已重定向到 /workspace/.npm"
+    fi
 }
 
 # --- 准备可写的 HOME 目录 ---

@@ -83,6 +83,7 @@ type PoolConfig struct {
 	Image        string // 锁定 tag，如 dtworkflow-worker:1.0
 	ImageFull        string // 执行镜像（fix、gen_tests），可选
 	MavenCacheVolume string // Maven 缓存 Docker named volume，非空时挂载到 /workspace/.m2/repository（仅 ImageFull 容器）
+	NpmCacheVolume   string // npm 缓存 Docker named volume，非空时挂载到 /workspace/.npm（仅 ImageFull 容器）
 	CPULimit     string // 容器 CPU 限制，如 "2.0"
 	MemoryLimit  string // 容器内存限制，如 "4g"
 	GiteaURL     string // Gitea 实例地址

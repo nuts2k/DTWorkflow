@@ -109,6 +109,7 @@ type WorkerConfig struct {
 	Image            string `mapstructure:"image"`
 	ImageFull        string `mapstructure:"image_full"`         // M3.4: 执行镜像（可选）
 	MavenCacheVolume string `mapstructure:"maven_cache_volume"` // M3.5: Maven 缓存 named volume，挂载到 fix/gen_tests 容器
+	NpmCacheVolume   string `mapstructure:"npm_cache_volume"`   // npm 缓存 named volume，挂载到 fix/gen_tests 容器
 	CPULimit         string `mapstructure:"cpu_limit"`
 	MemoryLimit      string `mapstructure:"memory_limit"`
 	NetworkName      string `mapstructure:"network_name"`
@@ -282,6 +283,7 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("worker.image", "dtworkflow-worker:1.0")
 		m.v.SetDefault("worker.image_full", "")
 		m.v.SetDefault("worker.maven_cache_volume", "")
+		m.v.SetDefault("worker.npm_cache_volume", "")
 		m.v.SetDefault("worker.cpu_limit", "2.0")
 		m.v.SetDefault("worker.memory_limit", "4g")
 		m.v.SetDefault("worker.network_name", "dtworkflow-net")

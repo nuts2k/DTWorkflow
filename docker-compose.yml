@@ -3,6 +3,8 @@ volumes:
   app-data:
   maven-cache: # Maven 依赖缓存，在 fix/gen_tests 容器间共享复用
     name: dtworkflow-maven-cache # 固定名称，避免 compose 项目名前缀干扰
+  npm-cache: # npm 依赖缓存，在 fix/gen_tests 容器间共享复用
+    name: dtworkflow-npm-cache
 
 services:
   redis:
@@ -46,8 +48,9 @@ services:
       - DTWORKFLOW_REDIS_ADDR=redis:6379
       # 容器内数据库路径（覆盖 yaml 中的相对路径）
       - DTWORKFLOW_DATABASE_PATH=/app/data/dtworkflow.db
-      # Maven 缓存 named volume 名称（dtworkflow 以此名挂载到 worker 容器）
+      # Maven/npm 缓存 named volume 名称（dtworkflow 以此名挂载到 worker 容器）
       - DTWORKFLOW_WORKER_MAVEN_CACHE_VOLUME=dtworkflow-maven-cache
+      - DTWORKFLOW_WORKER_NPM_CACHE_VOLUME=dtworkflow-npm-cache
     volumes:
       # 挂载统一配置文件（M1.8 配置体系），敏感信息通过 yaml 文件管理而非散落在 env 中
       - ./dtworkflow.yaml:/app/dtworkflow.yaml:ro

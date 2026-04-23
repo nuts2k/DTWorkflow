@@ -37,6 +37,7 @@ services:
       DTWORKFLOW_WORKER_IMAGE: ${WORKER_IMAGE}
       DTWORKFLOW_WORKER_IMAGE_FULL: ${WORKER_FULL_IMAGE}
       DTWORKFLOW_WORKER_MAVEN_CACHE_VOLUME: dtworkflow-maven-cache
+      DTWORKFLOW_WORKER_NPM_CACHE_VOLUME: dtworkflow-npm-cache
     volumes:
       - ${DEPLOY_DIR}/dtworkflow.yaml:/app/dtworkflow.yaml:ro
       - ${DEPLOY_DIR}/shared/data:/app/data
@@ -48,6 +49,8 @@ services:
 volumes:
   maven-cache:
     name: dtworkflow-maven-cache
+  npm-cache:
+    name: dtworkflow-npm-cache
 
 networks:
   dtworkflow-net:

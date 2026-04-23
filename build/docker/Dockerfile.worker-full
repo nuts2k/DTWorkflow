@@ -17,8 +17,8 @@ RUN curl -fsSL --retry 3 \
     | tar xz -C /opt \
     && ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn.real
 
-# Maven/Gradle 缓存目录预创建（named volume 挂载时 Docker 会复制此结构及权限）
-RUN mkdir -p /workspace/.m2/repository /workspace/.gradle \
+# Maven/Gradle/npm 缓存目录预创建（named volume 挂载时 Docker 会复制此结构及权限）
+RUN mkdir -p /workspace/.m2/repository /workspace/.gradle /workspace/.npm \
     && chown -R worker:worker /workspace
 
 # mvn 包装器：强制 -Dmaven.repo.local=/workspace/.m2/repository，过滤 Claude 可能传入的覆盖参数。
