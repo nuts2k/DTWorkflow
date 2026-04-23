@@ -91,6 +91,9 @@ docker buildx build \
     .
 echo "  Worker 镜像构建完成"
 
+# worker-full 的 Dockerfile 以 dtworkflow-worker:latest 为基础，构建前打上临时标签
+docker tag "$WORKER_IMAGE" "dtworkflow-worker:latest"
+
 # --- 7. 构建 Worker-Full 镜像 ---
 echo "[7/9] 构建 Worker-Full 镜像 ($WORKER_FULL_IMAGE)..."
 docker buildx build \
