@@ -118,7 +118,12 @@ case "${TASK_TYPE:-}" in
         git remote set-url origin "${REPO_CLONE_URL}"
         # 通过 credential helper 在每次 push 时按需注入 token，运行结束后随容器销毁
         # GITEA_TOKEN 在脚本末尾被 unset，但 helper 已捕获其值，故 push 仍可用
-        CRED_HELPER_SCRIPT="/tmp/.git-credential-helper"
+        #
+        # 放置于 /workspace 而非 /tmp：/tmp 为 noexec tmpfs（见 internal/worker/docker.go
+        # HostConfig.Tmpfs），即便 chmod 700 也无法执行，会导致 git push 报
+        # "Permission denied" → "could not read Username"。/workspace 同样是 tmpfs
+        # （容器退出即销毁，token 不持久化），但未设置 noexec，可安全执行 helper。
+        CRED_HELPER_SCRIPT="/workspace/.git-credential-helper"
         cat > "${CRED_HELPER_SCRIPT}" <<HELPER
 #!/bin/sh
 echo "username=token"
