@@ -172,7 +172,7 @@ func (d *dockerClient) CreateContainer(ctx context.Context, cfg *ContainerConfig
 		ReadonlyRootfs: true,
 		Tmpfs: map[string]string{
 			"/tmp":       "rw,noexec,nosuid,size=256m,mode=1777",
-			"/workspace": "rw,nosuid,size=2g,mode=1777",
+			"/workspace": "rw,exec,nosuid,size=2g,mode=1777",
 		},
 		Binds: cfg.Binds,
 		Resources: container.Resources{
