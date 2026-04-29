@@ -94,6 +94,9 @@ type PoolConfig struct {
 	// 与 GiteaToken 拆分为独立账号可以规避 Gitea"同一账号不能评审自己创建的 PR"的限制。
 	// 留空时 buildContainerEnv 回退到 GiteaToken。
 	GiteaTokenFix SecretString `json:"-"`
+	// GiteaTokenGenTests gen_tests 任务专用的 Gitea API Token（容器内 git push 到 auto-test/* 分支 + host 侧创建 PR 使用）。
+	// 留空时回退到 GiteaToken。
+	GiteaTokenGenTests SecretString `json:"-"`
 	ClaudeAPIKey  SecretString `json:"-"` // Claude API Key
 	ClaudeBaseURL string       // Claude API 代理地址，留空使用官方地址
 	WorkDir       string       // 容器内工作目录

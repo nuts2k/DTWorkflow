@@ -65,11 +65,13 @@ type GiteaConfig struct {
 // 因此需要区分"创建修复 PR 的账号"与"评审 PR 的账号"：
 //   - Review：评审 PR（review.Writer 用于 CreatePullReview）+ 只读 API 预校验 + 通知评论
 //   - Fix：修复 Issue（fix.Service 用于 CreatePullRequest + Issue 评论）+ 容器内 git push
+//   - GenTests：测试生成（gen_tests 容器内 git push 到 auto-test/* 分支 + host 侧创建 PR）
 //
 // 任一字段为空时回退到必填的 GiteaConfig.Token。
 type GiteaTokens struct {
-	Review string `mapstructure:"review"`
-	Fix    string `mapstructure:"fix"`
+	Review   string `mapstructure:"review"`
+	Fix      string `mapstructure:"fix"`
+	GenTests string `mapstructure:"gen_tests"`
 }
 
 // ReviewToken 返回评审用 token（空时回退到 GiteaConfig.Token）。
@@ -84,6 +86,14 @@ func (c GiteaConfig) ReviewToken() string {
 func (c GiteaConfig) FixToken() string {
 	if strings.TrimSpace(c.Tokens.Fix) != "" {
 		return c.Tokens.Fix
+	}
+	return c.Token
+}
+
+// GenTestsToken 返回测试生成用 token（空时回退到 GiteaConfig.Token）。
+func (c GiteaConfig) GenTestsToken() string {
+	if strings.TrimSpace(c.Tokens.GenTests) != "" {
+		return c.Tokens.GenTests
 	}
 	return c.Token
 }

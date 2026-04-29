@@ -58,6 +58,9 @@ type serveConfig struct {
 	// GiteaTokenFix 修复账号 token（fix.Service 的 PRClient/IssueClient + 容器内 git push）；
 	// 空字符串表示回退到 GiteaToken。
 	GiteaTokenFix string
+	// GiteaTokenGenTests 测试生成账号 token（gen_tests 容器内 git push 到 auto-test/* + host 侧创建 PR）；
+	// 空字符串表示回退到 GiteaToken。
+	GiteaTokenGenTests string
 	MaxWorkers    int
 	WorkerImage   string
 

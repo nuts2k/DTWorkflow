@@ -28,13 +28,20 @@ func sanitizeEnvValue(s string) string {
 
 // selectGiteaToken 根据任务类型选择注入到容器的 Gitea Token。
 //
-// fix_issue 任务需要在容器内 git push 到 auto-fix/* 分支并随后由 host 侧创建 PR，
-// 为规避 Gitea"同一账号不能评审自己创建的 PR"的限制，单独走 fix 账号（GiteaTokenFix）；
-// 其他任务（review_pr / analyze_issue / gen_tests 等）使用默认 GiteaToken。
-// GiteaTokenFix 为空时回退到 GiteaToken，保持向后兼容。
+// fix_issue 和 gen_tests 任务需要在容器内 git push 并由 host 侧创建 PR，
+// 为规避 Gitea"同一账号不能评审自己创建的 PR"的限制，各自走独立账号；
+// 其他任务（review_pr / analyze_issue 等）使用默认 GiteaToken。
+// 专属 token 为空时回退到 GiteaToken，保持向后兼容。
 func selectGiteaToken(config PoolConfig, taskType model.TaskType) string {
-	if taskType == model.TaskTypeFixIssue && config.GiteaTokenFix != "" {
-		return string(config.GiteaTokenFix)
+	switch taskType {
+	case model.TaskTypeFixIssue:
+		if config.GiteaTokenFix != "" {
+			return string(config.GiteaTokenFix)
+		}
+	case model.TaskTypeGenTests:
+		if config.GiteaTokenGenTests != "" {
+			return string(config.GiteaTokenGenTests)
+		}
 	}
 	return string(config.GiteaToken)
 }

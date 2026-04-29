@@ -52,8 +52,8 @@ type readinessSnapshot struct {
 }
 
 func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
-	// 容器内默认 GITEA_TOKEN 走 review 账号（review_pr / analyze_issue / gen_tests 都是
-	// 只读 clone）；fix_issue 需要在容器内 push 到 auto-fix/* 分支，单独走 GiteaTokenFix。
+	// 容器内默认 GITEA_TOKEN 走 review 账号（review_pr / analyze_issue 都是只读 clone）；
+	// fix_issue 单独走 GiteaTokenFix；gen_tests 单独走 GiteaTokenGenTests（需 push + 创建 PR）。
 	reviewTok := cfg.GiteaTokenReview
 	if reviewTok == "" {
 		reviewTok = cfg.GiteaToken
@@ -62,13 +62,18 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 	if fixTok == "" {
 		fixTok = cfg.GiteaToken
 	}
+	genTestsTok := cfg.GiteaTokenGenTests
+	if genTestsTok == "" {
+		genTestsTok = cfg.GiteaToken
+	}
 	pcfg := worker.PoolConfig{
-		Image:         cfg.WorkerImage,
-		CPULimit:      cfg.CPULimit,
-		MemoryLimit:   cfg.MemoryLimit,
-		GiteaURL:      cfg.GiteaURL,
-		GiteaToken:    worker.SecretString(reviewTok),
-		GiteaTokenFix: worker.SecretString(fixTok),
+		Image:              cfg.WorkerImage,
+		CPULimit:           cfg.CPULimit,
+		MemoryLimit:        cfg.MemoryLimit,
+		GiteaURL:           cfg.GiteaURL,
+		GiteaToken:         worker.SecretString(reviewTok),
+		GiteaTokenFix:      worker.SecretString(fixTok),
+		GiteaTokenGenTests: worker.SecretString(genTestsTok),
 		ClaudeAPIKey:  worker.SecretString(cfg.ClaudeAPIKey),
 		ClaudeBaseURL: cfg.ClaudeBaseURL,
 		NetworkName:   cfg.NetworkName,
@@ -291,8 +296,9 @@ func buildServeConfigFromManager(mgr *config.Manager) (serveConfig, error) {
 		ClaudeBaseURL: cfg.Claude.BaseURL,
 		GiteaURL:         cfg.Gitea.URL,
 		GiteaToken:       cfg.Gitea.Token,
-		GiteaTokenReview: cfg.Gitea.Tokens.Review,
-		GiteaTokenFix:    cfg.Gitea.Tokens.Fix,
+		GiteaTokenReview:   cfg.Gitea.Tokens.Review,
+		GiteaTokenFix:      cfg.Gitea.Tokens.Fix,
+		GiteaTokenGenTests: cfg.Gitea.Tokens.GenTests,
 		MaxWorkers:       cfg.Worker.Concurrency,
 		WorkerImage:   cfg.Worker.Image,
 		CPULimit:      cfg.Worker.CPULimit,
