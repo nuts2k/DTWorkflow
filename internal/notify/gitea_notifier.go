@@ -160,7 +160,7 @@ func (n *GiteaNotifier) CommentOnGenTestsPR(ctx context.Context, owner, repo str
 		return fmt.Errorf("CommentOnGenTestsPR 需要有效的 PR 编号（> 0）: %w", ErrInvalidTarget)
 	}
 
-	full := genTestsDoneAnchor + "\n\n" + body
+	full := sanitizeGiteaText(genTestsDoneAnchor + "\n\n" + body)
 
 	mgr, ok := n.client.(GiteaPRCommentManager)
 	if !ok {

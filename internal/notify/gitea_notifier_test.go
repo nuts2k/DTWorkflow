@@ -372,6 +372,31 @@ func TestCommentOnGenTestsPR_FirstTimeCreate(t *testing.T) {
 	}
 }
 
+// TestCommentOnGenTestsPR_CreateStripsNonBMPChars 验证首次 Create 路径会清洗
+// Gitea MySQL utf8 不支持的非 BMP 字符，避免写评论时触发 500。
+func TestCommentOnGenTestsPR_CreateStripsNonBMPChars(t *testing.T) {
+	mgr := &stubCommentManager{listReturn: nil}
+	n, err := NewGiteaNotifier(mgr)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	err = n.CommentOnGenTestsPR(context.Background(), "org", "repo", 42, "body 🤖🚀")
+	if err != nil {
+		t.Fatalf("CommentOnGenTestsPR error: %v", err)
+	}
+	if len(mgr.createCalls) != 1 {
+		t.Fatalf("期望 Create 调用 1 次，实际 %d", len(mgr.createCalls))
+	}
+	got := mgr.createCalls[0].body
+	if strings.Contains(got, "🤖") || strings.Contains(got, "🚀") {
+		t.Fatalf("Create body 不应包含非 BMP 字符，实际：%q", got)
+	}
+	if !strings.Contains(got, "body ") {
+		t.Fatalf("Create body 应保留非 BMP 以外内容，实际：%q", got)
+	}
+}
+
 // TestCommentOnGenTestsPR_SecondTimeEdit 同 PR 已存在含锚点的旧评论 → 走 Edit 覆盖。
 func TestCommentOnGenTestsPR_SecondTimeEdit(t *testing.T) {
 	oldBody := genTestsDoneAnchor + "\n\n旧的评论内容（由上一次 gen_tests 任务写入）"
@@ -405,6 +430,35 @@ func TestCommentOnGenTestsPR_SecondTimeEdit(t *testing.T) {
 	}
 	if !strings.Contains(got.body, "新的评论内容") {
 		t.Errorf("Edit body 未包含新内容：%q", got.body)
+	}
+}
+
+// TestCommentOnGenTestsPR_EditStripsNonBMPChars 验证覆盖旧评论的 Edit 路径也会清洗
+// 非 BMP 字符，避免 upsert 命中旧评论后绕过 Create 路径兜底。
+func TestCommentOnGenTestsPR_EditStripsNonBMPChars(t *testing.T) {
+	mgr := &stubCommentManager{
+		listReturn: []GiteaCommentInfo{
+			{ID: 100, Body: genTestsDoneAnchor + "\n\n旧评论"},
+		},
+	}
+	n, err := NewGiteaNotifier(mgr)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	err = n.CommentOnGenTestsPR(context.Background(), "org", "repo", 42, "新的评论内容 🤖🚀")
+	if err != nil {
+		t.Fatalf("CommentOnGenTestsPR error: %v", err)
+	}
+	if len(mgr.editCalls) != 1 {
+		t.Fatalf("期望 Edit 调用 1 次，实际 %d", len(mgr.editCalls))
+	}
+	got := mgr.editCalls[0].body
+	if strings.Contains(got, "🤖") || strings.Contains(got, "🚀") {
+		t.Fatalf("Edit body 不应包含非 BMP 字符，实际：%q", got)
+	}
+	if !strings.Contains(got, "新的评论内容 ") {
+		t.Fatalf("Edit body 应保留非 BMP 以外内容，实际：%q", got)
 	}
 }
 
@@ -477,6 +531,28 @@ func TestCommentOnGenTestsPR_NarrowClientFallback(t *testing.T) {
 	}
 }
 
+// TestCommentOnGenTestsPR_NarrowClientFallbackStripsNonBMPChars 验证窄接口 fallback
+// 的仅 Create 路径也复用同一套 Gitea 文本清洗。
+func TestCommentOnGenTestsPR_NarrowClientFallbackStripsNonBMPChars(t *testing.T) {
+	stub := &stubCommentCreator{}
+	n, err := NewGiteaNotifier(stub)
+	if err != nil {
+		t.Fatalf("NewGiteaNotifier error: %v", err)
+	}
+
+	err = n.CommentOnGenTestsPR(context.Background(), "org", "repo", 42, "body 🤖🚀")
+	if err != nil {
+		t.Fatalf("CommentOnGenTestsPR error: %v", err)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("期望 Create 调用 1 次，实际 %d", len(stub.calls))
+	}
+	got := stub.calls[0].body
+	if strings.Contains(got, "🤖") || strings.Contains(got, "🚀") {
+		t.Fatalf("fallback body 不应包含非 BMP 字符，实际：%q", got)
+	}
+}
+
 // TestCommentOnGenTestsPR_InvalidTarget 参数校验：owner/repo 空、prNumber <= 0。
 func TestCommentOnGenTestsPR_InvalidTarget(t *testing.T) {
 	mgr := &stubCommentManager{}
@@ -486,10 +562,10 @@ func TestCommentOnGenTestsPR_InvalidTarget(t *testing.T) {
 	}
 
 	cases := []struct {
-		name   string
-		owner  string
-		repo   string
-		prNum  int64
+		name  string
+		owner string
+		repo  string
+		prNum int64
 	}{
 		{"空 owner", "", "repo", 1},
 		{"空 repo", "org", "", 1},
