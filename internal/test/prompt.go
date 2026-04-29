@@ -588,6 +588,7 @@ func buildCommand(cfgProv TestConfigProvider) []string {
 	cmd := []string{
 		"claude", "-p", "-",
 		"--output-format", "json",
+		"--dangerously-skip-permissions",
 	}
 	if cfgProv != nil {
 		if m := cfgProv.GetClaudeModel(); m != "" {

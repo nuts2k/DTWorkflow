@@ -603,6 +603,10 @@ func (s *Service) createTestPR(ctx context.Context, payload model.TaskPayload,
 	// 3. 构造 body（交由 pr_body.go 渲染，包含 GapAnalysis / TestResults 等）
 	body := FormatTestGenPRBody(out, payload, string(result.Framework))
 
+	// 4. 兜底清洗：Gitea MySQL utf8 不支持 U+10000 以上字符（对齐 fix.sanitizeGiteaText）
+	title = stripNonBMPChars(title)
+	body = stripNonBMPChars(body)
+
 	pr, _, err := s.prClient.CreatePullRequest(ctx, payload.RepoOwner, payload.RepoName,
 		gitea.CreatePullRequestOption{
 			Head:  out.BranchName,

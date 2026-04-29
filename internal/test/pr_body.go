@@ -101,7 +101,7 @@ func FormatTestGenPRBody(out *TestGenOutput, payload model.TaskPayload, framewor
 
 	if out == nil {
 		sb.WriteString("> 本次任务未产出内层 TestGenOutput，详见任务记录与容器日志。\n\n")
-		sb.WriteString("---\n🤖 由 DTWorkflow 自动生成")
+		sb.WriteString("---\n[bot] 由 DTWorkflow 自动生成")
 		return finalizePRBody(sb.String())
 	}
 
@@ -156,7 +156,7 @@ func FormatTestGenPRBody(out *TestGenOutput, payload model.TaskPayload, framewor
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("---\n🤖 由 DTWorkflow 自动生成")
+	sb.WriteString("---\n[bot] 由 DTWorkflow 自动生成")
 	return finalizePRBody(sb.String())
 }
 
@@ -227,6 +227,16 @@ func boolDisplay(v bool, yes, no string) string {
 		return yes
 	}
 	return no
+}
+
+// stripNonBMPChars 移除 U+10000 以上的非 BMP 字符（对齐 fix.stripNonBMPChars）。
+func stripNonBMPChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r > 0xFFFF {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // finalizePRBody 把超长 body 按 prBodyMaxLen 截断（UTF-8 安全），并追加截断说明。

@@ -550,7 +550,7 @@ func TestResolveFramework_EmptyModuleRoot(t *testing.T) {
 
 func TestBuildCommand_DefaultBase(t *testing.T) {
 	cmd := buildCommand(nil)
-	want := []string{"claude", "-p", "-", "--output-format", "json"}
+	want := []string{"claude", "-p", "-", "--output-format", "json", "--dangerously-skip-permissions"}
 	if !equalSlice(cmd, want) {
 		t.Errorf("default cmd=%v, want %v", cmd, want)
 	}
