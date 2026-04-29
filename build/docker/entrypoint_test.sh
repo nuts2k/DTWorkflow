@@ -234,6 +234,7 @@ run_build_cache_case() {
   GITEA_TOKEN="token" \
   TASK_TYPE="${task_type}" \
   ISSUE_REF="feature/auth" \
+  BASE_REF="main" \
   bash "${ENTRYPOINT}" bash -lc 'printf "%s\n" "$MAVEN_OPTS"; printf "%s\n" "$GRADLE_USER_HOME"' >"${stdout_file}" 2>"${stderr_file}" || true
 
   if grep -qx -- '-Dmaven.repo.local=/workspace/.m2/repository' "${stdout_file}" &&
