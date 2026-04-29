@@ -21,18 +21,18 @@ var (
 // SecretString 防止敏感信息在日志或 fmt.Printf 中泄漏
 type SecretString string
 
-func (s SecretString) String() string                { return "[REDACTED]" }
-func (s SecretString) GoString() string              { return "[REDACTED]" }
-func (s SecretString) MarshalJSON() ([]byte, error)  { return []byte(`"[REDACTED]"`), nil }
-func (s SecretString) MarshalText() ([]byte, error)  { return []byte("[REDACTED]"), nil }
-func (s SecretString) LogValue() slog.Value          { return slog.StringValue("[REDACTED]") }
+func (s SecretString) String() string               { return "[REDACTED]" }
+func (s SecretString) GoString() string             { return "[REDACTED]" }
+func (s SecretString) MarshalJSON() ([]byte, error) { return []byte(`"[REDACTED]"`), nil }
+func (s SecretString) MarshalText() ([]byte, error) { return []byte("[REDACTED]"), nil }
+func (s SecretString) LogValue() slog.Value         { return slog.StringValue("[REDACTED]") }
 
 // ExecutionResult Worker 执行结果
 type ExecutionResult struct {
 	ExitCode    int    `json:"exit_code"`
 	Output      string `json:"output"`
 	Error       string `json:"error"`
-	Duration    int64  `json:"duration"`     // 毫秒
+	Duration    int64  `json:"duration"` // 毫秒
 	ContainerID string `json:"container_id"`
 }
 
@@ -80,30 +80,30 @@ type StreamMonitorConfig struct {
 
 // PoolConfig Worker 池配置
 type PoolConfig struct {
-	Image        string // 锁定 tag，如 dtworkflow-worker:1.0
+	Image            string // 锁定 tag，如 dtworkflow-worker:1.0
 	ImageFull        string // 执行镜像（fix、gen_tests），可选
 	MavenCacheVolume string // Maven 缓存 Docker named volume，非空时挂载到 /workspace/.m2/repository（仅 ImageFull 容器）
 	NpmCacheVolume   string // npm 缓存 Docker named volume，非空时挂载到 /workspace/.npm（仅 ImageFull 容器）
-	CPULimit     string // 容器 CPU 限制，如 "2.0"
-	MemoryLimit  string // 容器内存限制，如 "4g"
-	GiteaURL     string // Gitea 实例地址
-	// GiteaToken 默认 Gitea API Token（review/analyze_issue/gen_tests 容器内 git clone/push 使用）。
+	CPULimit         string // 容器 CPU 限制，如 "2.0"
+	MemoryLimit      string // 容器内存限制，如 "4g"
+	GiteaURL         string // Gitea 实例地址
+	// GiteaToken 默认 Gitea API Token（review_pr/analyze_issue 容器内 git clone 使用）。
 	// 该字段对应评审账号（review token），也作为兜底使用。
-	GiteaToken   SecretString `json:"-"`
+	GiteaToken SecretString `json:"-"`
 	// GiteaTokenFix fix_issue 任务专用的 Gitea API Token（容器内 git push 到 auto-fix/* 分支使用）。
 	// 与 GiteaToken 拆分为独立账号可以规避 Gitea"同一账号不能评审自己创建的 PR"的限制。
 	// 留空时 buildContainerEnv 回退到 GiteaToken。
 	GiteaTokenFix SecretString `json:"-"`
 	// GiteaTokenGenTests gen_tests 任务专用的 Gitea API Token（容器内 git push 到 auto-test/* 分支 + host 侧创建 PR 使用）。
 	// 留空时回退到 GiteaToken。
-	GiteaTokenGenTests SecretString `json:"-"`
-	ClaudeAPIKey  SecretString `json:"-"` // Claude API Key
-	ClaudeBaseURL string       // Claude API 代理地址，留空使用官方地址
-	WorkDir       string       // 容器内工作目录
-	NetworkName  string // Docker bridge 网络名，默认 "dtworkflow-net"
-	GiteaInsecureSkipVerify bool // 跳过 Gitea TLS 证书验证（自签名证书场景）
-	Timeouts      TaskTimeoutsConfig  // 按任务类型的硬超时配置
-	StreamMonitor StreamMonitorConfig // 流式心跳监控配置
+	GiteaTokenGenTests      SecretString        `json:"-"`
+	ClaudeAPIKey            SecretString        `json:"-"` // Claude API Key
+	ClaudeBaseURL           string              // Claude API 代理地址，留空使用官方地址
+	WorkDir                 string              // 容器内工作目录
+	NetworkName             string              // Docker bridge 网络名，默认 "dtworkflow-net"
+	GiteaInsecureSkipVerify bool                // 跳过 Gitea TLS 证书验证（自签名证书场景）
+	Timeouts                TaskTimeoutsConfig  // 按任务类型的硬超时配置
+	StreamMonitor           StreamMonitorConfig // 流式心跳监控配置
 }
 
 // Validate 校验 PoolConfig 必填字段，在 NewPool 中调用

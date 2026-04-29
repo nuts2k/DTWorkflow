@@ -28,18 +28,22 @@ type ServiceDeps struct {
 	// GiteaFixClient 修复账号持有的客户端。
 	// 用于：fix.Service 的 PRClient / IssueClient / RefClient（创建 PR + Issue 评论 + 读 ref）。
 	// 当 review/fix 两个 token 相同（未拆账号）时，与 GiteaClient 指向同一实例。
-	GiteaFixClient     *gitea.Client
-	QueueClient        *queue.Client
-	AsynqServer        *asynq.Server
-	Pool               *worker.Pool
-	Recovery           *queue.RecoveryLoop
-	GC                 *worker.GarbageCollector
-	Handler            webhook.Handler
-	EnqueueHandler     *queue.EnqueueHandler // 具体类型，供 API trigger handlers 使用
-	Notifier           queue.TaskNotifier
-	GiteaConfigured    bool
-	NotifierEnabled    bool
-	WorkerImagePresent bool
+	GiteaFixClient *gitea.Client
+	// GiteaGenTestsClient 测试生成账号持有的客户端。
+	// 用于：test.Service 的 PRClient，以及 gen_tests Cancel-and-Replace 的分支/PR 清理。
+	// 当 gen_tests token 与 review/fix 相同（未拆账号）时复用已有实例。
+	GiteaGenTestsClient *gitea.Client
+	QueueClient         *queue.Client
+	AsynqServer         *asynq.Server
+	Pool                *worker.Pool
+	Recovery            *queue.RecoveryLoop
+	GC                  *worker.GarbageCollector
+	Handler             webhook.Handler
+	EnqueueHandler      *queue.EnqueueHandler // 具体类型，供 API trigger handlers 使用
+	Notifier            queue.TaskNotifier
+	GiteaConfigured     bool
+	NotifierEnabled     bool
+	WorkerImagePresent  bool
 }
 
 type readinessSnapshot struct {
@@ -49,6 +53,72 @@ type readinessSnapshot struct {
 	NotifierEnabled    bool
 	WorkerImagePresent bool
 	ActiveWorkers      int
+}
+
+type giteaClientSet struct {
+	review   *gitea.Client
+	fix      *gitea.Client
+	genTests *gitea.Client
+}
+
+func buildGiteaClientSet(cfg serveConfig) (giteaClientSet, error) {
+	reviewTok := cfg.GiteaTokenReview
+	if reviewTok == "" {
+		reviewTok = cfg.GiteaToken
+	}
+	fixTok := cfg.GiteaTokenFix
+	if fixTok == "" {
+		fixTok = cfg.GiteaToken
+	}
+	genTestsTok := cfg.GiteaTokenGenTests
+	if genTestsTok == "" {
+		genTestsTok = cfg.GiteaToken
+	}
+
+	newClient := func(token string) (*gitea.Client, error) {
+		opts := []gitea.ClientOption{gitea.WithToken(token)}
+		if cfg.AppCfg != nil && cfg.AppCfg.Gitea.InsecureSkipVerify {
+			opts = append(opts, gitea.WithHTTPClient(&http.Client{
+				Timeout: 30 * time.Second,
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12}, //nolint:gosec
+				},
+			}))
+		}
+		return gitea.NewClient(cfg.GiteaURL, opts...)
+	}
+
+	reviewClient, err := newClient(reviewTok)
+	if err != nil {
+		return giteaClientSet{}, fmt.Errorf("初始化评审用 Gitea Client 失败: %w", err)
+	}
+
+	fixClient := reviewClient
+	if fixTok != reviewTok {
+		fixClient, err = newClient(fixTok)
+		if err != nil {
+			return giteaClientSet{}, fmt.Errorf("初始化修复用 Gitea Client 失败: %w", err)
+		}
+	}
+
+	genTestsClient := reviewClient
+	switch genTestsTok {
+	case reviewTok:
+		genTestsClient = reviewClient
+	case fixTok:
+		genTestsClient = fixClient
+	default:
+		genTestsClient, err = newClient(genTestsTok)
+		if err != nil {
+			return giteaClientSet{}, fmt.Errorf("初始化 gen_tests 用 Gitea Client 失败: %w", err)
+		}
+	}
+
+	return giteaClientSet{
+		review:   reviewClient,
+		fix:      fixClient,
+		genTests: genTestsClient,
+	}, nil
 }
 
 func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
@@ -74,11 +144,11 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 		GiteaToken:         worker.SecretString(reviewTok),
 		GiteaTokenFix:      worker.SecretString(fixTok),
 		GiteaTokenGenTests: worker.SecretString(genTestsTok),
-		ClaudeAPIKey:  worker.SecretString(cfg.ClaudeAPIKey),
-		ClaudeBaseURL: cfg.ClaudeBaseURL,
-		NetworkName:   cfg.NetworkName,
-		Timeouts:      buildWorkerTimeoutConfigFromAppConfig(cfg.AppCfg),
-		StreamMonitor: buildWorkerStreamMonitorConfigFromAppConfig(cfg.AppCfg),
+		ClaudeAPIKey:       worker.SecretString(cfg.ClaudeAPIKey),
+		ClaudeBaseURL:      cfg.ClaudeBaseURL,
+		NetworkName:        cfg.NetworkName,
+		Timeouts:           buildWorkerTimeoutConfigFromAppConfig(cfg.AppCfg),
+		StreamMonitor:      buildWorkerStreamMonitorConfigFromAppConfig(cfg.AppCfg),
 	}
 	if cfg.AppCfg != nil {
 		pcfg.GiteaInsecureSkipVerify = cfg.AppCfg.Gitea.InsecureSkipVerify
@@ -130,50 +200,20 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	}
 	cleanups = append(cleanups, func() { _ = s.Close() })
 
-	// 2. 初始化 Gitea Client（按职能拆两个账号）
-	//   - giteaClient: 评审账号（review.Service/Writer、通知评论、只读 API handlers）
-	//   - giteaFixClient: 修复账号（fix.Service 的 PRClient/IssueClient/RefClient）
-	// 两个 token 相同时回退到同一实例，避免重复初始化。
+	// 2. 初始化 Gitea Client（按职能拆 review / fix / gen_tests 三个账号）
 	giteaConfigured := cfg.GiteaURL != "" && cfg.GiteaToken != ""
 	var giteaClient *gitea.Client
 	var giteaFixClient *gitea.Client
+	var giteaGenTestsClient *gitea.Client
 	if giteaConfigured {
-		reviewTok := cfg.GiteaTokenReview
-		if reviewTok == "" {
-			reviewTok = cfg.GiteaToken
-		}
-		fixTok := cfg.GiteaTokenFix
-		if fixTok == "" {
-			fixTok = cfg.GiteaToken
-		}
-
-		newClient := func(token string) (*gitea.Client, error) {
-			opts := []gitea.ClientOption{gitea.WithToken(token)}
-			if cfg.AppCfg != nil && cfg.AppCfg.Gitea.InsecureSkipVerify {
-				opts = append(opts, gitea.WithHTTPClient(&http.Client{
-					Timeout: 30 * time.Second,
-					Transport: &http.Transport{
-						TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12}, //nolint:gosec
-					},
-				}))
-			}
-			return gitea.NewClient(cfg.GiteaURL, opts...)
-		}
-
-		giteaClient, err = newClient(reviewTok)
+		clients, err := buildGiteaClientSet(cfg)
 		if err != nil {
 			cleanup()
-			return nil, nil, fmt.Errorf("初始化评审用 Gitea Client 失败: %w", err)
+			return nil, nil, err
 		}
-		if fixTok == reviewTok {
-			giteaFixClient = giteaClient // 同账号复用，避免双连接池
-		} else {
-			giteaFixClient, err = newClient(fixTok)
-			if err != nil {
-				cleanup()
-				return nil, nil, fmt.Errorf("初始化修复用 Gitea Client 失败: %w", err)
-			}
-		}
+		giteaClient = clients.review
+		giteaFixClient = clients.fix
+		giteaGenTestsClient = clients.genTests
 	}
 
 	// 2.1 初始化可选通知路由
@@ -244,11 +284,11 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	//
 	// M4.2：gen_tests Cancel-and-Replace 流程需要主动清理旧 auto-test/{module} 远程分支
 	// 与残留 PR，避免新一轮任务被 non-fast-forward push 阻塞。BranchCleaner 依赖
-	// gitea.Client，仅在 giteaClient != nil 时注入；nil 时 EnqueueHandler 会跳过清理
+	// gitea.Client，仅在 giteaGenTestsClient != nil 时注入；nil 时 EnqueueHandler 会跳过清理
 	// 并记录 warn 日志（见 internal/queue/enqueue.go 注入点注释）。
 	var enqueueOpts []queue.EnqueueOption
-	if giteaClient != nil {
-		enqueueOpts = append(enqueueOpts, queue.WithBranchCleaner(queue.NewBranchCleaner(giteaClient, slog.Default())))
+	if giteaGenTestsClient != nil {
+		enqueueOpts = append(enqueueOpts, queue.WithBranchCleaner(queue.NewBranchCleaner(giteaGenTestsClient, slog.Default())))
 	}
 	handler := queue.NewEnqueueHandler(queueClient, queueClient, s, slog.Default(), enqueueOpts...)
 
@@ -259,20 +299,21 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	gc := worker.NewGarbageCollector(dockerClient)
 
 	return &ServiceDeps{
-		Store:              s,
-		GiteaClient:        giteaClient,
-		GiteaFixClient:     giteaFixClient,
-		QueueClient:        queueClient,
-		AsynqServer:        asynqServer,
-		Pool:               pool,
-		Recovery:           recovery,
-		GC:                 gc,
-		Handler:            handler,
-		EnqueueHandler:     handler,
-		Notifier:           notifier,
-		GiteaConfigured:    giteaConfigured,
-		NotifierEnabled:    notifier != nil,
-		WorkerImagePresent: workerImagePresent,
+		Store:               s,
+		GiteaClient:         giteaClient,
+		GiteaFixClient:      giteaFixClient,
+		GiteaGenTestsClient: giteaGenTestsClient,
+		QueueClient:         queueClient,
+		AsynqServer:         asynqServer,
+		Pool:                pool,
+		Recovery:            recovery,
+		GC:                  gc,
+		Handler:             handler,
+		EnqueueHandler:      handler,
+		Notifier:            notifier,
+		GiteaConfigured:     giteaConfigured,
+		NotifierEnabled:     notifier != nil,
+		WorkerImagePresent:  workerImagePresent,
 	}, cleanup, nil
 }
 
@@ -285,25 +326,25 @@ func buildServeConfigFromManager(mgr *config.Manager) (serveConfig, error) {
 		return serveConfig{}, fmt.Errorf("配置未加载")
 	}
 	return serveConfig{
-		Host:          cfg.Server.Host,
-		Port:          cfg.Server.Port,
-		RedisAddr:     cfg.Redis.Addr,
-		RedisPassword: cfg.Redis.Password,
-		RedisDB:       cfg.Redis.DB,
-		DBPath:        cfg.Database.Path,
-		WebhookSecret: cfg.Webhook.Secret,
-		ClaudeAPIKey:  cfg.Claude.APIKey,
-		ClaudeBaseURL: cfg.Claude.BaseURL,
-		GiteaURL:         cfg.Gitea.URL,
-		GiteaToken:       cfg.Gitea.Token,
+		Host:               cfg.Server.Host,
+		Port:               cfg.Server.Port,
+		RedisAddr:          cfg.Redis.Addr,
+		RedisPassword:      cfg.Redis.Password,
+		RedisDB:            cfg.Redis.DB,
+		DBPath:             cfg.Database.Path,
+		WebhookSecret:      cfg.Webhook.Secret,
+		ClaudeAPIKey:       cfg.Claude.APIKey,
+		ClaudeBaseURL:      cfg.Claude.BaseURL,
+		GiteaURL:           cfg.Gitea.URL,
+		GiteaToken:         cfg.Gitea.Token,
 		GiteaTokenReview:   cfg.Gitea.Tokens.Review,
 		GiteaTokenFix:      cfg.Gitea.Tokens.Fix,
 		GiteaTokenGenTests: cfg.Gitea.Tokens.GenTests,
-		MaxWorkers:       cfg.Worker.Concurrency,
-		WorkerImage:   cfg.Worker.Image,
-		CPULimit:      cfg.Worker.CPULimit,
-		MemoryLimit:   cfg.Worker.MemoryLimit,
-		NetworkName:   cfg.Worker.NetworkName,
-		AppCfg:        cfg,
+		MaxWorkers:         cfg.Worker.Concurrency,
+		WorkerImage:        cfg.Worker.Image,
+		CPULimit:           cfg.Worker.CPULimit,
+		MemoryLimit:        cfg.Worker.MemoryLimit,
+		NetworkName:        cfg.Worker.NetworkName,
+		AppCfg:             cfg,
 	}, nil
 }

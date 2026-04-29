@@ -29,17 +29,17 @@ func TestBuildContainerEnv_ReviewPR(t *testing.T) {
 
 	// 检查必填字段
 	mustContain := map[string]string{
-		"GITEA_URL":       "http://gitea.example.com",
-		"GITEA_TOKEN":     "token123",
+		"GITEA_URL":         "http://gitea.example.com",
+		"GITEA_TOKEN":       "token123",
 		"ANTHROPIC_API_KEY": "sk-claude-key",
-		"REPO_CLONE_URL":  "http://gitea.example.com/owner/repo.git",
-		"REPO_OWNER":      "owner",
-		"REPO_NAME":       "repo",
-		"REPO_FULL_NAME":  "owner/repo",
-		"PR_NUMBER":       "42",
-		"HEAD_REF":        "feature/test",
-		"BASE_REF":        "main",
-		"HEAD_SHA":        "abc123",
+		"REPO_CLONE_URL":    "http://gitea.example.com/owner/repo.git",
+		"REPO_OWNER":        "owner",
+		"REPO_NAME":         "repo",
+		"REPO_FULL_NAME":    "owner/repo",
+		"PR_NUMBER":         "42",
+		"HEAD_REF":          "feature/test",
+		"BASE_REF":          "main",
+		"HEAD_SHA":          "abc123",
 	}
 
 	envMap := envSliceToMap(env)
@@ -89,14 +89,15 @@ func TestBuildContainerEnv_FixIssue(t *testing.T) {
 }
 
 // TestBuildContainerEnv_TokenSelectionByTaskType 验证按任务类型注入正确的 GITEA_TOKEN。
-// fix_issue 走 GiteaTokenFix；其他任务（review_pr / analyze_issue / gen_tests）走 GiteaToken。
+// fix_issue 走 GiteaTokenFix；gen_tests 走 GiteaTokenGenTests；只读任务走 GiteaToken。
 // 设计目标：拆账号后 fix 创建的 PR 可以被 review 账号评审，规避 Gitea 自评审限制。
 func TestBuildContainerEnv_TokenSelectionByTaskType(t *testing.T) {
 	config := PoolConfig{
-		GiteaURL:      "http://gitea.example.com",
-		GiteaToken:    "tok-review",
-		GiteaTokenFix: "tok-fix",
-		ClaudeAPIKey:  "key",
+		GiteaURL:           "http://gitea.example.com",
+		GiteaToken:         "tok-review",
+		GiteaTokenFix:      "tok-fix",
+		GiteaTokenGenTests: "tok-gen-tests",
+		ClaudeAPIKey:       "key",
 	}
 	cases := []struct {
 		name     string
@@ -105,7 +106,7 @@ func TestBuildContainerEnv_TokenSelectionByTaskType(t *testing.T) {
 	}{
 		{"review_pr 用 review token", model.TaskTypeReviewPR, "tok-review"},
 		{"analyze_issue 用 review token", model.TaskTypeAnalyzeIssue, "tok-review"},
-		{"gen_tests 用 review token", model.TaskTypeGenTests, "tok-review"},
+		{"gen_tests 用 gen_tests token", model.TaskTypeGenTests, "tok-gen-tests"},
 		{"fix_issue 用 fix token", model.TaskTypeFixIssue, "tok-fix"},
 	}
 	for _, tc := range cases {
@@ -124,8 +125,8 @@ func TestBuildContainerEnv_TokenSelectionByTaskType(t *testing.T) {
 // 保持向后兼容（单 token 部署）。
 func TestBuildContainerEnv_FixTokenFallback(t *testing.T) {
 	config := PoolConfig{
-		GiteaURL:     "http://gitea.example.com",
-		GiteaToken:   "only-token",
+		GiteaURL:   "http://gitea.example.com",
+		GiteaToken: "only-token",
 		// GiteaTokenFix 留空
 		ClaudeAPIKey: "key",
 	}
@@ -133,6 +134,20 @@ func TestBuildContainerEnv_FixTokenFallback(t *testing.T) {
 	env := buildContainerEnv(config, payload)
 	if envSliceToMap(env)["GITEA_TOKEN"] != "only-token" {
 		t.Errorf("fix_issue 在 GiteaTokenFix 为空时应回退到 GiteaToken")
+	}
+}
+
+// TestBuildContainerEnv_GenTestsTokenFallback 验证 GiteaTokenGenTests 为空时回退到 GiteaToken。
+func TestBuildContainerEnv_GenTestsTokenFallback(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "http://gitea.example.com",
+		GiteaToken:   "only-token",
+		ClaudeAPIKey: "key",
+	}
+	payload := model.TaskPayload{TaskType: model.TaskTypeGenTests, RepoFullName: "o/r"}
+	env := buildContainerEnv(config, payload)
+	if envSliceToMap(env)["GITEA_TOKEN"] != "only-token" {
+		t.Errorf("gen_tests 在 GiteaTokenGenTests 为空时应回退到 GiteaToken")
 	}
 }
 
@@ -388,21 +403,21 @@ func TestParseMemoryLimit(t *testing.T) {
 		{"1024k", 1024 * 1024, false},
 		{"1024", 1024, false},
 		{"", 0, false},
-		{"0g", 0, false},              // 零值
+		{"0g", 0, false},                       // 零值
 		{"4gb", 4 * 1024 * 1024 * 1024, false}, // gb 后缀
-		{"512mb", 512 * 1024 * 1024, false},     // mb 后缀
-		{"1024kb", 1024 * 1024, false},           // kb 后缀
-		{"1024b", 1024, false},                   // b 后缀
-		{"1.5g", 1610612736, false},              // 浮点数（走 float 分支）
-		{"0.0g", 0, false},                       // 浮点零
+		{"512mb", 512 * 1024 * 1024, false},    // mb 后缀
+		{"1024kb", 1024 * 1024, false},         // kb 后缀
+		{"1024b", 1024, false},                 // b 后缀
+		{"1.5g", 1610612736, false},            // 浮点数（走 float 分支）
+		{"0.0g", 0, false},                     // 浮点零
 		{"-1g", 0, true},
-		{"-1", 0, true},                // 整数负数无后缀
+		{"-1", 0, true}, // 整数负数无后缀
 		{"abc", 0, true},
-		{"128g", 0, true},              // 超出 64GB 上限
-		{"999999999999g", 0, true},     // 溢出检测
-		{"-1.5g", 0, true},            // 浮点负数
-		{"100g", 0, true},             // 超 64GB 上限（整数路径）
-		{"100.0g", 0, true},           // 超 64GB 上限（浮点路径）
+		{"128g", 0, true},          // 超出 64GB 上限
+		{"999999999999g", 0, true}, // 溢出检测
+		{"-1.5g", 0, true},         // 浮点负数
+		{"100g", 0, true},          // 超 64GB 上限（整数路径）
+		{"100.0g", 0, true},        // 超 64GB 上限（浮点路径）
 	}
 
 	for _, tc := range tests {

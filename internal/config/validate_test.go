@@ -218,21 +218,25 @@ func TestValidate_MissingGiteaToken(t *testing.T) {
 	}
 }
 
-// TestValidate_SplitGiteaTokens 验证显式拆分 review/fix token 时，仍要求基础 gitea.token 必填；
-// 同时 ReviewToken/FixToken 应优先返回专属 token。
+// TestValidate_SplitGiteaTokens 验证显式拆分 review/fix/gen_tests token 时，仍要求基础 gitea.token 必填；
+// 同时各职能 Token helper 应优先返回专属 token。
 func TestValidate_SplitGiteaTokens(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.Gitea.Token = "tok-base"
 	cfg.Gitea.Tokens.Review = "tok-review"
 	cfg.Gitea.Tokens.Fix = "tok-fix"
+	cfg.Gitea.Tokens.GenTests = "tok-gen-tests"
 	if err := Validate(cfg); err != nil {
-		t.Fatalf("显式配置 review/fix token 且基础 token 存在时应通过校验，错误: %v", err)
+		t.Fatalf("显式配置 review/fix/gen_tests token 且基础 token 存在时应通过校验，错误: %v", err)
 	}
 	if got := cfg.Gitea.ReviewToken(); got != "tok-review" {
 		t.Errorf("ReviewToken()=%q, 期望 tok-review", got)
 	}
 	if got := cfg.Gitea.FixToken(); got != "tok-fix" {
 		t.Errorf("FixToken()=%q, 期望 tok-fix", got)
+	}
+	if got := cfg.Gitea.GenTestsToken(); got != "tok-gen-tests" {
+		t.Errorf("GenTestsToken()=%q, 期望 tok-gen-tests", got)
 	}
 }
 
@@ -247,6 +251,9 @@ func TestValidate_PartialSplitTokenFallback(t *testing.T) {
 	}
 	if got := cfg.Gitea.FixToken(); got != "tok-fallback" {
 		t.Errorf("FixToken() 未回退到兜底 token, 得到 %q", got)
+	}
+	if got := cfg.Gitea.GenTestsToken(); got != "tok-fallback" {
+		t.Errorf("GenTestsToken() 未回退到兜底 token, 得到 %q", got)
 	}
 }
 

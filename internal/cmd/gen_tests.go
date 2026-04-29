@@ -98,7 +98,7 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 		return &ExitCodeError{Code: 1, Err: fmt.Errorf("redis.addr 未配置")}
 	}
 	giteaURL := strings.TrimSpace(cfg.Gitea.URL)
-	giteaToken := strings.TrimSpace(cfg.Gitea.Token)
+	giteaToken := strings.TrimSpace(cfg.Gitea.GenTestsToken())
 	if giteaURL == "" || giteaToken == "" {
 		return &ExitCodeError{Code: 1, Err: fmt.Errorf("gitea.url / gitea.token 未配置")}
 	}
@@ -122,8 +122,9 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 	qClient.SetTimeouts(buildQueueTimeoutConfigFromAppConfig(cfg))
 	defer func() { _ = qClient.Close() }()
 
-	// 3. 构造 gitea.Client（查仓库默认分支与 CloneURL）
+	// 3. 构造 gitea.Client（查仓库默认分支与 CloneURL；重跑时清理 auto-test 分支/PR）
 	//    gitea 包暴露的是 Functional Options：必须 WithToken，可选 WithHTTPClient 注入 InsecureSkipVerify。
+	//    gen-tests 本地入队路径使用 gen_tests 写账号，保持 BranchCleaner 与 serve/API 语义一致。
 	giteaOpts := []gitea.ClientOption{gitea.WithToken(giteaToken)}
 	if cfg.Gitea.InsecureSkipVerify {
 		giteaOpts = append(giteaOpts, gitea.WithHTTPClient(&http.Client{

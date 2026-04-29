@@ -61,8 +61,8 @@ type serveConfig struct {
 	// GiteaTokenGenTests 测试生成账号 token（gen_tests 容器内 git push 到 auto-test/* + host 侧创建 PR）；
 	// 空字符串表示回退到 GiteaToken。
 	GiteaTokenGenTests string
-	MaxWorkers    int
-	WorkerImage   string
+	MaxWorkers         int
+	WorkerImage        string
 
 	// 资源限制与运行网络（运行时快照）。
 	CPULimit    string
@@ -256,7 +256,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 			deps.Pool,
 			cfgAdapter,
 			testgen.WithServiceLogger(slog.Default()),
-			testgen.WithPRClient(deps.GiteaClient),
+			testgen.WithPRClient(deps.GiteaGenTestsClient),
 			testgen.WithFileChecker(&giteaRepoFileChecker{client: deps.GiteaClient}),
 			testgen.WithReviewEnqueuer(deps.EnqueueHandler),
 			testgen.WithStore(deps.Store),

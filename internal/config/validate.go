@@ -77,7 +77,7 @@ func Validate(cfg *Config) error {
 		}
 	}
 	// gitea.token 是基础 token，必须显式配置；
-	// gitea.tokens.{review,fix} 仅用于覆盖默认用途，不改变基础 token 必填约束。
+	// gitea.tokens.{review,fix,gen_tests} 仅用于覆盖默认用途，不改变基础 token 必填约束。
 	if strings.TrimSpace(cfg.Gitea.Token) == "" {
 		errs = append(errs, fmt.Errorf("gitea.token 不能为空"))
 	}

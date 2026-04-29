@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,6 +87,49 @@ func TestBuildServiceDeps_WithGiteaConfig_BuildsNotifier(t *testing.T) {
 	}
 }
 
+func TestBuildGiteaClientSet_SplitTokens(t *testing.T) {
+	var gotAuth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"full_name":"owner/repo","default_branch":"main","clone_url":"https://gitea.example.com/owner/repo.git"}`))
+	}))
+	defer srv.Close()
+
+	cfg := newTestConfig(t)
+	cfg.GiteaURL = srv.URL
+	cfg.GiteaToken = "tok-fallback"
+	cfg.GiteaTokenReview = "tok-review"
+	cfg.GiteaTokenFix = "tok-fix"
+	cfg.GiteaTokenGenTests = "tok-gen-tests"
+
+	clients, err := buildGiteaClientSet(cfg)
+	if err != nil {
+		t.Fatalf("buildGiteaClientSet error: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, _, err := clients.review.GetRepo(ctx, "owner", "repo"); err != nil {
+		t.Fatalf("review GetRepo error: %v", err)
+	}
+	if _, _, err := clients.fix.GetRepo(ctx, "owner", "repo"); err != nil {
+		t.Fatalf("fix GetRepo error: %v", err)
+	}
+	if _, _, err := clients.genTests.GetRepo(ctx, "owner", "repo"); err != nil {
+		t.Fatalf("gen_tests GetRepo error: %v", err)
+	}
+
+	want := []string{"token tok-review", "token tok-fix", "token tok-gen-tests"}
+	if len(gotAuth) != len(want) {
+		t.Fatalf("Authorization 调用数=%d, want %d, got=%v", len(gotAuth), len(want), gotAuth)
+	}
+	for i := range want {
+		if gotAuth[i] != want[i] {
+			t.Fatalf("Authorization[%d]=%q, want %q", i, gotAuth[i], want[i])
+		}
+	}
+}
+
 func TestBuildServeConfigFromManager_ReadsAllRequiredFields(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "dtworkflow.yaml")
 	content := "server:\n  host: \"127.0.0.1\"\n  port: 18080\n" +
@@ -92,7 +137,7 @@ func TestBuildServeConfigFromManager_ReadsAllRequiredFields(t *testing.T) {
 		"database:\n  path: \"data/test.db\"\n" +
 		"webhook:\n  secret: \"wh\"\n" +
 		"claude:\n  api_key: \"ck\"\n" +
-		"gitea:\n  url: \"https://gitea.example.com\"\n  token: \"gt\"\n" +
+		"gitea:\n  url: \"https://gitea.example.com\"\n  token: \"gt\"\n  tokens:\n    review: \"gr\"\n    fix: \"gf\"\n    gen_tests: \"gg\"\n" +
 		"worker:\n  concurrency: 9\n  image: \"dtworkflow-worker:9.9\"\n  cpu_limit: \"3.5\"\n  memory_limit: \"8g\"\n  network_name: \"custom-net\"\n" +
 		"notify:\n  default_channel: \"gitea\"\n  channels:\n    gitea:\n      enabled: true\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
@@ -137,6 +182,15 @@ func TestBuildServeConfigFromManager_ReadsAllRequiredFields(t *testing.T) {
 	}
 	if sc.GiteaToken != "gt" {
 		t.Fatalf("GiteaToken=%q, want %q", sc.GiteaToken, "gt")
+	}
+	if sc.GiteaTokenReview != "gr" {
+		t.Fatalf("GiteaTokenReview=%q, want %q", sc.GiteaTokenReview, "gr")
+	}
+	if sc.GiteaTokenFix != "gf" {
+		t.Fatalf("GiteaTokenFix=%q, want %q", sc.GiteaTokenFix, "gf")
+	}
+	if sc.GiteaTokenGenTests != "gg" {
+		t.Fatalf("GiteaTokenGenTests=%q, want %q", sc.GiteaTokenGenTests, "gg")
 	}
 	if sc.MaxWorkers != 9 {
 		t.Fatalf("MaxWorkers=%d, want %d", sc.MaxWorkers, 9)
@@ -311,14 +365,15 @@ func TestComputeReadyStatus_OkWhenAllCriticalDepsPresent(t *testing.T) {
 	}
 }
 
-// TestBuildWorkerPoolConfig_SplitTokens 验证 serveConfig 中拆分的 review/fix token
-// 被正确映射到 PoolConfig 的 GiteaToken / GiteaTokenFix 字段。
+// TestBuildWorkerPoolConfig_SplitTokens 验证 serveConfig 中拆分的 review/fix/gen_tests token
+// 被正确映射到 PoolConfig 的各 GiteaToken 字段。
 func TestBuildWorkerPoolConfig_SplitTokens(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.GiteaURL = "https://gitea.example.com"
 	cfg.GiteaToken = "tok-fallback"
 	cfg.GiteaTokenReview = "tok-review"
 	cfg.GiteaTokenFix = "tok-fix"
+	cfg.GiteaTokenGenTests = "tok-gen-tests"
 
 	poolCfg := buildWorkerPoolConfigFromServeConfig(cfg)
 	if string(poolCfg.GiteaToken) != "tok-review" {
@@ -327,16 +382,20 @@ func TestBuildWorkerPoolConfig_SplitTokens(t *testing.T) {
 	if string(poolCfg.GiteaTokenFix) != "tok-fix" {
 		t.Fatalf("PoolConfig.GiteaTokenFix = %q, want tok-fix（fix 账号）", poolCfg.GiteaTokenFix)
 	}
+	if string(poolCfg.GiteaTokenGenTests) != "tok-gen-tests" {
+		t.Fatalf("PoolConfig.GiteaTokenGenTests = %q, want tok-gen-tests（gen_tests 账号）", poolCfg.GiteaTokenGenTests)
+	}
 }
 
 // TestBuildWorkerPoolConfig_TokenFallback 验证只填兜底 gitea.token 时，
-// 两个 PoolConfig token 字段都回退到它（保持向后兼容）。
+// 所有 PoolConfig token 字段都回退到它（保持向后兼容）。
 func TestBuildWorkerPoolConfig_TokenFallback(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.GiteaURL = "https://gitea.example.com"
 	cfg.GiteaToken = "tok-fallback"
 	cfg.GiteaTokenReview = ""
 	cfg.GiteaTokenFix = ""
+	cfg.GiteaTokenGenTests = ""
 
 	poolCfg := buildWorkerPoolConfigFromServeConfig(cfg)
 	if string(poolCfg.GiteaToken) != "tok-fallback" {
@@ -344,5 +403,8 @@ func TestBuildWorkerPoolConfig_TokenFallback(t *testing.T) {
 	}
 	if string(poolCfg.GiteaTokenFix) != "tok-fallback" {
 		t.Fatalf("PoolConfig.GiteaTokenFix 未回退到兜底 token, 得到 %q", poolCfg.GiteaTokenFix)
+	}
+	if string(poolCfg.GiteaTokenGenTests) != "tok-fallback" {
+		t.Fatalf("PoolConfig.GiteaTokenGenTests 未回退到兜底 token, 得到 %q", poolCfg.GiteaTokenGenTests)
 	}
 }

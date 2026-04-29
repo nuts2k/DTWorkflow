@@ -54,7 +54,7 @@ type ServerConfig struct {
 
 type GiteaConfig struct {
 	URL                string      `mapstructure:"url"`
-	Token              string      `mapstructure:"token"` // 基础 token（必填）；tokens.{review,fix} 留空时回退使用
+	Token              string      `mapstructure:"token"` // 基础 token（必填）；tokens.{review,fix,gen_tests} 留空时回退使用
 	Tokens             GiteaTokens `mapstructure:"tokens"`
 	InsecureSkipVerify bool        `mapstructure:"insecure_skip_verify"`
 }
@@ -309,6 +309,7 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("gitea.token", "")
 		m.v.SetDefault("gitea.tokens.review", "")
 		m.v.SetDefault("gitea.tokens.fix", "")
+		m.v.SetDefault("gitea.tokens.gen_tests", "")
 		m.v.SetDefault("claude.api_key", "")
 		m.v.SetDefault("claude.model", "claude-sonnet-4-6")
 		m.v.SetDefault("claude.effort", "high")

@@ -13,18 +13,21 @@ server:
 #
 # Token 使用规则：
 #   - tokens.review：评审账号，用于 review.Writer 发 Review、只读 API 预校验、Gitea 通知评论；
-#                    同时作为 review_pr / analyze_issue / gen_tests 任务容器内 git clone 的 token。
+#                    同时作为 review_pr / analyze_issue 任务容器内 git clone 的 token。
 #   - tokens.fix   ：修复账号，用于 fix.Service 创建 auto-fix PR、Issue 评论；
 #                    同时作为 fix_issue 任务容器内 git push 到 auto-fix/* 分支的 token。
-#   - token        ：基础 token，必填。上面两个子 token 留空时回退使用；
+#   - tokens.gen_tests：测试生成账号，用于 gen_tests 创建/清理 auto-test PR 与分支；
+#                    同时作为 gen_tests 任务容器内 git push 到 auto-test/* 分支的 token。
+#   - token        ：基础 token，必填。上面三个子 token 留空时回退使用；
 #                    单账号部署（旧行为）只填该字段即可，与拆分前完全兼容。
-# 推荐：生产环境为 review 和 fix 建两个独立 Gitea 账号，fix 创建的 PR 由 review 账号自动评审。
+# 推荐：生产环境为 review、fix、gen_tests 建独立 Gitea 账号，自动创建的 PR 由 review 账号评审。
 gitea:
   url: "https://your-gitea-instance.example.com"
   token: "REPLACE_ME_GITEA_TOKEN"  # 基础 token，必填（单账号部署只填这一项即可）
   tokens:
-    review: ""   # 评审账号 token，留空回退到 token
-    fix: ""      # 修复账号 token，留空回退到 token
+    review: ""     # 评审账号 token，留空回退到 token
+    fix: ""        # 修复账号 token，留空回退到 token
+    gen_tests: ""  # 测试生成账号 token，留空回退到 token
   # 自签名证书时设为 true。
   # 当前版本：该字段为预留配置，尚未接入 Gitea Client 的运行链路。
   insecure_skip_verify: false
