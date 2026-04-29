@@ -729,6 +729,13 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] **安全加固**：`sanitizeTestGenOutput` 统一过滤 `Warnings / FailureReason / MissingInfo` 等自由文本字段，防 prompt-injection 内容流入飞书/PR/评论；`Processor.record.Error` 走 `test.SanitizeErrorMessage` 兜底；hooks 目录 `chmod -R a-w` 加固防容器内修改 hook；已知风险登记于 `docs/SECURITY.md`
 - [x] 单元测试覆盖：`internal/test` 覆盖率 95.2%；`entrypoint_test.sh` 33 项断言（含 rev-parse 失败降级路径 S11）；`enqueue_test.go` 补 Cancel-and-Replace（按 branch key 聚合）与 review 拦截路径
 
+##### M4.2.1 混合仓库多框架支持
+> 说明：当前 `test_gen.test_framework` 只能设单个值（`junit5` / `vitest`），混合仓库（前后端一体）触发 gen_tests 时要么手动分 module 多次触发，要么报 `ErrAmbiguousFramework`。M4.2.1 解决整仓模式下的多框架自动处理。
+
+- [ ] **多框架支持**：整仓或多模块场景下自动识别并分别生成 JUnit 5 + Vitest 测试（候选方案：(a) 自动拆分为两个子任务；(b) `test_framework` 改为数组）
+- [ ] **整仓模式子目录扫描**：`--module` 留空时，`resolveFramework` 增加 depth=1 子目录扫描（当前仅检查根目录 `pom.xml` / `package.json`，实际仓库后端常放在 `sunrate-service/` 等子目录下）
+- [ ] 单元测试覆盖
+
 ---
 
 #### 第二轮：变更驱动测试
