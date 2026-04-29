@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ENTRYPOINT="${ROOT}/build/docker/entrypoint.sh"
 TMPDIR="$(mktemp -d)"
+export CRED_HELPER_SCRIPT="${TMPDIR}/cred-helper"
 trap 'rm -rf "${TMPDIR}"' EXIT
 
 mkdir -p "${TMPDIR}/fakebin" "${TMPDIR}/home"
@@ -191,11 +192,11 @@ run_gen_tests_credentials_case() {
     (( FAIL++ ))
   fi
 
-  if echo "${log}" | grep -q "git config --global credential.helper /workspace/.git-credential-helper"; then
+  if echo "${log}" | grep -q "git config --global credential.helper ${CRED_HELPER_SCRIPT}"; then
     echo "PASS: gen_tests — credential helper 已配置"
     (( PASS++ ))
   else
-    echo "FAIL: gen_tests — 预期 credential.helper 指向 /workspace/.git-credential-helper，实际 log:"
+    echo "FAIL: gen_tests — 预期 credential.helper 指向 ${CRED_HELPER_SCRIPT}，实际 log:"
     echo "${log}"
     (( FAIL++ ))
   fi

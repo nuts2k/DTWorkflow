@@ -123,7 +123,7 @@ case "${TASK_TYPE:-}" in
         # HostConfig.Tmpfs），即便 chmod 700 也无法执行，会导致 git push 报
         # "Permission denied" → "could not read Username"。/workspace 同样是 tmpfs
         # （容器退出即销毁，token 不持久化），且显式设置了 exec 标志，可安全执行 helper。
-        CRED_HELPER_SCRIPT="/workspace/.git-credential-helper"
+        CRED_HELPER_SCRIPT="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
         cat > "${CRED_HELPER_SCRIPT}" <<HELPER
 #!/bin/sh
 echo "username=token"
@@ -161,7 +161,7 @@ OVERRIDE
         git remote set-url origin "${REPO_CLONE_URL}"
         # credential helper 按需注入 token，容器销毁即失效
         # 放置于 /workspace 而非 /tmp：/tmp 为 noexec tmpfs，无法执行脚本
-        CRED_HELPER_SCRIPT="/workspace/.git-credential-helper"
+        CRED_HELPER_SCRIPT="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
         cat > "${CRED_HELPER_SCRIPT}" <<HELPER
 #!/bin/sh
 echo "username=token"
