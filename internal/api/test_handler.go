@@ -123,7 +123,7 @@ func (h *handlers) triggerGenTests(c *gin.Context) {
 		BaseRef:      baseRef,
 	}
 
-	taskID, err := h.deps.EnqueueHandler.EnqueueManualGenTests(ctx, payload, triggeredBy)
+	results, err := h.deps.EnqueueHandler.EnqueueManualGenTests(ctx, payload, triggeredBy)
 	if err != nil {
 		h.deps.Logger.Error("入队 gen_tests 失败",
 			"owner", owner, "repo", repo, "module", req.Module, "error", err)
@@ -131,9 +131,26 @@ func (h *handlers) triggerGenTests(c *gin.Context) {
 		return
 	}
 
-	Success(c, http.StatusAccepted, gin.H{
-		"task_id": taskID,
-		"message": fmt.Sprintf("gen_tests 任务已入队（module=%q, ref=%q）", req.Module, baseRef),
-	})
+	type taskInfo struct {
+		TaskID    string `json:"task_id"`
+		Module    string `json:"module"`
+		Framework string `json:"framework"`
+	}
+	tasks := make([]taskInfo, 0, len(results))
+	for _, r := range results {
+		tasks = append(tasks, taskInfo{TaskID: r.TaskID, Module: r.Module, Framework: r.Framework})
+	}
+
+	resp := gin.H{
+		"split": len(results) > 1,
+		"tasks": tasks,
+	}
+	if len(results) == 1 {
+		resp["task_id"] = results[0].TaskID
+		resp["message"] = fmt.Sprintf("gen_tests 任务已入队（module=%q, ref=%q）", req.Module, baseRef)
+	} else {
+		resp["message"] = fmt.Sprintf("整仓扫描拆分为 %d 个子任务", len(results))
+	}
+	Success(c, http.StatusAccepted, resp)
 }
 

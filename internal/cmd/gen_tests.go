@@ -184,12 +184,20 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 		BaseRef:      baseRef,
 	}
 
-	taskID, err := handler.EnqueueManualGenTests(ctx, payload, triggeredBy)
+	results, err := handler.EnqueueManualGenTests(ctx, payload, triggeredBy)
 	if err != nil {
 		return &ExitCodeError{Code: 1, Err: fmt.Errorf("入队失败: %w", err)}
 	}
 
-	printGenTestsResult(taskID, payload, baseRef, genTestsFramework)
+	if len(results) == 1 {
+		printGenTestsResult(results[0].TaskID, payload, baseRef, genTestsFramework)
+	} else {
+		fmt.Printf("整仓扫描发现 %d 个可测试模块，已拆分入队：\n", len(results))
+		for i, r := range results {
+			fmt.Printf("  [%d] module=%-20s framework=%-8s task_id=%s\n",
+				i+1, r.Module, r.Framework, r.TaskID)
+		}
+	}
 	return nil
 }
 
@@ -237,5 +245,7 @@ func buildGenTestsEnqueueOptions(giteaClient *gitea.Client) []queue.EnqueueOptio
 	}
 	return []queue.EnqueueOption{
 		queue.WithBranchCleaner(queue.NewBranchCleaner(giteaClient, slog.Default())),
+		queue.WithModuleScanner(&giteaRepoFileChecker{client: giteaClient}),
+		queue.WithPRClient(giteaClient),
 	}
 }

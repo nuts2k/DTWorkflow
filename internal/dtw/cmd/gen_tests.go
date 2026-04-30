@@ -54,7 +54,13 @@ var genTestsCmd = &cobra.Command{
 		}
 
 		var result struct {
+			Split  bool   `json:"split"`
 			TaskID string `json:"task_id"`
+			Tasks  []struct {
+				TaskID    string `json:"task_id"`
+				Module    string `json:"module"`
+				Framework string `json:"framework"`
+			} `json:"tasks"`
 		}
 
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/gen-tests", owner, repo)
@@ -62,13 +68,43 @@ var genTestsCmd = &cobra.Command{
 			return fmt.Errorf("提交 gen_tests 失败: %w", err)
 		}
 
+		// 多任务拆分场景
+		if result.Split && len(result.Tasks) > 1 {
+			if genTestsNoWait {
+				if flagJSON {
+					return printer.PrintJSON(result)
+				}
+				printer.PrintHuman("整仓扫描发现 %d 个可测试模块，已拆分入队：", len(result.Tasks))
+				for i, t := range result.Tasks {
+					printer.PrintHuman("  [%d] module=%-20s framework=%-8s task_id=%s",
+						i+1, t.Module, t.Framework, t.TaskID)
+				}
+				return nil
+			}
+			if flagJSON {
+				return printer.PrintJSON(result)
+			}
+			printer.PrintHuman("已拆分为 %d 个子任务，请使用 `dtw task list` 查看各任务进度", len(result.Tasks))
+			for i, t := range result.Tasks {
+				printer.PrintHuman("  [%d] module=%-20s framework=%-8s task_id=%s",
+					i+1, t.Module, t.Framework, t.TaskID)
+			}
+			return nil
+		}
+
+		// 单任务场景：保持现有行为
+		taskID := result.TaskID
+		if taskID == "" && len(result.Tasks) > 0 {
+			taskID = result.Tasks[0].TaskID
+		}
+
 		// --no-wait：仅提交不轮询
 		if genTestsNoWait {
-			return printer.Print(fmt.Sprintf("gen_tests 任务已创建: %s", result.TaskID), result)
+			return printer.Print(fmt.Sprintf("gen_tests 任务已创建: %s", taskID), result)
 		}
 
 		if !flagJSON {
-			printer.PrintHuman("gen_tests 任务已创建: %s", result.TaskID)
+			printer.PrintHuman("gen_tests 任务已创建: %s", taskID)
 		}
 
 		// 等待任务完成
@@ -80,7 +116,7 @@ var genTestsCmd = &cobra.Command{
 		if !flagJSON {
 			printer.PrintHuman("等待任务完成...")
 		}
-		status, err := dtw.WaitForTask(cmd.Context(), client, result.TaskID, opts)
+		status, err := dtw.WaitForTask(cmd.Context(), client, taskID, opts)
 		if err != nil {
 			return fmt.Errorf("等待任务失败: %w", err)
 		}

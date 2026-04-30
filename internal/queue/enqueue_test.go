@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
 )
 
@@ -1275,12 +1277,12 @@ func TestEnqueueManualGenTests_NoSuperseded(t *testing.T) {
 		Module:       "backend/api",
 	}
 
-	taskID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	results, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("EnqueueManualGenTests error: %v", err)
 	}
-	if taskID == "" {
-		t.Fatal("返回的 taskID 不应为空")
+	if len(results) != 1 || results[0].TaskID == "" {
+		t.Fatalf("期望 1 个结果且 TaskID 非空，实际 results=%+v", results)
 	}
 	if len(s.tasks) != 1 {
 		t.Fatalf("expected 1 task, got %d", len(s.tasks))
@@ -1327,17 +1329,19 @@ func TestEnqueueManualGenTests_CancelAndReplace(t *testing.T) {
 		Module:       "backend/api",
 	}
 
-	firstID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	firstResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第一次触发失败: %v", err)
 	}
+	firstID := firstResults[0].TaskID
 	// mockEnqueuer 为所有调用返回同一个 asynqID；手动置一个区分值，模拟两次入队的 asynq 作业独立
 	s.tasks[firstID].AsynqID = "asynq-gen-tests-first"
 
-	secondID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	secondResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第二次触发失败: %v", err)
 	}
+	secondID := secondResults[0].TaskID
 	if secondID == firstID {
 		t.Fatal("两次触发的 taskID 不应相同")
 	}
@@ -1375,16 +1379,18 @@ func TestEnqueueManualGenTests_ModuleKeyCollisionCancelsExistingTask(t *testing.
 	secondPayload := firstPayload
 	secondPayload.Module = "services-api"
 
-	firstID, err := h.EnqueueManualGenTests(context.Background(), firstPayload, "manual:ci-bot")
+	firstResults, err := h.EnqueueManualGenTests(context.Background(), firstPayload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第一次触发失败: %v", err)
 	}
+	firstID := firstResults[0].TaskID
 	s.tasks[firstID].AsynqID = "asynq-gen-tests-first-collision"
 
-	secondID, err := h.EnqueueManualGenTests(context.Background(), secondPayload, "manual:ci-bot")
+	secondResults, err := h.EnqueueManualGenTests(context.Background(), secondPayload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第二次触发失败: %v", err)
 	}
+	secondID := secondResults[0].TaskID
 	if secondID == firstID {
 		t.Fatal("两次触发的 taskID 不应相同")
 	}
@@ -1421,16 +1427,18 @@ func TestEnqueueManualGenTests_DifferentModulesNotCancelled(t *testing.T) {
 	frontend := base
 	frontend.Module = "frontend"
 
-	firstID, err := h.EnqueueManualGenTests(context.Background(), backend, "manual:ci-bot")
+	firstResults, err := h.EnqueueManualGenTests(context.Background(), backend, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第一次触发失败: %v", err)
 	}
+	firstID := firstResults[0].TaskID
 	s.tasks[firstID].AsynqID = "asynq-gen-tests-backend"
 
-	secondID, err := h.EnqueueManualGenTests(context.Background(), frontend, "manual:ci-bot")
+	secondResults, err := h.EnqueueManualGenTests(context.Background(), frontend, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第二次触发失败: %v", err)
 	}
+	secondID := secondResults[0].TaskID
 
 	// 两条都应是 queued，不互相取消
 	if s.tasks[firstID].Status != model.TaskStatusQueued {
@@ -1460,16 +1468,18 @@ func TestEnqueueManualGenTests_EmptyModuleCancelAndReplace(t *testing.T) {
 		// 故意不设置 Module，模拟整仓生成
 	}
 
-	firstID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	firstResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第一次触发失败: %v", err)
 	}
+	firstID := firstResults[0].TaskID
 	s.tasks[firstID].AsynqID = "asynq-gen-tests-empty-first"
 
-	secondID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	secondResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第二次触发失败: %v", err)
 	}
+	secondID := secondResults[0].TaskID
 
 	if s.tasks[firstID].Status != model.TaskStatusCancelled {
 		t.Errorf("第一条任务状态 = %q, want %q (整仓 Cancel-and-Replace 必须生效)",
@@ -1499,17 +1509,19 @@ func TestEnqueueManualGenTests_RetryingTaskAlsoReplaced(t *testing.T) {
 		Module:       "backend",
 	}
 
-	firstID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	firstResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第一次触发失败: %v", err)
 	}
+	firstID := firstResults[0].TaskID
 	s.tasks[firstID].AsynqID = "asynq-gen-tests-retrying-first"
 	s.tasks[firstID].Status = model.TaskStatusRetrying
 
-	secondID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	secondResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第二次触发失败: %v", err)
 	}
+	secondID := secondResults[0].TaskID
 
 	if s.tasks[firstID].Status != model.TaskStatusCancelled {
 		t.Errorf("retrying 旧任务状态 = %q, want %q", s.tasks[firstID].Status, model.TaskStatusCancelled)
@@ -1574,12 +1586,15 @@ func TestEnqueueManualGenTests_TriggeredByFormat(t *testing.T) {
 		Module:       "svc",
 	}
 
-	taskID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	results, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("EnqueueManualGenTests error: %v", err)
 	}
+	if len(results) != 1 {
+		t.Fatalf("期望 1 个结果，实际 %d", len(results))
+	}
 
-	got := s.tasks[taskID]
+	got := s.tasks[results[0].TaskID]
 	if got == nil {
 		t.Fatal("任务记录应存在")
 	}
@@ -1625,15 +1640,15 @@ func TestEnqueueManualGenTests_IncompletePayload(t *testing.T) {
 			mc := &mockEnqueuer{enqueuedID: "asynq-should-not-enqueue"}
 			h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
-			taskID, err := h.EnqueueManualGenTests(context.Background(), tc.payload, "manual:ci-bot")
+			results, err := h.EnqueueManualGenTests(context.Background(), tc.payload, "manual:ci-bot")
 			if err == nil {
-				t.Fatalf("期望 error，实际 taskID=%q", taskID)
+				t.Fatalf("期望 error，实际 results=%+v", results)
 			}
 			if !strings.Contains(err.Error(), "RepoFullName") && !strings.Contains(err.Error(), "CloneURL") {
 				t.Errorf("error 消息应提及 RepoFullName 或 CloneURL：%v", err)
 			}
-			if taskID != "" {
-				t.Errorf("拒绝入队时 taskID 应为空串，得 %q", taskID)
+			if results != nil {
+				t.Errorf("拒绝入队时 results 应为 nil，得 %+v", results)
 			}
 			if len(s.tasks) != 0 {
 				t.Errorf("不应落库任何 task，实际有 %d 条", len(s.tasks))
@@ -1674,11 +1689,11 @@ func TestEnqueueManualGenTests_TriggersBranchCleanerOnReplace(t *testing.T) {
 		Module:       "svc/user",
 	}
 
-	first, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	firstResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第一次触发失败: %v", err)
 	}
-	s.tasks[first].AsynqID = "asynq-first"
+	s.tasks[firstResults[0].TaskID].AsynqID = "asynq-first"
 
 	if _, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot"); err != nil {
 		t.Fatalf("第二次触发失败: %v", err)
@@ -1734,19 +1749,20 @@ func TestEnqueueManualGenTests_CleanupFailureDoesNotBlock(t *testing.T) {
 		Module:       "svc/user",
 	}
 
-	first, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	firstResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第一次触发失败: %v", err)
 	}
-	s.tasks[first].AsynqID = "asynq-first"
+	s.tasks[firstResults[0].TaskID].AsynqID = "asynq-first"
 
-	secondID, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	secondResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("cleanup 失败不应阻断入队: %v", err)
 	}
-	if secondID == "" {
+	if len(secondResults) == 0 || secondResults[0].TaskID == "" {
 		t.Fatal("第二次入队应成功并返回 taskID")
 	}
+	secondID := secondResults[0].TaskID
 	if s.tasks[secondID].Status != model.TaskStatusQueued {
 		t.Errorf("新任务 status = %q, want queued", s.tasks[secondID].Status)
 	}
@@ -1767,11 +1783,11 @@ func TestEnqueueManualGenTests_EmptyModuleBranchKey(t *testing.T) {
 		CloneURL:     "https://gitea.example.com/org/repo.git",
 	}
 
-	first, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	firstResults, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
 	if err != nil {
 		t.Fatalf("第一次触发失败: %v", err)
 	}
-	s.tasks[first].AsynqID = "asynq-first"
+	s.tasks[firstResults[0].TaskID].AsynqID = "asynq-first"
 
 	if _, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot"); err != nil {
 		t.Fatalf("第二次触发失败: %v", err)
@@ -2056,5 +2072,138 @@ func TestCleanupAllAutoTestBranches_CancelsAndClosesPRs(t *testing.T) {
 	// cleaner 应被调用（auto-test/backend）
 	if len(cleaner.calls) != 1 || cleaner.calls[0] != "auto-test/backend" {
 		t.Errorf("cleaner.calls = %v, want [auto-test/backend]", cleaner.calls)
+	}
+}
+
+// ==========================================================================
+// M4.2.1: mockModuleScanner + 整仓拆分测试
+// ==========================================================================
+
+// mockModuleScanner 满足 test.RepoFileChecker 接口，用于 ScanRepoModules 集成测试。
+type mockModuleScanner struct {
+	files  map[string]bool    // key: "module/relPath" 或根级 "relPath"
+	dirs   map[string][]string // key: dir → 子目录列表
+	err    error               // 全局错误（模拟 scan 失败）
+	called bool
+}
+
+func (m *mockModuleScanner) HasFile(_ context.Context, _, _, _, module, relPath string) (bool, error) {
+	m.called = true
+	if m.err != nil {
+		return false, m.err
+	}
+	key := module + "/" + relPath
+	if module == "" {
+		key = relPath
+	}
+	return m.files[key], nil
+}
+
+func (m *mockModuleScanner) ListDir(_ context.Context, _, _, _, dir string) ([]string, error) {
+	m.called = true
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.dirs[dir], nil
+}
+
+// TestEnqueueManualGenTests_SplitMultiModule 整仓模式下扫描到 2 个模块，拆分为 2 个子任务。
+func TestEnqueueManualGenTests_SplitMultiModule(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-split"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{
+			"backend/pom.xml":       true,
+			"frontend/package.json": true,
+		},
+		dirs: map[string][]string{"": {"backend", "frontend"}},
+	}
+	mockPR := &mockGenTestsPRClient{}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithModuleScanner(scanner),
+		WithPRClient(mockPR),
+	)
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		BaseRef:      "main",
+	}
+
+	results, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("期望 2 个子任务，实际 %d", len(results))
+	}
+	if results[0].Module != "backend" || results[0].Framework != string(test.FrameworkJUnit5) {
+		t.Errorf("第一个子任务不符合预期: %+v", results[0])
+	}
+	if results[1].Module != "frontend" || results[1].Framework != string(test.FrameworkVitest) {
+		t.Errorf("第二个子任务不符合预期: %+v", results[1])
+	}
+}
+
+// TestEnqueueManualGenTests_ScanFail_FallbackSingle 扫描失败时回退为单任务入队。
+func TestEnqueueManualGenTests_ScanFail_FallbackSingle(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-fallback"}
+	scanner := &mockModuleScanner{err: fmt.Errorf("scan failed")}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithModuleScanner(scanner),
+	)
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		BaseRef:      "main",
+	}
+
+	results, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("scan 失败应回退单任务，实际 error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("期望 1 个任务（回退），实际 %d", len(results))
+	}
+}
+
+// TestEnqueueManualGenTests_ModuleNonEmpty_SkipScan module 非空时不触发扫描。
+func TestEnqueueManualGenTests_ModuleNonEmpty_SkipScan(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-noscan"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{
+			"backend/pom.xml": true,
+		},
+		dirs: map[string][]string{"": {"backend"}},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithModuleScanner(scanner),
+	)
+
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		Module:       "backend",
+		BaseRef:      "main",
+	}
+
+	results, err := h.EnqueueManualGenTests(context.Background(), payload, "manual:ci-bot")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("module 非空不应触发扫描，期望 1 个任务，实际 %d", len(results))
+	}
+	if scanner.called {
+		t.Error("module 非空时不应调用 scanner")
 	}
 }

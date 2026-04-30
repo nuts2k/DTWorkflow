@@ -670,15 +670,63 @@ func (h *EnqueueHandler) cleanupAllAutoTestBranches(ctx context.Context, owner, 
 // EnqueueManualGenTests 手动触发 gen_tests 任务入队。
 // payload 由 API handler / CLI handler 组装；triggeredBy 格式为 "manual:{identity}"。
 // Cancel-and-Replace 按 stable branch key 粒度：同仓库同 branch key 的活跃任务在本次入队后被取消。
-func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+//
+// M4.2.1：整仓模式（module 空 + framework 空 + moduleScanner 已注入 + baseRef 非空）时
+// 自动调用 ScanRepoModules 拆分子任务；多模块时先全量清理旧 auto-test 资源；
+// 扫描失败 fail-open 回退单任务。
+func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy string) ([]EnqueuedTask, error) {
 	if payload.RepoFullName == "" || payload.CloneURL == "" {
-		return "", fmt.Errorf("payload 数据不完整: RepoFullName 或 CloneURL 为空")
+		return nil, fmt.Errorf("payload 数据不完整: RepoFullName 或 CloneURL 为空")
 	}
+
+	// 整仓模式：module 空 + framework 空 + moduleScanner 已注入 + baseRef 非空
+	if payload.Module == "" && payload.Framework == "" && h.moduleScanner != nil && payload.BaseRef != "" {
+		discovered, err := test.ScanRepoModules(ctx, h.moduleScanner,
+			payload.RepoOwner, payload.RepoName, payload.BaseRef)
+		if err != nil {
+			h.logger.WarnContext(ctx, "ScanRepoModules 失败，回退到单任务逻辑",
+				"repo", payload.RepoFullName, "error", err)
+			result, singleErr := h.enqueueSingleGenTests(ctx, payload, triggeredBy)
+			if singleErr != nil {
+				return nil, singleErr
+			}
+			return []EnqueuedTask{result}, nil
+		}
+
+		if len(discovered) >= 2 {
+			h.cleanupAllAutoTestBranches(ctx, payload.RepoOwner, payload.RepoName, payload.RepoFullName)
+		}
+
+		var results []EnqueuedTask
+		for _, mod := range discovered {
+			subPayload := payload
+			subPayload.Module = mod.Path
+			subPayload.Framework = string(mod.Framework)
+			result, subErr := h.enqueueSingleGenTests(ctx, subPayload, triggeredBy)
+			if subErr != nil {
+				h.logger.WarnContext(ctx, "子任务入队失败",
+					"repo", payload.RepoFullName, "module", mod.Path,
+					"framework", mod.Framework, "error", subErr)
+				continue
+			}
+			results = append(results, result)
+		}
+		if len(results) == 0 {
+			return nil, fmt.Errorf("所有子任务入队均失败")
+		}
+
+		h.logger.InfoContext(ctx, "整仓拆分 gen_tests 入队完成",
+			"repo", payload.RepoFullName, "discovered", len(discovered),
+			"enqueued", len(results), "triggered_by", triggeredBy)
+		return results, nil
+	}
+
+	// 非整仓模式或未注入 scanner：单任务入队
 	result, err := h.enqueueSingleGenTests(ctx, payload, triggeredBy)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return result.TaskID, nil
+	return []EnqueuedTask{result}, nil
 }
 
 // listActiveGenTestsTasks EnqueueHandler 私有 helper,封装错误日志,
