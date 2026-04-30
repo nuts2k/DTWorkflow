@@ -37,8 +37,8 @@ func TestBuildGenTestsEnqueueOptions(t *testing.T) {
 		t.Fatalf("NewClient error: %v", err)
 	}
 	opts := buildGenTestsEnqueueOptions(client)
-	if len(opts) != 1 {
-		t.Fatalf("非 nil gitea client 应注入 1 个 enqueue option，实际 %d 个", len(opts))
+	if len(opts) != 3 {
+		t.Fatalf("非 nil gitea client 应注入 3 个 enqueue option（BranchCleaner + ModuleScanner + PRClient），实际 %d 个", len(opts))
 	}
 }
 
