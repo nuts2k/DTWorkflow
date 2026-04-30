@@ -189,40 +189,73 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 		return &ExitCodeError{Code: 1, Err: fmt.Errorf("入队失败: %w", err)}
 	}
 
-	if len(results) == 1 {
-		printGenTestsResult(results[0].TaskID, payload, baseRef, genTestsFramework)
-	} else {
-		fmt.Printf("整仓扫描发现 %d 个可测试模块，已拆分入队：\n", len(results))
-		for i, r := range results {
-			fmt.Printf("  [%d] module=%-20s framework=%-8s task_id=%s\n",
-				i+1, r.Module, r.Framework, r.TaskID)
-		}
-	}
+	printGenTestsResults(results, payload, baseRef, genTestsFramework)
 	return nil
+}
+
+type genTestsTaskResult struct {
+	TaskID    string `json:"task_id"`
+	Module    string `json:"module"`
+	Framework string `json:"framework"`
+}
+
+type genTestsResult struct {
+	TaskID    string               `json:"task_id,omitempty"`
+	Repo      string               `json:"repo"`
+	Module    string               `json:"module"`
+	Ref       string               `json:"ref"`
+	Framework string               `json:"framework,omitempty"`
+	Status    string               `json:"status"`
+	Split     bool                 `json:"split"`
+	Tasks     []genTestsTaskResult `json:"tasks"`
+}
+
+func printGenTestsResults(results []queue.EnqueuedTask, payload model.TaskPayload, baseRef, framework string) {
+	tasks := make([]genTestsTaskResult, 0, len(results))
+	for _, r := range results {
+		tasks = append(tasks, genTestsTaskResult{TaskID: r.TaskID, Module: r.Module, Framework: r.Framework})
+	}
+	data := genTestsResult{
+		Repo:      payload.RepoFullName,
+		Module:    payload.Module,
+		Ref:       baseRef,
+		Framework: framework,
+		Status:    "queued",
+		Split:     len(results) > 1,
+		Tasks:     tasks,
+	}
+	if len(results) == 1 {
+		data.TaskID = results[0].TaskID
+	}
+
+	PrintResult(data, func(v any) string {
+		result := v.(genTestsResult)
+		if !result.Split {
+			var sb strings.Builder
+			sb.WriteString("gen_tests 任务已入队\n")
+			fmt.Fprintf(&sb, "  task_id = %s\n", result.TaskID)
+			fmt.Fprintf(&sb, "  repo = %s\n", result.Repo)
+			fmt.Fprintf(&sb, "  module = %q\n", result.Module)
+			fmt.Fprintf(&sb, "  ref = %s\n", result.Ref)
+			if result.Framework != "" {
+				fmt.Fprintf(&sb, "  framework = %s（显式指定，若与 test_gen.test_framework 冲突以请求级为准）\n", result.Framework)
+			}
+			return sb.String()
+		}
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "整仓扫描发现 %d 个可测试模块，已拆分入队：\n", len(result.Tasks))
+		for i, t := range result.Tasks {
+			fmt.Fprintf(&sb, "  [%d] module=%-20s framework=%-8s task_id=%s\n",
+				i+1, t.Module, t.Framework, t.TaskID)
+		}
+		return sb.String()
+	})
 }
 
 // printGenTestsResult 统一输出入队结果，复用 PrintResult 以自动处理 --json 模式。
 func printGenTestsResult(taskID string, payload model.TaskPayload, baseRef, framework string) {
-	data := map[string]any{
-		"task_id":   taskID,
-		"repo":      payload.RepoFullName,
-		"module":    payload.Module,
-		"ref":       baseRef,
-		"framework": framework,
-		"status":    "queued",
-	}
-	PrintResult(data, func(_ any) string {
-		var sb strings.Builder
-		sb.WriteString("gen_tests 任务已入队\n")
-		fmt.Fprintf(&sb, "  task_id = %s\n", taskID)
-		fmt.Fprintf(&sb, "  repo = %s\n", payload.RepoFullName)
-		fmt.Fprintf(&sb, "  module = %q\n", payload.Module)
-		fmt.Fprintf(&sb, "  ref = %s\n", baseRef)
-		if framework != "" {
-			fmt.Fprintf(&sb, "  framework = %s（显式指定，若与 test_gen.test_framework 冲突以请求级为准）\n", framework)
-		}
-		return sb.String()
-	})
+	printGenTestsResults([]queue.EnqueuedTask{{TaskID: taskID, Module: payload.Module, Framework: framework}}, payload, baseRef, framework)
 }
 
 // buildGenTestsTriggeredBy 构造 CLI 触发者标识。

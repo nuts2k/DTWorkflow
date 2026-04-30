@@ -42,16 +42,18 @@ func (m *mockRepoClient) GetBranch(ctx context.Context, owner, repo, branch stri
 }
 
 type mockTestPool struct {
-	result    *worker.ExecutionResult
-	err       error
-	calls     int
-	lastCmd   []string
-	lastStdin []byte
+	result      *worker.ExecutionResult
+	err         error
+	calls       int
+	lastCmd     []string
+	lastStdin   []byte
+	lastPayload model.TaskPayload
 }
 
-func (m *mockTestPool) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload,
+func (m *mockTestPool) RunWithCommandAndStdin(_ context.Context, payload model.TaskPayload,
 	cmd []string, stdin []byte) (*worker.ExecutionResult, error) {
 	m.calls++
+	m.lastPayload = payload
 	m.lastCmd = cmd
 	m.lastStdin = stdin
 	return m.result, m.err
@@ -521,6 +523,15 @@ func TestExecute_ModuleSubdirUsesAncestorFrameworkAnchor(t *testing.T) {
 	if strings.Contains(stdin, "mvn -pl 'backend/service'") {
 		t.Fatal("prompt 不应用子目录作 -pl（非 Maven 子模块根）")
 	}
+	if !strings.Contains(stdin, "工作分支：auto-test/backend-service") {
+		t.Fatalf("自动探测 framework 时工作分支应保持无后缀，实际 stdin: %s", stdin)
+	}
+	if strings.Contains(stdin, "工作分支：auto-test/backend-service-junit5") {
+		t.Fatal("自动探测 framework 不应给稳定分支追加 framework 后缀")
+	}
+	if pool.lastPayload.Framework != "" {
+		t.Fatalf("自动探测 framework 不应回写到容器 payload.Framework，实际 %q", pool.lastPayload.Framework)
+	}
 }
 
 // ============================================================================
@@ -763,6 +774,12 @@ func TestExecute_RequestFrameworkOverridesConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(pool.lastStdin), "Vitest") {
 		t.Error("prompt 应走 Vue/Vitest 模板")
+	}
+	if !strings.Contains(string(pool.lastStdin), "工作分支：auto-test/all-vitest") {
+		t.Errorf("请求级 framework 应进入工作分支后缀，实际 prompt: %s", string(pool.lastStdin))
+	}
+	if pool.lastPayload.Framework != "vitest" {
+		t.Errorf("容器 payload.Framework = %q, want vitest", pool.lastPayload.Framework)
 	}
 }
 

@@ -26,15 +26,12 @@ func ScanRepoModules(ctx context.Context, checker RepoFileChecker,
 		return nil, errPkg
 	}
 
-	if rootHasPom || rootHasPkg {
-		var result []DiscoveredModule
-		if rootHasPom {
-			result = append(result, DiscoveredModule{Path: "", Framework: FrameworkJUnit5})
-		}
-		if rootHasPkg {
-			result = append(result, DiscoveredModule{Path: "", Framework: FrameworkVitest})
-		}
-		return result, nil
+	var result []DiscoveredModule
+	if rootHasPom {
+		result = append(result, DiscoveredModule{Path: "", Framework: FrameworkJUnit5})
+	}
+	if rootHasPkg {
+		result = append(result, DiscoveredModule{Path: "", Framework: FrameworkVitest})
 	}
 
 	subdirs, err := checker.ListDir(ctx, owner, repo, ref, "")
@@ -48,7 +45,6 @@ func ScanRepoModules(ctx context.Context, checker RepoFileChecker,
 		subdirs = subdirs[:maxScanDirs]
 	}
 
-	var result []DiscoveredModule
 	for _, dir := range subdirs {
 		hasPom, err := checker.HasFile(ctx, owner, repo, ref, dir, "pom.xml")
 		if err != nil {

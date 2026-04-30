@@ -218,6 +218,9 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 	if err != nil {
 		return nil, err
 	}
+	// 分支后缀只表示请求/拆分显式指定的 framework。配置默认或自动探测出的
+	// 单框架任务保持历史稳定分支名，避免与 entrypoint 的 checkout 分支分叉。
+	payload.Framework = strings.TrimSpace(payload.Framework)
 
 	maxRetry := tgCfg.MaxRetryRounds
 	if maxRetry <= 0 {
@@ -230,7 +233,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		Timestamp:       time.Now().UTC().Format("20060102150405"),
 		MavenModulePath: anchor,
 		AnchorResolved:  anchorResolved,
-		Framework:       string(framework),
+		Framework:       payload.Framework,
 		MaxRetryRounds:  maxRetry,
 	}
 	var prompt string

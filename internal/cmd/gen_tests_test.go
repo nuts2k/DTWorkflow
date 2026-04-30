@@ -1,12 +1,17 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
 )
 
 // 注：flag 级别的框架 / 模块校验已抽出到 internal/validation 包统一维护，
@@ -39,6 +44,48 @@ func TestBuildGenTestsEnqueueOptions(t *testing.T) {
 	opts := buildGenTestsEnqueueOptions(client)
 	if len(opts) != 3 {
 		t.Fatalf("非 nil gitea client 应注入 3 个 enqueue option（BranchCleaner + ModuleScanner + PRClient），实际 %d 个", len(opts))
+	}
+}
+
+func TestPrintGenTestsResults_SplitJSON(t *testing.T) {
+	oldJSON := jsonOutput
+	oldStdout := os.Stdout
+	defer func() {
+		jsonOutput = oldJSON
+		os.Stdout = oldStdout
+	}()
+	jsonOutput = true
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe error: %v", err)
+	}
+	os.Stdout = w
+
+	printGenTestsResults([]queue.EnqueuedTask{
+		{TaskID: "task-backend", Module: "backend", Framework: "junit5"},
+		{TaskID: "task-frontend", Module: "frontend", Framework: "vitest"},
+	}, model.TaskPayload{RepoFullName: "org/repo"}, "main", "")
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+
+	var got genTestsResult
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("拆分结果应输出合法 JSON，实际 error=%v output=%s", err, buf.String())
+	}
+	if !got.Split {
+		t.Fatal("split 应为 true")
+	}
+	if got.TaskID != "" {
+		t.Errorf("拆分结果不应输出顶层 task_id，实际 %q", got.TaskID)
+	}
+	if len(got.Tasks) != 2 {
+		t.Fatalf("期望 2 个任务，实际 %+v", got.Tasks)
+	}
+	if got.Tasks[0].TaskID != "task-backend" || got.Tasks[1].Framework != "vitest" {
+		t.Errorf("tasks 内容不符合预期: %+v", got.Tasks)
 	}
 }
 

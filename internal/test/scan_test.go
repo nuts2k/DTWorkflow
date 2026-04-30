@@ -98,6 +98,34 @@ func TestScanRepoModules_Depth1MultiModule(t *testing.T) {
 	}
 }
 
+func TestScanRepoModules_RootAndDepth1Modules(t *testing.T) {
+	checker := &mockScanChecker{
+		files: map[string]bool{
+			"pom.xml":               true,
+			"backend/pom.xml":       true,
+			"frontend/package.json": true,
+		},
+		dirs: map[string][]string{"": {"backend", "frontend"}},
+	}
+	modules, err := ScanRepoModules(context.Background(), checker, "o", "r", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(modules) != 3 {
+		t.Fatalf("期望根模块 + 2 个子模块，实际 %d: %+v", len(modules), modules)
+	}
+	want := []DiscoveredModule{
+		{Path: "", Framework: FrameworkJUnit5},
+		{Path: "backend", Framework: FrameworkJUnit5},
+		{Path: "frontend", Framework: FrameworkVitest},
+	}
+	for i := range want {
+		if modules[i] != want[i] {
+			t.Errorf("modules[%d] = %+v, want %+v", i, modules[i], want[i])
+		}
+	}
+}
+
 func TestScanRepoModules_NoFrameworkDetected(t *testing.T) {
 	checker := &mockScanChecker{
 		dirs: map[string][]string{"": {"docs", "scripts"}},
