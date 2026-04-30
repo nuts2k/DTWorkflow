@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -136,5 +137,32 @@ func TestGiteaRepoFileChecker_HasFile(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("不存在的文件应返回 false")
+	}
+}
+
+func TestGiteaRepoFileChecker_ListDir(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := []gitea.ContentsResponse{
+			{Name: "backend", Type: "dir"},
+			{Name: "frontend", Type: "dir"},
+			{Name: "README.md", Type: "file"},
+			{Name: ".gitignore", Type: "file"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	client, _ := gitea.NewClient(ts.URL, gitea.WithToken("test"))
+	checker := &giteaRepoFileChecker{client: client}
+	dirs, err := checker.ListDir(context.Background(), "owner", "repo", "main", "")
+	if err != nil {
+		t.Fatalf("ListDir 返回错误: %v", err)
+	}
+	if len(dirs) != 2 {
+		t.Fatalf("期望 2 个子目录，实际 %d: %v", len(dirs), dirs)
+	}
+	if dirs[0] != "backend" || dirs[1] != "frontend" {
+		t.Errorf("子目录不符合预期: %v", dirs)
 	}
 }

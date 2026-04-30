@@ -197,3 +197,20 @@ func (c *giteaRepoFileChecker) HasFile(ctx context.Context, owner, repo, ref, mo
 	}
 	return contents != nil, nil
 }
+
+func (c *giteaRepoFileChecker) ListDir(ctx context.Context, owner, repo, ref, dir string) ([]string, error) {
+	if c == nil || c.client == nil {
+		return nil, fmt.Errorf("giteaRepoFileChecker: client 不能为空")
+	}
+	entries, _, err := c.client.ListDirContents(ctx, owner, repo, dir, ref)
+	if err != nil {
+		return nil, fmt.Errorf("ListDir(%s): %w", dir, err)
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.Type == "dir" {
+			dirs = append(dirs, e.Name)
+		}
+	}
+	return dirs, nil
+}

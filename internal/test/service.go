@@ -58,6 +58,7 @@ type TestConfigProvider interface {
 // M4.1 单测里用内存桩；M4.2 由上层适配（Gitea API 或容器内 fs）。
 type RepoFileChecker interface {
 	HasFile(ctx context.Context, owner, repo, ref, module, relPath string) (bool, error)
+	ListDir(ctx context.Context, owner, repo, ref, dir string) ([]string, error)
 }
 
 // ReviewEnqueuer gen_tests 任务完成后触发 review 入队的窄接口。

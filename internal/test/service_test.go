@@ -81,6 +81,10 @@ func (m *mockFileChecker) HasFile(_ context.Context, _, _, _, module, relPath st
 	return m.files[module+"||"+relPath], nil
 }
 
+func (m *mockFileChecker) ListDir(_ context.Context, _, _, _, _ string) ([]string, error) {
+	return nil, nil
+}
+
 // mockPRClient 满足 test.PRClient 窄接口，用于断言 Create / List 调用次数与参数。
 // 默认行为：List 返回空列表；Create 返回 pr{Number:42,HTMLURL:".../pulls/42"}。
 type mockPRClient struct {
