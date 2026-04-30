@@ -120,3 +120,26 @@ func (c *Client) GetFileContent(ctx context.Context, owner, repo, filepath, ref 
 	}
 	return data, resp, nil
 }
+
+// ListDirContents 列出仓库指定目录下的条目（文件和子目录）。
+// dir 为空字符串时列出根目录。
+// GET /api/v1/repos/{owner}/{repo}/contents/{dir}?ref={ref}
+func (c *Client) ListDirContents(ctx context.Context, owner, repo, dir, ref string) ([]ContentsResponse, *Response, error) {
+	p := fmt.Sprintf("/api/v1/repos/%s/%s/contents/%s",
+		url.PathEscape(owner), url.PathEscape(repo), dir)
+	params := url.Values{}
+	if ref != "" {
+		params.Set("ref", ref)
+	}
+	req, err := c.newRequestWithQuery(ctx, "GET", p, params, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var result []ContentsResponse
+	resp, err := c.doRequest(req, &result)
+	if err != nil {
+		return nil, resp, err
+	}
+	return result, resp, nil
+}

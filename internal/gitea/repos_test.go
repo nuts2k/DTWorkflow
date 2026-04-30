@@ -2,7 +2,9 @@ package gitea
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -235,5 +237,57 @@ func TestGetTag_NotFound(t *testing.T) {
 	}
 	if !IsNotFound(err) {
 		t.Errorf("期望 IsNotFound 为 true，实际错误: %v", err)
+	}
+}
+
+func TestListDirContents(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("期望 GET，实际 %s", r.Method)
+		}
+		wantPath := "/api/v1/repos/owner/repo/contents/"
+		if r.URL.Path != wantPath {
+			t.Errorf("期望路径 %s，实际 %s", wantPath, r.URL.Path)
+		}
+		if r.URL.Query().Get("ref") != "main" {
+			t.Errorf("期望 ref=main，实际 %s", r.URL.Query().Get("ref"))
+		}
+		resp := []ContentsResponse{
+			{Name: "backend", Path: "backend", Type: "dir"},
+			{Name: "frontend", Path: "frontend", Type: "dir"},
+			{Name: "README.md", Path: "README.md", Type: "file"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	client, _ := NewClient(ts.URL, WithToken("test-token"))
+	entries, _, err := client.ListDirContents(context.Background(), "owner", "repo", "", "main")
+	if err != nil {
+		t.Fatalf("ListDirContents 返回错误: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("期望 3 个条目，实际 %d", len(entries))
+	}
+	if entries[0].Name != "backend" || entries[0].Type != "dir" {
+		t.Errorf("第一个条目不符合预期: %+v", entries[0])
+	}
+}
+
+func TestListDirContents_NotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer ts.Close()
+
+	client, _ := NewClient(ts.URL, WithToken("test-token"))
+	_, _, err := client.ListDirContents(context.Background(), "owner", "repo", "nonexist", "")
+	if err == nil {
+		t.Fatal("期望返回错误")
+	}
+	if !IsNotFound(err) {
+		t.Errorf("期望 NotFound 错误，实际: %v", err)
 	}
 }
