@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
@@ -18,13 +19,15 @@ import (
 // 编译时检查 *EnqueueHandler 实现 webhook.Handler 接口
 var _ webhook.Handler = (*EnqueueHandler)(nil)
 
-// EnqueueHandler 实现 webhook.Handler 接口，将 webhook 事件转换为任务并入队
+// EnqueueHandler 实现 webhook.Handler 接口,将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
 	client        Enqueuer
-	canceller     TaskCanceller // M2.4: 任务取消能力
+	canceller     TaskCanceller    // M2.4: 任务取消能力
 	store         store.Store
 	logger        *slog.Logger
-	branchCleaner BranchCleaner // M4.2: 可选，Cancel-and-Replace 时清理旧 auto-test 分支
+	branchCleaner BranchCleaner    // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
+	prClient      genTestsPRClient // M4.2.1: cleanupAllAutoTestBranches
+	moduleScanner test.RepoFileChecker // M4.2.1: ScanRepoModules
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -38,10 +41,34 @@ func WithBranchCleaner(c BranchCleaner) EnqueueOption {
 	}
 }
 
+// EnqueuedTask 多模块入队结果条目。
+type EnqueuedTask struct {
+	TaskID    string
+	Module    string
+	Framework string
+}
+
+// genTestsPRClient 全量清理所需的 PR 操作窄接口。
+type genTestsPRClient interface {
+	ListRepoPullRequests(ctx context.Context, owner, repo string,
+		opts gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error)
+	ClosePullRequest(ctx context.Context, owner, repo string, index int64) error
+}
+
+// WithPRClient 注入 genTestsPRClient 用于 M4.2.1 全量清理 auto-test 分支。
+func WithPRClient(c genTestsPRClient) EnqueueOption {
+	return func(h *EnqueueHandler) { h.prClient = c }
+}
+
+// WithModuleScanner 注入 RepoFileChecker 用于 M4.2.1 ScanRepoModules。
+func WithModuleScanner(c test.RepoFileChecker) EnqueueOption {
+	return func(h *EnqueueHandler) { h.moduleScanner = c }
+}
+
 // NewEnqueueHandler 创建 EnqueueHandler 实例。
-// 参数 client 和 store 为必要依赖，传入 nil 属于编程错误（programming error），
-// 因此使用 panic 而非返回 error，与 Go 标准库（如 http.NewServeMux）的惯例一致。
-// canceller 为可选依赖，nil 时跳过取消逻辑。
+// 参数 client 和 store 为必要依赖,传入 nil 属于编程错误（programming error）,
+// 因此使用 panic 而非返回 error,与 Go 标准库（如 http.NewServeMux）的惯例一致。
+// canceller 为可选依赖,nil 时跳过取消逻辑。
 func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Store, logger *slog.Logger, opts ...EnqueueOption) *EnqueueHandler {
 	if client == nil {
 		panic("NewEnqueueHandler: client 不能为 nil")
@@ -64,15 +91,15 @@ func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Sto
 	return h
 }
 
-// HandlePullRequest 处理 PR 事件，执行幂等检查后创建任务并入队。
+// HandlePullRequest 处理 PR 事件,执行幂等检查后创建任务并入队。
 // 注意：HandlePullRequest 与 HandleIssueLabel 有相似的流程结构（幂等检查 -> 构建 payload ->
-// 构建 record -> enqueueTask -> 日志），但因各事件的 payload 字段差异较大且日志消息不同，
-// 提取通用模板方法反而会引入复杂的泛型或 interface 抽象，得不偿失。
-// 核心逻辑已下沉到 enqueueTask，当前的重复仅在 payload/record 构建和日志层面。
+// 构建 record -> enqueueTask -> 日志）,但因各事件的 payload 字段差异较大且日志消息不同,
+// 提取通用模板方法反而会引入复杂的泛型或 interface 抽象,得不偿失。
+// 核心逻辑已下沉到 enqueueTask,当前的重复仅在 payload/record 构建和日志层面。
 func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.PullRequestEvent) error {
 	// M4.2: 拦截来自 auto-test/{moduleKey} 分支的 PR webhook——这些 PR 由 gen_tests
-	// 自己产出，上游已发过 gen_tests 完成通知，不应再为其触发自动评审。
-	// 仅在命中活跃 gen_tests 任务的 module 时拦截；查询失败 fail-open，继续原流程
+	// 自己产出,上游已发过 gen_tests 完成通知,不应再为其触发自动评审。
+	// 仅在命中活跃 gen_tests 任务的 module 时拦截；查询失败 fail-open,继续原流程
 	// 保证评审能力不被 gen_tests 拖垮。
 	if h.shouldSkipAutoTestReview(ctx, event) {
 		return nil
@@ -84,7 +111,7 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		return fmt.Errorf("幂等检查失败: %w", err)
 	}
 	if existing != nil {
-		h.logger.InfoContext(ctx, "PR 评审任务已存在，跳过",
+		h.logger.InfoContext(ctx, "PR 评审任务已存在,跳过",
 			"delivery_id", event.DeliveryID,
 			"task_id", existing.ID,
 			"status", existing.Status,
@@ -92,7 +119,7 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		return nil
 	}
 
-	// M2.4: 先识别被替代的旧任务，等新任务持久化成功后再取消旧任务，
+	// M2.4: 先识别被替代的旧任务,等新任务持久化成功后再取消旧任务,
 	// 避免 replacement 创建失败时把当前唯一可运行任务也一起取消掉。
 	activeTasks, superseded := h.listActivePRTasks(ctx, event.Repository.FullName, event.PullRequest.Number)
 
@@ -139,7 +166,7 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 			"superseded", superseded.Count,
 		)
 	} else {
-		h.logger.InfoContext(ctx, "PR 评审任务已创建（pending），等待 RecoveryLoop 入队",
+		h.logger.InfoContext(ctx, "PR 评审任务已创建（pending）,等待 RecoveryLoop 入队",
 			"task_id", record.ID,
 			"repo", event.Repository.FullName,
 			"pr", event.PullRequest.Number,
@@ -148,12 +175,12 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 	return nil
 }
 
-// HandleIssueLabel 处理 Issue 标签事件，按标签类型路由到不同任务。
+// HandleIssueLabel 处理 Issue 标签事件,按标签类型路由到不同任务。
 // M3.4: fix-to-pr 标签 → TaskTypeFixIssue；auto-fix 标签 → TaskTypeAnalyzeIssue。
 // fix-to-pr 优先级高于 auto-fix（同时存在时仅入队 fix_issue）。
-// 流程结构与 HandlePullRequest 类似，参见其注释了解未提取模板方法的原因。
+// 流程结构与 HandlePullRequest 类似,参见其注释了解未提取模板方法的原因。
 func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.IssueLabelEvent) error {
-	// M3.4: 双标签分流，fix-to-pr 优先于 auto-fix
+	// M3.4: 双标签分流,fix-to-pr 优先于 auto-fix
 	var taskType model.TaskType
 	switch {
 	case event.FixToPRAdded:
@@ -170,7 +197,7 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 		return fmt.Errorf("幂等检查失败: %w", err)
 	}
 	if existing != nil {
-		h.logger.InfoContext(ctx, "Issue 任务已存在，跳过",
+		h.logger.InfoContext(ctx, "Issue 任务已存在,跳过",
 			"delivery_id", event.DeliveryID,
 			"task_id", existing.ID,
 			"task_type", taskType,
@@ -222,7 +249,7 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 			"issue", event.Issue.Number,
 		)
 	} else {
-		h.logger.InfoContext(ctx, taskTypeName+"任务已创建（pending），等待 RecoveryLoop 入队",
+		h.logger.InfoContext(ctx, taskTypeName+"任务已创建（pending）,等待 RecoveryLoop 入队",
 			"task_id", record.ID,
 			"task_type", taskType,
 			"repo", event.Repository.FullName,
@@ -233,11 +260,11 @@ func (h *EnqueueHandler) HandleIssueLabel(ctx context.Context, event webhook.Iss
 }
 
 // buildAsynqTaskID 根据 deliveryID 和 taskType 构建确定性的 asynq TaskID。
-// 当 deliveryID 非空时，使用 "deliveryID:taskType" 格式，保证 asynq 层面的幂等去重；
-// 当 deliveryID 为空时返回空字符串，让 asynq 自动生成 TaskID。
+// 当 deliveryID 非空时,使用 "deliveryID:taskType" 格式,保证 asynq 层面的幂等去重；
+// 当 deliveryID 为空时返回空字符串,让 asynq 自动生成 TaskID。
 //
-// 此函数被 enqueueTask 和 RecoveryLoop.requeue 共享，确保同一任务无论首次入队
-// 还是恢复重入队都使用相同的 TaskID，避免因 TaskID 不一致导致任务重复执行。
+// 此函数被 enqueueTask 和 RecoveryLoop.requeue 共享,确保同一任务无论首次入队
+// 还是恢复重入队都使用相同的 TaskID,避免因 TaskID 不一致导致任务重复执行。
 func buildAsynqTaskID(deliveryID string, taskType model.TaskType) string {
 	if deliveryID != "" {
 		return fmt.Sprintf("%s:%s", deliveryID, taskType)
@@ -250,7 +277,7 @@ func buildAsynqTaskID(deliveryID string, taskType model.TaskType) string {
 const autoTestBranchPrefix = "auto-test/"
 
 // shouldSkipAutoTestReview 判断 PR webhook 是否来自 gen_tests 自己产出的
-// auto-test/{moduleKey} 分支；若同仓库当前仍有该 module 的活跃 gen_tests 任务，
+// auto-test/{moduleKey} 分支；若同仓库当前仍有该 module 的活跃 gen_tests 任务,
 // 则拦截评审入队。其它情况（非 auto-test/* 前缀、查询失败等）均 fail-open。
 func (h *EnqueueHandler) shouldSkipAutoTestReview(ctx context.Context, event webhook.PullRequestEvent) bool {
 	head := event.PullRequest.HeadRef
@@ -264,9 +291,9 @@ func (h *EnqueueHandler) shouldSkipAutoTestReview(ctx context.Context, event web
 
 	candidates, err := h.store.ListActiveGenTestsModules(ctx, event.Repository.FullName)
 	if err != nil {
-		// fail-open：查询失败时不阻断评审，只记日志。按 §4.5 要求，字段覆盖
-		// repo / module_key / pr / head / delivery_id / error 全量，便于排障。
-		h.logger.WarnContext(ctx, "查询活跃 gen_tests module 失败，auto-test PR 仍按评审流程放行",
+		// fail-open：查询失败时不阻断评审,只记日志。按 §4.5 要求,字段覆盖
+		// repo / module_key / pr / head / delivery_id / error 全量,便于排障。
+		h.logger.WarnContext(ctx, "查询活跃 gen_tests module 失败,auto-test PR 仍按评审流程放行",
 			"repo", event.Repository.FullName,
 			"module_key", moduleKey,
 			"pr", event.PullRequest.Number,
@@ -297,11 +324,11 @@ type SupersededInfo struct {
 	LastHeadSHA string // 最近一个旧任务的 HeadSHA
 }
 
-// listActivePRTasks 查找同一 PR 的活跃旧评审任务，并汇总 superseded 信息。
+// listActivePRTasks 查找同一 PR 的活跃旧评审任务,并汇总 superseded 信息。
 func (h *EnqueueHandler) listActivePRTasks(ctx context.Context, repoFullName string, prNumber int64) ([]*model.TaskRecord, SupersededInfo) {
 	tasks, err := h.store.FindActivePRTasks(ctx, repoFullName, prNumber, model.TaskTypeReviewPR)
 	if err != nil {
-		h.logger.WarnContext(ctx, "查找活跃旧任务失败，跳过取消",
+		h.logger.WarnContext(ctx, "查找活跃旧任务失败,跳过取消",
 			"repo", repoFullName, "pr", prNumber, "error", err)
 		return nil, SupersededInfo{}
 	}
@@ -322,7 +349,7 @@ func (h *EnqueueHandler) listActivePRTasks(ctx context.Context, repoFullName str
 func (h *EnqueueHandler) listActiveIssueTasks(ctx context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) []*model.TaskRecord {
 	tasks, err := h.store.FindActiveIssueTasks(ctx, repoFullName, issueNumber, taskType)
 	if err != nil {
-		h.logger.WarnContext(ctx, "查找活跃 Issue 任务失败，跳过取消",
+		h.logger.WarnContext(ctx, "查找活跃 Issue 任务失败,跳过取消",
 			"repo", repoFullName, "issue", issueNumber, "error", err)
 		return nil
 	}
@@ -330,7 +357,7 @@ func (h *EnqueueHandler) listActiveIssueTasks(ctx context.Context, repoFullName 
 }
 
 // listReplacementIssueTasks 查找新任务创建后需要取消的旧任务。
-// analyze_issue 仅替换旧 analyze_issue；fix_issue 会同时替换旧 fix_issue 和 analyze_issue，
+// analyze_issue 仅替换旧 analyze_issue；fix_issue 会同时替换旧 fix_issue 和 analyze_issue,
 // 确保 fix-to-pr 升级为修复时不会与前序分析任务并发运行。
 func (h *EnqueueHandler) listReplacementIssueTasks(ctx context.Context, repoFullName string, issueNumber int64, taskType model.TaskType) []*model.TaskRecord {
 	tasks := h.listActiveIssueTasks(ctx, repoFullName, issueNumber, taskType)
@@ -358,7 +385,7 @@ func (h *EnqueueHandler) listReplacementIssueTasks(ctx context.Context, repoFull
 	return merged
 }
 
-// cancelTasks 在 replacement 已持久化后，逐个取消旧任务（best-effort）。
+// cancelTasks 在 replacement 已持久化后,逐个取消旧任务（best-effort）。
 func (h *EnqueueHandler) cancelTasks(ctx context.Context, tasks []*model.TaskRecord) {
 	var failCount int
 	for _, task := range tasks {
@@ -367,7 +394,7 @@ func (h *EnqueueHandler) cancelTasks(ctx context.Context, tasks []*model.TaskRec
 		}
 	}
 	if failCount > 0 {
-		h.logger.WarnContext(ctx, "部分旧任务取消失败，可能存在并行评审",
+		h.logger.WarnContext(ctx, "部分旧任务取消失败,可能存在并行评审",
 			"total", len(tasks), "failed", failCount)
 	}
 }
@@ -378,7 +405,7 @@ func (h *EnqueueHandler) cancelTask(ctx context.Context, task *model.TaskRecord)
 
 	if task.AsynqID != "" {
 		if h.canceller == nil {
-			h.logger.WarnContext(ctx, "缺少任务取消器，保留旧任务为可运行状态",
+			h.logger.WarnContext(ctx, "缺少任务取消器,保留旧任务为可运行状态",
 				"task_id", task.ID, "asynq_id", task.AsynqID, "status", task.Status)
 			return false
 		}
@@ -414,7 +441,7 @@ func (h *EnqueueHandler) cancelTask(ctx context.Context, task *model.TaskRecord)
 	return true
 }
 
-// enqueueTask 持久化任务记录并将其入队，record 字段 TaskType/Priority/RepoFullName/DeliveryID 需预先填充
+// enqueueTask 持久化任务记录并将其入队,record 字段 TaskType/Priority/RepoFullName/DeliveryID 需预先填充
 func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayload, record *model.TaskRecord) error {
 	now := time.Now()
 	record.ID = uuid.New().String()
@@ -434,10 +461,10 @@ func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayl
 
 	// 2. 入队到 Redis
 	// 设计决策："先持久化再入队" 的 eventually consistent 模式。
-	// Step 1 成功但 Step 2 失败时，任务保持 pending 状态，不向调用方返回错误。
-	// RecoveryLoop 会定期扫描长时间处于 pending 的孤儿任务并重新入队，
-	// 从而保证最终一致性。这避免了分布式事务的复杂性，代价是入队可能有延迟。
-	// 使用共享的 buildAsynqTaskID 生成确定性 TaskID，确保与 RecoveryLoop 一致
+	// Step 1 成功但 Step 2 失败时,任务保持 pending 状态,不向调用方返回错误。
+	// RecoveryLoop 会定期扫描长时间处于 pending 的孤儿任务并重新入队,
+	// 从而保证最终一致性。这避免了分布式事务的复杂性,代价是入队可能有延迟。
+	// 使用共享的 buildAsynqTaskID 生成确定性 TaskID,确保与 RecoveryLoop 一致
 	taskID := buildAsynqTaskID(record.DeliveryID, record.TaskType)
 	asynqID, err := h.client.Enqueue(ctx, payload, EnqueueOptions{
 		Priority: record.Priority,
@@ -445,15 +472,15 @@ func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayl
 	})
 	if err != nil {
 		// 设计决策：入队失败不返回错误给调用方。
-		// 设计文档（docs/M1.5-task-queue-design.md）中描述入队失败应返回 error，
+		// 设计文档（docs/M1.5-task-queue-design.md）中描述入队失败应返回 error,
 		// 但实际实现采用了 "先持久化再入队" 的 eventually consistent 模式：
-		// 任务已成功持久化到 SQLite（status=pending），RecoveryLoop 会定期扫描
-		// 长时间处于 pending 的孤儿任务并重新入队，最终保证一致性。
-		// 若此处返回 error，webhook handler 会向 Gitea 返回 500，触发 Gitea 重发
-		// 同一 webhook，而任务实际已被持久化，这会造成不必要的重试噪音。
-		// 因此选择静默降级：记录警告日志，依赖 RecoveryLoop 补偿入队，
+		// 任务已成功持久化到 SQLite（status=pending）,RecoveryLoop 会定期扫描
+		// 长时间处于 pending 的孤儿任务并重新入队,最终保证一致性。
+		// 若此处返回 error,webhook handler 会向 Gitea 返回 500,触发 Gitea 重发
+		// 同一 webhook,而任务实际已被持久化,这会造成不必要的重试噪音。
+		// 因此选择静默降级：记录警告日志,依赖 RecoveryLoop 补偿入队,
 		// 代价是入队可能有最多 interval（默认 60s）的延迟。
-		h.logger.WarnContext(ctx, "任务入队失败，将由 RecoveryLoop 重试",
+		h.logger.WarnContext(ctx, "任务入队失败,将由 RecoveryLoop 重试",
 			"task_id", record.ID,
 			"task_type", record.TaskType,
 			"error", err,
@@ -470,14 +497,14 @@ func (h *EnqueueHandler) enqueueTask(ctx context.Context, payload model.TaskPayl
 			"task_id", record.ID,
 			"error", err,
 		)
-		// 不返回错误，任务已成功入队
+		// 不返回错误,任务已成功入队
 	}
 
 	return nil
 }
 
 // EnqueueManualReview 手动触发 PR 评审入队。
-// payload 由 API handler 组装（含完整 PR 信息），triggeredBy 格式为 "manual:{identity}"。
+// payload 由 API handler 组装（含完整 PR 信息）,triggeredBy 格式为 "manual:{identity}"。
 func (h *EnqueueHandler) EnqueueManualReview(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
 	payload.TaskType = model.TaskTypeReviewPR
 	payload.DeliveryID = generateManualDeliveryID()
@@ -508,7 +535,7 @@ func (h *EnqueueHandler) EnqueueManualReview(ctx context.Context, payload model.
 }
 
 // EnqueueManualFix 手动触发 Issue 分析或修复入队。
-// M3.4: 支持调用方通过 payload.TaskType 指定任务类型（analyze_issue 或 fix_issue），
+// M3.4: 支持调用方通过 payload.TaskType 指定任务类型（analyze_issue 或 fix_issue）,
 // 未指定时默认为 analyze_issue。
 func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
 	// M3.4: 支持调用方指定 TaskType（analyze_issue 或 fix_issue）
@@ -547,48 +574,25 @@ func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.Tas
 	return record.ID, nil
 }
 
-// EnqueueManualGenTests 手动触发 gen_tests 任务入队。
-// payload 由 API handler / CLI handler 组装；triggeredBy 格式为 "manual:{identity}"。
-// Cancel-and-Replace 按 (repo, module) 粒度：同仓库同 module 的活跃任务在本次入队后被取消。
-func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
-	// 完整性校验：与 HandlePullRequest / EnqueueManualReview 对齐。
-	// API / CLI 装配层应确保 payload 已通过 Gitea 查询填充这两个字段，
-	// 但 worker 下游 entrypoint.sh 会依赖 CloneURL / RepoFullName 做凭证与 clone，
-	// 任一为空时直接拒绝入队，避免将不完整任务落库后再由 Worker 阶段失败。
-	if payload.RepoFullName == "" || payload.CloneURL == "" {
-		return "", fmt.Errorf("payload 数据不完整: RepoFullName 或 CloneURL 为空")
-	}
-
+// enqueueSingleGenTests 封装单个 gen_tests 任务的入队逻辑,供 EnqueueManualGenTests
+// 及未来的多模块批量入队复用。调用方需确保 payload.RepoFullName / CloneURL 已填充。
+func (h *EnqueueHandler) enqueueSingleGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy string) (EnqueuedTask, error) {
 	payload.TaskType = model.TaskTypeGenTests
 	payload.DeliveryID = generateManualDeliveryID()
 
-	// Cancel-and-Replace 按 stable branch key（auto-test/{ModuleKey(module)}）聚合，
-	// 而不是按原始 module 字符串精确匹配。这样 `svc/api` 与 `svc-api` 等会命中同一
-	// 稳定分支的请求能互相替换，避免并发写同一 auto-test 分支。
-	activeTasks := h.listActiveGenTestsTasksByBranchKey(ctx, payload.RepoFullName, payload.Module)
+	activeTasks := h.listActiveGenTestsTasksByBranchKey(ctx, payload.RepoFullName, payload.Module, payload.Framework)
 
-	// M4.2 修订：Cancel-and-Replace 按 "清理远程 → 取消旧任务 → 入队新任务" 顺序执行。
-	// 原顺序（先入队再清理）存在 race：新任务被 asynq 取出启动容器时，旧远程分支
-	// 可能还未删除，entrypoint fetch 到陈旧分支，后续建 PR 指向错位 ref。
-	// 清理远程资源优先让 Gitea 达成一致；cleanup 失败仅 warn，不阻断入队。
 	if len(activeTasks) > 0 && h.branchCleaner != nil {
-		branchName := test.BuildAutoTestBranchName(payload.Module)
+		branchName := test.BuildAutoTestBranchName(payload.Module, payload.Framework)
 		if err := h.branchCleaner.CleanupAutoTestBranch(ctx, payload.RepoOwner, payload.RepoName, branchName); err != nil {
-			h.logger.WarnContext(ctx, "清理旧 auto-test 分支失败，继续入队新任务",
-				"repo", payload.RepoFullName,
-				"module", payload.Module,
-				"branch", branchName,
-				"error", err,
-			)
+			h.logger.WarnContext(ctx, "清理旧 auto-test 分支失败,继续入队新任务",
+				"repo", payload.RepoFullName, "module", payload.Module,
+				"branch", branchName, "error", err)
 		}
 	}
 
-	// 取消旧任务（含 context cancel 运行中容器）—— 必须在新任务入队前完成，
-	// 否则新任务从 asynq 取出时旧容器可能还持有工作目录 / 分支引用。
 	h.cancelTasks(ctx, activeTasks)
 
-	// 手动触发使用 PriorityNormal，确保不被 review/fix 队列饿死。
-	// 未来若新增 webhook / CronJob 自动触发入口，应改用 PriorityLow（背景任务语义）。
 	record := &model.TaskRecord{
 		TaskType:     model.TaskTypeGenTests,
 		Priority:     model.PriorityNormal,
@@ -598,24 +602,36 @@ func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload mode
 	}
 
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
-		return "", err
+		return EnqueuedTask{}, err
 	}
 
-	h.logger.InfoContext(ctx, "手动 gen_tests 任务已入队",
-		"task_id", record.ID,
-		"repo", payload.RepoFullName,
-		"module", payload.Module,
-		"triggered_by", triggeredBy,
-	)
-	return record.ID, nil
+	h.logger.InfoContext(ctx, "gen_tests 任务已入队",
+		"task_id", record.ID, "repo", payload.RepoFullName,
+		"module", payload.Module, "framework", payload.Framework,
+		"triggered_by", triggeredBy)
+	return EnqueuedTask{TaskID: record.ID, Module: payload.Module, Framework: payload.Framework}, nil
 }
 
-// listActiveGenTestsTasks EnqueueHandler 私有 helper，封装错误日志，
+// EnqueueManualGenTests 手动触发 gen_tests 任务入队。
+// payload 由 API handler / CLI handler 组装；triggeredBy 格式为 "manual:{identity}"。
+// Cancel-and-Replace 按 stable branch key 粒度：同仓库同 branch key 的活跃任务在本次入队后被取消。
+func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+	if payload.RepoFullName == "" || payload.CloneURL == "" {
+		return "", fmt.Errorf("payload 数据不完整: RepoFullName 或 CloneURL 为空")
+	}
+	result, err := h.enqueueSingleGenTests(ctx, payload, triggeredBy)
+	if err != nil {
+		return "", err
+	}
+	return result.TaskID, nil
+}
+
+// listActiveGenTestsTasks EnqueueHandler 私有 helper,封装错误日志,
 // 与 listActivePRTasks / listActiveIssueTasks 风格一致。
 func (h *EnqueueHandler) listActiveGenTestsTasks(ctx context.Context, repoFullName, module string) []*model.TaskRecord {
 	tasks, err := h.store.FindActiveGenTestsTasks(ctx, repoFullName, module)
 	if err != nil {
-		h.logger.WarnContext(ctx, "查找活跃 gen_tests 任务失败，跳过取消",
+		h.logger.WarnContext(ctx, "查找活跃 gen_tests 任务失败,跳过取消",
 			"repo", repoFullName, "module", module, "error", err)
 		return nil
 	}
@@ -624,19 +640,26 @@ func (h *EnqueueHandler) listActiveGenTestsTasks(ctx context.Context, repoFullNa
 
 // listActiveGenTestsTasksByBranchKey 查找会落到同一 stable branch 的活跃 gen_tests 任务。
 //
-// 设计背景：stable branch 名由 test.ModuleKey(module) 派生，原始 module 字符串不同但
-// branch key 相同（例如 "svc/api" 与 "svc-api"）时，本质上会写同一 remote branch。
-// 若仍按原始 module 精确匹配 Cancel-and-Replace，会放行两条任务并发写同一分支。
+// 设计背景：stable branch 名由 test.ModuleKey(module) 派生,原始 module 字符串不同但
+// branch key 相同（例如 "svc/api" 与 "svc-api"）时,本质上会写同一 remote branch。
+// 若仍按原始 module 精确匹配 Cancel-and-Replace,会放行两条任务并发写同一分支。
 //
-// 实现上先取活跃 module 列表，再按 ModuleKey 过滤并回查具体任务。若列表查询失败则回退
-// 到旧的“按原始 module 精确匹配”逻辑，保持 fail-open 行为与既有兼容性。
+// M4.2.1：framework 非空时,targetKey 追加 "-{framework}" 后缀,使同 module 不同 framework
+// 的任务（例如 junit5 与 vitest）不互相取消；同时在内层循环增加二次过滤,排除
+// Payload.Framework 不匹配的历史任务。
+//
+// 实现上先取活跃 module 列表,再按 ModuleKey 过滤并回查具体任务。若列表查询失败则回退
+// 到旧的"按原始 module 精确匹配"逻辑,保持 fail-open 行为与既有兼容性。
 func (h *EnqueueHandler) listActiveGenTestsTasksByBranchKey(ctx context.Context,
-	repoFullName, module string) []*model.TaskRecord {
+	repoFullName, module, framework string) []*model.TaskRecord {
 	targetKey := test.ModuleKey(module)
+	if framework != "" {
+		targetKey = targetKey + "-" + framework
+	}
 
 	modules, err := h.store.ListActiveGenTestsModules(ctx, repoFullName)
 	if err != nil {
-		h.logger.WarnContext(ctx, "查询活跃 gen_tests module 列表失败，回退到原始 module 精确匹配",
+		h.logger.WarnContext(ctx, "查询活跃 gen_tests module 列表失败,回退到原始 module 精确匹配",
 			"repo", repoFullName, "module", module, "module_key", targetKey, "error", err)
 		return h.listActiveGenTestsTasks(ctx, repoFullName, module)
 	}
@@ -645,7 +668,7 @@ func (h *EnqueueHandler) listActiveGenTestsTasksByBranchKey(ctx context.Context,
 	seenTask := make(map[string]struct{})
 	var merged []*model.TaskRecord
 	for _, candidate := range modules {
-		if test.ModuleKey(candidate) != targetKey {
+		if test.ModuleKey(candidate) != test.ModuleKey(module) {
 			continue
 		}
 		if _, ok := seenModule[candidate]; ok {
@@ -655,7 +678,7 @@ func (h *EnqueueHandler) listActiveGenTestsTasksByBranchKey(ctx context.Context,
 
 		tasks, err := h.store.FindActiveGenTestsTasks(ctx, repoFullName, candidate)
 		if err != nil {
-			h.logger.WarnContext(ctx, "按 stable branch key 回查活跃 gen_tests 任务失败，跳过该 module",
+			h.logger.WarnContext(ctx, "按 stable branch key 回查活跃 gen_tests 任务失败,跳过该 module",
 				"repo", repoFullName,
 				"module", module,
 				"candidate_module", candidate,
@@ -669,6 +692,9 @@ func (h *EnqueueHandler) listActiveGenTestsTasksByBranchKey(ctx context.Context,
 				continue
 			}
 			if _, ok := seenTask[task.ID]; ok {
+				continue
+			}
+			if framework != "" && task.Payload.Framework != framework {
 				continue
 			}
 			seenTask[task.ID] = struct{}{}
