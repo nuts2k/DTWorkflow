@@ -799,6 +799,68 @@ func TestBuildContainerCmd_FixIssueWithRef(t *testing.T) {
 	}
 }
 
+func TestModuleKeyForContainerWithFramework(t *testing.T) {
+	tests := []struct {
+		module    string
+		framework string
+		want      string
+	}{
+		{"backend", "", "backend"},
+		{"", "", "all"},
+		{"", "junit5", "all-junit5"},
+		{"", "vitest", "all-vitest"},
+		{"mono", "junit5", "mono-junit5"},
+		{"mono", "vitest", "mono-vitest"},
+		{"svc/api", "", "svc-api"},
+		{"svc/api", "junit5", "svc-api-junit5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.module+"_"+tt.framework, func(t *testing.T) {
+			got := moduleKeyForContainerWithFramework(tt.module, tt.framework)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestModuleKeyConsistencyWithTestPackage 验证 moduleKeyForContainerWithFramework 与
+// internal/test.BuildAutoTestBranchName 语义一致。
+// 由于 internal/test → internal/worker 存在反向依赖（import cycle），
+// 此处使用本地等价实现（moduleKeyForContainer + framework 后缀）重现 BuildAutoTestBranchName 逻辑，
+// 与 worker 实现做交叉验证。期望值手动维护自 internal/test.BuildAutoTestBranchName 的定义：
+//   auto-test/<moduleKey>[-framework]
+func TestModuleKeyConsistencyWithTestPackage(t *testing.T) {
+	cases := []struct {
+		module    string
+		framework string
+		// wantBranchSuffix 是 auto-test/ 之后的部分，等价于 BuildAutoTestBranchName 去除前缀的结果
+		wantBranchSuffix string
+	}{
+		{"", "", "all"},
+		{"", "junit5", "all-junit5"},
+		{"", "vitest", "all-vitest"},
+		{"backend", "", "backend"},
+		{"backend", "junit5", "backend-junit5"},
+		{"frontend", "vitest", "frontend-vitest"},
+		{"mono", "junit5", "mono-junit5"},
+		{"mono", "vitest", "mono-vitest"},
+		{"svc/api", "", "svc-api"},
+		{"svc/api", "junit5", "svc-api-junit5"},
+		{"a..b", "", "a.b"},
+		{"--special--", "vitest", "special-vitest"},
+		{"   ", "", "all"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.module+"_"+tt.framework, func(t *testing.T) {
+			workerKey := moduleKeyForContainerWithFramework(tt.module, tt.framework)
+			if workerKey != tt.wantBranchSuffix {
+				t.Errorf("一致性失败: worker=%q, 期望与 BuildAutoTestBranchName 对齐=%q", workerKey, tt.wantBranchSuffix)
+			}
+		})
+	}
+}
+
 // TestModuleKeyForContainerParity 验证 moduleKeyForContainer 与 internal/test.ModuleKey 语义一致。
 // 由于 test → worker 反向依赖无法在此 import internal/test，手动维护等价期望值。
 // 若本测试失败，需同步检查 internal/test.ModuleKey 是否也有对应变更；

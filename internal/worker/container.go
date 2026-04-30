@@ -111,7 +111,7 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		// M4.2：注入清洗后的 module key（entrypoint 用作分支名），空 module → "all"
 		// 与 internal/test.ModuleKey 语义一致；由于 test → worker 已存在反向依赖，
 		// 不能在此 import test，改用本地等价实现 moduleKeyForContainer。
-		env = append(env, fmt.Sprintf("MODULE_SANITIZED=%s", moduleKeyForContainer(payload.Module)))
+		env = append(env, fmt.Sprintf("MODULE_SANITIZED=%s", moduleKeyForContainerWithFramework(payload.Module, payload.Framework)))
 	}
 
 	return env
@@ -133,6 +133,17 @@ func moduleKeyForContainer(module string) string {
 	key = sanitizeModuleBranchRef(key)
 	if key == "" {
 		key = "all"
+	}
+	return key
+}
+
+// moduleKeyForContainerWithFramework 在 moduleKeyForContainer 基础上追加 framework 后缀。
+// 空 framework 时行为与 moduleKeyForContainer 完全一致。
+// 与 internal/test.BuildAutoTestBranchName(module, framework) 语义保持一致。
+func moduleKeyForContainerWithFramework(module, framework string) string {
+	key := moduleKeyForContainer(module)
+	if framework != "" {
+		key = key + "-" + framework
 	}
 	return key
 }
