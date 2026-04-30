@@ -482,8 +482,12 @@ func ModuleKey(module string) string {
 
 // BuildAutoTestBranchName 返回 gen_tests 任务的稳定工作分支名。
 // 格式：auto-test/{moduleKey}。不带 timestamp，利于 Cancel-and-Replace 与断点续传。
-func BuildAutoTestBranchName(module string) string {
-	return "auto-test/" + ModuleKey(module)
+func BuildAutoTestBranchName(module string, framework ...string) string {
+	key := ModuleKey(module)
+	if len(framework) > 0 && framework[0] != "" {
+		key = key + "-" + framework[0]
+	}
+	return "auto-test/" + key
 }
 
 // sanitizeBranchRef 按 git ref 命名约束清洗 module 名：

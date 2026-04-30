@@ -617,6 +617,38 @@ func TestBuildCommand_NoExtraArgsWhenNilCfg(t *testing.T) {
 	}
 }
 
+func TestBuildAutoTestBranchName_WithFramework(t *testing.T) {
+	tests := []struct {
+		name      string
+		module    string
+		framework string
+		want      string
+	}{
+		{"单框架 module=backend 不传 framework", "backend", "", "auto-test/backend"},
+		{"单框架 module=空 不传 framework", "", "", "auto-test/all"},
+		{"双框架 module=空 framework=junit5", "", "junit5", "auto-test/all-junit5"},
+		{"双框架 module=空 framework=vitest", "", "vitest", "auto-test/all-vitest"},
+		{"双框架 module=mono framework=junit5", "mono", "junit5", "auto-test/mono-junit5"},
+		{"双框架 module=mono framework=vitest", "mono", "vitest", "auto-test/mono-vitest"},
+		{"扫描拆出 module=backend 单框架", "backend", "", "auto-test/backend"},
+		{"扫描拆出 module=frontend 单框架", "frontend", "", "auto-test/frontend"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			if tt.framework != "" {
+				got = BuildAutoTestBranchName(tt.module, tt.framework)
+			} else {
+				got = BuildAutoTestBranchName(tt.module)
+			}
+			if got != tt.want {
+				t.Errorf("BuildAutoTestBranchName(%q, %q) = %q, want %q",
+					tt.module, tt.framework, got, tt.want)
+			}
+		})
+	}
+}
+
 // ============================================================================
 // helpers
 // ============================================================================
