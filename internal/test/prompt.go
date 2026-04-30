@@ -378,6 +378,7 @@ type PromptContext struct {
 	//   - AnchorResolved=true 且 MavenModulePath=="" → 根级 pom，prompt 建议省略 -pl
 	//   - AnchorResolved=false → 未探测（显式 cfg），prompt 回退到 Module
 	AnchorResolved bool
+	Framework      string
 	MaxRetryRounds int
 }
 
@@ -458,7 +459,7 @@ func writeHeader(b *strings.Builder, ctx PromptContext) {
 	if ctx.BaseRef != "" {
 		b.WriteString(fmt.Sprintf("基准 ref：%s\n", sanitize(ctx.BaseRef, 200)))
 	}
-	b.WriteString(fmt.Sprintf("工作分支：%s\n", sanitize(BuildAutoTestBranchName(ctx.Module), 120)))
+	b.WriteString(fmt.Sprintf("工作分支：%s\n", sanitize(BuildAutoTestBranchName(ctx.Module, ctx.Framework), 120)))
 }
 
 // ModuleKey 将 module 路径映射为 auto-test 分支的稳定 key。

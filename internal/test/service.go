@@ -230,6 +230,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		Timestamp:       time.Now().UTC().Format("20060102150405"),
 		MavenModulePath: anchor,
 		AnchorResolved:  anchorResolved,
+		Framework:       string(framework),
 		MaxRetryRounds:  maxRetry,
 	}
 	var prompt string
