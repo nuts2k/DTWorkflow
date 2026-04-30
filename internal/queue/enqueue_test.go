@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
@@ -1915,5 +1916,145 @@ func TestHandlePullRequest_NonAutoTestPrefixUnaffected(t *testing.T) {
 	}
 	if len(s.tasks) != 1 {
 		t.Errorf("非 auto-test/* 应正常入队，实际 %d 条", len(s.tasks))
+	}
+}
+
+// ==========================================================================
+// M4.2.1: mockGenTestsPRClient + cleanupAllAutoTestBranches / shouldSkipAutoTestReview 测试
+// ==========================================================================
+
+// mockGenTestsPRClient 满足 genTestsPRClient 接口。
+type mockGenTestsPRClient struct {
+	prs       []*gitea.PullRequest
+	listErr   error
+	closeErr  error
+	closedPRs []int64
+}
+
+func (m *mockGenTestsPRClient) ListRepoPullRequests(_ context.Context, _, _ string,
+	_ gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error) {
+	if m.listErr != nil {
+		return nil, nil, m.listErr
+	}
+	return m.prs, nil, nil
+}
+
+func (m *mockGenTestsPRClient) ClosePullRequest(_ context.Context, _, _ string, index int64) error {
+	m.closedPRs = append(m.closedPRs, index)
+	return m.closeErr
+}
+
+// TestShouldSkipAutoTestReview_FrameworkSuffixedBranch auto-test/all-junit5 分支
+// 应被拦截（"all-junit5" 以 "all-" 为前缀，匹配活跃 module ""→ModuleKey="all"）。
+func TestShouldSkipAutoTestReview_FrameworkSuffixedBranch(t *testing.T) {
+	s := newMockStore()
+	s.activeGenTestsModules = []string{""} // 空 module = 整仓，ModuleKey="" → "all"
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID: "delivery-fw-suffix",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  100,
+			HeadRef: "auto-test/all-junit5",
+		},
+	}
+
+	if !h.shouldSkipAutoTestReview(context.Background(), event) {
+		t.Error("auto-test/all-junit5 应被拦截（存在活跃整仓 gen_tests 任务）")
+	}
+}
+
+// TestShouldSkipAutoTestReview_FrameworkSuffixedBranch_NoMatch auto-test/all-junit5
+// 不应被活跃 module="backend" 拦截（"all-junit5" 不以 "backend-" 为前缀）。
+func TestShouldSkipAutoTestReview_FrameworkSuffixedBranch_NoMatch(t *testing.T) {
+	s := newMockStore()
+	s.activeGenTestsModules = []string{"backend"} // ModuleKey="backend"
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		DeliveryID: "delivery-fw-nomatch",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  101,
+			HeadRef: "auto-test/all-junit5",
+		},
+	}
+
+	if h.shouldSkipAutoTestReview(context.Background(), event) {
+		t.Error("auto-test/all-junit5 不应被 module=backend 拦截")
+	}
+}
+
+// TestCleanupAllAutoTestBranches_NilPRClient prClient 为 nil 时不 panic。
+func TestCleanupAllAutoTestBranches_NilPRClient(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+	// prClient 默认 nil，不应 panic
+	h.cleanupAllAutoTestBranches(context.Background(), "org", "repo", "org/repo")
+}
+
+// TestCleanupAllAutoTestBranches_CancelsAndClosesPRs 验证全量清理的完整路径。
+func TestCleanupAllAutoTestBranches_CancelsAndClosesPRs(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	cleaner := &recordingBranchCleaner{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+
+	// 预置活跃任务
+	oldTask := &model.TaskRecord{
+		ID:           "old-cleanup-task",
+		AsynqID:      "asynq-old-cleanup",
+		TaskType:     model.TaskTypeGenTests,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityNormal,
+		RepoFullName: "org/repo",
+		Payload:      model.TaskPayload{Module: "backend"},
+	}
+	s.tasks[oldTask.ID] = oldTask
+
+	// mock PR client
+	mockPR := &mockGenTestsPRClient{
+		prs: []*gitea.PullRequest{
+			{
+				Number:  10,
+				Head:    &gitea.PRBranch{Ref: "auto-test/backend"},
+				HTMLURL: "https://gitea.example.com/org/repo/pulls/10",
+			},
+			{
+				Number:  11,
+				Head:    &gitea.PRBranch{Ref: "feature/unrelated"},
+				HTMLURL: "https://gitea.example.com/org/repo/pulls/11",
+			},
+		},
+	}
+
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(),
+		WithBranchCleaner(cleaner),
+		WithPRClient(mockPR),
+	)
+
+	h.cleanupAllAutoTestBranches(context.Background(), "org", "repo", "org/repo")
+
+	// 旧任务应被取消
+	if s.tasks[oldTask.ID].Status != model.TaskStatusCancelled {
+		t.Errorf("旧任务状态 = %q, want cancelled", s.tasks[oldTask.ID].Status)
+	}
+	// 只有 auto-test/* 的 PR 被关闭
+	if len(mockPR.closedPRs) != 1 || mockPR.closedPRs[0] != 10 {
+		t.Errorf("closedPRs = %v, want [10]", mockPR.closedPRs)
+	}
+	// cleaner 应被调用（auto-test/backend）
+	if len(cleaner.calls) != 1 || cleaner.calls[0] != "auto-test/backend" {
+		t.Errorf("cleaner.calls = %v, want [auto-test/backend]", cleaner.calls)
 	}
 }

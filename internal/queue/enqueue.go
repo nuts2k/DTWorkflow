@@ -279,13 +279,17 @@ const autoTestBranchPrefix = "auto-test/"
 // shouldSkipAutoTestReview 判断 PR webhook 是否来自 gen_tests 自己产出的
 // auto-test/{moduleKey} 分支；若同仓库当前仍有该 module 的活跃 gen_tests 任务,
 // 则拦截评审入队。其它情况（非 auto-test/* 前缀、查询失败等）均 fail-open。
+//
+// M4.2.1：branchKey 采用前缀匹配（candidateKey == branchKey 或 branchKey 以
+// candidateKey+"-" 开头），正确处理 framework 后缀分支，如 auto-test/all-junit5
+// 会被活跃 module=""（candidateKey="all"）命中。
 func (h *EnqueueHandler) shouldSkipAutoTestReview(ctx context.Context, event webhook.PullRequestEvent) bool {
 	head := event.PullRequest.HeadRef
 	if !strings.HasPrefix(head, autoTestBranchPrefix) {
 		return false
 	}
-	moduleKey := strings.TrimPrefix(head, autoTestBranchPrefix)
-	if moduleKey == "" {
+	branchKey := strings.TrimPrefix(head, autoTestBranchPrefix)
+	if branchKey == "" {
 		return false
 	}
 
@@ -293,25 +297,19 @@ func (h *EnqueueHandler) shouldSkipAutoTestReview(ctx context.Context, event web
 	if err != nil {
 		// fail-open：查询失败时不阻断评审,只记日志。按 §4.5 要求,字段覆盖
 		// repo / module_key / pr / head / delivery_id / error 全量,便于排障。
-		h.logger.WarnContext(ctx, "查询活跃 gen_tests module 失败,auto-test PR 仍按评审流程放行",
-			"repo", event.Repository.FullName,
-			"module_key", moduleKey,
-			"pr", event.PullRequest.Number,
-			"head", head,
-			"delivery_id", event.DeliveryID,
-			"error", err,
-		)
+		h.logger.WarnContext(ctx, "查询活跃 gen_tests module 失败，auto-test PR 仍按评审流程放行",
+			"repo", event.Repository.FullName, "module_key", branchKey,
+			"pr", event.PullRequest.Number, "head", head,
+			"delivery_id", event.DeliveryID, "error", err)
 		return false
 	}
 	for _, candidate := range candidates {
-		if test.ModuleKey(candidate) == moduleKey {
+		candidateKey := test.ModuleKey(candidate)
+		if candidateKey == branchKey || strings.HasPrefix(branchKey, candidateKey+"-") {
 			h.logger.InfoContext(ctx, "拦截 auto-test PR 评审入队：存在活跃 gen_tests 任务",
-				"repo", event.Repository.FullName,
-				"module_key", moduleKey,
-				"pr", event.PullRequest.Number,
-				"head", head,
-				"delivery_id", event.DeliveryID,
-			)
+				"repo", event.Repository.FullName, "module_key", branchKey,
+				"pr", event.PullRequest.Number, "head", head,
+				"delivery_id", event.DeliveryID)
 			return true
 		}
 	}
@@ -610,6 +608,63 @@ func (h *EnqueueHandler) enqueueSingleGenTests(ctx context.Context, payload mode
 		"module", payload.Module, "framework", payload.Framework,
 		"triggered_by", triggeredBy)
 	return EnqueuedTask{TaskID: record.ID, Module: payload.Module, Framework: payload.Framework}, nil
+}
+
+// cleanupAllAutoTestBranches 全量清理同仓库下所有活跃 gen_tests 任务及 auto-test/* 分支。
+// 用于整仓拆分前（M4.2.1）清理旧的整仓 auto-test/* 资源，为多模块并行生成腾出空间。
+// 各步骤 best-effort，任意失败仅记 warn 日志，不阻断后续操作。
+func (h *EnqueueHandler) cleanupAllAutoTestBranches(ctx context.Context, owner, repo, repoFullName string) {
+	modules, err := h.store.ListActiveGenTestsModules(ctx, repoFullName)
+	if err != nil {
+		h.logger.WarnContext(ctx, "cleanupAll: 查询活跃 gen_tests module 列表失败",
+			"repo", repoFullName, "error", err)
+	} else {
+		for _, mod := range modules {
+			tasks, tErr := h.store.FindActiveGenTestsTasks(ctx, repoFullName, mod)
+			if tErr != nil {
+				h.logger.WarnContext(ctx, "cleanupAll: 查询活跃 gen_tests 任务失败",
+					"repo", repoFullName, "module", mod, "error", tErr)
+				continue
+			}
+			for _, task := range tasks {
+				h.logger.InfoContext(ctx, "cleanupAll: 即将取消任务",
+					"task_id", task.ID, "module", mod)
+			}
+			h.cancelTasks(ctx, tasks)
+		}
+	}
+
+	if h.prClient == nil {
+		h.logger.WarnContext(ctx, "cleanupAll: prClient 未注入，跳过 PR 关闭和分支删除",
+			"repo", repoFullName)
+		return
+	}
+
+	prs, _, prErr := h.prClient.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
+		ListOptions: gitea.ListOptions{Page: 1, PageSize: 50},
+		State:       "open",
+	})
+	if prErr != nil {
+		h.logger.WarnContext(ctx, "cleanupAll: 列出 open PR 失败",
+			"repo", repoFullName, "error", prErr)
+		return
+	}
+
+	for _, pr := range prs {
+		if pr.Head == nil || !strings.HasPrefix(pr.Head.Ref, autoTestBranchPrefix) {
+			continue
+		}
+		h.logger.InfoContext(ctx, "cleanupAll: 即将关闭 PR 并删除分支",
+			"repo", repoFullName, "pr", pr.Number, "branch", pr.Head.Ref)
+
+		if closeErr := h.prClient.ClosePullRequest(ctx, owner, repo, pr.Number); closeErr != nil {
+			h.logger.WarnContext(ctx, "cleanupAll: 关闭 PR 失败",
+				"repo", repoFullName, "pr", pr.Number, "error", closeErr)
+		}
+		if h.branchCleaner != nil {
+			_ = h.branchCleaner.CleanupAutoTestBranch(ctx, owner, repo, pr.Head.Ref)
+		}
+	}
 }
 
 // EnqueueManualGenTests 手动触发 gen_tests 任务入队。
