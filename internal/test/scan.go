@@ -34,6 +34,11 @@ func ScanRepoModules(ctx context.Context, checker RepoFileChecker,
 		result = append(result, DiscoveredModule{Path: "", Framework: FrameworkVitest})
 	}
 
+	// 根级命中即返回，不做 depth=1（设计文档 1.3 节）
+	if len(result) > 0 {
+		return result, nil
+	}
+
 	subdirs, err := checker.ListDir(ctx, owner, repo, ref, "")
 	if err != nil {
 		return nil, err

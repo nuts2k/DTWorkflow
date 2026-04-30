@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -684,6 +685,9 @@ func (h *EnqueueHandler) EnqueueManualGenTests(ctx context.Context, payload mode
 		discovered, err := test.ScanRepoModules(ctx, h.moduleScanner,
 			payload.RepoOwner, payload.RepoName, payload.BaseRef)
 		if err != nil {
+			if errors.Is(err, test.ErrNoFrameworkDetected) {
+				return nil, err
+			}
 			h.logger.WarnContext(ctx, "ScanRepoModules 失败，回退到单任务逻辑",
 				"repo", payload.RepoFullName, "error", err)
 			result, singleErr := h.enqueueSingleGenTests(ctx, payload, triggeredBy)

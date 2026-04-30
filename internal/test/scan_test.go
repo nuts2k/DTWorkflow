@@ -98,7 +98,7 @@ func TestScanRepoModules_Depth1MultiModule(t *testing.T) {
 	}
 }
 
-func TestScanRepoModules_RootAndDepth1Modules(t *testing.T) {
+func TestScanRepoModules_RootHit_SkipsDepth1(t *testing.T) {
 	checker := &mockScanChecker{
 		files: map[string]bool{
 			"pom.xml":               true,
@@ -111,18 +111,31 @@ func TestScanRepoModules_RootAndDepth1Modules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(modules) != 3 {
-		t.Fatalf("期望根模块 + 2 个子模块，实际 %d: %+v", len(modules), modules)
+	if len(modules) != 1 {
+		t.Fatalf("根级命中应立即返回，不做 depth=1 扫描，期望 1 实际 %d: %+v", len(modules), modules)
 	}
-	want := []DiscoveredModule{
-		{Path: "", Framework: FrameworkJUnit5},
-		{Path: "backend", Framework: FrameworkJUnit5},
-		{Path: "frontend", Framework: FrameworkVitest},
+	if modules[0].Path != "" || modules[0].Framework != FrameworkJUnit5 {
+		t.Errorf("期望根级 junit5，实际: %+v", modules[0])
 	}
-	for i := range want {
-		if modules[i] != want[i] {
-			t.Errorf("modules[%d] = %+v, want %+v", i, modules[i], want[i])
-		}
+}
+
+func TestScanRepoModules_RootBothFrameworks(t *testing.T) {
+	checker := &mockScanChecker{
+		files: map[string]bool{
+			"pom.xml":      true,
+			"package.json": true,
+		},
+		dirs: map[string][]string{"": {"docs"}},
+	}
+	modules, err := ScanRepoModules(context.Background(), checker, "o", "r", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(modules) != 2 {
+		t.Fatalf("根级双框架应返回 2 条，实际 %d: %+v", len(modules), modules)
+	}
+	if modules[0].Framework != FrameworkJUnit5 || modules[1].Framework != FrameworkVitest {
+		t.Errorf("期望 junit5 + vitest，实际: %+v", modules)
 	}
 }
 
