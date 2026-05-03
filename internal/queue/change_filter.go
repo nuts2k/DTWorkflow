@@ -22,6 +22,7 @@ var defaultIgnoredExtensions = map[string]bool{
 	".gif": true, ".ico": true,
 	".csv": true,
 	".license": true,
+	".sh": true,
 }
 
 var defaultIgnoredFiles = map[string]bool{
@@ -40,6 +41,8 @@ var testFilePatterns = []string{
 	"*_test.go", "*Test.java", "*Tests.java",
 	"*.test.ts", "*.test.js", "*.spec.ts", "*.spec.js",
 	"*.test.tsx", "*.test.jsx", "*.spec.tsx", "*.spec.jsx",
+	"test_*.py", "*_test.py",
+	"*Test.kt", "*Tests.kt",
 }
 
 // extractFilenames 从 ChangedFile 列表中提取文件名，排除 status="deleted" 的文件。
@@ -104,12 +107,19 @@ func shouldIgnoreFile(file string, extraIgnorePaths []string) bool {
 	return false
 }
 
+// moduleFileGroup 将模块与其匹配的变更文件绑定，避免使用 DiscoveredModule 作 map key。
+type moduleFileGroup struct {
+	Module test.DiscoveredModule
+	Files  []string
+}
+
 // matchFilesToModules 将过滤后的源码文件按路径前缀归组到模块。
-func matchFilesToModules(files []string, modules []test.DiscoveredModule) map[test.DiscoveredModule][]string {
-	result := make(map[test.DiscoveredModule][]string)
+// 返回的切片保持与 modules 参数相同的相对顺序（仅含有匹配文件的模块）。
+func matchFilesToModules(files []string, modules []test.DiscoveredModule) []moduleFileGroup {
+	collected := make(map[int][]string)
 
 	for _, file := range files {
-		for _, mod := range modules {
+		for i, mod := range modules {
 			if mod.Path == "" {
 				belongsToSub := false
 				for _, other := range modules {
@@ -119,13 +129,19 @@ func matchFilesToModules(files []string, modules []test.DiscoveredModule) map[te
 					}
 				}
 				if !belongsToSub {
-					result[mod] = append(result[mod], file)
+					collected[i] = append(collected[i], file)
 				}
 			} else if strings.HasPrefix(file, mod.Path+"/") {
-				result[mod] = append(result[mod], file)
+				collected[i] = append(collected[i], file)
 			}
 		}
 	}
 
+	var result []moduleFileGroup
+	for i, mod := range modules {
+		if matched, ok := collected[i]; ok {
+			result = append(result, moduleFileGroup{Module: mod, Files: matched})
+		}
+	}
 	return result
 }

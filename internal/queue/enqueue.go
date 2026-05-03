@@ -285,22 +285,22 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 
 	successes := 0
 	failures := 0
-	for mod, files := range moduleFiles {
+	for _, group := range moduleFiles {
 		payload := model.TaskPayload{
 			TaskType:     model.TaskTypeGenTests,
 			RepoOwner:    event.Repository.Owner,
 			RepoName:     event.Repository.Name,
 			RepoFullName: repo,
 			CloneURL:     event.Repository.CloneURL,
-			Module:       mod.Path,
-			Framework:    string(mod.Framework),
+			Module:       group.Module.Path,
+			Framework:    string(group.Module.Framework),
 			BaseRef:      pr.BaseRef,
-			ChangedFiles: files,
+			ChangedFiles: group.Files,
 		}
-		deliveryID := buildChangeDrivenDeliveryID(event.DeliveryID, pr.Number, mod.Path, string(mod.Framework))
+		deliveryID := buildChangeDrivenDeliveryID(event.DeliveryID, pr.Number, group.Module.Path, string(group.Module.Framework))
 		if _, err := h.enqueueChangeDrivenGenTests(ctx, payload, triggeredBy, deliveryID); err != nil {
 			h.logger.WarnContext(ctx, "change-driven: failed to enqueue module",
-				"repo", repo, "module", mod.Path, "error", err)
+				"repo", repo, "module", group.Module.Path, "error", err)
 			failures++
 			continue
 		}
@@ -320,6 +320,8 @@ func resolveChangeDrivenConfig(tgCfg config.TestGenOverride) config.ChangeDriven
 	return *tgCfg.ChangeDriven
 }
 
+// buildChangeDrivenDeliveryID 构建复合 delivery ID，实现 webhook 重放幂等：
+// 同一 webhook + 同一模块/框架组合只会入队一次，无需额外 store 查询。
 func buildChangeDrivenDeliveryID(webhookDeliveryID string, prNumber int64, module, framework string) string {
 	moduleKey := test.ModuleKey(module)
 	if framework != "" {

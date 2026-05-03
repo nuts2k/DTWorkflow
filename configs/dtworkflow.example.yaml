@@ -164,7 +164,8 @@ test_gen:
   #   enabled: false
   #   ignore_paths:         # 额外忽略的路径（doublestar glob 语法）
   #     - "scripts/**"
-  #     - "deploy/**"
+  #     # 注意：docs/、deploy/、.github/ 等已内置忽略，无需重复配置
+
 
 # 仓库级配置覆盖示例
 repos:

@@ -107,6 +107,17 @@ func TestFilterSourceFiles_Prefixes(t *testing.T) {
 	assertStringSliceEqual(t, want, got)
 }
 
+func TestFilterSourceFiles_ShellScripts(t *testing.T) {
+	files := []string{
+		"src/main.go",
+		"scripts/build.sh",
+		"tools/deploy.sh",
+	}
+	got := filterSourceFiles(files, nil)
+	want := []string{"src/main.go"}
+	assertStringSliceEqual(t, want, got)
+}
+
 func TestFilterSourceFiles_TestFiles(t *testing.T) {
 	files := []string{
 		"service_test.go",
@@ -116,6 +127,10 @@ func TestFilterSourceFiles_TestFiles(t *testing.T) {
 		"util.test.js",
 		"Component.test.tsx",
 		"helper.spec.jsx",
+		"test_handler.py",
+		"service_test.py",
+		"UserTest.kt",
+		"UserTests.kt",
 		"src/main.go",
 	}
 	got := filterSourceFiles(files, nil)
@@ -164,8 +179,11 @@ func TestMatchFilesToModules_RootModule(t *testing.T) {
 	files := []string{"src/main.go", "internal/service.go"}
 
 	got := matchFilesToModules(files, modules)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(got))
+	}
 	want := []string{"src/main.go", "internal/service.go"}
-	assertStringSliceEqual(t, want, got[modules[0]])
+	assertStringSliceEqual(t, want, got[0].Files)
 }
 
 func TestMatchFilesToModules_SubModules(t *testing.T) {
@@ -180,9 +198,12 @@ func TestMatchFilesToModules_SubModules(t *testing.T) {
 	}
 
 	got := matchFilesToModules(files, modules)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(got))
+	}
 
-	assertStringSliceEqual(t, []string{"backend/src/Main.java", "backend/src/Service.java"}, got[modules[0]])
-	assertStringSliceEqual(t, []string{"frontend/src/App.vue"}, got[modules[1]])
+	assertStringSliceEqual(t, []string{"backend/src/Main.java", "backend/src/Service.java"}, got[0].Files)
+	assertStringSliceEqual(t, []string{"frontend/src/App.vue"}, got[1].Files)
 }
 
 func TestMatchFilesToModules_DualFramework(t *testing.T) {
@@ -193,9 +214,12 @@ func TestMatchFilesToModules_DualFramework(t *testing.T) {
 	files := []string{"mono/src/App.java", "mono/src/index.ts"}
 
 	got := matchFilesToModules(files, modules)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(got))
+	}
 
-	assertStringSliceEqual(t, []string{"mono/src/App.java", "mono/src/index.ts"}, got[modules[0]])
-	assertStringSliceEqual(t, []string{"mono/src/App.java", "mono/src/index.ts"}, got[modules[1]])
+	assertStringSliceEqual(t, []string{"mono/src/App.java", "mono/src/index.ts"}, got[0].Files)
+	assertStringSliceEqual(t, []string{"mono/src/App.java", "mono/src/index.ts"}, got[1].Files)
 }
 
 func TestMatchFilesToModules_NoMatch(t *testing.T) {
@@ -223,12 +247,12 @@ func TestMatchFilesToModules_Mixed(t *testing.T) {
 	}
 
 	got := matchFilesToModules(files, modules)
-
-	assertStringSliceEqual(t, []string{"backend/src/Main.java"}, got[modules[0]])
-	assertStringSliceEqual(t, []string{"frontend/src/App.vue"}, got[modules[1]])
 	if len(got) != 2 {
-		t.Errorf("expected 2 modules in result, got %d", len(got))
+		t.Fatalf("expected 2 groups, got %d", len(got))
 	}
+
+	assertStringSliceEqual(t, []string{"backend/src/Main.java"}, got[0].Files)
+	assertStringSliceEqual(t, []string{"frontend/src/App.vue"}, got[1].Files)
 }
 
 func assertStringSliceEqual(t *testing.T, want, got []string) {

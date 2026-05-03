@@ -2730,3 +2730,72 @@ func TestHandleMergedPR_NoModulesMatched(t *testing.T) {
 		t.Errorf("no matching modules should not enqueue, got %d tasks", len(s.tasks))
 	}
 }
+
+// I4: ListPullRequestFiles 返回错误时应传播给调用方（触发任务重试）。
+func TestHandleMergedPR_ListPRFilesError(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{err: errors.New("gitea api timeout")}),
+	)
+
+	event := newMergedPREvent(80, "feature/api-err", "main")
+	err := h.HandlePullRequest(context.Background(), event)
+	if err == nil {
+		t.Fatal("ListPullRequestFiles error should propagate")
+	}
+	if !strings.Contains(err.Error(), "list PR files") {
+		t.Errorf("error = %v, want 'list PR files' wrapper", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("no tasks should be created on ListPRFiles error, got %d", len(s.tasks))
+	}
+}
+
+// S5: 全局 test_gen.enabled=false 但仓库级覆盖为 true + change_driven.enabled=true 时应正常入队。
+func TestHandleMergedPR_RepoOverrideEnabled(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-override"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+
+	cfg := &config.Config{
+		TestGen: config.TestGenOverride{
+			Enabled: boolPtr(false),
+		},
+		Repos: []config.RepoConfig{
+			{
+				Name: "org/repo",
+				TestGen: &config.TestGenOverride{
+					Enabled:      boolPtr(true),
+					ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+				},
+			},
+		},
+	}
+
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(cfg),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(90, "feature/repo-override", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("repo override should enable gen_tests, expected 1 task, got %d", len(s.tasks))
+	}
+	for _, record := range s.tasks {
+		if record.TaskType != model.TaskTypeGenTests {
+			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeGenTests)
+		}
+	}
+}
