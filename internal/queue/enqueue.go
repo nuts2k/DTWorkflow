@@ -24,14 +24,14 @@ var _ webhook.Handler = (*EnqueueHandler)(nil)
 // EnqueueHandler 实现 webhook.Handler 接口,将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
 	client         Enqueuer
-	canceller      TaskCanceller        // M2.4: 任务取消能力
+	canceller      TaskCanceller // M2.4: 任务取消能力
 	store          store.Store
 	logger         *slog.Logger
-	branchCleaner  BranchCleaner        // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
-	prClient       genTestsPRClient     // M4.2.1: cleanupAllAutoTestBranches
-	moduleScanner  test.RepoFileChecker // M4.2.1: ScanRepoModules
+	branchCleaner  BranchCleaner              // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
+	prClient       genTestsPRClient           // M4.2.1: cleanupAllAutoTestBranches
+	moduleScanner  test.RepoFileChecker       // M4.2.1: ScanRepoModules
 	configProvider ChangeDrivenConfigProvider // M4.3: 变更驱动配置读取
-	prFilesLister  PRFilesLister        // M4.3: PR 变更文件列表查询
+	prFilesLister  PRFilesLister              // M4.3: PR 变更文件列表查询
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -223,6 +223,10 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		return nil
 	}
 	tgCfg := h.configProvider.ResolveTestGenConfig(repo)
+	if tgCfg.Enabled != nil && !*tgCfg.Enabled {
+		h.logger.DebugContext(ctx, "change-driven: test_gen disabled for repo", "repo", repo)
+		return nil
+	}
 	changeDriven := resolveChangeDrivenConfig(tgCfg)
 	if !changeDriven.IsEnabled() {
 		h.logger.DebugContext(ctx, "change-driven: disabled for repo", "repo", repo)
@@ -279,6 +283,8 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		"modules", len(moduleFiles),
 		"triggered_by", triggeredBy)
 
+	successes := 0
+	failures := 0
 	for mod, files := range moduleFiles {
 		payload := model.TaskPayload{
 			TaskType:     model.TaskTypeGenTests,
@@ -291,10 +297,17 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 			BaseRef:      pr.BaseRef,
 			ChangedFiles: files,
 		}
-		if _, err := h.enqueueSingleGenTests(ctx, payload, triggeredBy); err != nil {
+		deliveryID := buildChangeDrivenDeliveryID(event.DeliveryID, pr.Number, mod.Path, string(mod.Framework))
+		if _, err := h.enqueueChangeDrivenGenTests(ctx, payload, triggeredBy, deliveryID); err != nil {
 			h.logger.WarnContext(ctx, "change-driven: failed to enqueue module",
 				"repo", repo, "module", mod.Path, "error", err)
+			failures++
+			continue
 		}
+		successes++
+	}
+	if successes == 0 {
+		return fmt.Errorf("change-driven: 所有模块入队均失败: repo=%s pr=%d failures=%d", repo, pr.Number, failures)
 	}
 	return nil
 }
@@ -305,6 +318,37 @@ func resolveChangeDrivenConfig(tgCfg config.TestGenOverride) config.ChangeDriven
 		return config.ChangeDrivenConfig{}
 	}
 	return *tgCfg.ChangeDriven
+}
+
+func buildChangeDrivenDeliveryID(webhookDeliveryID string, prNumber int64, module, framework string) string {
+	moduleKey := test.ModuleKey(module)
+	if framework != "" {
+		moduleKey += "-" + framework
+	}
+	if webhookDeliveryID != "" {
+		return fmt.Sprintf("%s:gen_tests:%s", webhookDeliveryID, moduleKey)
+	}
+	return fmt.Sprintf("pr-merged-%d:gen_tests:%s", prNumber, moduleKey)
+}
+
+func (h *EnqueueHandler) enqueueChangeDrivenGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy, deliveryID string) (EnqueuedTask, error) {
+	if deliveryID != "" {
+		existing, err := h.store.FindByDeliveryID(ctx, deliveryID, model.TaskTypeGenTests)
+		if err != nil {
+			return EnqueuedTask{}, fmt.Errorf("change-driven 幂等检查失败: %w", err)
+		}
+		if existing != nil {
+			h.logger.InfoContext(ctx, "change-driven gen_tests 任务已存在,跳过",
+				"delivery_id", deliveryID,
+				"task_id", existing.ID,
+				"status", existing.Status,
+				"module", payload.Module,
+				"framework", payload.Framework,
+			)
+			return EnqueuedTask{TaskID: existing.ID, Module: payload.Module, Framework: payload.Framework}, nil
+		}
+	}
+	return h.enqueueGenTestsWithDeliveryID(ctx, payload, triggeredBy, deliveryID)
 }
 
 // HandleIssueLabel 处理 Issue 标签事件,按标签类型路由到不同任务。
@@ -707,9 +751,12 @@ func (h *EnqueueHandler) EnqueueManualFix(ctx context.Context, payload model.Tas
 // enqueueSingleGenTests 封装单个 gen_tests 任务的入队逻辑,供 EnqueueManualGenTests
 // 及未来的多模块批量入队复用。调用方需确保 payload.RepoFullName / CloneURL 已填充。
 func (h *EnqueueHandler) enqueueSingleGenTests(ctx context.Context, payload model.TaskPayload, triggeredBy string) (EnqueuedTask, error) {
-	payload.TaskType = model.TaskTypeGenTests
-	payload.DeliveryID = generateManualDeliveryID()
+	return h.enqueueGenTestsWithDeliveryID(ctx, payload, triggeredBy, generateManualDeliveryID())
+}
 
+func (h *EnqueueHandler) enqueueGenTestsWithDeliveryID(ctx context.Context, payload model.TaskPayload, triggeredBy, deliveryID string) (EnqueuedTask, error) {
+	payload.TaskType = model.TaskTypeGenTests
+	payload.DeliveryID = deliveryID
 	activeTasks := h.listActiveGenTestsTasksByBranchKey(ctx, payload.RepoFullName, payload.Module, payload.Framework)
 
 	if len(activeTasks) > 0 && h.branchCleaner != nil {

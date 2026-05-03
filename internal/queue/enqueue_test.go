@@ -2098,7 +2098,7 @@ func TestCleanupAllAutoTestBranches_CancelsAndClosesPRs(t *testing.T) {
 
 // mockModuleScanner 满足 test.RepoFileChecker 接口，用于 ScanRepoModules 集成测试。
 type mockModuleScanner struct {
-	files  map[string]bool    // key: "module/relPath" 或根级 "relPath"
+	files  map[string]bool     // key: "module/relPath" 或根级 "relPath"
 	dirs   map[string][]string // key: dir → 子目录列表
 	err    error               // 全局错误（模拟 scan 失败）
 	called bool
@@ -2317,6 +2317,25 @@ func TestHandleMergedPR_Disabled(t *testing.T) {
 	}
 	if len(s.tasks) != 0 {
 		t.Errorf("disabled change-driven should not enqueue, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_TestGenDisabledSkipped(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			Enabled:      boolPtr(false),
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+	)
+
+	event := newMergedPREvent(31, "feature/foo", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("test_gen.enabled=false should not enqueue, got %d tasks", len(s.tasks))
 	}
 }
 
@@ -2578,6 +2597,67 @@ func TestHandleMergedPR_ChangedFilesInPayload(t *testing.T) {
 		if !fileSet["src/Main.java"] || !fileSet["src/Service.java"] {
 			t.Errorf("ChangedFiles = %v, want src/Main.java + src/Service.java", record.Payload.ChangedFiles)
 		}
+	}
+}
+
+func TestHandleMergedPR_IdempotentByDelivery(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-merged-idem"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(51, "feature/replay", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("first HandlePullRequest error: %v", err)
+	}
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("second HandlePullRequest error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("same delivery should enqueue once, got %d tasks", len(s.tasks))
+	}
+	for _, record := range s.tasks {
+		wantDelivery := buildChangeDrivenDeliveryID(event.DeliveryID, event.PullRequest.Number, "", string(test.FrameworkJUnit5))
+		if record.DeliveryID != wantDelivery {
+			t.Errorf("DeliveryID = %q, want %q", record.DeliveryID, wantDelivery)
+		}
+	}
+}
+
+func TestHandleMergedPR_AllModulesFailedReturnsError(t *testing.T) {
+	s := newMockStore()
+	s.createErr = errors.New("sqlite unavailable")
+	mc := &mockEnqueuer{enqueuedID: "asynq-merged-fail"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(52, "feature/fail", "main")
+	err := h.HandlePullRequest(context.Background(), event)
+	if err == nil {
+		t.Fatal("all module enqueue failures should return error")
+	}
+	if !strings.Contains(err.Error(), "所有模块入队均失败") {
+		t.Fatalf("error = %v, want all-modules-failed message", err)
 	}
 }
 
