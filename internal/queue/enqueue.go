@@ -304,6 +304,9 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		}
 		successes++
 	}
+	// 与 handleReviewPullRequest（吞掉 enqueue 失败以避免 webhook 重试）不同，
+	// merged 路径选择传播错误：部分失败时返回 error 可触发 Gitea webhook 重试，
+	// 已成功的模块由 buildChangeDrivenDeliveryID 幂等保护不会重复入队。
 	if successes == 0 {
 		return fmt.Errorf("change-driven: 所有模块入队均失败: repo=%s pr=%d failures=%d", repo, pr.Number, failures)
 	}
@@ -314,11 +317,14 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 }
 
 func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, repo string, prNumber int64) ([]*gitea.ChangedFile, error) {
-	const pageSize = 100
+	const (
+		pageSize     = 100
+		maxPages     = 20
+	)
 
 	page := 1
 	var all []*gitea.ChangedFile
-	for {
+	for page <= maxPages {
 		files, resp, err := h.prFilesLister.ListPullRequestFiles(ctx, owner, repo, prNumber, gitea.ListOptions{
 			Page:     page,
 			PageSize: pageSize,
@@ -332,6 +338,9 @@ func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, rep
 		}
 		page = resp.NextPage
 	}
+	h.logger.WarnContext(ctx, "change-driven: PR file list truncated at max pages",
+		"owner", owner, "repo", repo, "pr", prNumber, "max_pages", maxPages, "files_so_far", len(all))
+	return all, nil
 }
 
 // resolveChangeDrivenConfig 从合并后的 TestGenOverride 中提取 ChangeDrivenConfig。
