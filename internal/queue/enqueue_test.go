@@ -33,6 +33,8 @@ type mockStore struct {
 	activeGenTestsModules    []string // ListActiveGenTestsModules 返回值
 	activeGenTestsModulesErr error    // ListActiveGenTestsModules 错误
 	saveTestGenCalls         int      // SaveTestGenResult 调用计数
+	createCalls              int
+	createErrAt              int
 }
 
 func newMockStore() *mockStore {
@@ -43,8 +45,12 @@ func newMockStore() *mockStore {
 }
 
 func (m *mockStore) CreateTask(_ context.Context, record *model.TaskRecord) error {
+	m.createCalls++
 	if m.createErr != nil {
 		return m.createErr
+	}
+	if m.createErrAt > 0 && m.createCalls == m.createErrAt {
+		return errors.New("create failed at configured call")
 	}
 	m.tasks[record.ID] = record
 	if record.DeliveryID != "" {
@@ -2240,11 +2246,22 @@ func (m *mockConfigProvider) ResolveTestGenConfig(_ string) config.TestGenOverri
 
 // mockPRFilesLister 测试用 PRFilesLister
 type mockPRFilesLister struct {
-	files []*gitea.ChangedFile
-	err   error
+	files      []*gitea.ChangedFile
+	pages      map[int][]*gitea.ChangedFile
+	nextPages  map[int]int
+	err        error
+	calledPage []int
 }
 
-func (m *mockPRFilesLister) ListPullRequestFiles(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+func (m *mockPRFilesLister) ListPullRequestFiles(_ context.Context, _, _ string, _ int64, opts gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+	m.calledPage = append(m.calledPage, opts.Page)
+	if m.pages != nil {
+		next := 0
+		if m.nextPages != nil {
+			next = m.nextPages[opts.Page]
+		}
+		return m.pages[opts.Page], &gitea.Response{NextPage: next}, m.err
+	}
 	return m.files, nil, m.err
 }
 
@@ -2393,6 +2410,43 @@ func TestHandleMergedPR_NoSourceFiles(t *testing.T) {
 	}
 }
 
+func TestHandleMergedPR_PRFilesPagination(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-paged-files"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+	lister := &mockPRFilesLister{
+		pages: map[int][]*gitea.ChangedFile{
+			1: {
+				{Filename: "README.md", Status: "modified"},
+			},
+			2: {
+				{Filename: "src/Main.java", Status: "modified"},
+			},
+		},
+		nextPages: map[int]int{1: 2},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(lister),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(61, "feature/paged-files", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task from source file on page 2, got %d", len(s.tasks))
+	}
+	if fmt.Sprint(lister.calledPage) != "[1 2]" {
+		t.Fatalf("called pages = %v, want [1 2]", lister.calledPage)
+	}
+}
+
 func TestHandleMergedPR_DeletedFilesExcluded(t *testing.T) {
 	s := newMockStore()
 	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
@@ -2526,6 +2580,41 @@ func TestHandleMergedPR_MultiModule(t *testing.T) {
 	}
 	if !hasBackend || !hasFrontend {
 		t.Errorf("expected backend+frontend modules, got %v", modules)
+	}
+}
+
+func TestHandleMergedPR_PartialModuleFailureReturnsError(t *testing.T) {
+	s := newMockStore()
+	s.createErrAt = 2
+	mc := &mockEnqueuer{enqueuedID: "asynq-merged-partial"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{
+			"backend/pom.xml":       true,
+			"frontend/package.json": true,
+		},
+		dirs: map[string][]string{"": {"backend", "frontend"}},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "backend/src/Api.java", Status: "modified"},
+			{Filename: "frontend/src/App.vue", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(100, "feature/partial", "main")
+	err := h.HandlePullRequest(context.Background(), event)
+	if err == nil {
+		t.Fatal("partial module enqueue failure should return error")
+	}
+	if !strings.Contains(err.Error(), "部分模块入队失败") {
+		t.Fatalf("error = %v, want partial failure message", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected first module task to remain persisted, got %d tasks", len(s.tasks))
 	}
 }
 

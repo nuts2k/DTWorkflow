@@ -237,9 +237,7 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 	if h.prFilesLister == nil {
 		return nil
 	}
-	changedFiles, _, err := h.prFilesLister.ListPullRequestFiles(
-		ctx, event.Repository.Owner, event.Repository.Name,
-		pr.Number, gitea.ListOptions{PageSize: 100})
+	changedFiles, err := h.listAllPullRequestFiles(ctx, event.Repository.Owner, event.Repository.Name, pr.Number)
 	if err != nil {
 		return fmt.Errorf("list PR files: %w", err)
 	}
@@ -309,7 +307,31 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 	if successes == 0 {
 		return fmt.Errorf("change-driven: 所有模块入队均失败: repo=%s pr=%d failures=%d", repo, pr.Number, failures)
 	}
+	if failures > 0 {
+		return fmt.Errorf("change-driven: 部分模块入队失败: repo=%s pr=%d successes=%d failures=%d", repo, pr.Number, successes, failures)
+	}
 	return nil
+}
+
+func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, repo string, prNumber int64) ([]*gitea.ChangedFile, error) {
+	const pageSize = 100
+
+	page := 1
+	var all []*gitea.ChangedFile
+	for {
+		files, resp, err := h.prFilesLister.ListPullRequestFiles(ctx, owner, repo, prNumber, gitea.ListOptions{
+			Page:     page,
+			PageSize: pageSize,
+		})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, files...)
+		if resp == nil || resp.NextPage == 0 {
+			return all, nil
+		}
+		page = resp.NextPage
+	}
 }
 
 // resolveChangeDrivenConfig 从合并后的 TestGenOverride 中提取 ChangeDrivenConfig。

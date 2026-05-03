@@ -293,7 +293,9 @@ func Validate(cfg *Config) error {
 		if repo.TestGen == nil {
 			continue
 		}
-		errs = append(errs, validateTestGen(fmt.Sprintf("repos[%d].test_gen", i), *repo.TestGen)...)
+		field := fmt.Sprintf("repos[%d].test_gen", i)
+		errs = append(errs, validateTestGen(field, *repo.TestGen)...)
+		errs = append(errs, validateResolvedTestGen(field, *repo.TestGen, cfg.ResolveTestGenConfig(repo.Name))...)
 	}
 
 	// repos[].review 校验
@@ -432,6 +434,16 @@ func validateTestGen(field string, tg TestGenOverride) []error {
 		}
 	}
 	return errs
+}
+
+func validateResolvedTestGen(field string, raw, resolved TestGenOverride) []error {
+	if raw.ChangeDriven != nil && raw.ChangeDriven.IsEnabled() && raw.Enabled != nil && !*raw.Enabled {
+		return nil
+	}
+	if resolved.ChangeDriven != nil && resolved.ChangeDriven.IsEnabled() && resolved.Enabled != nil && !*resolved.Enabled {
+		return []error{fmt.Errorf("%s 合并后 change_driven.enabled=true 但 test_gen.enabled=false，矛盾", field)}
+	}
+	return nil
 }
 
 // ValidationError 配置校验聚合错误。

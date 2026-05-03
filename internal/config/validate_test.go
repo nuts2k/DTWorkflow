@@ -1284,6 +1284,25 @@ func TestValidate_TestGen_ValidFullOverride(t *testing.T) {
 	}
 }
 
+func TestValidate_TestGen_RepoMergedChangeDrivenRequiresEnabled(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.TestGen = TestGenOverride{Enabled: boolPtr(false)}
+	cfg.Repos = []RepoConfig{{
+		Name: "acme/repo",
+		TestGen: &TestGenOverride{
+			ChangeDriven: &ChangeDrivenConfig{Enabled: boolPtr(true)},
+		},
+	}}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("合并后 change_driven=true 但 test_gen.enabled=false 应产生校验错误")
+	}
+	if !strings.Contains(err.Error(), "合并后 change_driven.enabled=true") {
+		t.Fatalf("error = %v, want merged change_driven conflict", err)
+	}
+}
+
 func TestValidate_RepoFeishuOverride(t *testing.T) {
 	// 辅助函数：构造启用了全局飞书渠道的基础配置
 	feishuBaseConfig := func() *Config {
