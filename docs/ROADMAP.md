@@ -761,13 +761,25 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > PR 合并后自动分析变更代码是否有对应测试覆盖，缺失时自动触发测试生成。
 
 ##### M4.3 变更驱动测试生成
-- [ ] Webhook 扩展：新增 PR merged 事件处理（当前仅处理 opened / synchronized / reopened）
-- [ ] 变更范围分析：解析合并的 diff，识别变更的模块/类/方法
-- [ ] 测试覆盖判断：Claude 分析变更代码是否有对应测试覆盖（复用 M4.1 分析能力，范围缩小到变更文件）
-- [ ] 自动触发：覆盖不足时自动入队 gen_tests 任务（范围限定为变更相关模块）
-- [ ] 去重机制：检查是否已有针对同一模块的 pending gen_tests 任务
-- [ ] 可配置开关：仓库级 `test_gen.change_driven.enabled`
-- [ ] 单元测试覆盖
+> 说明（完成 2026-05-03）：PR 合并后自动分析变更代码并触发测试生成。核心设计：所有变更驱动逻辑在入队层（`internal/queue/enqueue.go`）完成，`test.Service.Execute` 零改动。
+> 详细设计见 `docs/plans/2026-05-03-m4.3-change-driven-test-gen-design.md`。
+
+- [x] Webhook 扩展：`parsePullRequest` 支持 `action="closed" + merged=true`，映射为语义化的 `action="merged"`；`PullRequestRef` 新增 `Merged` 字段；`giteaPullRequestPayload` 新增 `Merged` 字段
+- [x] 变更文件预过滤（`internal/queue/change_filter.go` 新建）：
+  - `extractFilenames`：提取文件名并排除 `status=deleted`
+  - `filterSourceFiles`：链式过滤——内置忽略扩展名（`.md/.yaml/.json/.png` 等）、文件名精确匹配（`.gitignore`/`Makefile` 等）、路径前缀（`docs/`/`.github/` 等）、测试文件模式（`*_test.go`/`*Test.java`/`*.spec.ts` 等）+ 用户 `ignore_paths` doublestar glob
+  - `matchFilesToModules`：将过滤后源码文件按路径前缀归组到 `ScanRepoModules` 发现的模块
+- [x] 模块级入队 + Prompt 变更上下文注入（D1 决策）：
+  - `handleMergedPullRequest` 7 步数据流：Bot PR 过滤 → 配置检查 → 获取变更文件 → 预过滤 → 扫描模块 → 文件归组 → 逐模块入队
+  - `TaskPayload.ChangedFiles` 新增字段，变更驱动场景下非空，prompt 层据此注入变更聚焦段（`writeChangeDrivenSection`，优先为变更文件生成测试，`maxChangedFilesInPrompt=50` 截断）
+- [x] 幂等保护：`buildChangeDrivenDeliveryID` 构建 `{webhookDeliveryID}:gen_tests:{moduleKey}` 复合 ID + 复用 Cancel-and-Replace
+- [x] Bot PR 自触发过滤：`auto-test/`、`auto-fix/` 分支前缀跳过
+- [x] 配置结构（`config.ChangeDrivenConfig`）：`Enabled *bool`（nil=false 默认关闭）+ `IgnorePaths []string`；挂载在 `TestGenOverride.ChangeDriven`；`ResolveTestGenConfig` 仓库级整体替换合并；校验：`ignore_paths` 语法 + `change_driven.enabled=true` 与 `test_gen.enabled=false` 矛盾检测
+- [x] 依赖注入：`WithPRFilesLister`（review token client，只读查询）+ `WithConfigProvider`（配置读取窄接口）；`serve_deps.go` 装配
+- [x] `listAllPullRequestFiles` 分页获取变更文件列表（`maxPages=20` 安全上限）
+- [x] 通知复用：变更驱动任务复用现有三事件，`triggered_by="webhook:pr_merged:<pr_number>"` 区分来源
+- [x] 示例配置 `dtworkflow.example.yaml` 补充 `change_driven` 配置示例
+- [x] 单元测试覆盖：webhook merged/closed 解析、过滤逻辑全场景（扩展名/dotfile/前缀/测试文件/用户 glob）、模块映射（根模块/子模块/双框架/无匹配）、入队全路径（bot 跳过/禁用/无源码/无框架/单模块/多模块/幂等/deleted 排除/配置 nil）、prompt 变更段注入与截断、配置解析与校验
 
 ### 交付物
 
@@ -778,8 +790,11 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - 测试 PR 自动创建
 
 **第二轮**：
-- PR 合并后变更驱动的测试自动生成
-- Webhook PR merged 事件处理
+- PR 合并后变更驱动的测试自动生成（`internal/queue/enqueue.go` 入队层 + `internal/queue/change_filter.go` 过滤层）
+- Webhook PR merged 事件处理（`internal/webhook/parser.go` 扩展）
+- 变更文件预过滤与模块映射
+- Prompt 变更上下文注入（`internal/test/prompt.go`）
+- `ChangeDrivenConfig` 配置结构与校验
 
 ### 验证标准
 
@@ -789,8 +804,11 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - 生成失败时收到通知，包含失败原因
 
 **第二轮**：
-- 合并一个无测试覆盖的 PR → 自动检测 → 自动生成对应测试 → 创建 PR
-- 已有充分测试覆盖的 PR 合并后不触发生成
+- 合并一个包含源码变更的 PR → 变更驱动自动过滤非源码文件 → 匹配到可测试模块 → 自动入队 gen_tests → 生成对应测试 → 创建 PR
+- 纯文档/配置 PR 合并后过滤后无源码文件，不触发生成
+- Bot 自身的 PR（`auto-test/*`、`auto-fix/*`）合并后不触发（防自触发循环）
+- `change_driven.enabled=false` 的仓库不触发
+- 同一 webhook 重发时幂等保护不重复入队
 
 ---
 

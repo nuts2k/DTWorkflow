@@ -86,11 +86,12 @@ configs/        # 配置文件模板
 - **错误脱敏**：`executeFix` 返回的 error 不携带 ParseError 详情（可能含 Claude 原始输出），详情仅写结构化日志，防止 prompt-injection 内容泄露到飞书通知或 Issue 评论
 - **失败处理**：信息不足 / Claude 返回失败 → SkipRetry + Issue 评论；Push 成功但 PR 创建失败 → 允许重试
 
-## 测试生成功能（M4.1 + M4.2 + M4.2.1）
+## 测试生成功能（M4.1 + M4.2 + M4.2.1 + M4.3）
 
-- **触发方式**（M4.1 + M4.2 仅手动；M4.3 扩展 Webhook PR merged 触发）：
+- **触发方式**：
   - CLI 触发：`./bin/dtw gen-tests --repo <owner/repo> [--module <path>] [--ref <branch>] [--framework junit5|vitest]`
   - API 触发：`POST /api/v1/repos/{owner}/{repo}/gen-tests`
+  - 变更驱动（M4.3）：PR merged webhook → 自动分析变更文件 → 过滤源码 → 匹配模块 → 逐模块入队 gen_tests
 - **镜像**：`gen_tests` 使用执行镜像（`worker-full`，含 JDK + Maven）
 - **执行流程（M4.2 §4.2 八步）**：`test.Service.Execute` —
   1. 前置校验（`Enabled` / `validateModule` / `resolveBaseRef` / `validateModuleExists`）
@@ -123,6 +124,19 @@ configs/        # 配置文件模板
 - **shouldSkipAutoTestReview 前缀匹配**：从精确 key 匹配改为 `branchKey == candidateKey || strings.HasPrefix(branchKey, candidateKey+"-")`，正确拦截 `auto-test/all-junit5` 等 framework 后缀分支的 PR 评审
 - **worker 一致性**：`moduleKeyForContainerWithFramework` 计算 `MODULE_SANITIZED` 时追加 framework 后缀；`container_test.go` 内置 worker ↔ test 一致性对照测试（`moduleKeyForContainerWithFramework(m,f) == strings.TrimPrefix(BuildAutoTestBranchName(m,f), "auto-test/")`）
 - **装配层**：`serve.go` 和服务端 CLI `gen_tests.go` 均通过 `WithModuleScanner(&giteaRepoFileChecker{...})` + `WithPRClient(gc)` 注入；未注入时整仓模式 fail-open 退化为现有单任务逻辑
+
+## 变更驱动测试生成（M4.3）
+
+- **触发流程**：PR merged webhook → `parsePullRequest` 将 `action="closed" + merged=true` 映射为 `action="merged"` → `HandlePullRequest` 路由到 `handleMergedPullRequest`（现有 review 路由逻辑提取为 `handleReviewPullRequest`，零行为变更）
+- **7 步数据流**：① Bot PR 过滤（`auto-test/`、`auto-fix/` 分支前缀 → 跳过，防自触发循环）→ ② 配置检查（`ChangeDrivenConfigProvider` 窄接口，`change_driven.enabled` 默认关闭）→ ③ `listAllPullRequestFiles` 分页获取变更文件（`maxPages=20` 安全上限）→ ④ `filterSourceFiles` 预过滤（内置忽略扩展名/文件名/路径前缀/测试文件模式 + `ignore_paths` doublestar glob）→ ⑤ `ScanRepoModules` 发现模块结构 → ⑥ `matchFilesToModules` 按路径前缀归组 → ⑦ 逐模块 `enqueueChangeDrivenGenTests`
+- **新增过滤层**（`internal/queue/change_filter.go`）：`extractFilenames` 提取文件名并排除 `status=deleted`；`filterSourceFiles` 链式过滤（文件名精确 → 扩展名 → 路径前缀 → 测试文件模式 → 用户 ignore_paths）；`matchFilesToModules` 按 `DiscoveredModule.Path` 前缀分配文件到模块
+- **幂等保护**：`buildChangeDrivenDeliveryID` 构建 `{webhookDeliveryID}:gen_tests:{moduleKey}` 复合 ID，同一 webhook + 同一模块只入队一次；复用 Cancel-and-Replace 语义处理 webhook 重发
+- **Prompt 增强**（`internal/test/prompt.go`）：`PromptContext.ChangedFiles` 非空时 `writeChangeDrivenSection` 注入变更聚焦段，引导 Claude 优先为变更文件生成测试；`maxChangedFilesInPrompt=50` 截断 + `sanitize` 防 prompt 注入；手动触发时该字段为空，现有行为不变
+- **配置**（`config.ChangeDrivenConfig`）：`Enabled *bool`（nil=false 默认关闭，与 `TestGenOverride.Enabled` nil=true 语义相反）+ `IgnorePaths []string`；挂载在 `TestGenOverride.ChangeDriven`；`ResolveTestGenConfig` 仓库级整体替换合并；校验：`ignore_paths` 语法 + `change_driven.enabled=true` 要求 `test_gen.enabled` 不为 `false`
+- **依赖注入**：`WithPRFilesLister(giteaClient)` 注入 review token client（只读查询 PR 文件列表）；`WithConfigProvider(cfgAdapter)` 注入配置读取；均 nil 时 fail-open 跳过变更驱动
+- **通知复用**：变更驱动任务与手动触发在 Processor 层完全一致，复用现有三事件；`triggered_by="webhook:pr_merged:<pr_number>"` 区分来源
+- **`test.Service.Execute` 零改动**：所有变更驱动逻辑均在入队层（`internal/queue/enqueue.go`）和 prompt 层完成
+- **设计文档**：`docs/plans/2026-05-03-m4.3-change-driven-test-gen-design.md`
 
 ## 测试服务器
 
