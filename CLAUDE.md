@@ -86,7 +86,7 @@ configs/        # 配置文件模板
 - **错误脱敏**：`executeFix` 返回的 error 不携带 ParseError 详情（可能含 Claude 原始输出），详情仅写结构化日志，防止 prompt-injection 内容泄露到飞书通知或 Issue 评论
 - **失败处理**：信息不足 / Claude 返回失败 → SkipRetry + Issue 评论；Push 成功但 PR 创建失败 → 允许重试
 
-## 测试生成功能（M4.1 + M4.2）
+## 测试生成功能（M4.1 + M4.2 + M4.2.1）
 
 - **触发方式**（M4.1 + M4.2 仅手动；M4.3 扩展 Webhook PR merged 触发）：
   - CLI 触发：`./bin/dtw gen-tests --repo <owner/repo> [--module <path>] [--ref <branch>] [--framework junit5|vitest]`
@@ -111,6 +111,18 @@ configs/        # 配置文件模板
 - **分支保护**：`entrypoint.sh` gen_tests 分支含 pre-push hook，仅允许推送 `refs/heads/auto-test/*`；hooks 目录 `chmod -R a-w` 加固，防止 Claude 在容器内修改 hook；prompt 禁止 Claude 使用 `git push -f / --force / 重写历史`（`--force-with-lease` 仅由 entrypoint 在分支重置场景主动发起）
 - **Cancel-and-Replace**：按 stable branch key（`test.ModuleKey(module)` 派生）聚合，`svc/api` 与 `svc-api` 等落到同一 `auto-test/*` 分支的请求互相替换（不再按原始 module 字符串精确匹配）；空 `module`（整仓生成）通过 SQL `COALESCE` 正确处理；cancel 旧任务后由 `queue.BranchCleaner`（注入 `gitea.ClosePullRequest` + `gitea.DeleteBranch`）清理远程 PR + 分支；CLI 手动触发路径同样装配 BranchCleaner，与 serve/API 语义对齐；cleanup 失败仅 warn
 - **错误脱敏**：`ErrTestGenParseFailure` 详情不进返回 error（防止 Claude 原始输出泄露到飞书/PR 评论），详情仅写结构化日志；`sanitizeTestGenOutput` 统一过滤 `Warnings / FailureReason / MissingInfo` 等自由文本字段（防 prompt-injection 内容流入飞书/PR/评论），`Processor.record.Error` 也走 `test.SanitizeErrorMessage` 兜底
+
+## 混合仓库多框架支持（M4.2.1）
+
+- **触发场景**：整仓模式（`--module` 留空、`--framework` 未指定）且 `moduleScanner` 已注入时，`EnqueueManualGenTests` 自动扫描仓库 depth=1 子目录，发现多可测试模块后拆分为独立子任务，各自产出独立分支和 PR
+- **ScanRepoModules**（`internal/test/scan.go`）：先检查根目录 `pom.xml` / `package.json`，有则直接 early return（不做 depth=1）；根级均无时调用 `ListDir` 扫描子目录；同目录双框架（`pom.xml` + `package.json` 并存）拆分两条 `DiscoveredModule`；`maxScanDirs=30` 截断；单目录检测失败跳过继续；空结果返回 `ErrNoFrameworkDetected`
+- **EnqueueManualGenTests 返回 `[]EnqueuedTask`**：整仓多模块时先 `cleanupAllAutoTestBranches` 全量清理旧资源，再逐模块调用 `enqueueSingleGenTests`；扫描失败 fail-open 回退单任务；API 响应新增 `split/tasks` 结构（`{"split":true,"tasks":[{"task_id":"...","module":"backend","framework":"junit5"},...]}` ）
+- **framework 感知分支命名**：`BuildAutoTestBranchName(module, framework...)` variadic 参数，多框架拆分场景追加 `-{framework}` 后缀（`auto-test/all-junit5`、`auto-test/mono-vitest`）；单框架不传 framework 行为不变
+- **framework 感知 Cancel-and-Replace**：`listActiveGenTestsTasksByBranchKey` 按 `(ModuleKey(module), framework)` 二元组匹配，同 module 不同 framework 的子任务不互相取消
+- **cleanupAllAutoTestBranches**：整仓拆分前全量清理——取消所有活跃 gen_tests 任务 + 批量关闭 `auto-test/*` PR + 删除远程分支；操作前记 dry-run 日志；任一步骤失败仅 warn 不阻断入队
+- **shouldSkipAutoTestReview 前缀匹配**：从精确 key 匹配改为 `branchKey == candidateKey || strings.HasPrefix(branchKey, candidateKey+"-")`，正确拦截 `auto-test/all-junit5` 等 framework 后缀分支的 PR 评审
+- **worker 一致性**：`moduleKeyForContainerWithFramework` 计算 `MODULE_SANITIZED` 时追加 framework 后缀；`container_test.go` 内置 worker ↔ test 一致性对照测试（`moduleKeyForContainerWithFramework(m,f) == strings.TrimPrefix(BuildAutoTestBranchName(m,f), "auto-test/")`）
+- **装配层**：`serve.go` 和服务端 CLI `gen_tests.go` 均通过 `WithModuleScanner(&giteaRepoFileChecker{...})` + `WithPRClient(gc)` 注入；未注入时整仓模式 fail-open 退化为现有单任务逻辑
 
 ## 测试服务器
 

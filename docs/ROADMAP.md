@@ -730,11 +730,29 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 单元测试覆盖：`internal/test` 覆盖率 95.2%；`entrypoint_test.sh` 33 项断言（含 rev-parse 失败降级路径 S11）；`enqueue_test.go` 补 Cancel-and-Replace（按 branch key 聚合）与 review 拦截路径
 
 ##### M4.2.1 混合仓库多框架支持
-> 说明：当前 `test_gen.test_framework` 只能设单个值（`junit5` / `vitest`），混合仓库（前后端一体）触发 gen_tests 时要么手动分 module 多次触发，要么报 `ErrAmbiguousFramework`。M4.2.1 解决整仓模式下的多框架自动处理。
+> 说明（完成 2026-05-03）：整仓模式自动发现 depth=1 子目录中的可测试模块，多模块拆分为独立 gen_tests 任务，各自产出独立 PR。采用方案 (a)——入队层拆分为多个子任务，每个子任务复用现有完整 `test.Service.Execute` 管线，子任务间完全独立。
+> 详细设计见 `docs/superpowers/specs/2026-04-29-m4.2.1-mixed-framework-design.md`；实施计划见 `docs/superpowers/plans/2026-04-30-m4.2.1-mixed-framework.md`。
 
-- [ ] **多框架支持**：整仓或多模块场景下自动识别并分别生成 JUnit 5 + Vitest 测试（候选方案：(a) 自动拆分为两个子任务；(b) `test_framework` 改为数组）
-- [ ] **整仓模式子目录扫描**：`--module` 留空时，`resolveFramework` 增加 depth=1 子目录扫描（当前仅检查根目录 `pom.xml` / `package.json`，实际仓库后端常放在 `sunrate-service/` 等子目录下）
-- [ ] 单元测试覆盖
+- [x] **Gitea Contents API 扩展**：新增 `gitea.Client.ListDirContents`（`GET /repos/{owner}/{repo}/contents/{dir}?ref={ref}`，过滤 `type==dir` 返回子目录名列表）
+- [x] **RepoFileChecker 接口扩展**：新增 `ListDir` 方法；`giteaRepoFileChecker` 实现（过滤 Gitea Contents API 中 `type=dir` 条目）；`mockFileChecker` 测试桩同步适配
+- [x] **ScanRepoModules 函数**（`internal/test/scan.go` 新建）：
+  - 先检查根目录 `pom.xml` / `package.json`；根级有标记文件时直接 early return（不做 depth=1 扫描）
+  - 根级两者均无时调用 `ListDir` 扫描 depth=1 子目录，逐目录检测框架
+  - 同目录双框架拆分为两条 `DiscoveredModule`（如 `mono/pom.xml` + `mono/package.json` → junit5 + vitest 两条）
+  - `maxScanDirs=30` 截断保护；单目录 `HasFile` 失败跳过继续（warn 日志）；空结果返回 `ErrNoFrameworkDetected`
+- [x] **BuildAutoTestBranchName variadic framework 参数**：多框架拆分时追加 `-{framework}` 后缀（`auto-test/all-junit5`、`auto-test/mono-vitest`）；单框架场景不传参行为不变（向后兼容）
+- [x] **PromptContext.Framework 字段**：`writeHeader` 使用 resolved framework 生成正确分支名；`Execute` 从 `resolveFramework` 结果（而非原始 `payload.Framework`）填充，确保检测场景分支名正确
+- [x] **moduleKeyForContainerWithFramework**（`internal/worker/container.go`）：`buildContainerEnv` 注入 `MODULE_SANITIZED` 时追加 framework 后缀；新增 worker ↔ test 一致性对照测试，保障两份实现同步不漂移
+- [x] **framework 感知 Cancel-and-Replace**：`listActiveGenTestsTasksByBranchKey` 增加 framework 参数，按 `(ModuleKey(module), framework)` 二元组精确匹配；同 module 不同 framework 的子任务不互相取消
+- [x] **cleanupAllAutoTestBranches**：整仓拆分前全量清理旧资源——取消所有活跃 gen_tests 任务 + 一次性列出 open PR 按 `auto-test/*` 前缀过滤批量关闭 + 删除远程分支；每步执行前记录 dry-run 日志便于审计；任一步骤失败仅 warn 不阻断后续入队
+- [x] **shouldSkipAutoTestReview 适配 framework 后缀**：从精确匹配改为前缀匹配（`branchKey == candidateKey || strings.HasPrefix(branchKey, candidateKey+"-")`），正确拦截 `auto-test/all-junit5` 等 framework 后缀分支的 PR 评审入队
+- [x] **EnqueueManualGenTests 返回 `[]EnqueuedTask` + 整仓拆分**：
+  - 整仓触发条件：`module=="" && framework=="" && moduleScanner 已注入 && BaseRef 非空`
+  - 调用 `ScanRepoModules` 发现模块列表；`len >= 2` 时先执行 `cleanupAllAutoTestBranches`
+  - 各子任务调用 `enqueueSingleGenTests` 独立入队；扫描失败 fail-open 回退单任务逻辑
+  - API 响应新增 `split/tasks` 结构（`{"split":true,"tasks":[{"task_id":"...","module":"backend","framework":"junit5"},...]}`）
+- [x] **CLI + dtw 瘦客户端适配**：多任务返回时输出拆分汇总表格；`serve.go` 与服务端 `gen_tests.go` 装配层均注入 `WithModuleScanner` + `WithPRClient`
+- [x] **单元测试覆盖**：`scan_test.go` 全场景（根单框架/根双框架/depth=1 多模块/空结果/ListDir 失败/子目录跳过/截断）；`container_test.go` worker ↔ test 一致性对照；`enqueue_test.go` 拆分路径 + shouldSkipAutoTestReview framework 后缀场景
 
 ---
 
