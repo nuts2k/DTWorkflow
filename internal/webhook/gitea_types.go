@@ -15,6 +15,7 @@ type giteaPullRequestPayload struct {
 	Title   string `json:"title"`
 	Body    string `json:"body"`
 	HTMLURL string `json:"html_url"`
+	Merged  bool   `json:"merged"`
 	Head    struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`

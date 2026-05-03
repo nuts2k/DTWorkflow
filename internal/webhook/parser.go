@@ -32,16 +32,25 @@ func (p *Parser) parsePullRequest(deliveryID string, body []byte) (Event, error)
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, ErrInvalidPayload
 	}
-	if payload.Action != "opened" && payload.Action != "synchronized" && payload.Action != "reopened" {
+	if payload.Action != "opened" && payload.Action != "synchronized" &&
+		payload.Action != "reopened" && payload.Action != "closed" {
 		return nil, ErrUnsupportedAction
 	}
+
+	action := payload.Action
+	if payload.Action == "closed" && payload.PullRequest.Merged {
+		action = "merged"
+	} else if payload.Action == "closed" {
+		return nil, ErrUnsupportedAction
+	}
+
 	if payload.PullRequest.Number == 0 || payload.Repository.FullName == "" {
 		return nil, ErrInvalidPayload
 	}
 	return PullRequestEvent{
 		DeliveryID: deliveryID,
 		EventType:  "pull_request",
-		Action:     payload.Action,
+		Action:     action,
 		Repository: RepositoryRef{
 			Owner:         payload.Repository.Owner.Login,
 			Name:          payload.Repository.Name,
@@ -54,6 +63,7 @@ func (p *Parser) parsePullRequest(deliveryID string, body []byte) (Event, error)
 			Title:   payload.PullRequest.Title,
 			Body:    payload.PullRequest.Body,
 			HTMLURL: payload.PullRequest.HTMLURL,
+			Merged:  payload.PullRequest.Merged,
 			BaseRef: payload.PullRequest.Base.Ref,
 			HeadRef: payload.PullRequest.Head.Ref,
 			BaseSHA: payload.PullRequest.Base.SHA,

@@ -292,7 +292,11 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 			queue.WithBranchCleaner(queue.NewBranchCleaner(giteaGenTestsClient, slog.Default())),
 			queue.WithModuleScanner(&giteaRepoFileChecker{client: giteaGenTestsClient}),
 			queue.WithPRClient(giteaGenTestsClient),
+			queue.WithPRFilesLister(giteaClient),
 		)
+	}
+	if cfg.AppCfg != nil {
+		enqueueOpts = append(enqueueOpts, queue.WithConfigProvider(cfg.AppCfg))
 	}
 	handler := queue.NewEnqueueHandler(queueClient, queueClient, s, slog.Default(), enqueueOpts...)
 

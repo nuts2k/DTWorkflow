@@ -235,6 +235,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Test
 		AnchorResolved:  anchorResolved,
 		Framework:       payload.Framework,
 		MaxRetryRounds:  maxRetry,
+		ChangedFiles:    payload.ChangedFiles,
 	}
 	var prompt string
 	switch framework {

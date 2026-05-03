@@ -93,8 +93,9 @@ type TaskPayload struct {
 	IssueRef    string `json:"issue_ref,omitempty"`
 
 	// 测试生成定位
-	Module    string `json:"module,omitempty"`
-	Framework string `json:"framework,omitempty"`
+	Module       string   `json:"module,omitempty"`
+	Framework    string   `json:"framework,omitempty"`
+	ChangedFiles []string `json:"changed_files,omitempty"` // 变更驱动：触发变更的源码文件列表
 
 	// M2.4 重新评审
 	CreatedAt       time.Time `json:"created_at,omitempty"`        // 任务创建时间（staleness check 基准）

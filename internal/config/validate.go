@@ -419,6 +419,18 @@ func validateTestGen(field string, tg TestGenOverride) []error {
 	if strings.Contains(tg.ModuleScope, "..") {
 		errs = append(errs, fmt.Errorf("%s.module_scope 不能包含 ..，当前值: %q", field, tg.ModuleScope))
 	}
+	if tg.ChangeDriven != nil {
+		for i, pattern := range tg.ChangeDriven.IgnorePaths {
+			if !doublestar.ValidatePattern(pattern) {
+				errs = append(errs, fmt.Errorf("%s.change_driven.ignore_paths[%d] 语法不合法: %q",
+					field, i, pattern))
+			}
+		}
+		if tg.ChangeDriven.IsEnabled() && tg.Enabled != nil && !*tg.Enabled {
+			errs = append(errs, fmt.Errorf("%s.change_driven.enabled=true 但 %s.enabled=false，矛盾",
+				field, field))
+		}
+	}
 	return errs
 }
 

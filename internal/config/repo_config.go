@@ -32,6 +32,8 @@ type TestGenOverride struct {
 	//   - *false = 显式关闭（仅 Success=true 时入队 review）
 	//   - *true  = 显式启用（Success=false 且 PRNumber>0 时也入队 review）
 	ReviewOnFailure *bool `mapstructure:"review_on_failure"`
+	// ChangeDriven M4.3 新增：变更驱动测试生成配置。
+	ChangeDriven *ChangeDrivenConfig `mapstructure:"change_driven"`
 }
 
 // NotifyOverride 仓库级通知配置覆盖。
@@ -195,7 +197,22 @@ func (c *Config) ResolveTestGenConfig(repoFullName string) TestGenOverride {
 		if repo.TestGen.ReviewOnFailure != nil {
 			merged.ReviewOnFailure = repo.TestGen.ReviewOnFailure
 		}
+		if repo.TestGen.ChangeDriven != nil {
+			merged.ChangeDriven = repo.TestGen.ChangeDriven
+		}
 		break
 	}
 	return merged
+}
+
+// ChangeDrivenConfig 变更驱动测试生成配置。
+// Enabled 使用指针语义，nil=false（默认关闭），与 TestGenOverride.Enabled 的 nil=true 语义相反。
+type ChangeDrivenConfig struct {
+	Enabled     *bool    `mapstructure:"enabled"`
+	IgnorePaths []string `mapstructure:"ignore_paths"`
+}
+
+// IsEnabled 返回变更驱动是否启用。nil 视为 false（默认关闭）。
+func (c ChangeDrivenConfig) IsEnabled() bool {
+	return c.Enabled != nil && *c.Enabled
 }

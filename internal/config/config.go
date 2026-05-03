@@ -448,6 +448,18 @@ func (c *Config) Clone() *Config {
 		v := *c.TestGen.ReviewOnFailure
 		clone.TestGen.ReviewOnFailure = &v
 	}
+	// M4.3：ChangeDriven 深拷贝
+	if c.TestGen.ChangeDriven != nil {
+		cdCopy := *c.TestGen.ChangeDriven
+		if cdCopy.Enabled != nil {
+			v := *cdCopy.Enabled
+			cdCopy.Enabled = &v
+		}
+		if cdCopy.IgnorePaths != nil {
+			cdCopy.IgnorePaths = append([]string(nil), cdCopy.IgnorePaths...)
+		}
+		clone.TestGen.ChangeDriven = &cdCopy
+	}
 
 	// 深拷贝 API.Tokens
 	if c.API.Tokens != nil {
@@ -507,6 +519,17 @@ func (c *Config) Clone() *Config {
 				if repo.TestGen.ReviewOnFailure != nil {
 					v := *repo.TestGen.ReviewOnFailure
 					testGenCopy.ReviewOnFailure = &v
+				}
+				if repo.TestGen.ChangeDriven != nil {
+					cdCopy := *repo.TestGen.ChangeDriven
+					if cdCopy.Enabled != nil {
+						v := *cdCopy.Enabled
+						cdCopy.Enabled = &v
+					}
+					if cdCopy.IgnorePaths != nil {
+						cdCopy.IgnorePaths = append([]string(nil), cdCopy.IgnorePaths...)
+					}
+					testGenCopy.ChangeDriven = &cdCopy
 				}
 				clone.Repos[i].TestGen = &testGenCopy
 			}

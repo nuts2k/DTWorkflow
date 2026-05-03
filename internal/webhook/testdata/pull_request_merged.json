@@ -1,0 +1,20 @@
+{
+  "action": "closed",
+  "repository": {
+    "full_name": "owner/repo",
+    "clone_url": "https://gitea.example.com/owner/repo.git",
+    "default_branch": "main",
+    "owner": {"login": "owner"},
+    "name": "repo"
+  },
+  "pull_request": {
+    "number": 99,
+    "title": "Implement feature X",
+    "body": "Merged PR body",
+    "html_url": "https://gitea.example.com/owner/repo/pulls/99",
+    "merged": true,
+    "head": {"ref": "feature-x", "sha": "abc123"},
+    "base": {"ref": "main", "sha": "def456"}
+  },
+  "sender": {"login": "bob", "full_name": "Bob"}
+}

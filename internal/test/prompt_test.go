@@ -1,6 +1,7 @@
 package test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -646,6 +647,65 @@ func TestBuildAutoTestBranchName_WithFramework(t *testing.T) {
 					tt.module, tt.framework, got, tt.want)
 			}
 		})
+	}
+}
+
+// ============================================================================
+// 变更驱动上下文段测试
+// ============================================================================
+
+func TestBuildPrompt_WithChangedFiles(t *testing.T) {
+	ctx := PromptContext{
+		RepoFullName:   "org/repo",
+		Module:         "backend",
+		BaseRef:        "main",
+		Framework:      "junit5",
+		MaxRetryRounds: 3,
+		ChangedFiles:   []string{"backend/src/main/java/Foo.java", "backend/src/main/java/Bar.java"},
+	}
+	prompt := buildJavaPrompt(ctx)
+	if !strings.Contains(prompt, "变更驱动上下文") {
+		t.Error("expected prompt to contain 变更驱动上下文 section")
+	}
+	if !strings.Contains(prompt, "backend/src/main/java/Foo.java") {
+		t.Error("expected prompt to contain changed file")
+	}
+}
+
+func TestBuildPrompt_WithoutChangedFiles(t *testing.T) {
+	ctx := PromptContext{
+		RepoFullName:   "org/repo",
+		Module:         "backend",
+		BaseRef:        "main",
+		Framework:      "junit5",
+		MaxRetryRounds: 3,
+		ChangedFiles:   nil,
+	}
+	prompt := buildJavaPrompt(ctx)
+	if strings.Contains(prompt, "变更驱动上下文") {
+		t.Error("expected prompt NOT to contain 变更驱动上下文 when no changed files")
+	}
+}
+
+func TestBuildPrompt_ChangedFilesTruncated(t *testing.T) {
+	files := make([]string, 60)
+	for i := range files {
+		files[i] = fmt.Sprintf("src/file%d.java", i)
+	}
+	ctx := PromptContext{
+		RepoFullName:   "org/repo",
+		Module:         "backend",
+		BaseRef:        "main",
+		Framework:      "junit5",
+		MaxRetryRounds: 3,
+		ChangedFiles:   files,
+	}
+	prompt := buildJavaPrompt(ctx)
+	if !strings.Contains(prompt, "及其他 10 个文件") {
+		t.Error("expected truncation notice for files beyond 50")
+	}
+	if strings.Contains(prompt, "src/file50.java") {
+		t.Error("file at index 50 should be truncated")
 	}
 }
 

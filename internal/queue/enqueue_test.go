@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
@@ -243,6 +244,7 @@ func TestHandlePullRequest_CreatesTask(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-001",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 42},
@@ -272,6 +274,7 @@ func TestHandlePullRequest_Idempotent(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-dup",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 1},
@@ -298,6 +301,7 @@ func TestHandlePullRequest_EnqueueFail_KeepsPending(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-fail",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 99},
@@ -350,6 +354,7 @@ func TestHandlePullRequest_IncompleteData(t *testing.T) {
 
 	// RepoFullName 为空
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-incomplete-1",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 1},
@@ -361,6 +366,7 @@ func TestHandlePullRequest_IncompleteData(t *testing.T) {
 
 	// CloneURL 为空
 	event2 := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-incomplete-2",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: ""},
 		PullRequest: webhook.PullRequestRef{Number: 1},
@@ -378,6 +384,7 @@ func TestHandlePullRequest_FindByDeliveryIDError(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-find-err",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 1},
@@ -395,6 +402,7 @@ func TestHandlePullRequest_CreateTaskError(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-create-err",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 1},
@@ -412,6 +420,7 @@ func TestHandlePullRequest_UpdateTaskError_StillSucceeds(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-upd-err",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 1},
@@ -789,6 +798,7 @@ func TestHandlePullRequest_WithSuperseded(t *testing.T) {
 	s.activePRTasks = []*model.TaskRecord{oldTask}
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-superseded-1",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 7, HeadSHA: "cafebabe"},
@@ -853,6 +863,7 @@ func TestHandlePullRequest_InvalidPayload_DoesNotCancelOldTask(t *testing.T) {
 	s.activePRTasks = []*model.TaskRecord{oldTask}
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-invalid-payload",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo"},
 		PullRequest: webhook.PullRequestRef{Number: 7, HeadSHA: "cafebabe"},
@@ -891,6 +902,7 @@ func TestHandlePullRequest_CreateTaskFailed_DoesNotCancelOldTask(t *testing.T) {
 	s.activePRTasks = []*model.TaskRecord{oldTask}
 
 	event := webhook.PullRequestEvent{
+		Action:      "opened",
 		DeliveryID:  "delivery-create-failed",
 		Repository:  webhook.RepositoryRef{Owner: "org", Name: "repo", FullName: "org/repo", CloneURL: "https://gitea.example.com/org/repo.git"},
 		PullRequest: webhook.PullRequestRef{Number: 7, HeadSHA: "cafebabe"},
@@ -1807,6 +1819,7 @@ func TestHandlePullRequest_AutoTestInterceptWhenActive(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:     "opened",
 		DeliveryID: "delivery-autotest-intercept",
 		Repository: webhook.RepositoryRef{
 			Owner: "org", Name: "repo", FullName: "org/repo",
@@ -1834,6 +1847,7 @@ func TestHandlePullRequest_AutoTestDifferentModule(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:     "opened",
 		DeliveryID: "delivery-autotest-diff",
 		Repository: webhook.RepositoryRef{
 			Owner: "org", Name: "repo", FullName: "org/repo",
@@ -1860,6 +1874,7 @@ func TestHandlePullRequest_AutoTestNoActiveTasks(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:     "opened",
 		DeliveryID: "delivery-autotest-inactive",
 		Repository: webhook.RepositoryRef{
 			Owner: "org", Name: "repo", FullName: "org/repo",
@@ -1888,6 +1903,7 @@ func TestHandlePullRequest_AutoTestStoreFailOpen(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:     "opened",
 		DeliveryID: "delivery-failopen",
 		Repository: webhook.RepositoryRef{
 			Owner: "org", Name: "repo", FullName: "org/repo",
@@ -1916,6 +1932,7 @@ func TestHandlePullRequest_NonAutoTestPrefixUnaffected(t *testing.T) {
 	h := NewEnqueueHandler(mc, nil, s, slog.Default())
 
 	event := webhook.PullRequestEvent{
+		Action:     "opened",
 		DeliveryID: "delivery-regular",
 		Repository: webhook.RepositoryRef{
 			Owner: "org", Name: "repo", FullName: "org/repo",
@@ -2205,5 +2222,431 @@ func TestEnqueueManualGenTests_ModuleNonEmpty_SkipScan(t *testing.T) {
 	}
 	if scanner.called {
 		t.Error("module 非空时不应调用 scanner")
+	}
+}
+
+// ==========================================================================
+// M4.3: 变更驱动测试生成 — handleMergedPullRequest 测试
+// ==========================================================================
+
+// mockConfigProvider 测试用 ChangeDrivenConfigProvider
+type mockConfigProvider struct {
+	cfg config.TestGenOverride
+}
+
+func (m *mockConfigProvider) ResolveTestGenConfig(_ string) config.TestGenOverride {
+	return m.cfg
+}
+
+// mockPRFilesLister 测试用 PRFilesLister
+type mockPRFilesLister struct {
+	files []*gitea.ChangedFile
+	err   error
+}
+
+func (m *mockPRFilesLister) ListPullRequestFiles(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error) {
+	return m.files, nil, m.err
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func newMergedPREvent(prNumber int64, headRef, baseRef string) webhook.PullRequestEvent {
+	return webhook.PullRequestEvent{
+		Action:     "merged",
+		DeliveryID: fmt.Sprintf("delivery-merged-%d", prNumber),
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  prNumber,
+			BaseRef: baseRef,
+			HeadRef: headRef,
+		},
+	}
+}
+
+func TestHandleMergedPR_BotPRSkipped(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+	)
+
+	event := newMergedPREvent(1, "auto-test/backend", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("bot PR (auto-test/*) should be skipped, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_BotFixPRSkipped(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+	)
+
+	event := newMergedPREvent(2, "auto-fix/issue-1", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("bot PR (auto-fix/*) should be skipped, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_Disabled(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(false)},
+		}}),
+	)
+
+	event := newMergedPREvent(3, "feature/foo", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("disabled change-driven should not enqueue, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_ConfigProviderNil(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := newMergedPREvent(4, "feature/foo", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("nil configProvider should silently skip, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_PRFilesListerNil(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+	)
+
+	event := newMergedPREvent(5, "feature/foo", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("nil prFilesLister should silently skip, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_NoSourceFiles(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "README.md", Status: "modified"},
+			{Filename: "docs/guide.md", Status: "added"},
+		}}),
+	)
+
+	event := newMergedPREvent(6, "feature/docs-only", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("pure docs PR should not enqueue, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_DeletedFilesExcluded(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "deleted"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(7, "feature/cleanup", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("deleted-only files should not enqueue, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_NoFramework(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	scanner := &mockModuleScanner{
+		dirs: map[string][]string{"": {"src"}},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/main.py", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(8, "feature/python", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("ErrNoFrameworkDetected should silently skip, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_SingleModule(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-merged-single"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+			{Filename: "src/Service.java", Status: "added"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(42, "feature/new-api", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+
+	for _, record := range s.tasks {
+		if record.TaskType != model.TaskTypeGenTests {
+			t.Errorf("task type = %q, want %q", record.TaskType, model.TaskTypeGenTests)
+		}
+		if record.Payload.BaseRef != "main" {
+			t.Errorf("BaseRef = %q, want %q", record.Payload.BaseRef, "main")
+		}
+		if record.Payload.Framework != string(test.FrameworkJUnit5) {
+			t.Errorf("Framework = %q, want %q", record.Payload.Framework, test.FrameworkJUnit5)
+		}
+	}
+}
+
+func TestHandleMergedPR_MultiModule(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-merged-multi"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{
+			"backend/pom.xml":       true,
+			"frontend/package.json": true,
+		},
+		dirs: map[string][]string{"": {"backend", "frontend"}},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "backend/src/Api.java", Status: "modified"},
+			{Filename: "frontend/src/App.vue", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(99, "feature/fullstack", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 2 {
+		t.Fatalf("expected 2 tasks for multi-module, got %d", len(s.tasks))
+	}
+
+	var modules []string
+	for _, record := range s.tasks {
+		modules = append(modules, record.Payload.Module)
+	}
+	hasBackend := false
+	hasFrontend := false
+	for _, m := range modules {
+		if m == "backend" {
+			hasBackend = true
+		}
+		if m == "frontend" {
+			hasFrontend = true
+		}
+	}
+	if !hasBackend || !hasFrontend {
+		t.Errorf("expected backend+frontend modules, got %v", modules)
+	}
+}
+
+func TestHandleMergedPR_TriggeredBy(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-merged-trig"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(42, "feature/trig-check", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+
+	for _, record := range s.tasks {
+		if record.TriggeredBy != "webhook:pr_merged:42" {
+			t.Errorf("TriggeredBy = %q, want %q", record.TriggeredBy, "webhook:pr_merged:42")
+		}
+	}
+}
+
+func TestHandleMergedPR_ChangedFilesInPayload(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-merged-files"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+			{Filename: "src/Service.java", Status: "added"},
+			{Filename: "README.md", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(50, "feature/payload-check", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(s.tasks))
+	}
+
+	for _, record := range s.tasks {
+		if len(record.Payload.ChangedFiles) != 2 {
+			t.Errorf("ChangedFiles count = %d, want 2 (README.md filtered)", len(record.Payload.ChangedFiles))
+		}
+		fileSet := make(map[string]bool)
+		for _, f := range record.Payload.ChangedFiles {
+			fileSet[f] = true
+		}
+		if !fileSet["src/Main.java"] || !fileSet["src/Service.java"] {
+			t.Errorf("ChangedFiles = %v, want src/Main.java + src/Service.java", record.Payload.ChangedFiles)
+		}
+	}
+}
+
+func TestHandleMergedPR_DefaultAction_IgnoresUnknown(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := webhook.PullRequestEvent{
+		Action:     "closed",
+		DeliveryID: "delivery-closed-1",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{Number: 1},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unknown action should return nil, got: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("unknown action should not enqueue, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_ModuleScannerNil(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+	)
+
+	event := newMergedPREvent(60, "feature/no-scanner", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("nil moduleScanner should silently skip, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedPR_NoModulesMatched(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"backend/pom.xml": true},
+		dirs:  map[string][]string{"": {"backend"}},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "scripts/deploy.sh", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(70, "feature/scripts", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("no matching modules should not enqueue, got %d tasks", len(s.tasks))
 	}
 }

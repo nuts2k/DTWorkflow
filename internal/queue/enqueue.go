@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
@@ -22,13 +23,15 @@ var _ webhook.Handler = (*EnqueueHandler)(nil)
 
 // EnqueueHandler 实现 webhook.Handler 接口,将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
-	client        Enqueuer
-	canceller     TaskCanceller    // M2.4: 任务取消能力
-	store         store.Store
-	logger        *slog.Logger
-	branchCleaner BranchCleaner    // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
-	prClient      genTestsPRClient // M4.2.1: cleanupAllAutoTestBranches
-	moduleScanner test.RepoFileChecker // M4.2.1: ScanRepoModules
+	client         Enqueuer
+	canceller      TaskCanceller        // M2.4: 任务取消能力
+	store          store.Store
+	logger         *slog.Logger
+	branchCleaner  BranchCleaner        // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
+	prClient       genTestsPRClient     // M4.2.1: cleanupAllAutoTestBranches
+	moduleScanner  test.RepoFileChecker // M4.2.1: ScanRepoModules
+	configProvider ChangeDrivenConfigProvider // M4.3: 变更驱动配置读取
+	prFilesLister  PRFilesLister        // M4.3: PR 变更文件列表查询
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -66,6 +69,26 @@ func WithModuleScanner(c test.RepoFileChecker) EnqueueOption {
 	return func(h *EnqueueHandler) { h.moduleScanner = c }
 }
 
+// ChangeDrivenConfigProvider 变更驱动配置读取窄接口。
+type ChangeDrivenConfigProvider interface {
+	ResolveTestGenConfig(repoFullName string) config.TestGenOverride
+}
+
+// WithConfigProvider 注入变更驱动配置读取能力。
+func WithConfigProvider(p ChangeDrivenConfigProvider) EnqueueOption {
+	return func(h *EnqueueHandler) { h.configProvider = p }
+}
+
+// PRFilesLister 列出 PR 变更文件的窄接口。
+type PRFilesLister interface {
+	ListPullRequestFiles(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error)
+}
+
+// WithPRFilesLister 注入 PR 文件列表查询能力。
+func WithPRFilesLister(lister PRFilesLister) EnqueueOption {
+	return func(h *EnqueueHandler) { h.prFilesLister = lister }
+}
+
 // NewEnqueueHandler 创建 EnqueueHandler 实例。
 // 参数 client 和 store 为必要依赖,传入 nil 属于编程错误（programming error）,
 // 因此使用 panic 而非返回 error,与 Go 标准库（如 http.NewServeMux）的惯例一致。
@@ -92,12 +115,20 @@ func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Sto
 	return h
 }
 
-// HandlePullRequest 处理 PR 事件,执行幂等检查后创建任务并入队。
-// 注意：HandlePullRequest 与 HandleIssueLabel 有相似的流程结构（幂等检查 -> 构建 payload ->
-// 构建 record -> enqueueTask -> 日志）,但因各事件的 payload 字段差异较大且日志消息不同,
-// 提取通用模板方法反而会引入复杂的泛型或 interface 抽象,得不偿失。
-// 核心逻辑已下沉到 enqueueTask,当前的重复仅在 payload/record 构建和日志层面。
+// HandlePullRequest 处理 PR 事件，按 action 路由到评审或合并后处理。
 func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.PullRequestEvent) error {
+	switch event.Action {
+	case "opened", "synchronized", "reopened":
+		return h.handleReviewPullRequest(ctx, event)
+	case "merged":
+		return h.handleMergedPullRequest(ctx, event)
+	default:
+		return nil
+	}
+}
+
+// handleReviewPullRequest 处理 PR 评审事件,执行幂等检查后创建任务并入队。
+func (h *EnqueueHandler) handleReviewPullRequest(ctx context.Context, event webhook.PullRequestEvent) error {
 	// M4.2: 拦截来自 auto-test/{moduleKey} 分支的 PR webhook——这些 PR 由 gen_tests
 	// 自己产出,上游已发过 gen_tests 完成通知,不应再为其触发自动评审。
 	// 仅在命中活跃 gen_tests 任务的 module 时拦截；查询失败 fail-open,继续原流程
@@ -174,6 +205,106 @@ func (h *EnqueueHandler) HandlePullRequest(ctx context.Context, event webhook.Pu
 		)
 	}
 	return nil
+}
+
+// handleMergedPullRequest 处理 PR 合并事件，按变更驱动策略入队 gen_tests。
+func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webhook.PullRequestEvent) error {
+	repo := event.Repository.FullName
+	pr := event.PullRequest
+
+	// 1. Bot PR 过滤
+	if strings.HasPrefix(pr.HeadRef, "auto-test/") || strings.HasPrefix(pr.HeadRef, "auto-fix/") {
+		h.logger.DebugContext(ctx, "change-driven: skipping bot PR", "repo", repo, "head_ref", pr.HeadRef)
+		return nil
+	}
+
+	// 2. 配置检查
+	if h.configProvider == nil {
+		return nil
+	}
+	tgCfg := h.configProvider.ResolveTestGenConfig(repo)
+	changeDriven := resolveChangeDrivenConfig(tgCfg)
+	if !changeDriven.IsEnabled() {
+		h.logger.DebugContext(ctx, "change-driven: disabled for repo", "repo", repo)
+		return nil
+	}
+
+	// 3. 获取变更文件
+	if h.prFilesLister == nil {
+		return nil
+	}
+	changedFiles, _, err := h.prFilesLister.ListPullRequestFiles(
+		ctx, event.Repository.Owner, event.Repository.Name,
+		pr.Number, gitea.ListOptions{PageSize: 100})
+	if err != nil {
+		return fmt.Errorf("list PR files: %w", err)
+	}
+
+	// 4. 预过滤
+	filenames := extractFilenames(changedFiles)
+	sourceFiles := filterSourceFiles(filenames, changeDriven.IgnorePaths)
+	if len(sourceFiles) == 0 {
+		h.logger.DebugContext(ctx, "change-driven: no source files after filtering",
+			"repo", repo, "pr", pr.Number, "total_files", len(filenames))
+		return nil
+	}
+
+	// 5. 模块扫描
+	if h.moduleScanner == nil {
+		return nil
+	}
+	modules, err := test.ScanRepoModules(ctx, h.moduleScanner,
+		event.Repository.Owner, event.Repository.Name, pr.BaseRef)
+	if err != nil {
+		if errors.Is(err, test.ErrNoFrameworkDetected) {
+			h.logger.DebugContext(ctx, "change-driven: no framework detected", "repo", repo)
+			return nil
+		}
+		return fmt.Errorf("scan modules: %w", err)
+	}
+
+	// 6. 文件→模块归组
+	moduleFiles := matchFilesToModules(sourceFiles, modules)
+	if len(moduleFiles) == 0 {
+		h.logger.DebugContext(ctx, "change-driven: no modules matched",
+			"repo", repo, "source_files", len(sourceFiles))
+		return nil
+	}
+
+	// 7. 逐模块入队
+	triggeredBy := fmt.Sprintf("webhook:pr_merged:%d", pr.Number)
+	h.logger.InfoContext(ctx, "change-driven: enqueueing gen_tests",
+		"repo", repo, "pr", pr.Number,
+		"source_files", len(sourceFiles),
+		"modules", len(moduleFiles),
+		"triggered_by", triggeredBy)
+
+	for mod, files := range moduleFiles {
+		payload := model.TaskPayload{
+			TaskType:     model.TaskTypeGenTests,
+			RepoOwner:    event.Repository.Owner,
+			RepoName:     event.Repository.Name,
+			RepoFullName: repo,
+			CloneURL:     event.Repository.CloneURL,
+			Module:       mod.Path,
+			Framework:    string(mod.Framework),
+			BaseRef:      pr.BaseRef,
+			ChangedFiles: files,
+		}
+		if _, err := h.enqueueSingleGenTests(ctx, payload, triggeredBy); err != nil {
+			h.logger.WarnContext(ctx, "change-driven: failed to enqueue module",
+				"repo", repo, "module", mod.Path, "error", err)
+		}
+	}
+	return nil
+}
+
+// resolveChangeDrivenConfig 从合并后的 TestGenOverride 中提取 ChangeDrivenConfig。
+func resolveChangeDrivenConfig(tgCfg config.TestGenOverride) config.ChangeDrivenConfig {
+	if tgCfg.ChangeDriven == nil {
+		return config.ChangeDrivenConfig{}
+	}
+	return *tgCfg.ChangeDriven
 }
 
 // HandleIssueLabel 处理 Issue 标签事件,按标签类型路由到不同任务。

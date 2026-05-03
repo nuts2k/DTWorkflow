@@ -158,6 +158,13 @@ test_gen:
   max_retry_rounds: 3       # 容器内 Claude 修正测试失败的最大轮次
   test_framework: ""        # 留空自动探测；可显式指定 "junit5" / "vitest"
   # review_on_failure: false  # 失败时是否也自动触发 review（D5）；默认 false
+  # M4.3 变更驱动测试生成：PR 合并后自动分析变更代码并触发 gen_tests。
+  # 默认关闭，需显式启用。启用时 test_gen.enabled 不能为 false（会被校验拦截）。
+  # change_driven:
+  #   enabled: false
+  #   ignore_paths:         # 额外忽略的路径（doublestar glob 语法）
+  #     - "scripts/**"
+  #     - "deploy/**"
 
 # 仓库级配置覆盖示例
 repos:
@@ -204,6 +211,8 @@ repos:
       # max_retry_rounds: 5              # 仓库级覆盖，[1, 10]
       # test_framework: "junit5"         # 强制仓库使用 JUnit 5
       # review_on_failure: true          # 仓库级：失败也触发 review（D5）
+      # change_driven:
+      #   enabled: true       # 仓库级启用变更驱动
 
 # 每日评审统计报告
 # 定时通过飞书发送前一天的 PR 评审统计摘要。

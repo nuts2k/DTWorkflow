@@ -29,6 +29,7 @@ type PullRequestRef struct {
 	Title   string
 	Body    string
 	HTMLURL string
+	Merged  bool
 	BaseRef string
 	HeadRef string
 	BaseSHA string

@@ -380,6 +380,7 @@ type PromptContext struct {
 	AnchorResolved bool
 	Framework      string
 	MaxRetryRounds int
+	ChangedFiles   []string // 变更驱动场景下的变更文件列表，空切片 = 手动触发
 }
 
 // buildJavaPrompt 按公共段 + Java 特有段拼接 prompt。
@@ -460,6 +461,39 @@ func writeHeader(b *strings.Builder, ctx PromptContext) {
 		b.WriteString(fmt.Sprintf("基准 ref：%s\n", sanitize(ctx.BaseRef, 200)))
 	}
 	b.WriteString(fmt.Sprintf("工作分支：%s\n", sanitize(BuildAutoTestBranchName(ctx.Module, ctx.Framework), 120)))
+
+	if len(ctx.ChangedFiles) > 0 {
+		writeChangeDrivenSection(b, ctx.ChangedFiles)
+	}
+}
+
+const maxChangedFilesInPrompt = 50
+
+func writeChangeDrivenSection(b *strings.Builder, files []string) {
+	b.WriteString("\n## 变更驱动上下文\n\n")
+	b.WriteString("本次测试生成由 PR 合并触发，以下是本次合并涉及的源码文件：\n\n")
+
+	displayFiles := files
+	truncated := 0
+	if len(files) > maxChangedFilesInPrompt {
+		displayFiles = files[:maxChangedFilesInPrompt]
+		truncated = len(files) - maxChangedFilesInPrompt
+	}
+
+	for _, f := range displayFiles {
+		b.WriteString("- ")
+		b.WriteString(sanitize(f, 300))
+		b.WriteString("\n")
+	}
+
+	if truncated > 0 {
+		b.WriteString(fmt.Sprintf("\n...及其他 %d 个文件\n", truncated))
+	}
+
+	b.WriteString("\n请优先为上述变更文件生成或补充测试。如果这些文件已有充分的测试覆盖，\n")
+	b.WriteString("你仍然可以为同模块内其他缺少测试的代码生成测试，但变更文件优先级最高。\n")
+	b.WriteString("如果所有变更文件均已有充分测试覆盖且你认为无需额外补充，请在 analysis\n")
+	b.WriteString("字段中说明，并将 success 设为 true、generated_files 设为空数组。\n")
 }
 
 // ModuleKey 将 module 路径映射为 auto-test 分支的稳定 key。

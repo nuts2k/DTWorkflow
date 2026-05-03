@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -523,5 +524,124 @@ func TestClone_TestGenNilPreserved(t *testing.T) {
 	}
 	if cloned.TestGen.ModuleScope != "backend" {
 		t.Errorf("TestGen.ModuleScope = %q, want backend", cloned.TestGen.ModuleScope)
+	}
+}
+
+func TestChangeDrivenConfig_DefaultDisabled(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		TestGen: TestGenOverride{
+			MaxRetryRounds: 3,
+		},
+	}
+	tgCfg := cfg.ResolveTestGenConfig("org/repo")
+	var cd ChangeDrivenConfig
+	if tgCfg.ChangeDriven != nil {
+		cd = *tgCfg.ChangeDriven
+	}
+	if cd.IsEnabled() {
+		t.Errorf("ChangeDriven 为 nil 时 IsEnabled() 应为 false")
+	}
+}
+
+func TestChangeDrivenConfig_ExplicitEnabled(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	cfg := &Config{
+		TestGen: TestGenOverride{
+			MaxRetryRounds: 3,
+			ChangeDriven:   &ChangeDrivenConfig{Enabled: &enabled},
+		},
+	}
+	tgCfg := cfg.ResolveTestGenConfig("org/repo")
+	if tgCfg.ChangeDriven == nil || !tgCfg.ChangeDriven.IsEnabled() {
+		t.Errorf("显式 Enabled=true 时 IsEnabled() 应为 true")
+	}
+}
+
+func TestChangeDrivenConfig_RepoOverride(t *testing.T) {
+	t.Parallel()
+
+	globalEnabled := false
+	repoEnabled := true
+	cfg := &Config{
+		TestGen: TestGenOverride{
+			MaxRetryRounds: 3,
+			ChangeDriven:   &ChangeDrivenConfig{Enabled: &globalEnabled},
+		},
+		Repos: []RepoConfig{{
+			Name: "org/repo",
+			TestGen: &TestGenOverride{
+				ChangeDriven: &ChangeDrivenConfig{Enabled: &repoEnabled},
+			},
+		}},
+	}
+	tgCfg := cfg.ResolveTestGenConfig("org/repo")
+	if tgCfg.ChangeDriven == nil || !tgCfg.ChangeDriven.IsEnabled() {
+		t.Errorf("仓库级覆盖后 IsEnabled() 应为 true")
+	}
+}
+
+func TestChangeDrivenConfig_InvalidIgnorePath(t *testing.T) {
+	t.Parallel()
+
+	tg := TestGenOverride{
+		ChangeDriven: &ChangeDrivenConfig{
+			IgnorePaths: []string{"[invalid"},
+		},
+	}
+	errs := validateTestGen("test_gen", tg)
+	if len(errs) == 0 {
+		t.Fatal("非法 glob 应产生校验错误")
+	}
+	if !strings.Contains(errs[0].Error(), "ignore_paths") {
+		t.Errorf("错误消息应包含 ignore_paths，实际: %s", errs[0].Error())
+	}
+}
+
+func TestChangeDrivenConfig_EnabledRequiresTestGen(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	disabled := false
+	tg := TestGenOverride{
+		Enabled:      &disabled,
+		ChangeDriven: &ChangeDrivenConfig{Enabled: &enabled},
+	}
+	errs := validateTestGen("test_gen", tg)
+	if len(errs) == 0 {
+		t.Fatal("change_driven=true 但 test_gen=false 应产生校验错误")
+	}
+	if !strings.Contains(errs[0].Error(), "矛盾") {
+		t.Errorf("错误消息应包含'矛盾'，实际: %s", errs[0].Error())
+	}
+}
+
+func TestClone_ChangeDrivenDeepCopy(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	original := &Config{
+		TestGen: TestGenOverride{
+			ChangeDriven: &ChangeDrivenConfig{
+				Enabled:     &enabled,
+				IgnorePaths: []string{"vendor/**", "docs/**"},
+			},
+		},
+	}
+
+	cloned := original.Clone()
+
+	// 修改 clone 不应影响原始对象
+	*cloned.TestGen.ChangeDriven.Enabled = false
+	cloned.TestGen.ChangeDriven.IgnorePaths[0] = "modified"
+
+	if !*original.TestGen.ChangeDriven.Enabled {
+		t.Error("修改 clone 后原始 ChangeDriven.Enabled 被改变")
+	}
+	if original.TestGen.ChangeDriven.IgnorePaths[0] != "vendor/**" {
+		t.Errorf("修改 clone 后原始 IgnorePaths 被改变: %v", original.TestGen.ChangeDriven.IgnorePaths)
 	}
 }
