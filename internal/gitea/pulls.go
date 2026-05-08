@@ -190,10 +190,18 @@ func (c *Client) ListPullReviewComments(ctx context.Context, owner, repo string,
 
 // ListPullRequestCommits 列出 PR 的提交记录
 // GET /api/v1/repos/{owner}/{repo}/pulls/{index}/commits
-func (c *Client) ListPullRequestCommits(ctx context.Context, owner, repo string, index int64) ([]*Commit, *Response, error) {
+func (c *Client) ListPullRequestCommits(ctx context.Context, owner, repo string, index int64, opts ListOptions) ([]*Commit, *Response, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/commits",
 		url.PathEscape(owner), url.PathEscape(repo), index)
-	req, err := c.newRequest(ctx, "GET", path, nil)
+	params := url.Values{}
+	if opts.Page > 0 {
+		params.Set("page", fmt.Sprintf("%d", opts.Page))
+	}
+	if opts.PageSize > 0 {
+		params.Set("limit", fmt.Sprintf("%d", opts.PageSize))
+	}
+
+	req, err := c.newRequestWithQuery(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, nil, err
 	}

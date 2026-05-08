@@ -371,7 +371,7 @@ func TestListPullRequestCommits(t *testing.T) {
 		_, _ = w.Write([]byte(`[{"id":"abc123","url":"https://gitea.example.com/owner/repo/commit/abc123"},{"id":"def456","url":"https://gitea.example.com/owner/repo/commit/def456"}]`))
 	})
 
-	commits, _, err := client.ListPullRequestCommits(context.Background(), "owner", "repo", 42)
+	commits, _, err := client.ListPullRequestCommits(context.Background(), "owner", "repo", 42, ListOptions{})
 	if err != nil {
 		t.Fatalf("ListPullRequestCommits 返回错误: %v", err)
 	}
