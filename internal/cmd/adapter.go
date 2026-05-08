@@ -50,56 +50,32 @@ func (a *giteaCommentAdapter) CreateIssueComment(ctx context.Context, owner, rep
 	return err
 }
 
-// 分页遍历常量，保护 gen_tests 锚点搜索不被评论数量拖垮。
-//
-// maxCommentPages：最多拉 20 页 × 50 条/页 = 1000 条评论；超过时 CommentOnGenTestsPR
-// 若仍未命中锚点会退化为 Create（接受极端长寿 PR 偶发重复评论）。
-const (
-	commentListPageSize = 50
-	maxCommentPages     = 20
-)
-
 // ListIssueComments 实现 notify.GiteaPRCommentManager 接口：
 // 拉取指定 Issue/PR 下的评论并裁剪为 notify.GiteaCommentInfo 窄视图。
 //
-// 分页策略（M4.2 修订）：
-//   - 从第 1 页开始逐页拉取 PageSize=50，遇到空页 / 不足 50 条即停止
-//   - 最多拉 maxCommentPages 页（1000 条）；超过上限也停止
-//   - 锚点评论可能出现在任意页（Gitea 默认按创建时间升序返回），必须遍历完再决策 upsert
-//
-// 原实现只取首页 50 条，长寿 PR（review + fix 多轮迭代）的 gen_tests 锚点评论
-// 常被挤到第 2 页之后，导致 CommentOnGenTestsPR 退化为 Create 产生重复评论。
+// 分页策略：最多拉 20 页 × 50 条/页 = 1000 条评论；锚点评论可能出现在任意页
+// （Gitea 默认按创建时间升序返回），必须遍历完再决策 upsert。
 func (a *giteaCommentAdapter) ListIssueComments(ctx context.Context, owner, repo string, index int64) ([]notify.GiteaCommentInfo, error) {
-	var all []notify.GiteaCommentInfo
-	for page := 1; page <= maxCommentPages; page++ {
-		comments, resp, err := a.client.ListIssueComments(ctx, owner, repo, index, gitea.ListOptions{
-			Page:     page,
-			PageSize: commentListPageSize,
-		})
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(comments) == 0 {
-			break
-		}
-		for _, c := range comments {
-			if c == nil {
-				continue
-			}
-			all = append(all, notify.GiteaCommentInfo{
-				ID:   c.ID,
-				Body: c.Body,
+	comments, err := gitea.PaginateAll(ctx, 50, 20,
+		func(ctx context.Context, page, pageSize int) ([]*gitea.Comment, *gitea.Response, error) {
+			return a.client.ListIssueComments(ctx, owner, repo, index, gitea.ListOptions{
+				Page: page, PageSize: pageSize,
 			})
-		}
-		// 最后一页（返回少于 PageSize）直接停止，避免无谓的下一页请求
-		if len(comments) < commentListPageSize {
-			break
-		}
+		})
+	if err != nil {
+		return nil, err
 	}
-	return all, nil
+	result := make([]notify.GiteaCommentInfo, 0, len(comments))
+	for _, c := range comments {
+		if c == nil {
+			continue
+		}
+		result = append(result, notify.GiteaCommentInfo{
+			ID:   c.ID,
+			Body: c.Body,
+		})
+	}
+	return result, nil
 }
 
 // EditIssueComment 实现 notify.GiteaPRCommentManager 接口：
