@@ -372,18 +372,14 @@ func validateSuccessfulFixOutput(fix *FixOutput) error {
 
 // collectContext 采集 Issue 富上下文
 func (s *Service) collectContext(ctx context.Context, owner, repo string, issue *gitea.Issue) (*IssueContext, error) {
-	// 单页获取评论（最多 50 条）
-	comments, _, err := s.gitea.ListIssueComments(ctx, owner, repo, issue.Number, gitea.ListOptions{PageSize: 50})
+	comments, err := gitea.PaginateAll(ctx, 50, 20,
+		func(ctx context.Context, page, pageSize int) ([]*gitea.Comment, *gitea.Response, error) {
+			return s.gitea.ListIssueComments(ctx, owner, repo, issue.Number, gitea.ListOptions{
+				Page: page, PageSize: pageSize,
+			})
+		})
 	if err != nil {
 		return nil, fmt.Errorf("获取评论失败: %w", err)
-	}
-
-	if issue.Comments > len(comments) {
-		s.logger.WarnContext(ctx, "Issue 评论数超过单页上限，部分评论未采集",
-			"issue", issue.Number,
-			"total", issue.Comments,
-			"fetched", len(comments),
-		)
 	}
 
 	return &IssueContext{
@@ -849,10 +845,12 @@ func (s *Service) findExistingFixPR(ctx context.Context, owner, repo, headBranch
 	if headBranch == "" {
 		return 0, "", false
 	}
-	prs, _, err := s.prClient.ListRepoPullRequests(ctx, owner, repo,
-		gitea.ListPullRequestsOptions{
-			State:       "open",
-			ListOptions: gitea.ListOptions{PageSize: 50},
+	prs, err := gitea.PaginateAll(ctx, 50, 10,
+		func(ctx context.Context, page, pageSize int) ([]*gitea.PullRequest, *gitea.Response, error) {
+			return s.prClient.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
+				State:       "open",
+				ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize},
+			})
 		})
 	if err != nil {
 		s.logger.WarnContext(ctx, "查询既有 PR 失败，跳过幂等检查继续创建",
