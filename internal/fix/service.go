@@ -372,7 +372,11 @@ func validateSuccessfulFixOutput(fix *FixOutput) error {
 
 // collectContext 采集 Issue 富上下文
 func (s *Service) collectContext(ctx context.Context, owner, repo string, issue *gitea.Issue) (*IssueContext, error) {
-	comments, err := gitea.PaginateAll(ctx, 50, 20,
+	const (
+		commentPageSize = 50
+		maxCommentPages = 20
+	)
+	comments, truncated, err := gitea.PaginateAll(ctx, commentPageSize, maxCommentPages,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.Comment, *gitea.Response, error) {
 			return s.gitea.ListIssueComments(ctx, owner, repo, issue.Number, gitea.ListOptions{
 				Page: page, PageSize: pageSize,
@@ -380,6 +384,16 @@ func (s *Service) collectContext(ctx context.Context, owner, repo string, issue 
 		})
 	if err != nil {
 		return nil, fmt.Errorf("获取评论失败: %w", err)
+	}
+	if truncated || issue.Comments > len(comments) {
+		s.logger.WarnContext(ctx, "Issue 评论未完整采集，后续分析可能缺少上下文",
+			"issue", issue.Number,
+			"total", issue.Comments,
+			"fetched", len(comments),
+			"page_size", commentPageSize,
+			"max_pages", maxCommentPages,
+			"truncated", truncated,
+		)
 	}
 
 	return &IssueContext{
@@ -845,7 +859,7 @@ func (s *Service) findExistingFixPR(ctx context.Context, owner, repo, headBranch
 	if headBranch == "" {
 		return 0, "", false
 	}
-	prs, err := gitea.PaginateAll(ctx, 50, 10,
+	prs, truncated, err := gitea.PaginateAll(ctx, 50, 10,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.PullRequest, *gitea.Response, error) {
 			return s.prClient.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
 				State:       "open",
@@ -856,6 +870,10 @@ func (s *Service) findExistingFixPR(ctx context.Context, owner, repo, headBranch
 		s.logger.WarnContext(ctx, "查询既有 PR 失败，跳过幂等检查继续创建",
 			"owner", owner, "repo", repo, "head", headBranch, "error", err)
 		return 0, "", false
+	}
+	if truncated {
+		s.logger.WarnContext(ctx, "查询既有修复 PR 结果被截断，幂等检查可能漏判",
+			"owner", owner, "repo", repo, "head", headBranch, "fetched", len(prs))
 	}
 	for _, pr := range prs {
 		if pr == nil || pr.Head == nil {

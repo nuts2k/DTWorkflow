@@ -56,7 +56,7 @@ func (a *giteaCommentAdapter) CreateIssueComment(ctx context.Context, owner, rep
 // 分页策略：最多拉 20 页 × 50 条/页 = 1000 条评论；锚点评论可能出现在任意页
 // （Gitea 默认按创建时间升序返回），必须遍历完再决策 upsert。
 func (a *giteaCommentAdapter) ListIssueComments(ctx context.Context, owner, repo string, index int64) ([]notify.GiteaCommentInfo, error) {
-	comments, err := gitea.PaginateAll(ctx, 50, 20,
+	comments, _, err := gitea.PaginateAll(ctx, 50, 20,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.Comment, *gitea.Response, error) {
 			return a.client.ListIssueComments(ctx, owner, repo, index, gitea.ListOptions{
 				Page: page, PageSize: pageSize,

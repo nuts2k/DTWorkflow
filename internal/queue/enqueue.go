@@ -321,7 +321,7 @@ func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, rep
 		pageSize = 100
 		maxPages = 20
 	)
-	files, err := gitea.PaginateAll(ctx, pageSize, maxPages,
+	files, truncated, err := gitea.PaginateAll(ctx, pageSize, maxPages,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.ChangedFile, *gitea.Response, error) {
 			return h.prFilesLister.ListPullRequestFiles(ctx, owner, repo, prNumber, gitea.ListOptions{
 				Page: page, PageSize: pageSize,
@@ -330,9 +330,10 @@ func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, rep
 	if err != nil {
 		return nil, err
 	}
-	if len(files) >= pageSize*maxPages {
+	if truncated {
 		h.logger.WarnContext(ctx, "change-driven: PR file list may be truncated",
-			"owner", owner, "repo", repo, "pr", prNumber, "files", len(files))
+			"owner", owner, "repo", repo, "pr", prNumber, "files", len(files),
+			"page_size", pageSize, "max_pages", maxPages)
 	}
 	return files, nil
 }
@@ -846,7 +847,7 @@ func (h *EnqueueHandler) cleanupAllAutoTestBranches(ctx context.Context, owner, 
 		return
 	}
 
-	prs, prErr := gitea.PaginateAll(ctx, 50, 10,
+	prs, truncated, prErr := gitea.PaginateAll(ctx, 50, 10,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.PullRequest, *gitea.Response, error) {
 			return h.prClient.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
 				ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize},
@@ -857,6 +858,10 @@ func (h *EnqueueHandler) cleanupAllAutoTestBranches(ctx context.Context, owner, 
 		h.logger.WarnContext(ctx, "cleanupAll: 列出 open PR 失败",
 			"repo", repoFullName, "error", prErr)
 		return
+	}
+	if truncated {
+		h.logger.WarnContext(ctx, "cleanupAll: open PR 列表被截断，auto-test 资源清理可能不完整",
+			"repo", repoFullName, "fetched", len(prs))
 	}
 
 	for _, pr := range prs {

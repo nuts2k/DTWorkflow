@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
@@ -91,6 +92,55 @@ func TestConfigAdapter_ResolveTestGenConfig_ReturnsMergedOverride(t *testing.T) 
 	}
 	if got.MaxRetryRounds != 3 {
 		t.Fatalf("MaxRetryRounds = %d, want 3", got.MaxRetryRounds)
+	}
+}
+
+func TestGiteaCommentAdapter_ListIssueCommentsFetchesMultiplePages(t *testing.T) {
+	var requestedPages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/acme/repo/issues/42/comments" {
+			http.NotFound(w, r)
+			return
+		}
+		requestedPages = append(requestedPages, r.URL.Query().Get("page"))
+		if got := r.URL.Query().Get("limit"); got != "50" {
+			t.Errorf("limit = %q, want 50", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			w.Header().Set("Link", `<http://gitea.test/api/v1/repos/acme/repo/issues/42/comments?page=2&limit=50>; rel="next"`)
+			_, _ = w.Write([]byte(`[{"id":1,"body":"第一页"}]`))
+		case "2":
+			_, _ = w.Write([]byte(`[null,{"id":2,"body":"第二页"}]`))
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	defer srv.Close()
+
+	client, err := gitea.NewClient(srv.URL, gitea.WithToken("test-token"))
+	if err != nil {
+		t.Fatalf("创建 Gitea client 失败: %v", err)
+	}
+	adapter := &giteaCommentAdapter{client: client}
+
+	comments, err := adapter.ListIssueComments(context.Background(), "acme", "repo", 42)
+	if err != nil {
+		t.Fatalf("ListIssueComments 返回错误: %v", err)
+	}
+	if got, want := requestedPages, []string{"1", "2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("请求页序列 = %v, want %v", got, want)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("comments len = %d, want 2: %+v", len(comments), comments)
+	}
+	if comments[0].ID != 1 || comments[0].Body != "第一页" {
+		t.Errorf("comments[0] = %+v", comments[0])
+	}
+	if comments[1].ID != 2 || comments[1].Body != "第二页" {
+		t.Errorf("comments[1] = %+v", comments[1])
 	}
 }
 

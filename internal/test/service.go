@@ -637,7 +637,7 @@ func (s *Service) findExistingTestPR(ctx context.Context, owner, repo, headBranc
 	if headBranch == "" {
 		return 0, "", false
 	}
-	prs, err := gitea.PaginateAll(ctx, 50, 10,
+	prs, truncated, err := gitea.PaginateAll(ctx, 50, 10,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.PullRequest, *gitea.Response, error) {
 			return s.prClient.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
 				State:       "open",
@@ -648,6 +648,10 @@ func (s *Service) findExistingTestPR(ctx context.Context, owner, repo, headBranc
 		s.logger.WarnContext(ctx, "查询既有 PR 失败，跳过幂等检查继续创建",
 			"owner", owner, "repo", repo, "head", headBranch, "error", err)
 		return 0, "", false
+	}
+	if truncated {
+		s.logger.WarnContext(ctx, "查询既有测试 PR 结果被截断，幂等检查可能漏判",
+			"owner", owner, "repo", repo, "head", headBranch, "fetched", len(prs))
 	}
 	for _, pr := range prs {
 		if pr == nil || pr.Head == nil {

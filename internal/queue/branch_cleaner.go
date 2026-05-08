@@ -60,7 +60,7 @@ func newBranchCleanerWithClient(client branchCleanerClient, logger *slog.Logger)
 // 任一步失败仅 warn，方法始终返回 nil——上层入队流程不应因此受阻。
 func (c *giteaBranchCleaner) CleanupAutoTestBranch(ctx context.Context, owner, repo, branch string) error {
 	// 1. 列出所有 open PR；失败时记 warn 后继续尝试删分支（删分支本身有 404 幂等）。
-	prs, listErr := gitea.PaginateAll(ctx, 50, 10,
+	prs, truncated, listErr := gitea.PaginateAll(ctx, 50, 10,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.PullRequest, *gitea.Response, error) {
 			return c.client.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
 				ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize},
@@ -75,6 +75,14 @@ func (c *giteaBranchCleaner) CleanupAutoTestBranch(ctx context.Context, owner, r
 			"error", listErr,
 		)
 	} else {
+		if truncated {
+			c.logger.WarnContext(ctx, "列出远程 PR 结果被截断，旧 PR 清理可能不完整",
+				"owner", owner,
+				"repo", repo,
+				"branch", branch,
+				"fetched", len(prs),
+			)
+		}
 		for _, pr := range prs {
 			if pr == nil || pr.Head == nil {
 				continue

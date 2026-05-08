@@ -180,8 +180,10 @@ type stubPRClient struct {
 
 	// 幂等检查：listResult 为 ListRepoPullRequests 返回结果，listErr 为返回错误
 	listResult []*gitea.PullRequest
+	listResp   *gitea.Response
 	listErr    error
 	listCalls  int
+	listOpts   []gitea.ListPullRequestsOptions
 }
 
 type stubPRResult struct {
@@ -190,8 +192,9 @@ type stubPRResult struct {
 }
 
 type stubPRListResult struct {
-	prs []*gitea.PullRequest
-	err error
+	prs  []*gitea.PullRequest
+	resp *gitea.Response
+	err  error
 }
 
 func (s *stubPRClient) CreatePullRequest(_ context.Context, _, _ string, opts gitea.CreatePullRequestOption) (*gitea.PullRequest, *gitea.Response, error) {
@@ -219,16 +222,17 @@ func (s *stubPRClient) GetRepo(_ context.Context, _, _ string) (*gitea.Repositor
 }
 
 func (s *stubPRClient) ListRepoPullRequests(_ context.Context, _, _ string,
-	_ gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error) {
+	opts gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error) {
 	idx := s.listCalls
 	s.listCalls++
+	s.listOpts = append(s.listOpts, opts)
 	if len(s.listSeq) > 0 {
 		if idx >= len(s.listSeq) {
 			idx = len(s.listSeq) - 1
 		}
-		return s.listSeq[idx].prs, nil, s.listSeq[idx].err
+		return s.listSeq[idx].prs, s.listSeq[idx].resp, s.listSeq[idx].err
 	}
-	return s.listResult, nil, s.listErr
+	return s.listResult, s.listResp, s.listErr
 }
 
 func TestExecuteFix_InfoInsufficientPreCheck(t *testing.T) {
@@ -433,6 +437,76 @@ func TestExecuteFix_IdempotentReusesExistingPR(t *testing.T) {
 	}
 	if createCommentCount != 1 {
 		t.Errorf("仍应发出 1 条修复成功评论（指向复用 PR），实际 %d", createCommentCount)
+	}
+}
+
+func TestExecuteFix_IdempotentReusesExistingPRFromSecondPage(t *testing.T) {
+	createCommentCount := 0
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			createCommentCount++
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	fixEnvelope := `{"type":"result","duration_ms":1000,"total_cost_usd":0.01,"result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"passed\":5,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"x\",\"fix_approach\":\"y\"}"}`
+	pool := &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: fixEnvelope},
+	}
+	prClient := &stubPRClient{
+		listSeq: []stubPRListResult{
+			{
+				prs: []*gitea.PullRequest{
+					{Number: 70, HTMLURL: "https://g/o/r/pulls/70", Head: &gitea.PRBranch{Ref: "other-branch"}},
+				},
+				resp: &gitea.Response{NextPage: 2},
+			},
+			{
+				prs: []*gitea.PullRequest{
+					{Number: 77, HTMLURL: "https://g/o/r/pulls/77", Head: &gitea.PRBranch{Ref: "auto-fix/issue-15"}},
+				},
+				resp: &gitea.Response{},
+			},
+		},
+		createResult: &gitea.PullRequest{Number: 99, HTMLURL: "https://g/o/r/pulls/99"},
+	}
+	svc := NewService(issueClient, pool,
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	result, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	if prClient.listCalls != 2 {
+		t.Fatalf("ListRepoPullRequests 应翻到第 2 页，实际调用 %d 次", prClient.listCalls)
+	}
+	if len(prClient.listOpts) != 2 || prClient.listOpts[0].Page != 1 || prClient.listOpts[1].Page != 2 {
+		t.Fatalf("分页参数不符合预期: %+v", prClient.listOpts)
+	}
+	if prClient.createCalls != 0 {
+		t.Errorf("第 2 页命中既有 PR 时不应创建新 PR，实际调用 %d 次", prClient.createCalls)
+	}
+	if result.PRNumber != 77 || result.PRURL != "https://g/o/r/pulls/77" {
+		t.Errorf("应复用第 2 页 PR #77，实际 number=%d url=%q", result.PRNumber, result.PRURL)
+	}
+	if createCommentCount != 1 {
+		t.Errorf("应发出 1 条修复成功评论，实际 %d", createCommentCount)
 	}
 }
 

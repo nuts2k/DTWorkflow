@@ -95,9 +95,18 @@ type mockPRClient struct {
 	listCalls      int
 	lastCreateOpts gitea.CreatePullRequestOption
 	listResult     []*gitea.PullRequest
+	listResp       *gitea.Response
+	listSeq        []mockPRListResult
+	listOpts       []gitea.ListPullRequestsOptions
 	createResult   *gitea.PullRequest
 	createErr      error
 	listErr        error
+}
+
+type mockPRListResult struct {
+	prs  []*gitea.PullRequest
+	resp *gitea.Response
+	err  error
 }
 
 func (m *mockPRClient) CreatePullRequest(_ context.Context, _, _ string,
@@ -121,14 +130,22 @@ func (m *mockPRClient) CreatePullRequest(_ context.Context, _, _ string,
 }
 
 func (m *mockPRClient) ListRepoPullRequests(_ context.Context, _, _ string,
-	_ gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error) {
+	opts gitea.ListPullRequestsOptions) ([]*gitea.PullRequest, *gitea.Response, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	idx := m.listCalls
 	m.listCalls++
+	m.listOpts = append(m.listOpts, opts)
+	if len(m.listSeq) > 0 {
+		if idx >= len(m.listSeq) {
+			idx = len(m.listSeq) - 1
+		}
+		return m.listSeq[idx].prs, m.listSeq[idx].resp, m.listSeq[idx].err
+	}
 	if m.listErr != nil {
 		return nil, nil, m.listErr
 	}
-	return m.listResult, nil, nil
+	return m.listResult, m.listResp, nil
 }
 
 // mockReviewEnqueuer 满足 test.ReviewEnqueuer 窄接口。
@@ -1456,6 +1473,63 @@ func TestExecute_M42_CreateTestPR_IdempotentReuse(t *testing.T) {
 	}
 	if pr.createCalls != 0 {
 		t.Errorf("命中幂等后不应再调 CreatePullRequest，实际 %d 次", pr.createCalls)
+	}
+}
+
+func TestExecute_M42_CreateTestPR_IdempotentReuseFromSecondPage(t *testing.T) {
+	cfg := &mockCfgProv{}
+	pool := &mockTestPool{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: successEnvelope},
+	}
+	pr := &mockPRClient{
+		listSeq: []mockPRListResult{
+			{
+				prs: []*gitea.PullRequest{
+					{
+						Number:  6,
+						HTMLURL: "https://gitea.example/acme/backend/pulls/6",
+						Head:    &gitea.PRBranch{Ref: "other-branch"},
+					},
+				},
+				resp: &gitea.Response{NextPage: 2},
+			},
+			{
+				prs: []*gitea.PullRequest{
+					{
+						Number:  7,
+						HTMLURL: "https://gitea.example/acme/backend/pulls/7",
+						Head:    &gitea.PRBranch{Ref: "auto-test/backend-20260418120000"},
+					},
+				},
+				resp: &gitea.Response{},
+			},
+		},
+	}
+	st := &mockStore{}
+	re := &mockReviewEnqueuer{}
+
+	s := NewService(&mockRepoClient{}, pool, cfg,
+		WithFileChecker(juitRootChecker()),
+		WithPRClient(pr),
+		WithReviewEnqueuer(re),
+		WithStore(st),
+	)
+
+	result, err := s.Execute(context.Background(), defaultPayload())
+	if err != nil {
+		t.Fatalf("应成功，实际: %v", err)
+	}
+	if pr.listCalls != 2 {
+		t.Fatalf("ListRepoPullRequests 应翻到第 2 页，实际调用 %d 次", pr.listCalls)
+	}
+	if len(pr.listOpts) != 2 || pr.listOpts[0].Page != 1 || pr.listOpts[1].Page != 2 {
+		t.Fatalf("分页参数不符合预期: %+v", pr.listOpts)
+	}
+	if result.PRNumber != 7 {
+		t.Errorf("应复用第 2 页既有 PR #7，实际 PRNumber=%d", result.PRNumber)
+	}
+	if pr.createCalls != 0 {
+		t.Errorf("第 2 页命中幂等后不应再调 CreatePullRequest，实际 %d 次", pr.createCalls)
 	}
 }
 
