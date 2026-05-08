@@ -852,10 +852,13 @@ func (h *EnqueueHandler) cleanupAllAutoTestBranches(ctx context.Context, owner, 
 		return
 	}
 
-	prs, _, prErr := h.prClient.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
-		ListOptions: gitea.ListOptions{Page: 1, PageSize: 50},
-		State:       "open",
-	})
+	prs, prErr := gitea.PaginateAll(ctx, 50, 10,
+		func(ctx context.Context, page, pageSize int) ([]*gitea.PullRequest, *gitea.Response, error) {
+			return h.prClient.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
+				ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize},
+				State:       "open",
+			})
+		})
 	if prErr != nil {
 		h.logger.WarnContext(ctx, "cleanupAll: 列出 open PR 失败",
 			"repo", repoFullName, "error", prErr)
