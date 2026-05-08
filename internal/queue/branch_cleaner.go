@@ -60,9 +60,13 @@ func newBranchCleanerWithClient(client branchCleanerClient, logger *slog.Logger)
 // 任一步失败仅 warn，方法始终返回 nil——上层入队流程不应因此受阻。
 func (c *giteaBranchCleaner) CleanupAutoTestBranch(ctx context.Context, owner, repo, branch string) error {
 	// 1. 列出所有 open PR；失败时记 warn 后继续尝试删分支（删分支本身有 404 幂等）。
-	prs, _, listErr := c.client.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
-		State: "open",
-	})
+	prs, listErr := gitea.PaginateAll(ctx, 50, 10,
+		func(ctx context.Context, page, pageSize int) ([]*gitea.PullRequest, *gitea.Response, error) {
+			return c.client.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
+				ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize},
+				State:       "open",
+			})
+		})
 	if listErr != nil {
 		c.logger.WarnContext(ctx, "列出远程 PR 失败，跳过关闭旧 PR 步骤",
 			"owner", owner,
