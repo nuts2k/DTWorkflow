@@ -318,29 +318,23 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 
 func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, repo string, prNumber int64) ([]*gitea.ChangedFile, error) {
 	const (
-		pageSize     = 100
-		maxPages     = 20
+		pageSize = 100
+		maxPages = 20
 	)
-
-	page := 1
-	var all []*gitea.ChangedFile
-	for page <= maxPages {
-		files, resp, err := h.prFilesLister.ListPullRequestFiles(ctx, owner, repo, prNumber, gitea.ListOptions{
-			Page:     page,
-			PageSize: pageSize,
+	files, err := gitea.PaginateAll(ctx, pageSize, maxPages,
+		func(ctx context.Context, page, pageSize int) ([]*gitea.ChangedFile, *gitea.Response, error) {
+			return h.prFilesLister.ListPullRequestFiles(ctx, owner, repo, prNumber, gitea.ListOptions{
+				Page: page, PageSize: pageSize,
+			})
 		})
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, files...)
-		if resp == nil || resp.NextPage == 0 {
-			return all, nil
-		}
-		page = resp.NextPage
+	if err != nil {
+		return nil, err
 	}
-	h.logger.WarnContext(ctx, "change-driven: PR file list truncated at max pages",
-		"owner", owner, "repo", repo, "pr", prNumber, "max_pages", maxPages, "files_so_far", len(all))
-	return all, nil
+	if len(files) >= pageSize*maxPages {
+		h.logger.WarnContext(ctx, "change-driven: PR file list may be truncated",
+			"owner", owner, "repo", repo, "pr", prNumber, "files", len(files))
+	}
+	return files, nil
 }
 
 // resolveChangeDrivenConfig 从合并后的 TestGenOverride 中提取 ChangeDrivenConfig。
