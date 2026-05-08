@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -507,6 +508,71 @@ func TestExecuteFix_IdempotentReusesExistingPRFromSecondPage(t *testing.T) {
 	}
 	if createCommentCount != 1 {
 		t.Errorf("应发出 1 条修复成功评论，实际 %d", createCommentCount)
+	}
+}
+
+func TestExecuteFix_IdempotentTruncatedFallsThrough(t *testing.T) {
+	// 验证截断场景：ListRepoPullRequests 遍历 10 页（maxPages）仍未找到匹配 PR，
+	// findExistingFixPR 返回 false + 记录 warn → 走 CreatePullRequest 创建新 PR。
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	createCommentCount := 0
+	issueClient := &mockIssueClient{
+		getIssue: func(_ context.Context, _, _ string, _ int64) (*gitea.Issue, *gitea.Response, error) {
+			return &gitea.Issue{Number: 15, State: "open", Ref: "main", Title: "t"}, nil, nil
+		},
+		listComments: func(_ context.Context, _, _ string, _ int64, _ gitea.ListOptions) ([]*gitea.Comment, *gitea.Response, error) {
+			return nil, nil, nil
+		},
+		createComment: func(_ context.Context, _, _ string, _ int64, _ gitea.CreateIssueCommentOption) (*gitea.Comment, *gitea.Response, error) {
+			createCommentCount++
+			return &gitea.Comment{ID: 1}, nil, nil
+		},
+	}
+	fixEnvelope := `{"type":"result","duration_ms":1000,"total_cost_usd":0.01,"result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-fix/issue-15\",\"commit_sha\":\"abc\",\"modified_files\":[\"a.go\"],\"test_results\":{\"passed\":5,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"x\",\"fix_approach\":\"y\"}"}`
+	pool := &mockFixPoolRunner{
+		result: &worker.ExecutionResult{ExitCode: 0, Output: fixEnvelope},
+	}
+	prClient := &stubPRClient{
+		listSeq: []stubPRListResult{
+			{
+				prs:  []*gitea.PullRequest{{Number: 70, HTMLURL: "https://g/o/r/pulls/70", Head: &gitea.PRBranch{Ref: "unrelated-branch"}}},
+				resp: &gitea.Response{NextPage: 2},
+			},
+		},
+		createResult: &gitea.PullRequest{Number: 99, HTMLURL: "https://g/o/r/pulls/99"},
+	}
+	svc := NewService(issueClient, pool,
+		WithServiceLogger(logger),
+		WithRefClient(&mockRefClient{
+			getBranch: func(_ context.Context, _, _, branch string) (*gitea.Branch, *gitea.Response, error) {
+				if branch == "main" {
+					return &gitea.Branch{Name: branch}, nil, nil
+				}
+				return nil, nil, notFoundErr()
+			},
+		}),
+		WithPRClient(prClient),
+	)
+
+	result, err := svc.Execute(context.Background(),
+		model.TaskPayload{TaskType: model.TaskTypeFixIssue, RepoOwner: "o", RepoName: "r",
+			RepoFullName: "o/r", IssueNumber: 15, IssueRef: "main"})
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	if prClient.listCalls != 10 {
+		t.Fatalf("应遍历 10 页（maxPages），实际调用 %d 次", prClient.listCalls)
+	}
+	if prClient.createCalls != 1 {
+		t.Fatalf("截断未命中应 fallthrough 到 CreatePullRequest，实际调用 %d 次", prClient.createCalls)
+	}
+	if result.PRNumber != 99 {
+		t.Errorf("应使用新建的 PR #99，实际: %d", result.PRNumber)
+	}
+	if !strings.Contains(logBuf.String(), "幂等检查可能漏判") {
+		t.Errorf("截断时应记录 warn 日志，实际日志: %s", logBuf.String())
 	}
 }
 

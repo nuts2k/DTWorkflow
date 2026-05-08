@@ -20,13 +20,14 @@ func PaginateAll[T any](
     ctx context.Context,
     pageSize, maxPages int,
     fetch func(ctx context.Context, page, pageSize int) ([]T, *Response, error),
-) ([]T, error)
+) ([]T, bool, error)
 ```
 
 - 泛型函数，适配所有返回 `[]T` 的列表 API
 - 终止条件：`resp == nil || resp.NextPage == 0`（依赖已有的 `Response.parsePagination` 解析 Link header）
 - `maxPages` 安全上限防无限循环
-- 截断于 maxPages 时返回已拉取的部分数据 + nil error
+- 截断于 maxPages 时返回已拉取的部分数据 + `truncated=true` + nil error，调用方按业务语义决定如何处理
+- 循环体开头检查 `ctx.Err()`，context 取消时立即返回 `(nil, false, ctx.Err())`
 - pageSize/maxPages 传 0 时使用默认值
 
 **页码推进策略**：首页 `page=1`，后续页使用 `resp.NextPage`（HATEOAS 模式，由 Gitea Link header 驱动）。`maxPages` 按迭代次数计数（非页码值），防止跳页导致无限循环。
@@ -34,20 +35,23 @@ func PaginateAll[T any](
 ```go
 page := 1
 for i := 0; i < maxPages; i++ {
+    if err := ctx.Err(); err != nil {
+        return nil, false, err
+    }
     items, resp, err := fetch(ctx, page, pageSize)
     if err != nil {
-        return nil, err
+        return nil, false, err
     }
     all = append(all, items...)
     if resp == nil || resp.NextPage == 0 {
-        return all, nil
+        return all, false, nil
     }
     page = resp.NextPage
 }
-return all, nil // 截断于 maxPages
+return all, true, nil // 截断于 maxPages
 ```
 
-**错误语义**：中途 error 返回 `(nil, err)`——丢弃已拉取的部分数据。所有调用方对 error 路径均做 fail-open 或直接 return err，不消费 partial data，此语义与现有模式一致。
+**错误语义**：中途 error 返回 `(nil, false, err)`——丢弃已拉取的部分数据。所有调用方对 error 路径均做 fail-open 或直接 return err，不消费 partial data，此语义与现有模式一致。
 
 ### 2. 客户端方法补全（API 一致性对齐）
 
@@ -61,7 +65,7 @@ return all, nil // 截断于 maxPages
 |---|------|------|----------|----------|
 | 1 | `test/service.go:640` | `findExistingTestPR` | PageSize=50 单页 | `PaginateAll` 拉全量 open PR，filter headBranch |
 | 2 | `fix/service.go:852` | `findExistingFixPR` | PageSize=50 单页 | 同上 |
-| 3 | `fix/service.go:376` | `collectContext` | PageSize=50 单页 + 手动 warn | `PaginateAll` 替换，去掉手动 warn |
+| 3 | `fix/service.go:376` | `collectContext` | PageSize=50 单页 + 手动 warn | `PaginateAll` 替换，保留 `issue.Comments > len` 双重校验（兜底 Gitea 计数竞态） |
 | 4 | `queue/enqueue.go:855` | `cleanupAllAutoTestBranches` | Page=1 硬编码 | `PaginateAll` 替换 |
 | 5 | `queue/branch_cleaner.go:63` | `CleanupAutoTestBranch` | 无分页参数（默认 50） | `PaginateAll` 替换 |
 
@@ -78,7 +82,7 @@ return all, nil // 截断于 maxPages
 
 ```go
 func (a *giteaCommentAdapter) ListIssueComments(ctx context.Context, owner, repo string, index int64) ([]notify.GiteaCommentInfo, error) {
-    comments, err := gitea.PaginateAll(ctx, 50, 20,
+    comments, truncated, err := gitea.PaginateAll(ctx, 50, 20,
         func(ctx context.Context, page, pageSize int) ([]*gitea.Comment, *gitea.Response, error) {
             return a.client.ListIssueComments(ctx, owner, repo, index, gitea.ListOptions{
                 Page: page, PageSize: pageSize,
@@ -86,6 +90,10 @@ func (a *giteaCommentAdapter) ListIssueComments(ctx context.Context, owner, repo
         })
     if err != nil {
         return nil, err
+    }
+    if truncated {
+        slog.WarnContext(ctx, "评论列表被截断，锚点评论幂等 upsert 可能退化为 create",
+            "owner", owner, "repo", repo, "index", index, "fetched", len(comments))
     }
     result := make([]notify.GiteaCommentInfo, 0, len(comments))
     for _, c := range comments {
@@ -122,10 +130,12 @@ func (a *giteaCommentAdapter) ListIssueComments(ctx context.Context, owner, repo
 ### 新增
 
 - `internal/gitea/pagination_test.go`：
-  - 单页即返回（NextPage=0）
-  - 多页正常拉取（验证 resp.NextPage 推进）
-  - 到达 maxPages 截断
-  - 中途 error 返回 (nil, err)
+  - 单页即返回（NextPage=0，truncated=false）
+  - resp 为 nil 时正确终止（truncated=false）
+  - 多页正常拉取（验证 resp.NextPage 推进，truncated=false）
+  - 到达 maxPages 截断（truncated=true）
+  - 中途 error 返回 (nil, false, err)
+  - context 取消时立即返回 ctx.Err()
   - pageSize/maxPages 默认值生效
 
 ### 适配

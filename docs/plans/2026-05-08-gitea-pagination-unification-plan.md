@@ -34,13 +34,13 @@ const (
 // PaginateAll 逐页拉取 Gitea 分页 API 的全量结果。
 //
 // 页码推进使用 resp.NextPage（HATEOAS 模式）；maxPages 按迭代次数计数。
-// 截断于 maxPages 时返回已拉取的部分数据 + nil error。
-// 中途 error 返回 (nil, err)，丢弃已拉取的部分数据。
+// 截断于 maxPages 时返回已拉取的部分数据 + truncated=true + nil error。
+// 中途 error 返回 (nil, false, err)，丢弃已拉取的部分数据。
 func PaginateAll[T any](
 	ctx context.Context,
 	pageSize, maxPages int,
 	fetch func(ctx context.Context, page, pageSize int) ([]T, *Response, error),
-) ([]T, error) {
+) ([]T, bool, error) {
 	if pageSize <= 0 {
 		pageSize = DefaultPageSize
 	}
@@ -50,17 +50,20 @@ func PaginateAll[T any](
 	var all []T
 	page := 1
 	for i := 0; i < maxPages; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		items, resp, err := fetch(ctx, page, pageSize)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		all = append(all, items...)
 		if resp == nil || resp.NextPage == 0 {
-			return all, nil
+			return all, false, nil
 		}
 		page = resp.NextPage
 	}
-	return all, nil
+	return all, true, nil
 }
 ```
 
@@ -333,7 +336,7 @@ func (s *Service) findExistingFixPR(ctx context.Context, owner, repo, headBranch
 	if headBranch == "" {
 		return 0, "", false
 	}
-	prs, err := gitea.PaginateAll(ctx, 50, 10,
+	prs, truncated, err := gitea.PaginateAll(ctx, 50, 10,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.PullRequest, *gitea.Response, error) {
 			return s.prClient.ListRepoPullRequests(ctx, owner, repo, gitea.ListPullRequestsOptions{
 				State:       "open",
@@ -344,6 +347,10 @@ func (s *Service) findExistingFixPR(ctx context.Context, owner, repo, headBranch
 		s.logger.WarnContext(ctx, "查询既有 PR 失败，跳过幂等检查继续创建",
 			"owner", owner, "repo", repo, "head", headBranch, "error", err)
 		return 0, "", false
+	}
+	if truncated {
+		s.logger.WarnContext(ctx, "查询既有修复 PR 结果被截断，幂等检查可能漏判",
+			"owner", owner, "repo", repo, "head", headBranch, "fetched", len(prs))
 	}
 	for _, pr := range prs {
 		if pr == nil || pr.Head == nil {
@@ -363,7 +370,7 @@ func (s *Service) findExistingFixPR(ctx context.Context, owner, repo, headBranch
 
 ```go
 func (s *Service) collectContext(ctx context.Context, owner, repo string, issue *gitea.Issue) (*IssueContext, error) {
-	comments, err := gitea.PaginateAll(ctx, 50, 20,
+	comments, truncated, err := gitea.PaginateAll(ctx, 50, 20,
 		func(ctx context.Context, page, pageSize int) ([]*gitea.Comment, *gitea.Response, error) {
 			return s.gitea.ListIssueComments(ctx, owner, repo, issue.Number, gitea.ListOptions{
 				Page: page, PageSize: pageSize,
@@ -371,6 +378,12 @@ func (s *Service) collectContext(ctx context.Context, owner, repo string, issue 
 		})
 	if err != nil {
 		return nil, fmt.Errorf("获取评论失败: %w", err)
+	}
+	// 双重校验：truncated 捕获 PaginateAll 截断；issue.Comments > len 兜底 Gitea 计数与实际不一致（竞态或已知 bug）
+	if truncated || issue.Comments > len(comments) {
+		s.logger.WarnContext(ctx, "Issue 评论未完整采集，后续分析可能缺少上下文",
+			"issue", issue.Number, "total", issue.Comments, "fetched", len(comments),
+			"page_size", commentPageSize, "max_pages", maxCommentPages, "truncated", truncated)
 	}
 
 	return &IssueContext{
@@ -380,7 +393,7 @@ func (s *Service) collectContext(ctx context.Context, owner, repo string, issue 
 }
 ```
 
-注意：去掉了原来的 `issue.Comments > len(comments)` warn 日志——`PaginateAll` 已拉取所有页，不会出现部分采集的情况（maxPages=20 覆盖 1000 条评论，prompt 层另有截断）。
+注意：保留了 `issue.Comments > len(comments)` 双重校验——`truncated` 捕获 PaginateAll 截断，`issue.Comments > len` 兜底 Gitea 计数与实际评论数不一致的竞态场景（Gitea 已知行为）。
 
 - [ ] **Step 3: 运行现有测试确认无回归**
 
@@ -598,32 +611,10 @@ func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, rep
 }
 ```
 
-- [ ] **Step 2: 保留截断 warn 日志**
+- [x] **Step 2: 保留截断 warn 日志**（已 superseded）
 
-原实现在 maxPages 截断时有 warn 日志，`PaginateAll` 静默返回。在调用后补充截断检查，保留可观测性：
-
-```go
-func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, repo string, prNumber int64) ([]*gitea.ChangedFile, error) {
-	const (
-		pageSize = 100
-		maxPages = 20
-	)
-	files, err := gitea.PaginateAll(ctx, pageSize, maxPages,
-		func(ctx context.Context, page, pageSize int) ([]*gitea.ChangedFile, *gitea.Response, error) {
-			return h.prFilesLister.ListPullRequestFiles(ctx, owner, repo, prNumber, gitea.ListOptions{
-				Page: page, PageSize: pageSize,
-			})
-		})
-	if err != nil {
-		return nil, err
-	}
-	if len(files) >= pageSize*maxPages {
-		h.logger.WarnContext(ctx, "change-driven: PR file list may be truncated",
-			"owner", owner, "repo", repo, "pr", prNumber, "files", len(files))
-	}
-	return files, nil
-}
-```
+> **实际实现**：`PaginateAll` 签名改为返回 `([]T, bool, error)` 三元组，`truncated` 布尔值直接标识截断状态，
+> 无需启发式 `len(files) >= pageSize*maxPages` 推断。实际代码使用 `truncated` 进行 warn 日志判断。
 
 - [ ] **Step 3: 运行相关测试确认无回归**
 

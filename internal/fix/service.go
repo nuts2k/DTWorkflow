@@ -385,6 +385,7 @@ func (s *Service) collectContext(ctx context.Context, owner, repo string, issue 
 	if err != nil {
 		return nil, fmt.Errorf("获取评论失败: %w", err)
 	}
+	// 双重校验：truncated 捕获 PaginateAll 截断；issue.Comments > len 兜底 Gitea 计数与实际不一致（竞态或已知 bug）
 	if truncated || issue.Comments > len(comments) {
 		s.logger.WarnContext(ctx, "Issue 评论未完整采集，后续分析可能缺少上下文",
 			"issue", issue.Number,

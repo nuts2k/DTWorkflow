@@ -103,7 +103,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 		return nil, fmt.Errorf("PR #%d 状态为 %s: %w", prNum, pr.State, ErrPRNotOpen)
 	}
 
-	// 2. 获取变更文件列表（单页，最多 100 个文件）
+	// 2. 获取变更文件列表（有意保持单页，PaginateAll 统一治理时已评估排除）
 	// 此列表仅用于 prompt 摘要和大 PR 检测，非评审的完整输入。
 	// Claude CLI 在容器内通过 git diff 获取完整变更。
 	files, _, err := s.gitea.ListPullRequestFiles(ctx, owner, repo, prNum, gitea.ListOptions{PageSize: 100})

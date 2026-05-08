@@ -26,6 +26,9 @@ func PaginateAll[T any](
 	var all []T
 	page := 1
 	for i := 0; i < maxPages; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		items, resp, err := fetch(ctx, page, pageSize)
 		if err != nil {
 			return nil, false, err

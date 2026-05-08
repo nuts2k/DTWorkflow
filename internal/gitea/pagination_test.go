@@ -112,6 +112,31 @@ func TestPaginateAll_ErrorDiscardsPartialData(t *testing.T) {
 	}
 }
 
+func TestPaginateAll_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	result, truncated, err := PaginateAll(ctx, 10, 10,
+		func(_ context.Context, _ int, _ int) ([]string, *Response, error) {
+			calls++
+			if calls == 2 {
+				cancel()
+			}
+			return []string{"item"}, &Response{NextPage: calls + 1}, nil
+		})
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on cancel, got %v", result)
+	}
+	if truncated {
+		t.Fatal("cancel path should not report truncation")
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 calls before cancel detected, got %d", calls)
+	}
+}
+
 func TestPaginateAll_DefaultValues(t *testing.T) {
 	var gotPageSize int
 	calls := 0
