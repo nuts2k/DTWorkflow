@@ -52,7 +52,8 @@ internal/       # 内部包（不对外暴露）
   review/       # PR 评审逻辑
   fix/          # Issue 分析与修复逻辑（analyze_issue 只读分析 / fix_issue 写权限修复）
   test/         # 测试生成逻辑（test.Service / TestGenOutput / prompt / errors）
-  validation/   # 公共输入校验（gen_tests module / framework，三入口共用）
+  e2e/          # E2E 测试执行逻辑（e2e.Service / E2EOutput / prompt / errors）
+  validation/   # 公共输入校验（gen_tests / e2e module / framework，多入口共用）
   notify/       # 通知框架
   config/       # 配置管理
   dtw/          # dtw 客户端核心库（HTTP 客户端/配置/Wait 轮询/输出）
@@ -137,6 +138,21 @@ configs/        # 配置文件模板
 - **通知复用**：变更驱动任务与手动触发在 Processor 层完全一致，复用现有三事件；`triggered_by="webhook:pr_merged:<pr_number>"` 区分来源
 - **`test.Service.Execute` 零改动**：所有变更驱动逻辑均在入队层（`internal/queue/enqueue.go`）和 prompt 层完成
 - **设计文档**：`docs/plans/2026-05-03-m4.3-change-driven-test-gen-design.md`
+
+## E2E 测试执行功能（M5.1）
+
+- **触发方式**：
+  - CLI 触发：`./bin/dtw e2e run --repo <owner/repo> --env <环境名> [--suite <suite>] [--module <module>]`
+  - API 触发：`POST /api/v1/repos/{owner}/{repo}/e2e`
+- **镜像**：`run_e2e` 使用 E2E 专用镜像（`worker-e2e`，含 Playwright + Chromium）
+- **执行流程**：`e2e.Service.Execute` — 前置校验（Enabled / resolveEnvironment）→ 构造 prompt → 容器执行 → 解析 E2EOutput → 返回 E2EResult
+- **环境解析优先级**：payload.Environment > override.DefaultEnv > 报错 `ErrEnvironmentNotFound`
+- **配置**：`e2e` 块含 `enabled`（*bool，nil=允许）、`image`（E2E 镜像名）、`environments`（命名环境列表，各含 base_url / db_* / extra_env）、`default_env`
+- **输出解析**：双层解析（CLI 信封 → E2EOutput JSON），`sanitizeE2EOutput` 截断自由文本字段防 prompt injection
+- **确定性失败**：`isDeterministicE2EFailure` 检测配置错误（disabled / env not found / no cases），返回 SkipRetry 不重试
+- **错误脱敏**：processor 对 `TaskTypeRunE2E` 错误消息调用 `SanitizeErrorMessage`，防止 Claude 原始输出泄露到通知/存储
+- **Token 复用**：E2E 当前复用 `gen_tests` 账号的 token 进行容器内 git 操作（只读克隆，不创建 PR）
+- **设计文档**：`docs/plans/2026-05-10-m5.1-e2e-infrastructure-impl-plan.md`
 
 ## 测试服务器
 
