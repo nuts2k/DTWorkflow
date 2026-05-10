@@ -168,7 +168,7 @@ func runGenTests(cmd *cobra.Command, _ []string) error {
 	handler := queue.NewEnqueueHandler(qClient, qClient, s, slog.Default(), buildGenTestsEnqueueOptions(gc)...)
 
 	// 5. 生成 triggeredBy（CLI 本地触发）
-	triggeredBy := buildGenTestsTriggeredBy()
+	triggeredBy := buildCLITriggeredBy()
 
 	// 6. 构造 payload 并入队。
 	//    注意：EnqueueManualGenTests 内部会强制设置 TaskType=gen_tests 并合成 DeliveryID。
@@ -258,10 +258,10 @@ func printGenTestsResult(taskID string, payload model.TaskPayload, baseRef, fram
 	printGenTestsResults([]queue.EnqueuedTask{{TaskID: taskID, Module: payload.Module, Framework: framework}}, payload, baseRef, framework)
 }
 
-// buildGenTestsTriggeredBy 构造 CLI 触发者标识。
+// buildCLITriggeredBy 构造 CLI 触发者标识。
 // 与 API handler 的 "manual:{identity}" 惯例对应，本地 CLI 使用 "cli:{hostname}"，
 // 便于在 TaskRecord.TriggeredBy 中区分 webhook / REST API / 本地 CLI 三种来源。
-func buildGenTestsTriggeredBy() string {
+func buildCLITriggeredBy() string {
 	hostname, err := os.Hostname()
 	if err != nil || strings.TrimSpace(hostname) == "" {
 		hostname = "local"

@@ -395,7 +395,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		// gen_tests 任务的 runErr 可能由 test.ErrTestGenParseFailure 派生或
 		// 夹带仓库 / module 等 Claude 可间接控制的字段，统一走 SanitizeErrorMessage
 		// 兜底过滤控制字符 / URL，保证 record.Error 不成为 prompt injection 落点。
-		if payload.TaskType == model.TaskTypeGenTests {
+		if payload.TaskType == model.TaskTypeGenTests || payload.TaskType == model.TaskTypeRunE2E {
 			record.Error = test.SanitizeErrorMessage(runErr.Error())
 		} else {
 			record.Error = runErr.Error()
@@ -1299,7 +1299,7 @@ func adaptTestResult(r *test.TestGenResult) *worker.ExecutionResult {
 // 标记任务 failed、尽可能保留结构化结果、持久化、发送通知，并返回 SkipRetry 错误。
 func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, logMsg string) error {
 	record.Status = model.TaskStatusFailed
-	if record.Payload.TaskType == model.TaskTypeGenTests {
+	if record.Payload.TaskType == model.TaskTypeGenTests || record.Payload.TaskType == model.TaskTypeRunE2E {
 		record.Error = test.SanitizeErrorMessage(runErr.Error())
 	} else {
 		record.Error = runErr.Error()

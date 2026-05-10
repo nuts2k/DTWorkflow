@@ -173,7 +173,7 @@ func runE2E(cmd *cobra.Command, _ []string) error {
 		BaseURLOverride: e2eBaseURL,
 	}
 
-	taskID, err := handler.EnqueueManualE2E(ctx, payload, buildGenTestsTriggeredBy())
+	taskID, err := handler.EnqueueManualE2E(ctx, payload, buildCLITriggeredBy())
 	if err != nil {
 		return &ExitCodeError{Code: 1, Err: fmt.Errorf("入队失败: %w", err)}
 	}

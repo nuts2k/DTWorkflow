@@ -18,10 +18,10 @@ import (
 // 对应单测见 internal/validation/gen_tests_test.go。本文件仅保留 Cobra 装配与
 // RunE 集成相关测试。
 
-// TestBuildGenTestsTriggeredBy_PrefixedWithCLI
+// TestBuildCLITriggeredBy_PrefixedWithCLI
 // 验证 CLI 触发者标识以 "cli:" 前缀开头，使 TaskRecord.TriggeredBy 可区分 webhook/API/CLI 三种来源。
-func TestBuildGenTestsTriggeredBy_PrefixedWithCLI(t *testing.T) {
-	got := buildGenTestsTriggeredBy()
+func TestBuildCLITriggeredBy_PrefixedWithCLI(t *testing.T) {
+	got := buildCLITriggeredBy()
 	if !strings.HasPrefix(got, "cli:") {
 		t.Fatalf("triggeredBy = %q, want prefix %q", got, "cli:")
 	}
