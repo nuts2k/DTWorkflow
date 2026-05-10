@@ -610,6 +610,10 @@ func (p *Pool) resolveImage(taskType model.TaskType) string {
 		if p.config.ImageFull != "" {
 			return p.config.ImageFull
 		}
+	case model.TaskTypeRunE2E:
+		if p.config.ImageE2E != "" {
+			return p.config.ImageE2E
+		}
 	}
 	return p.config.Image
 }

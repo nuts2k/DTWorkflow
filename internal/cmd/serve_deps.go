@@ -155,6 +155,7 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 		pcfg.ImageFull = cfg.AppCfg.Worker.ImageFull               // M3.4
 		pcfg.MavenCacheVolume = cfg.AppCfg.Worker.MavenCacheVolume // M3.5
 		pcfg.NpmCacheVolume = cfg.AppCfg.Worker.NpmCacheVolume
+		pcfg.ImageE2E = cfg.AppCfg.Worker.ImageE2E // M5.1
 	}
 	return pcfg
 }

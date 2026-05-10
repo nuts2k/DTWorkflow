@@ -11,6 +11,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
@@ -91,6 +92,18 @@ func WithTestService(svc TestExecutor) ProcessorOption {
 	}
 }
 
+// E2EExecutor 窄接口，解耦 e2e 包。
+type E2EExecutor interface {
+	Execute(ctx context.Context, payload model.TaskPayload) (*e2e.E2EResult, error)
+}
+
+// WithE2EService 注入 E2E 执行服务。
+func WithE2EService(svc E2EExecutor) ProcessorOption {
+	return func(p *Processor) {
+		p.e2eService = svc
+	}
+}
+
 // ReviewEnabledChecker 是 Processor 层的窄接口（ISP）
 // 仅暴露 Enabled 检查所需的最小能力
 type ReviewEnabledChecker interface {
@@ -129,6 +142,7 @@ type Processor struct {
 	reviewEnabledChecker ReviewEnabledChecker // 可选，nil 时默认启用
 	fixService           FixExecutor          // M3.2 激活；M3.1 始终为 nil，fix_issue 走 pool.Run()
 	testService          TestExecutor         // 可选；注入后 gen_tests 走 test.Service，否则回退 pool.Run()
+	e2eService           E2EExecutor          // 可选；注入后 run_e2e 走 e2e.Service，否则回退 pool.Run()
 	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 
@@ -251,6 +265,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	var reviewResult *review.ReviewResult
 	var fixResult *fix.FixResult
 	var testResult *test.TestGenResult
+	var e2eResult *e2e.E2EResult
 	var result *worker.ExecutionResult
 	var runErr error
 	// 路由：review_pr → reviewService，analyze_issue/fix_issue → fixService，
@@ -270,6 +285,11 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		testResult, runErr = p.testService.Execute(ctx, payload)
 		if testResult != nil {
 			result = adaptTestResult(testResult)
+		}
+	case payload.TaskType == model.TaskTypeRunE2E && p.e2eService != nil:
+		e2eResult, runErr = p.e2eService.Execute(ctx, payload)
+		if e2eResult != nil {
+			result = adaptE2EResult(e2eResult)
 		}
 	default:
 		result, runErr = p.pool.Run(ctx, payload)
@@ -331,6 +351,15 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		}
 		if errors.Is(runErr, test.ErrTestGenFailed) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "Claude 返回 success=false，跳过重试")
+		}
+		if errors.Is(runErr, e2e.ErrE2EDisabled) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "E2E 已禁用，跳过任务")
+		}
+		if errors.Is(runErr, e2e.ErrEnvironmentNotFound) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "E2E 环境未找到，跳过任务")
+		}
+		if errors.Is(runErr, e2e.ErrNoCasesFound) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "未发现 E2E 用例，跳过任务")
 		}
 		// fix 解析失败且重试耗尽：发送降级评论，让用户至少能在 Issue 上看到原始输出
 		if errors.Is(runErr, fix.ErrFixParseFailure) && !shouldRetry(ctx) && fixResult != nil {
@@ -432,7 +461,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if finalStatePersisted {
-		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, e2eResult)
 	}
 
 	if runErr != nil {
@@ -605,6 +634,26 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 			Body:     fmt.Sprintf("正在生成测试\n\n仓库：%s\nmodule：%s", payload.RepoFullName, genTestsModuleLabel(payload.Module)),
 			Metadata: metadata,
 		}
+	case model.TaskTypeRunE2E:
+		if payload.RepoFullName == "" {
+			return notify.Message{}, false
+		}
+		metadata := map[string]string{}
+		if payload.Environment != "" {
+			metadata[notify.MetaKeyE2EEnv] = payload.Environment
+		}
+		msg = notify.Message{
+			EventType: notify.EventE2EStarted,
+			Severity:  notify.SeverityInfo,
+			Target: notify.Target{
+				Owner: payload.RepoOwner,
+				Repo:  payload.RepoName,
+				IsPR:  false,
+			},
+			Title:    "E2E 测试开始",
+			Body:     fmt.Sprintf("正在执行 E2E 测试\n\n仓库：%s", payload.RepoFullName),
+			Metadata: metadata,
+		}
 	default:
 		return notify.Message{}, false
 	}
@@ -620,11 +669,11 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 // sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知。
 // 内部创建独立后台 context，与 asynq 任务 ctx 的生命周期解耦，
 // 确保即使 asynq ctx 已过期（如任务超时）仍能发出通知。
-func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult) {
+func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult) {
 	if p.notifier == nil || record == nil {
 		return
 	}
-	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult, testResult)
+	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult, testResult, e2eResult)
 	if !ok {
 		// 主消息未构建成功（例如 gen_tests 缺 RepoFullName）仍尝试 Warnings 追加——
 		// 但无主消息时 Warnings 也无处附着，直接返回。
@@ -648,8 +697,9 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 
 // buildNotificationMessage 构建任务完成通知消息。
 // M4.2：新增 testResult 形参，用于 gen_tests 任务（EventGenTestsDone / EventGenTestsFailed）。
+// M5.1：新增 e2eResult 形参，用于 run_e2e 任务（EventE2EDone / EventE2EFailed）。
 // 其它类型调用时传 nil。
-func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult) (notify.Message, bool) {
+func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult) (notify.Message, bool) {
 	if record == nil {
 		return notify.Message{}, false
 	}
@@ -866,6 +916,54 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 				Severity:  severity,
 				Target:    genTarget,
 				Title:     title,
+				Body:      body,
+				Metadata:  metadata,
+			}
+		}
+	case model.TaskTypeRunE2E:
+		if payload.RepoFullName == "" {
+			return notify.Message{}, false
+		}
+		metadata := map[string]string{}
+		if payload.Environment != "" {
+			metadata[notify.MetaKeyE2EEnv] = payload.Environment
+		}
+		if e2eResult != nil && e2eResult.Output != nil {
+			metadata[notify.MetaKeyE2ETotalCases] = fmt.Sprintf("%d", e2eResult.Output.TotalCases)
+			metadata[notify.MetaKeyE2EPassedCases] = fmt.Sprintf("%d", e2eResult.Output.PassedCases)
+			metadata[notify.MetaKeyE2EFailedCases] = fmt.Sprintf("%d", e2eResult.Output.FailedCases)
+			metadata[notify.MetaKeyE2EErrorCases] = fmt.Sprintf("%d", e2eResult.Output.ErrorCases)
+		}
+		target := notify.Target{
+			Owner: payload.RepoOwner,
+			Repo:  payload.RepoName,
+			IsPR:  false,
+		}
+		switch record.Status {
+		case model.TaskStatusSucceeded:
+			msg = notify.Message{
+				EventType: notify.EventE2EDone,
+				Severity:  notify.SeverityInfo,
+				Target:    target,
+				Title:     "E2E 测试完成",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		case model.TaskStatusRetrying:
+			msg = notify.Message{
+				EventType: notify.EventE2EFailed,
+				Severity:  notify.SeverityWarning,
+				Target:    target,
+				Title:     "E2E 测试重试中",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		default:
+			msg = notify.Message{
+				EventType: notify.EventE2EFailed,
+				Severity:  notify.SeverityWarning,
+				Target:    target,
+				Title:     "E2E 测试失败",
 				Body:      body,
 				Metadata:  metadata,
 			}
@@ -1117,6 +1215,21 @@ func (p *Processor) syncGenTestsPRComment(ctx context.Context, record *model.Tas
 	}
 }
 
+func adaptE2EResult(r *e2e.E2EResult) *worker.ExecutionResult {
+	if r == nil {
+		return nil
+	}
+	exitCode := 0
+	if r.Output != nil && !r.Output.Success {
+		exitCode = 1
+	}
+	return &worker.ExecutionResult{
+		ExitCode: exitCode,
+		Output:   r.RawOutput,
+		Duration: r.DurationMs,
+	}
+}
+
 // adaptTestResult 将 test.TestGenResult 适配为 worker.ExecutionResult。
 // ParseError 仅保留到 Error 字段，不直接改写退出码；真正的重试策略由 Processor
 // 依据 ErrTestGenParseFailure 判断。
@@ -1192,7 +1305,7 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 			"error", err,
 		)
 	} else {
-		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, nil)
 	}
 	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
 }

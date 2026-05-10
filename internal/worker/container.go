@@ -112,7 +112,11 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		// 与 internal/test.ModuleKey 语义一致；由于 test → worker 已存在反向依赖，
 		// 不能在此 import test，改用本地等价实现 moduleKeyForContainer。
 		env = append(env, fmt.Sprintf("MODULE_SANITIZED=%s", moduleKeyForContainerWithFramework(payload.Module, payload.Framework)))
+	case model.TaskTypeRunE2E:
+		env = append(env, fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)))
 	}
+
+	env = append(env, payload.ExtraEnvs...)
 
 	return env
 }
@@ -285,6 +289,8 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 				sanitizePromptInput(payload.RepoFullName, 200),
 			),
 		}
+	case model.TaskTypeRunE2E:
+		return []string{"claude", "-p", "--output-format", "json", "-"}
 	default:
 		return []string{
 			"claude", "-p",

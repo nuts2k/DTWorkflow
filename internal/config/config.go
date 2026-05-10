@@ -26,6 +26,7 @@ type Config struct {
 	Notify      NotifyConfig      `mapstructure:"notify"`
 	Review      ReviewOverride    `mapstructure:"review"`
 	TestGen     TestGenOverride   `mapstructure:"test_gen"` // M4.1
+	E2E         E2EConfig         `mapstructure:"e2e"`
 	DailyReport DailyReportConfig `mapstructure:"daily_report"`
 	API         APIConfig         `mapstructure:"api" yaml:"api"`
 	Repos       []RepoConfig      `mapstructure:"repos"`
@@ -119,6 +120,7 @@ type WorkerConfig struct {
 
 	Image            string `mapstructure:"image"`
 	ImageFull        string `mapstructure:"image_full"`         // M3.4: 执行镜像（可选）
+	ImageE2E         string `mapstructure:"image_e2e"`          // M5.1: E2E Worker 镜像（Playwright + Chromium）
 	MavenCacheVolume string `mapstructure:"maven_cache_volume"` // M3.5: Maven 缓存 named volume，挂载到 fix/gen_tests 容器
 	NpmCacheVolume   string `mapstructure:"npm_cache_volume"`   // npm 缓存 named volume，挂载到 fix/gen_tests 容器
 	CPULimit         string `mapstructure:"cpu_limit"`
@@ -135,6 +137,37 @@ type TaskTimeouts struct {
 	AnalyzeIssue time.Duration `mapstructure:"analyze_issue"` // M3.4: 默认 15m
 	FixIssue     time.Duration `mapstructure:"fix_issue"`
 	GenTests     time.Duration `mapstructure:"gen_tests"`
+	RunE2E       time.Duration `mapstructure:"run_e2e"` // M5.1: 默认 60m
+}
+
+// E2EAccountConfig 测试账号配置。
+type E2EAccountConfig struct {
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+}
+
+// E2EDBConfig 数据库连接配置。
+type E2EDBConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	Database string `mapstructure:"database"`
+}
+
+// E2EEnvironment 单个命名环境配置。
+type E2EEnvironment struct {
+	BaseURL  string                      `mapstructure:"base_url"`
+	DB       *E2EDBConfig                `mapstructure:"db"`
+	Accounts map[string]E2EAccountConfig `mapstructure:"accounts"`
+}
+
+// E2EConfig 全局 E2E 配置。
+type E2EConfig struct {
+	Enabled               *bool                     `mapstructure:"enabled"`
+	DefaultEnv            string                    `mapstructure:"default_env"`
+	ArtifactRetentionDays int                       `mapstructure:"artifact_retention_days"`
+	Environments          map[string]E2EEnvironment `mapstructure:"environments"`
 }
 
 // StreamMonitorConf 流式心跳监控配置

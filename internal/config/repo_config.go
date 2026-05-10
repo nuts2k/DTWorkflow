@@ -6,6 +6,7 @@ type RepoConfig struct {
 	Review  *ReviewOverride  `mapstructure:"review"`
 	Notify  *NotifyOverride  `mapstructure:"notify"`
 	TestGen *TestGenOverride `mapstructure:"test_gen"` // M4.1
+	E2E     *E2EOverride     `mapstructure:"e2e"`      // M5.1
 }
 
 // TestGenOverride 测试生成配置（全局或仓库级覆盖）。
@@ -199,6 +200,36 @@ func (c *Config) ResolveTestGenConfig(repoFullName string) TestGenOverride {
 		}
 		if repo.TestGen.ChangeDriven != nil {
 			merged.ChangeDriven = repo.TestGen.ChangeDriven
+		}
+		break
+	}
+	return merged
+}
+
+// E2EOverride 仓库级 E2E 配置覆盖。
+type E2EOverride struct {
+	Enabled    *bool  `mapstructure:"enabled"`
+	DefaultEnv string `mapstructure:"default_env"`
+}
+
+// ResolveE2EConfig 解析指定仓库的最终 E2E 配置覆盖。
+func (c *Config) ResolveE2EConfig(repoFullName string) E2EOverride {
+	if c == nil {
+		return E2EOverride{}
+	}
+	merged := E2EOverride{
+		Enabled:    c.E2E.Enabled,
+		DefaultEnv: c.E2E.DefaultEnv,
+	}
+	for _, repo := range c.Repos {
+		if repo.Name != repoFullName || repo.E2E == nil {
+			continue
+		}
+		if repo.E2E.Enabled != nil {
+			merged.Enabled = repo.E2E.Enabled
+		}
+		if repo.E2E.DefaultEnv != "" {
+			merged.DefaultEnv = repo.E2E.DefaultEnv
 		}
 		break
 	}

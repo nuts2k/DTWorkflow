@@ -861,6 +861,51 @@ func TestModuleKeyConsistencyWithTestPackage(t *testing.T) {
 	}
 }
 
+func TestBuildContainerEnv_RunE2E(t *testing.T) {
+	config := PoolConfig{
+		Image:        "test-image",
+		GiteaURL:     "https://gitea.test",
+		GiteaToken:   "test-token",
+		ClaudeAPIKey: "test-key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeRunE2E,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.test/owner/repo.git",
+		BaseRef:      "main",
+		ExtraEnvs: []string{
+			"E2E_BASE_URL=https://staging.example.com",
+			"E2E_DB_HOST=db.internal",
+		},
+	}
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	if envMap["BASE_REF"] != "main" {
+		t.Errorf("BASE_REF = %q, 期望 main", envMap["BASE_REF"])
+	}
+	if envMap["E2E_BASE_URL"] != "https://staging.example.com" {
+		t.Errorf("E2E_BASE_URL = %q, 期望 https://staging.example.com", envMap["E2E_BASE_URL"])
+	}
+	if envMap["E2E_DB_HOST"] != "db.internal" {
+		t.Errorf("E2E_DB_HOST = %q, 期望 db.internal", envMap["E2E_DB_HOST"])
+	}
+}
+
+func TestResolveImage_RunE2E(t *testing.T) {
+	p := &Pool{config: PoolConfig{Image: "worker:latest", ImageE2E: "worker-e2e:latest"}}
+	if got := p.resolveImage(model.TaskTypeRunE2E); got != "worker-e2e:latest" {
+		t.Errorf("resolveImage(RunE2E) = %q, 期望 worker-e2e:latest", got)
+	}
+
+	p2 := &Pool{config: PoolConfig{Image: "worker:latest"}}
+	if got := p2.resolveImage(model.TaskTypeRunE2E); got != "worker:latest" {
+		t.Errorf("resolveImage(RunE2E, 无 ImageE2E) = %q, 期望 worker:latest（回退基础镜像）", got)
+	}
+}
+
 // TestModuleKeyForContainerParity 验证 moduleKeyForContainer 与 internal/test.ModuleKey 语义一致。
 // 由于 test → worker 反向依赖无法在此 import internal/test，手动维护等价期望值。
 // 若本测试失败，需同步检查 internal/test.ModuleKey 是否也有对应变更；

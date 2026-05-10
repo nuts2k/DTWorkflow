@@ -26,6 +26,10 @@ const (
 	EventGenTestsStarted EventType = "gen_tests.started"
 	EventGenTestsDone    EventType = "gen_tests.done"
 	EventGenTestsFailed  EventType = "gen_tests.failed"
+	// M5.1：E2E 测试任务通知事件。
+	EventE2EStarted EventType = "e2e.started"
+	EventE2EDone    EventType = "e2e.done"
+	EventE2EFailed  EventType = "e2e.failed"
 )
 
 // Metadata key 常量，用于 Message.Metadata 的键名，确保生产端和消费端类型安全。
@@ -50,6 +54,13 @@ const (
 	MetaKeyCommittedCount  = "committed_count"  // 实际提交到分支的文件数
 	MetaKeySkippedCount    = "skipped_count"    // 跳过的目标数
 	MetaKeyFailureCategory = "failure_category" // gen_tests 失败分类
+
+	// M5.1 E2E 事件专用 metadata key。
+	MetaKeyE2EEnv         = "e2e_env"
+	MetaKeyE2ETotalCases  = "e2e_total_cases"
+	MetaKeyE2EPassedCases = "e2e_passed_cases"
+	MetaKeyE2EFailedCases = "e2e_failed_cases"
+	MetaKeyE2EErrorCases  = "e2e_error_cases"
 )
 
 // Severity 通知紧急程度

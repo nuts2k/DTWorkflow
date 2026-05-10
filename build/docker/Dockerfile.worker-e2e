@@ -1,0 +1,17 @@
+# M5.1: E2E Worker 镜像 -- 基于轻量 worker + Playwright + Chromium
+FROM dtworkflow-worker:latest
+
+USER root
+
+# 安装 Playwright + Chromium（含系统依赖）
+RUN npx playwright install --with-deps chromium
+
+# 安装 MySQL 客户端
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 tsx（TypeScript 脚本执行器）
+RUN npm install -g tsx
+
+USER worker

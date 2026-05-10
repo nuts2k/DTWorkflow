@@ -263,6 +263,54 @@ HOOK
             git checkout -B "${AUTO_TEST_BRANCH}" "origin/${BASE_REF}"
         fi
         ;;
+    run_e2e)
+        # M5.1: E2E 测试模式（只读，不需要 push 能力）
+        if [ -n "${BASE_REF:-}" ]; then
+            log "E2E: fetch + checkout BASE_REF=${BASE_REF}"
+            git fetch origin "${BASE_REF}" >&2 2>&1
+            git checkout FETCH_HEAD >&2 2>&1
+        fi
+        # 生成 MySQL 配置文件（如有数据库环境变量）
+        if [ -n "${E2E_DB_HOST:-}" ]; then
+            cat > /tmp/.my.cnf <<MYCNF
+[client]
+host=${E2E_DB_HOST}
+port=${E2E_DB_PORT:-3306}
+user=${E2E_DB_USER}
+password=${E2E_DB_PASSWORD}
+database=${E2E_DB_DATABASE}
+MYCNF
+            chmod 600 /tmp/.my.cnf
+            unset E2E_DB_PASSWORD
+            log "MySQL 配置已写入 /tmp/.my.cnf，E2E_DB_PASSWORD 已清除"
+        fi
+        # 写入测试账号文件
+        if env | grep -q '^E2E_ACCOUNT_'; then
+            python3 -c "
+import os, json
+accounts = {}
+for k, v in os.environ.items():
+    if k.startswith('E2E_ACCOUNT_') and k.endswith('_USERNAME'):
+        name = k[12:-9].lower()
+        pwd_key = 'E2E_ACCOUNT_' + name.upper() + '_PASSWORD'
+        accounts[name] = {'username': v, 'password': os.environ.get(pwd_key, '')}
+with open('/tmp/.e2e-accounts.json', 'w') as f:
+    json.dump(accounts, f)
+os.chmod('/tmp/.e2e-accounts.json', 0o600)
+" 2>&1 || log "警告：生成 .e2e-accounts.json 失败"
+            # 清除账号密码环境变量
+            for var in $(env | grep '^E2E_ACCOUNT_.*_PASSWORD=' | cut -d= -f1); do
+                unset "$var"
+            done
+            log "测试账号已写入 /tmp/.e2e-accounts.json，密码环境变量已清除"
+        fi
+        # 设置 Playwright 输出目录
+        export PLAYWRIGHT_OUTPUT_DIR=/workspace/artifacts/test-results
+        export PLAYWRIGHT_REPORT_DIR=/workspace/artifacts/reports
+        mkdir -p "${PLAYWRIGHT_OUTPUT_DIR}" "${PLAYWRIGHT_REPORT_DIR}" 2>/dev/null || true
+        setup_build_cache
+        log "E2E 测试模式已启用（只读 + DB 配置 + 账号文件 + Playwright 输出目录）"
+        ;;
     *)
         log "任务类型: ${TASK_TYPE:-<empty>}，使用默认分支"
         ;;

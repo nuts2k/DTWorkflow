@@ -17,6 +17,7 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/api"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
+	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/report"
@@ -262,6 +263,14 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 			testgen.WithStore(deps.Store),
 		)
 		processorOpts = append(processorOpts, queue.WithTestService(testSvc))
+
+		// M5.1：装配 e2e.Service
+		e2eSvc := e2esvc.NewService(
+			deps.Pool,
+			cfgAdapter,
+			e2esvc.WithServiceLogger(slog.Default()),
+		)
+		processorOpts = append(processorOpts, queue.WithE2EService(e2eSvc))
 	}
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), processorOpts...)
 	mux := asynq.NewServeMux()
@@ -269,6 +278,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	mux.Handle(queue.AsynqTypeAnalyzeIssue, processor) // M3.4
 	mux.Handle(queue.AsynqTypeFixIssue, processor)
 	mux.Handle(queue.AsynqTypeGenTests, processor)
+	mux.Handle(queue.AsynqTypeRunE2E, processor) // M5.1
 
 	// M2.7: 每日报告 Handler 装配
 	var dailyReportHandler *report.DailyReportHandler

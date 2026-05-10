@@ -46,6 +46,7 @@ func RegisterRoutes(r *gin.Engine, deps Dependencies) {
 	v1.POST("/repos/:owner/:repo/review-pr", h.triggerReview)
 	v1.POST("/repos/:owner/:repo/fix-issue", h.triggerFix)
 	v1.POST("/repos/:owner/:repo/gen-tests", h.triggerGenTests)
+	v1.POST("/repos/:owner/:repo/e2e", h.triggerE2E)
 }
 
 type handlers struct {

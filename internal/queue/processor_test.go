@@ -978,7 +978,7 @@ func TestProcessTask_Retrying_SendsNotification(t *testing.T) {
 		},
 	}
 	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default())
-	p.sendCompletionNotification(context.Background(), record, nil, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil)
 	if len(notifier.messages) != 1 {
 		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
 	}
@@ -1448,7 +1448,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 			PRNumber:     1,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
 	if ok {
 		t.Error("RepoOwner 为空时不应生成通知消息")
 	}
@@ -1456,7 +1456,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 
 func TestBuildNotificationMessage_NilRecord(t *testing.T) {
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
-	_, ok := p.buildNotificationMessage(nil, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("nil record 不应生成通知消息")
 	}
@@ -1476,7 +1476,7 @@ func TestBuildNotificationMessage_FixIssue_InvalidNumber(t *testing.T) {
 			IssueNumber: 0,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
 	if ok {
 		t.Error("IssueNumber=0 不应生成通知消息")
 	}
@@ -2762,7 +2762,7 @@ func TestBuildNotificationMessage_FixIssue_SuccessInjectsPRMetadata(t *testing.T
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -2805,7 +2805,7 @@ func TestBuildNotificationMessage_FixIssue_FailureOmitsPRMetadata(t *testing.T) 
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -2890,7 +2890,7 @@ func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2933,7 +2933,7 @@ func TestBuildNotificationMessage_Failed_HasNotifyTimeNoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -2971,7 +2971,7 @@ func TestBuildNotificationMessage_Retrying_HasNotifyTimeNoDuration(t *testing.T)
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3009,7 +3009,7 @@ func TestBuildNotificationMessage_FixIssue_Succeeded_HasDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3047,7 +3047,7 @@ func TestBuildNotificationMessage_FixIssue_Failed_NoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3138,7 +3138,7 @@ func TestBuildNotificationMessage_GenTests_SucceededMetadata(t *testing.T) {
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, nil, tr)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -3209,7 +3209,7 @@ func TestBuildNotificationMessage_GenTests_FailureCategorySeverity(t *testing.T)
 				output.InfoSufficient = true
 			}
 			tr := &testgen.TestGenResult{Output: output}
-			msg, ok := p.buildNotificationMessage(record, nil, nil, tr)
+			msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil)
 			if !ok {
 				t.Fatal("buildNotificationMessage 应返回 true")
 			}
@@ -3247,7 +3247,7 @@ func TestBuildNotificationMessage_GenTests_Retrying(t *testing.T) {
 			Module:       "svc/user",
 		},
 	}
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -3291,7 +3291,7 @@ func TestSendCompletionNotification_GenTests_WarningsAppended(t *testing.T) {
 			Warnings:       []string{"AUTO_TEST_BRANCH_RESET_REMOTE_FAILED"},
 		},
 	}
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil)
 	if len(notifier.messages) != 2 {
 		t.Fatalf("应发出 2 条通知（Done + Warnings），实际 %d", len(notifier.messages))
 	}
@@ -3350,7 +3350,7 @@ func TestSendCompletionNotification_GenTests_SyncsPRComment(t *testing.T) {
 		},
 	}
 
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil)
 
 	if len(notifier.commentCalls) != 1 {
 		t.Fatalf("应同步 1 条 PR 评论，实际 %d 条", len(notifier.commentCalls))
@@ -3402,7 +3402,7 @@ func TestSendCompletionNotification_GenTests_RetryingDoesNotSyncPRComment(t *tes
 		},
 	}
 
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil)
 
 	if len(notifier.commentCalls) != 0 {
 		t.Fatalf("retrying 阶段不应同步 PR 评论，实际 %d 条", len(notifier.commentCalls))
@@ -3431,7 +3431,7 @@ func TestSendCompletionNotification_ReviewStillWorksWithNilTestResult(t *testing
 			PRNumber:     1,
 		},
 	}
-	p.sendCompletionNotification(context.Background(), record, nil, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil)
 	if len(notifier.messages) != 1 {
 		t.Fatalf("review 路径应发送 1 条通知，实际 %d", len(notifier.messages))
 	}

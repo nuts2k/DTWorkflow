@@ -1028,3 +1028,26 @@ func (h *EnqueueHandler) listActiveGenTestsTasksByBranchKey(ctx context.Context,
 func generateManualDeliveryID() string {
 	return fmt.Sprintf("manual-%d-%s", time.Now().UnixMilli(), uuid.New().String()[:8])
 }
+
+// EnqueueManualE2E 手动入队 E2E 测试任务。
+func (h *EnqueueHandler) EnqueueManualE2E(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+	payload.TaskType = model.TaskTypeRunE2E
+	if payload.DeliveryID == "" {
+		payload.DeliveryID = uuid.New().String()
+	}
+
+	record := &model.TaskRecord{
+		TaskType:     model.TaskTypeRunE2E,
+		Status:       model.TaskStatusPending,
+		Priority:     model.PriorityNormal,
+		Payload:      payload,
+		RepoFullName: payload.RepoFullName,
+		DeliveryID:   payload.DeliveryID,
+		TriggeredBy:  triggeredBy,
+	}
+
+	if err := h.enqueueTask(ctx, payload, record); err != nil {
+		return "", fmt.Errorf("入队 run_e2e 失败: %w", err)
+	}
+	return record.ID, nil
+}

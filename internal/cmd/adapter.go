@@ -7,6 +7,7 @@ import (
 	"path"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
@@ -99,6 +100,7 @@ func (a *giteaCommentAdapter) EditIssueComment(ctx context.Context, owner, repo 
 var _ fix.FixConfigProvider = (*configAdapter)(nil)
 var _ testgen.TestConfigProvider = (*configAdapter)(nil)
 var _ testgen.RepoFileChecker = (*giteaRepoFileChecker)(nil)
+var _ e2e.E2EConfigProvider = (*configAdapter)(nil)
 
 // configAdapter 将 config.Manager 适配为 review.ConfigProvider 接口
 type configAdapter struct {
@@ -148,6 +150,24 @@ func (a *configAdapter) ResolveTestGenConfig(repoFullName string) config.TestGen
 		return config.TestGenOverride{}
 	}
 	return cfg.ResolveTestGenConfig(repoFullName)
+}
+
+// ResolveE2EConfig 实现 e2e.E2EConfigProvider 接口。
+func (a *configAdapter) ResolveE2EConfig(repoFullName string) config.E2EOverride {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return config.E2EOverride{}
+	}
+	return cfg.ResolveE2EConfig(repoFullName)
+}
+
+// GetE2EEnvironments 实现 e2e.E2EConfigProvider 接口。
+func (a *configAdapter) GetE2EEnvironments() map[string]config.E2EEnvironment {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return nil
+	}
+	return cfg.E2E.Environments
 }
 
 // giteaRepoFileChecker 基于 Gitea contents API 检测 ref 下文件是否存在。

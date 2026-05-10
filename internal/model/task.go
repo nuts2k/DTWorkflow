@@ -11,6 +11,7 @@ const (
 	TaskTypeFixIssue       TaskType = "fix_issue"     // M3.4: 语义修正为真正的修复
 	TaskTypeGenTests       TaskType = "gen_tests"
 	TaskTypeGenDailyReport TaskType = "gen_daily_report"
+	TaskTypeRunE2E         TaskType = "run_e2e"
 )
 
 // TaskPriority 任务优先级（asynq 使用整数，越小越高）
@@ -39,7 +40,7 @@ const (
 // IsValid 检查任务类型是否为已知值
 func (t TaskType) IsValid() bool {
 	switch t {
-	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport:
+	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport, TaskTypeRunE2E:
 		return true
 	}
 	return false
@@ -96,6 +97,14 @@ type TaskPayload struct {
 	Module       string   `json:"module,omitempty"`
 	Framework    string   `json:"framework,omitempty"`
 	ChangedFiles []string `json:"changed_files,omitempty"` // 变更驱动：触发变更的源码文件列表
+
+	// E2E 测试定位
+	Environment     string `json:"environment,omitempty"`       // 命名环境（staging / dev 等）
+	CaseName        string `json:"case_name,omitempty"`         // 单用例指定（需配合 Module）
+	BaseURLOverride string `json:"base_url_override,omitempty"` // 临时覆盖 base_url
+
+	// 额外环境变量（key=value 格式），由特定 Service 在入队前注入
+	ExtraEnvs []string `json:"extra_envs,omitempty"`
 
 	// M2.4 重新评审
 	CreatedAt       time.Time `json:"created_at,omitempty"`        // 任务创建时间（staleness check 基准）

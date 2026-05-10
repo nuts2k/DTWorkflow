@@ -42,6 +42,7 @@ type TaskTimeoutsConfig struct {
 	FixIssue     time.Duration
 	GenTests     time.Duration
 	AnalyzeIssue time.Duration // M3.4: 只读分析超时（默认 15m）
+	RunE2E       time.Duration
 }
 
 // Lookup 根据任务类型返回对应超时值。零值时回退到与 queue 层一致的按类型默认值。
@@ -67,6 +68,11 @@ func (c TaskTimeoutsConfig) Lookup(taskType model.TaskType) time.Duration {
 			return c.AnalyzeIssue
 		}
 		return 15 * time.Minute
+	case model.TaskTypeRunE2E:
+		if c.RunE2E > 0 {
+			return c.RunE2E
+		}
+		return 60 * time.Minute
 	default:
 		return 10 * time.Minute
 	}
@@ -82,6 +88,7 @@ type StreamMonitorConfig struct {
 type PoolConfig struct {
 	Image            string // 锁定 tag，如 dtworkflow-worker:1.0
 	ImageFull        string // 执行镜像（fix、gen_tests），可选
+	ImageE2E         string // E2E 镜像（Playwright + Chromium），可选
 	MavenCacheVolume string // Maven 缓存 Docker named volume，非空时挂载到 /workspace/.m2/repository（仅 ImageFull 容器）
 	NpmCacheVolume   string // npm 缓存 Docker named volume，非空时挂载到 /workspace/.npm（仅 ImageFull 容器）
 	CPULimit         string // 容器 CPU 限制，如 "2.0"
@@ -122,6 +129,9 @@ func (c PoolConfig) Validate() error {
 	}
 	if c.ImageFull != "" && strings.Contains(c.ImageFull, " ") {
 		return fmt.Errorf("PoolConfig.ImageFull 不可含空格: %q", c.ImageFull)
+	}
+	if c.ImageE2E != "" && strings.Contains(c.ImageE2E, " ") {
+		return fmt.Errorf("PoolConfig.ImageE2E 不可含空格: %q", c.ImageE2E)
 	}
 	return nil
 }

@@ -15,6 +15,7 @@ func buildQueueTimeoutConfigFromAppConfig(cfg *config.Config) queue.TaskTimeouts
 		AnalyzeIssue: cfg.Worker.Timeouts.AnalyzeIssue, // M3.4
 		FixIssue:     cfg.Worker.Timeouts.FixIssue,
 		GenTests:     cfg.Worker.Timeouts.GenTests,
+		RunE2E:       cfg.Worker.Timeouts.RunE2E, // M5.1
 	}
 }
 
@@ -27,6 +28,7 @@ func buildWorkerTimeoutConfigFromAppConfig(cfg *config.Config) worker.TaskTimeou
 		AnalyzeIssue: cfg.Worker.Timeouts.AnalyzeIssue, // M3.4
 		FixIssue:     cfg.Worker.Timeouts.FixIssue,
 		GenTests:     cfg.Worker.Timeouts.GenTests,
+		RunE2E:       cfg.Worker.Timeouts.RunE2E, // M5.1
 	}
 }
 
