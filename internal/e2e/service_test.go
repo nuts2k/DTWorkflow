@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -86,6 +87,23 @@ func TestParseE2EResult_CLIEnvelope(t *testing.T) {
 	output, err := parseE2EResult(raw)
 	require.NoError(t, err)
 	assert.True(t, output.Success)
+}
+
+func TestParseE2EResult_StreamMonitorSuccessEnvelope(t *testing.T) {
+	inner := `{"success":true,"total_cases":1,"passed_cases":1,"failed_cases":0,"error_cases":0,"skipped_cases":0,"cases":[{"name":"test1","module":"order","case_path":"e2e/order/cases/test1","status":"passed","duration_ms":500}]}`
+	raw := `{"type":"success","is_error":false,"result":` + strconv.Quote(inner) + `}`
+	output, err := parseE2EResult(raw)
+	require.NoError(t, err)
+	assert.True(t, output.Success)
+	assert.Equal(t, 1, output.PassedCases)
+}
+
+func TestParseE2EResult_CLIErrorEnvelope(t *testing.T) {
+	raw := `{"type":"error_during_execution","is_error":true,"result":""}`
+	output, err := parseE2EResult(raw)
+	require.Error(t, err)
+	assert.Nil(t, output)
+	assert.Contains(t, err.Error(), "Claude CLI 报告错误")
 }
 
 func TestValidateE2EOutput_SuccessWithFailed(t *testing.T) {

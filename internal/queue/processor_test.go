@@ -12,6 +12,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
@@ -113,6 +114,17 @@ func (m *mockTestExecutor) Execute(_ context.Context, _ model.TaskPayload) (*tes
 func (m *mockTestExecutor) WriteDegraded(_ context.Context, _ model.TaskPayload, _ *testgen.TestGenResult) error {
 	m.writeDegradedCalls++
 	return m.writeDegradedErr
+}
+
+type mockE2EExecutor struct {
+	result *e2e.E2EResult
+	err    error
+	calls  int
+}
+
+func (m *mockE2EExecutor) Execute(_ context.Context, _ model.TaskPayload) (*e2e.E2EResult, error) {
+	m.calls++
+	return m.result, m.err
 }
 
 // buildAsynqTask 构建测试用的 asynq.Task（仅序列化 payload，不依赖 ResultWriter）
@@ -754,6 +766,84 @@ func TestProcessTask_GenTests_DeterministicFailureSkipRetry(t *testing.T) {
 	got := s.tasks["proc-task-gentests-skipretry"]
 	if got.Status != model.TaskStatusFailed {
 		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+}
+
+func TestProcessTask_E2EFailureSkipRetry(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeRunE2E,
+		DeliveryID:   "dlv-e2e-failed-1",
+		RepoFullName: "org/repo",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:         "proc-task-e2e-failed",
+		TaskType:   model.TaskTypeRunE2E,
+		Status:     model.TaskStatusQueued,
+		Payload:    payload,
+		DeliveryID: payload.DeliveryID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	seedRecord(s, record)
+
+	e2eExec := &mockE2EExecutor{result: &e2e.E2EResult{
+		RawOutput: `{"success":false}`,
+		Output: &e2e.E2EOutput{
+			Success:      false,
+			TotalCases:   1,
+			PassedCases:  0,
+			FailedCases:  1,
+			ErrorCases:   0,
+			SkippedCases: 0,
+			Cases: []e2e.CaseResult{{
+				Name:            "checkout",
+				Module:          "order",
+				Status:          "failed",
+				FailureCategory: "bug",
+			}},
+		},
+		DurationMs: 1000,
+	}}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithE2EService(e2eExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("E2E success=false 应包含 asynq.SkipRetry，实际: %v", err)
+	}
+	got := s.tasks["proc-task-e2e-failed"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if !strings.Contains(got.Error, "E2E 测试未通过") {
+		t.Errorf("Error 应包含 E2E 失败摘要，实际: %q", got.Error)
+	}
+	if got.Result != `{"success":false}` {
+		t.Errorf("Result = %q, want raw E2E output", got.Result)
+	}
+}
+
+func TestAdaptE2EResult_EnvironmentFailureRetryable(t *testing.T) {
+	result := adaptE2EResult(&e2e.E2EResult{
+		Output: &e2e.E2EOutput{
+			Success:      false,
+			TotalCases:   1,
+			FailedCases:  1,
+			PassedCases:  0,
+			ErrorCases:   0,
+			SkippedCases: 0,
+			Cases: []e2e.CaseResult{{
+				Name:            "login",
+				Module:          "auth",
+				Status:          "failed",
+				FailureCategory: "environment",
+			}},
+		},
+	})
+	if result.ExitCode != 1 {
+		t.Fatalf("environment 类 E2E 失败应保留可重试 exit code 1，实际: %d", result.ExitCode)
 	}
 }
 

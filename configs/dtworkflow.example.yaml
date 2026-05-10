@@ -67,6 +67,7 @@ worker:
   timeout: "30m"
   image: "dtworkflow-worker:1.0"
   image_full: "dtworkflow-worker-full:latest"  # M3.4: 执行镜像（可选，不配则所有任务用 image）
+  image_e2e: "dtworkflow-worker-e2e:latest"    # M5.1: E2E 镜像（Playwright + Chromium）
   # maven_cache_volume: "dtworkflow-maven-cache"  # Maven 缓存 named volume（通常由 compose 环境变量注入）
   # npm_cache_volume: "dtworkflow-npm-cache"       # npm 缓存 named volume（通常由 compose 环境变量注入）
   cpu_limit: "2.0"
@@ -81,6 +82,7 @@ worker:
     analyze_issue: "15m"   # M3.4: 只读分析
     fix_issue: "45m"       # M3.4: 含分析 + 修复 + 测试
     gen_tests: "30m"
+    run_e2e: "60m"
   # 流式心跳监控（stream-json 活跃度检测）
   # 启用后容器内 claude -p 改用 stream-json 输出格式，
   # 通过监控 stdout 事件流检测容器是否卡住。

@@ -1220,14 +1220,42 @@ func adaptE2EResult(r *e2e.E2EResult) *worker.ExecutionResult {
 		return nil
 	}
 	exitCode := 0
+	errMsg := ""
 	if r.Output != nil && !r.Output.Success {
 		exitCode = 1
+		if isDeterministicE2EFailure(r.Output) {
+			exitCode = 2
+		}
+		errMsg = fmt.Sprintf("E2E 测试未通过: total=%d passed=%d failed=%d error=%d skipped=%d",
+			r.Output.TotalCases,
+			r.Output.PassedCases,
+			r.Output.FailedCases,
+			r.Output.ErrorCases,
+			r.Output.SkippedCases,
+		)
 	}
 	return &worker.ExecutionResult{
 		ExitCode: exitCode,
 		Output:   r.RawOutput,
 		Duration: r.DurationMs,
+		Error:    errMsg,
 	}
+}
+
+func isDeterministicE2EFailure(o *e2e.E2EOutput) bool {
+	if o == nil {
+		return false
+	}
+	hasFailure := false
+	for _, c := range o.Cases {
+		switch c.FailureCategory {
+		case "environment":
+			return false
+		case "bug", "script_outdated":
+			hasFailure = true
+		}
+	}
+	return hasFailure && o.ErrorCases == 0
 }
 
 // adaptTestResult 将 test.TestGenResult 适配为 worker.ExecutionResult。

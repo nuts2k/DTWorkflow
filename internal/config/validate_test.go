@@ -598,6 +598,13 @@ func TestValidate_WorkerTimeouts_Negative(t *testing.T) {
 			},
 			errKey: "worker.timeouts.gen_tests",
 		},
+		{
+			name: "负数 run_e2e",
+			mutate: func(cfg *Config) {
+				cfg.Worker.Timeouts.RunE2E = -1 * time.Minute
+			},
+			errKey: "worker.timeouts.run_e2e",
+		},
 	}
 
 	for _, tc := range tests {
@@ -642,6 +649,13 @@ func TestValidate_WorkerTimeouts_ExceedsMax(t *testing.T) {
 			},
 			errKey: "worker.timeouts.gen_tests",
 		},
+		{
+			name: "run_e2e 超过 24h",
+			mutate: func(cfg *Config) {
+				cfg.Worker.Timeouts.RunE2E = 25 * time.Hour
+			},
+			errKey: "worker.timeouts.run_e2e",
+		},
 	}
 
 	for _, tc := range tests {
@@ -668,10 +682,87 @@ func TestValidate_WorkerTimeouts_ZeroAllowed(t *testing.T) {
 	cfg.Worker.Timeouts.ReviewPR = 0
 	cfg.Worker.Timeouts.FixIssue = 0
 	cfg.Worker.Timeouts.GenTests = 0
+	cfg.Worker.Timeouts.RunE2E = 0
 	err := Validate(cfg)
 	if err != nil {
 		t.Errorf("零值 timeouts 应通过校验，但返回: %v", err)
 	}
+}
+
+func TestValidate_WorkerImageE2E_Invalid(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Worker.ImageE2E = "bad image"
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("worker.image_e2e 含空格应校验失败")
+	}
+	if !strings.Contains(err.Error(), "worker.image_e2e") {
+		t.Errorf("错误应包含 worker.image_e2e，得到: %v", err)
+	}
+}
+
+func TestValidate_E2EConfig(t *testing.T) {
+	t.Run("enabled true 时 environments 不能为空", func(t *testing.T) {
+		cfg := validBaseConfig()
+		enabled := true
+		cfg.E2E.Enabled = &enabled
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "e2e.environments") {
+			t.Fatalf("应校验 e2e.environments 不能为空，实际: %v", err)
+		}
+	})
+
+	t.Run("default_env 必须存在", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.E2E.DefaultEnv = "staging"
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "e2e.default_env") {
+			t.Fatalf("应校验 e2e.default_env，实际: %v", err)
+		}
+	})
+
+	t.Run("base_url 必须合法", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.E2E.Environments = map[string]E2EEnvironment{
+			"staging": {BaseURL: "ftp://example.com"},
+		}
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "base_url") {
+			t.Fatalf("应校验 e2e base_url，实际: %v", err)
+		}
+	})
+
+	t.Run("db 字段必填", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.E2E.Environments = map[string]E2EEnvironment{
+			"staging": {
+				BaseURL: "https://staging.example.com",
+				DB:      &E2EDBConfig{Host: "db.internal"},
+			},
+		}
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "db.user") || !strings.Contains(err.Error(), "db.database") {
+			t.Fatalf("应校验 e2e db 必填字段，实际: %v", err)
+		}
+	})
+
+	t.Run("有效 E2E 配置通过", func(t *testing.T) {
+		cfg := validBaseConfig()
+		enabled := true
+		cfg.E2E.Enabled = &enabled
+		cfg.E2E.DefaultEnv = "staging"
+		cfg.E2E.Environments = map[string]E2EEnvironment{
+			"staging": {
+				BaseURL: "https://staging.example.com",
+				DB: &E2EDBConfig{
+					Host: "db.internal", User: "tester", Database: "app_test",
+				},
+			},
+		}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("有效 E2E 配置应通过校验: %v", err)
+		}
+	})
 }
 
 func TestValidate_StreamMonitor_InvalidActivityTimeout(t *testing.T) {

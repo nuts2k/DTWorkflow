@@ -163,11 +163,15 @@ func buildClaudeCmd(model, effort string) []string {
 func parseE2EResult(raw string) (*E2EOutput, error) {
 	type cliEnvelope struct {
 		Type   string          `json:"type"`
+		IsErr  bool            `json:"is_error"`
 		Result json.RawMessage `json:"result"`
 	}
 	raw = strings.TrimSpace(raw)
 	var envelope cliEnvelope
-	if err := json.Unmarshal([]byte(raw), &envelope); err == nil && envelope.Type == "result" && len(envelope.Result) > 0 {
+	if err := json.Unmarshal([]byte(raw), &envelope); err == nil && isE2ECLIEnvelope(envelope.Type, envelope.IsErr, envelope.Result) {
+		if envelope.IsErr || !isE2ECLISuccessType(envelope.Type) {
+			return nil, fmt.Errorf("Claude CLI 报告错误: type=%s is_error=%v", envelope.Type, envelope.IsErr)
+		}
 		raw = string(envelope.Result)
 		var s string
 		if json.Unmarshal([]byte(raw), &s) == nil {
@@ -187,4 +191,25 @@ func parseE2EResult(raw string) (*E2EOutput, error) {
 	}
 
 	return &output, nil
+}
+
+func isE2ECLIEnvelope(t string, isErr bool, result json.RawMessage) bool {
+	if isErr || len(result) == 0 {
+		return isErr
+	}
+	switch t {
+	case "result", "success", "error", "error_during_execution":
+		return true
+	default:
+		return false
+	}
+}
+
+func isE2ECLISuccessType(t string) bool {
+	switch t {
+	case "", "result", "success":
+		return true
+	default:
+		return false
+	}
 }

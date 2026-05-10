@@ -116,6 +116,7 @@ func Validate(cfg *Config) error {
 		{"worker.timeouts.fix_issue", cfg.Worker.Timeouts.FixIssue},
 		{"worker.timeouts.gen_tests", cfg.Worker.Timeouts.GenTests},
 		{"worker.timeouts.analyze_issue", cfg.Worker.Timeouts.AnalyzeIssue},
+		{"worker.timeouts.run_e2e", cfg.Worker.Timeouts.RunE2E},
 	} {
 		if tc.val < 0 {
 			errs = append(errs, fmt.Errorf("%s 不能为负数，当前值: %s", tc.name, tc.val))
@@ -130,6 +131,13 @@ func Validate(cfg *Config) error {
 			errs = append(errs, fmt.Errorf("worker.image_full 格式非法: %q", cfg.Worker.ImageFull))
 		}
 	}
+	if cfg.Worker.ImageE2E != "" {
+		if strings.Contains(cfg.Worker.ImageE2E, " ") {
+			errs = append(errs, fmt.Errorf("worker.image_e2e 格式非法: %q", cfg.Worker.ImageE2E))
+		}
+	}
+
+	errs = append(errs, validateE2EConfig(cfg)...)
 
 	// worker.stream_monitor 校验（仅在 enabled 时校验 activity_timeout）
 	if cfg.Worker.StreamMonitor.Enabled {
@@ -358,6 +366,56 @@ func Validate(cfg *Config) error {
 
 	if len(errs) > 0 {
 		return &ValidationError{Errors: errs}
+	}
+	return nil
+}
+
+func validateE2EConfig(cfg *Config) []error {
+	if cfg == nil {
+		return nil
+	}
+	var errs []error
+	enabled := cfg.E2E.Enabled != nil && *cfg.E2E.Enabled
+	if enabled && len(cfg.E2E.Environments) == 0 {
+		errs = append(errs, fmt.Errorf("e2e.enabled=true 时 e2e.environments 不能为空"))
+	}
+	if cfg.E2E.DefaultEnv != "" {
+		if _, ok := cfg.E2E.Environments[cfg.E2E.DefaultEnv]; !ok {
+			errs = append(errs, fmt.Errorf("e2e.default_env %q 未在 e2e.environments 中定义", cfg.E2E.DefaultEnv))
+		}
+	}
+	for name, env := range cfg.E2E.Environments {
+		if strings.TrimSpace(env.BaseURL) == "" {
+			errs = append(errs, fmt.Errorf("e2e.environments[%s].base_url 不能为空", name))
+		} else if err := validateHTTPURL(env.BaseURL); err != nil {
+			errs = append(errs, fmt.Errorf("e2e.environments[%s].base_url 格式不合法: %w", name, err))
+		}
+		if env.DB == nil {
+			continue
+		}
+		if strings.TrimSpace(env.DB.Host) == "" {
+			errs = append(errs, fmt.Errorf("e2e.environments[%s].db.host 不能为空", name))
+		}
+		if strings.TrimSpace(env.DB.User) == "" {
+			errs = append(errs, fmt.Errorf("e2e.environments[%s].db.user 不能为空", name))
+		}
+		if strings.TrimSpace(env.DB.Database) == "" {
+			errs = append(errs, fmt.Errorf("e2e.environments[%s].db.database 不能为空", name))
+		}
+	}
+	return errs
+}
+
+func validateHTTPURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("仅支持 http/https 协议")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("缺少主机名")
 	}
 	return nil
 }
