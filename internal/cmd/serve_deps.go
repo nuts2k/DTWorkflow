@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -156,6 +157,7 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 		pcfg.MavenCacheVolume = cfg.AppCfg.Worker.MavenCacheVolume // M3.5
 		pcfg.NpmCacheVolume = cfg.AppCfg.Worker.NpmCacheVolume
 		pcfg.ImageE2E = cfg.AppCfg.Worker.ImageE2E // M5.1
+		pcfg.DataDir = filepath.Dir(cfg.AppCfg.Database.Path)
 	}
 	return pcfg
 }

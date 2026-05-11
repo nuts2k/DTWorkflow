@@ -116,6 +116,18 @@ func (m *mockTaskStore) ListActiveGenTestsModules(_ context.Context, _ string) (
 	return nil, nil
 }
 
+func (m *mockTaskStore) SaveE2EResult(_ context.Context, _ *store.E2EResultRecord) error {
+	return nil
+}
+
+func (m *mockTaskStore) GetE2EResultByTaskID(_ context.Context, _ string) (*store.E2EResultRecord, error) {
+	return nil, nil
+}
+
+func (m *mockTaskStore) UpdateE2ECreatedIssues(_ context.Context, _ string, _ map[string]int64) error {
+	return nil
+}
+
 type stubTaskEnqueuer struct {
 	asynqID     string
 	enqueueErr  error

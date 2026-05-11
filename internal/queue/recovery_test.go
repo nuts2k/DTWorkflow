@@ -103,6 +103,18 @@ func (m *mockStoreForRecovery) ListActiveGenTestsModules(_ context.Context, _ st
 	return nil, nil
 }
 
+func (m *mockStoreForRecovery) SaveE2EResult(_ context.Context, _ *store.E2EResultRecord) error {
+	return nil
+}
+
+func (m *mockStoreForRecovery) GetE2EResultByTaskID(_ context.Context, _ string) (*store.E2EResultRecord, error) {
+	return nil, nil
+}
+
+func (m *mockStoreForRecovery) UpdateE2ECreatedIssues(_ context.Context, _ string, _ map[string]int64) error {
+	return nil
+}
+
 // mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
 type mockEnqueuerForRecovery struct {
 	enqueueErr error

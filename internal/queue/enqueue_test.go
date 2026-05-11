@@ -204,6 +204,18 @@ func (m *mockStore) UpdateTestGenResultReviewEnqueued(_ context.Context, _ strin
 	return nil
 }
 
+func (m *mockStore) SaveE2EResult(_ context.Context, _ *store.E2EResultRecord) error {
+	return nil
+}
+
+func (m *mockStore) GetE2EResultByTaskID(_ context.Context, _ string) (*store.E2EResultRecord, error) {
+	return nil, nil
+}
+
+func (m *mockStore) UpdateE2ECreatedIssues(_ context.Context, _ string, _ map[string]int64) error {
+	return nil
+}
+
 func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
 	if m.activeGenTestsModulesErr != nil {
 		return nil, m.activeGenTestsModulesErr

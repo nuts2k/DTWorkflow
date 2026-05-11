@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -163,6 +164,16 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	}
 	defer cleanup()
 
+	// M5.2: 启动时清理过期 E2E artifact
+	if cfg.AppCfg != nil {
+		retentionDays := 7
+		if cfg.AppCfg.E2E.ArtifactRetentionDays > 0 {
+			retentionDays = cfg.AppCfg.E2E.ArtifactRetentionDays
+		}
+		dataDir := filepath.Dir(cfg.AppCfg.Database.Path)
+		cleanupE2EArtifacts(filepath.Join(dataDir, "e2e-artifacts"), retentionDays)
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Logger())
@@ -264,12 +275,18 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		)
 		processorOpts = append(processorOpts, queue.WithTestService(testSvc))
 
-		// M5.1：装配 e2e.Service
-		e2eSvc := e2esvc.NewService(
-			deps.Pool,
-			cfgAdapter,
-			e2esvc.WithServiceLogger(slog.Default()),
-		)
+		// M5.2：装配 e2e.Service（新增 IssueClient / Store / ArtifactDir）
+		var e2eOpts []e2esvc.ServiceOption
+		e2eOpts = append(e2eOpts, e2esvc.WithServiceLogger(slog.Default()))
+		if deps.GiteaFixClient != nil {
+			e2eOpts = append(e2eOpts, e2esvc.WithIssueClient(deps.GiteaFixClient))
+		}
+		e2eOpts = append(e2eOpts, e2esvc.WithStore(deps.Store))
+		dataDir := filepath.Dir(cfg.AppCfg.Database.Path)
+		if dataDir != "" && dataDir != "." {
+			e2eOpts = append(e2eOpts, e2esvc.WithArtifactDir(dataDir))
+		}
+		e2eSvc := e2esvc.NewService(deps.Pool, cfgAdapter, e2eOpts...)
 		processorOpts = append(processorOpts, queue.WithE2EService(e2eSvc))
 	}
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), processorOpts...)
@@ -370,6 +387,40 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 
 	slog.Info("收到关闭信号，开始分层关闭...")
 	return gracefulShutdown(server, deps, recoveryCancel, gcCancel)
+}
+
+// cleanupE2EArtifacts 清理超过 retentionDays 天的 E2E artifact 目录。
+func cleanupE2EArtifacts(baseDir string, retentionDays int) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("扫描 E2E artifact 目录失败", "path", baseDir, "error", err)
+		}
+		return
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	var cleaned int
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			dirPath := filepath.Join(baseDir, entry.Name())
+			if err := os.RemoveAll(dirPath); err != nil {
+				slog.Warn("清理 E2E artifact 失败", "path", dirPath, "error", err)
+			} else {
+				cleaned++
+			}
+		}
+	}
+	if cleaned > 0 {
+		slog.Info("E2E artifact 清理完成", "cleaned", cleaned, "retention_days", retentionDays)
+	}
 }
 
 // getEnvDefault 读取环境变量，若为空则返回默认值。

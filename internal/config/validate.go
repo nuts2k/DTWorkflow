@@ -403,6 +403,11 @@ func validateE2EConfig(cfg *Config) []error {
 			errs = append(errs, fmt.Errorf("e2e.environments[%s].db.database 不能为空", name))
 		}
 	}
+	if cfg.E2E.ArtifactRetentionDays != 0 &&
+		(cfg.E2E.ArtifactRetentionDays < 1 || cfg.E2E.ArtifactRetentionDays > 90) {
+		errs = append(errs, fmt.Errorf("e2e.artifact_retention_days 必须在 [1, 90] 范围内，当前值: %d",
+			cfg.E2E.ArtifactRetentionDays))
+	}
 	return errs
 }
 
