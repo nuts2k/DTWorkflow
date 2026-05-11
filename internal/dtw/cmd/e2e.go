@@ -62,7 +62,12 @@ var e2eRunCmd = &cobra.Command{
 		}
 
 		var result struct {
+			Split  bool   `json:"split"`
 			TaskID string `json:"task_id"`
+			Tasks  []struct {
+				TaskID string `json:"task_id"`
+				Module string `json:"module"`
+			} `json:"tasks"`
 		}
 
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/e2e", owner, repo)
@@ -70,7 +75,56 @@ var e2eRunCmd = &cobra.Command{
 			return fmt.Errorf("提交 E2E 任务失败: %w", err)
 		}
 
+		// 多模块拆分场景
+		if result.Split && len(result.Tasks) > 1 {
+			if e2eNoWait {
+				if flagJSON {
+					return printer.PrintJSON(result)
+				}
+				printer.PrintHuman("整仓扫描发现 %d 个 E2E 模块，已拆分入队：", len(result.Tasks))
+				for i, t := range result.Tasks {
+					printer.PrintHuman("  [%d] module=%-20s task_id=%s", i+1, t.Module, t.TaskID)
+				}
+				return nil
+			}
+			if flagJSON {
+				return printer.PrintJSON(result)
+			}
+			printer.PrintHuman("已拆分为 %d 个子任务，逐任务等待完成...", len(result.Tasks))
+
+			opts := dtw.DefaultWaitOptions()
+			if e2eTimeout > 0 {
+				opts.Timeout = e2eTimeout
+			}
+
+			var firstErr error
+			for i, t := range result.Tasks {
+				printer.PrintHuman("  [%d/%d] module=%s task_id=%s 等待中...",
+					i+1, len(result.Tasks), t.Module, t.TaskID)
+				status, err := dtw.WaitForTask(cmd.Context(), client, t.TaskID, opts)
+				if err != nil {
+					printer.PrintHuman("  [%d/%d] module=%s 等待失败: %v", i+1, len(result.Tasks), t.Module, err)
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				printer.PrintHuman("  [%d/%d] module=%s status=%s", i+1, len(result.Tasks), t.Module, status.Status)
+				if status.Error != "" {
+					printer.PrintHuman("    错误: %s", status.Error)
+				}
+				if status.Status == "failed" && firstErr == nil {
+					firstErr = fmt.Errorf("E2E 任务失败: module=%s task_id=%s", t.Module, t.TaskID)
+				}
+			}
+			return firstErr
+		}
+
+		// 单任务场景
 		taskID := result.TaskID
+		if taskID == "" && len(result.Tasks) > 0 {
+			taskID = result.Tasks[0].TaskID
+		}
 
 		if e2eNoWait {
 			return printer.Print(fmt.Sprintf("E2E 任务已创建: %s", taskID), result)
