@@ -1,14 +1,23 @@
 package e2e
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
 type mockConfigProvider struct {
@@ -143,4 +152,237 @@ func TestBuildClaudeCmd(t *testing.T) {
 	assert.Contains(t, cmd, "--effort")
 	assert.Contains(t, cmd, "high")
 	assert.Equal(t, "-", cmd[len(cmd)-1])
+}
+
+// --- M5.2: processFailures 测试 mock ---
+
+type mockPool struct{}
+
+func (m *mockPool) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload,
+	_ []string, _ []byte) (*worker.ExecutionResult, error) {
+	return &worker.ExecutionResult{}, nil
+}
+
+type mockIssueClient struct {
+	createdIssues []gitea.CreateIssueOption
+	labels        []gitea.Label
+	createErr     error
+	labelsErr     error
+}
+
+func (m *mockIssueClient) CreateIssue(_ context.Context, _, _ string,
+	opts gitea.CreateIssueOption) (*gitea.Issue, *gitea.Response, error) {
+	if m.createErr != nil {
+		return nil, nil, m.createErr
+	}
+	m.createdIssues = append(m.createdIssues, opts)
+	return &gitea.Issue{Number: int64(len(m.createdIssues) + 40)}, nil, nil
+}
+
+func (m *mockIssueClient) ListRepoLabels(_ context.Context, _, _ string) ([]gitea.Label, *gitea.Response, error) {
+	return m.labels, nil, m.labelsErr
+}
+
+func (m *mockIssueClient) CreateIssueAttachment(_ context.Context, _, _ string,
+	_ int64, filename string, _ io.Reader) (*gitea.Attachment, *gitea.Response, error) {
+	return &gitea.Attachment{ID: 1, Name: filename}, nil, nil
+}
+
+type mockE2EStore struct {
+	saved   *store.E2EResultRecord
+	updated map[string]int64
+}
+
+func (m *mockE2EStore) SaveE2EResult(_ context.Context, record *store.E2EResultRecord) error {
+	record.ID = "test-record-id"
+	m.saved = record
+	return nil
+}
+
+func (m *mockE2EStore) GetE2EResultByTaskID(_ context.Context, taskID string) (*store.E2EResultRecord, error) {
+	if m.saved != nil && m.saved.TaskID == taskID {
+		return m.saved, nil
+	}
+	return nil, nil
+}
+
+func (m *mockE2EStore) UpdateE2ECreatedIssues(_ context.Context, _ string, issues map[string]int64) error {
+	m.updated = issues
+	return nil
+}
+
+// --- M5.2: processFailures 测试 ---
+
+func TestProcessFailures_BugCreatesIssue(t *testing.T) {
+	ic := &mockIssueClient{
+		labels: []gitea.Label{{ID: 5, Name: "fix-to-pr"}},
+	}
+	svc := NewService(&mockPool{}, &mockConfigProvider{},
+		WithIssueClient(ic),
+		WithServiceLogger(slog.Default()),
+	)
+
+	result := &E2EResult{
+		Output: &E2EOutput{
+			Cases: []CaseResult{
+				{Name: "create-order", Module: "order", CasePath: "e2e/order/cases/create-order",
+					Status: "failed", FailureCategory: "bug", FailureAnalysis: "按钮失效"},
+			},
+		},
+		CreatedIssues: make(map[string]int64),
+	}
+
+	payload := model.TaskPayload{TaskID: "t1", RepoFullName: "owner/repo", BaseRef: "main"}
+	err := svc.processFailures(context.Background(), payload, result, map[string]int64{}, "https://app.example.com")
+	if err != nil {
+		t.Fatalf("processFailures: %v", err)
+	}
+	if len(ic.createdIssues) != 1 {
+		t.Fatalf("期望创建 1 个 Issue，实际=%d", len(ic.createdIssues))
+	}
+	if !strings.Contains(ic.createdIssues[0].Title, "bug") {
+		t.Errorf("标题应包含 bug: %s", ic.createdIssues[0].Title)
+	}
+	if len(ic.createdIssues[0].Labels) != 0 {
+		t.Errorf("bug 类不应携带标签，实际=%v", ic.createdIssues[0].Labels)
+	}
+}
+
+func TestProcessFailures_ScriptOutdatedWithLabel(t *testing.T) {
+	ic := &mockIssueClient{
+		labels: []gitea.Label{{ID: 5, Name: "fix-to-pr"}},
+	}
+	svc := NewService(&mockPool{}, &mockConfigProvider{},
+		WithIssueClient(ic),
+		WithServiceLogger(slog.Default()),
+	)
+
+	result := &E2EResult{
+		Output: &E2EOutput{
+			Cases: []CaseResult{
+				{Name: "login", Module: "auth", CasePath: "e2e/auth/cases/login",
+					Status: "failed", FailureCategory: "script_outdated"},
+			},
+		},
+		CreatedIssues: make(map[string]int64),
+	}
+
+	payload := model.TaskPayload{TaskID: "t2", RepoFullName: "owner/repo"}
+	_ = svc.processFailures(context.Background(), payload, result, map[string]int64{}, "https://app.example.com")
+
+	if len(ic.createdIssues) != 1 {
+		t.Fatalf("期望创建 1 个 Issue，实际=%d", len(ic.createdIssues))
+	}
+	if len(ic.createdIssues[0].Labels) != 1 || ic.createdIssues[0].Labels[0] != 5 {
+		t.Errorf("script_outdated 应携带 fix-to-pr 标签 ID=5，实际=%v", ic.createdIssues[0].Labels)
+	}
+}
+
+func TestProcessFailures_EnvironmentSkipped(t *testing.T) {
+	ic := &mockIssueClient{}
+	svc := NewService(&mockPool{}, &mockConfigProvider{},
+		WithIssueClient(ic),
+		WithServiceLogger(slog.Default()),
+	)
+
+	result := &E2EResult{
+		Output: &E2EOutput{
+			Cases: []CaseResult{
+				{Name: "checkout", Module: "payment", CasePath: "e2e/payment/cases/checkout",
+					Status: "failed", FailureCategory: "environment"},
+			},
+		},
+		CreatedIssues: make(map[string]int64),
+	}
+
+	payload := model.TaskPayload{TaskID: "t3", RepoFullName: "owner/repo"}
+	_ = svc.processFailures(context.Background(), payload, result, map[string]int64{}, "https://app.example.com")
+
+	if len(ic.createdIssues) != 0 {
+		t.Errorf("environment 失败不应创建 Issue，实际创建=%d", len(ic.createdIssues))
+	}
+}
+
+func TestProcessFailures_IdempotentGuard(t *testing.T) {
+	ic := &mockIssueClient{}
+	svc := NewService(&mockPool{}, &mockConfigProvider{},
+		WithIssueClient(ic),
+		WithServiceLogger(slog.Default()),
+	)
+
+	result := &E2EResult{
+		Output: &E2EOutput{
+			Cases: []CaseResult{
+				{Name: "create-order", Module: "order", CasePath: "e2e/order/cases/create-order",
+					Status: "failed", FailureCategory: "bug"},
+			},
+		},
+		CreatedIssues: make(map[string]int64),
+	}
+
+	// 模拟已有 Issue（幂等）
+	saved := map[string]int64{"e2e/order/cases/create-order": 42}
+	payload := model.TaskPayload{TaskID: "t4", RepoFullName: "owner/repo"}
+	_ = svc.processFailures(context.Background(), payload, result, saved, "https://app.example.com")
+
+	if len(ic.createdIssues) != 0 {
+		t.Errorf("幂等 guard 应跳过已有 Issue，实际创建=%d", len(ic.createdIssues))
+	}
+}
+
+func TestProcessFailures_CreateIssueError_Degraded(t *testing.T) {
+	ic := &mockIssueClient{
+		createErr: fmt.Errorf("Gitea API 500"),
+	}
+	svc := NewService(&mockPool{}, &mockConfigProvider{},
+		WithIssueClient(ic),
+		WithServiceLogger(slog.Default()),
+	)
+
+	result := &E2EResult{
+		Output: &E2EOutput{
+			Cases: []CaseResult{
+				{Name: "a", Module: "m", CasePath: "e2e/m/cases/a",
+					Status: "failed", FailureCategory: "bug"},
+				{Name: "b", Module: "m", CasePath: "e2e/m/cases/b",
+					Status: "failed", FailureCategory: "bug"},
+			},
+		},
+		CreatedIssues: make(map[string]int64),
+	}
+
+	payload := model.TaskPayload{TaskID: "t5", RepoFullName: "owner/repo"}
+	err := svc.processFailures(context.Background(), payload, result, map[string]int64{}, "https://app.example.com")
+	// Issue 创建失败不阻断主流程
+	if err != nil {
+		t.Errorf("processFailures 不应返回错误: %v", err)
+	}
+	if len(result.CreatedIssues) != 0 {
+		t.Errorf("创建失败时 CreatedIssues 应为空，实际=%d", len(result.CreatedIssues))
+	}
+}
+
+func TestConvertScreenshotPath_Valid(t *testing.T) {
+	svc := &Service{artifactDir: "/data", logger: slog.Default()}
+	got := svc.convertScreenshotPath("/workspace/artifacts/test-results/login/screenshot.png", "task-1")
+	expected := filepath.Join("/data", "e2e-artifacts", "task-1", "test-results", "login", "screenshot.png")
+	if got != expected {
+		t.Errorf("路径转换: 期望=%s 实际=%s", expected, got)
+	}
+}
+
+func TestConvertScreenshotPath_TraversalBlocked(t *testing.T) {
+	svc := &Service{artifactDir: "/data", logger: slog.Default()}
+	got := svc.convertScreenshotPath("/workspace/artifacts/../../../etc/passwd", "task-1")
+	if got != "" {
+		t.Errorf("路径遍历应被拦截，实际=%s", got)
+	}
+}
+
+func TestConvertScreenshotPath_NoPrefix(t *testing.T) {
+	svc := &Service{artifactDir: "/data", logger: slog.Default()}
+	got := svc.convertScreenshotPath("/tmp/random/file.png", "task-1")
+	if got != "" {
+		t.Errorf("非 artifact 路径应返回空，实际=%s", got)
+	}
 }
