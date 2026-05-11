@@ -152,7 +152,8 @@ configs/        # 配置文件模板
 - **确定性失败**：`isDeterministicE2EFailure` 检测配置错误（disabled / env not found / no cases），返回 SkipRetry 不重试
 - **错误脱敏**：processor 对 `TaskTypeRunE2E` 错误消息调用 `SanitizeErrorMessage`，防止 Claude 原始输出泄露到通知/存储
 - **Token 复用**：E2E 当前复用 `gen_tests` 账号的 token 进行容器内 git 操作（只读克隆，不创建 PR）
-- **设计文档**：`docs/plans/2026-05-10-m5.1-e2e-infrastructure-impl-plan.md`
+- **case.yaml schema**：用户在仓库 `e2e/{module}/cases/{caseName}/case.yaml` 中定义用例。Go 类型 `e2e.CaseSpec`（`internal/e2e/case.go`），YAML 字段：`name`（必填）、`description`、`timeout`（[30s, 30m] 范围，默认 5m）、`tags`、`expectations`（业务意图，auto-fix 修复基准）、`setup`（数据准备脚本）、`test`（必填，`.spec.ts` Playwright 脚本）、`teardown`（清理脚本）。脚本名禁止绝对路径/路径遍历/子目录，扩展名限 `.sql` / `.js` / `.ts` / `.spec.ts`。`suite.yaml` 推迟至 M5.3
+- **设计文档**：`docs/plans/2026-05-09-m5.1-e2e-infrastructure-design.md`、`docs/plans/2026-05-10-m5.1-e2e-infrastructure-impl-plan.md`
 
 ## 测试服务器
 
