@@ -204,6 +204,21 @@ type CreateIssueCommentOption struct {
 	Body string `json:"body"`
 }
 
+// CreateIssueOption 创建 Issue 的选项
+type CreateIssueOption struct {
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	Labels    []int64  `json:"labels,omitempty"`
+	Assignees []string `json:"assignees,omitempty"`
+}
+
+// Attachment Issue/Release 附件
+type Attachment struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	DownloadURL string `json:"browser_download_url"`
+}
+
 // --- 仓库选项 ---
 
 // CreateBranchOption 创建分支的选项
