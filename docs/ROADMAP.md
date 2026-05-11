@@ -877,11 +877,15 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 测试报告生成（模块级 + 全量级汇总）
 - [x] 通知适配：飞书 + Gitea 通知（开始 / 成功 / 失败三场景）
 
-##### M5.3 模块拆分与并行执行
-- [ ] 全量执行时扫描 `e2e/` 目录，按模块拆分任务（复用 M4.2.1 模式）
-- [ ] 模块间 Worker 池并行调度
-- [ ] 多模块结果聚合为统一报告
-- [ ] Cancel-and-Replace 机制（复用现有模式）
+##### M5.3 模块拆分与并行执行（完成 2026-05-11）
+
+> 说明：全量模式（`--module` 留空）时宿主侧 `ScanE2EModules` 扫描 `e2e/` 目录发现模块，`EnqueueManualE2E` 按模块拆分为独立子任务，Worker 池并行调度。各模块独立通知和报告（不做聚合通知，与 gen_tests M4.2.1 一致）。Store 层泛化 gen_tests 专用查询为 task_type 参数化通用查询。
+
+- [x] 全量执行时扫描 `e2e/` 目录，按模块拆分任务（复用 M4.2.1 模式）
+- [x] 模块间 Worker 池并行调度（各子任务独立通知和报告，不做聚合）
+- [x] Cancel-and-Replace 机制（全量拆分前无条件清理旧任务 + 按模块粒度取消）
+- [x] Store 层泛化：`FindActiveTasksByModule` / `ListActiveModules` 按 task_type 参数化
+- [x] API / 服务端 CLI / dtw 瘦客户端适配多任务返回（`split/tasks` 结构）
 
 ---
 

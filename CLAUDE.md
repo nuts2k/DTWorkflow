@@ -152,7 +152,7 @@ configs/        # 配置文件模板
 - **确定性失败**：`isDeterministicE2EFailure` 检测配置错误（disabled / env not found / no cases），返回 SkipRetry 不重试
 - **错误脱敏**：processor 对 `TaskTypeRunE2E` 错误消息调用 `SanitizeErrorMessage`，防止 Claude 原始输出泄露到通知/存储
 - **Token 复用**：E2E 当前复用 `gen_tests` 账号的 token 进行容器内 git 操作（只读克隆，不创建 PR）
-- **case.yaml schema**：用户在仓库 `e2e/{module}/cases/{caseName}/case.yaml` 中定义用例。Go 类型 `e2e.CaseSpec`（`internal/e2e/case.go`），YAML 字段：`name`（必填）、`description`、`timeout`（[30s, 30m] 范围，默认 5m）、`tags`、`expectations`（业务意图，auto-fix 修复基准）、`setup`（数据准备脚本）、`test`（必填，`.spec.ts` Playwright 脚本）、`teardown`（清理脚本）。脚本名禁止绝对路径/路径遍历/子目录，扩展名限 `.sql` / `.js` / `.ts` / `.spec.ts`。`suite.yaml` 推迟至 M5.3
+- **case.yaml schema**：用户在仓库 `e2e/{module}/cases/{caseName}/case.yaml` 中定义用例。Go 类型 `e2e.CaseSpec`（`internal/e2e/case.go`），YAML 字段：`name`（必填）、`description`、`timeout`（[30s, 30m] 范围，默认 5m）、`tags`、`expectations`（业务意图，auto-fix 修复基准）、`setup`（数据准备脚本）、`test`（必填，`.spec.ts` Playwright 脚本）、`teardown`（清理脚本）。脚本名禁止绝对路径/路径遍历/子目录，扩展名限 `.sql` / `.js` / `.ts` / `.spec.ts`。`suite.yaml` 无明确用户场景驱动，暂不实现（YAGNI）
 - **设计文档**：`docs/plans/2026-05-09-m5.1-e2e-infrastructure-design.md`、`docs/plans/2026-05-10-m5.1-e2e-infrastructure-impl-plan.md`
 
 ## E2E 失败分析与报告（M5.2）
@@ -172,6 +172,20 @@ configs/        # 配置文件模板
 - **装配层**：`serve.go` 通过 `WithIssueClient(giteaFixClient)` + `WithStore(store)` + `WithArtifactDir(dataDir)` 注入 M5.2 依赖；任一为 nil 时优雅降级保持 M5.1 行为
 - **Token 使用**：Issue 创建使用 `fix` 账号 token（`GiteaFixClient`），避免 review 账号自评审冲突
 - **设计文档**：`docs/plans/2026-05-11-m5.2-failure-analysis-report-design.md`、`docs/plans/2026-05-11-m5.2-failure-analysis-report-impl-plan.md`
+
+## E2E 模块拆分与并行执行（M5.3）
+
+- **触发条件**：全量模式（`--module` 留空 + `e2eModuleScanner` 已注入 + `baseRef` 非空）时自动扫描拆分；指定 `--module` 时仍走单任务，与 M5.1 行为一致
+- **模块发现**：`e2e.ScanE2EModules`（`internal/e2e/scan.go`）调用 `E2EModuleScanner.ListDir("e2e")` 获取子目录，逐子目录校验 `cases/` 是否存在；`maxE2EScanDirs=30` 截断；单子目录扫描失败跳过继续；Gitea 404 由 adapter 层转译为 `ErrDirNotFound`，scan 层映射为 `ErrNoE2EModulesFound`
+- **入队层改造**：`EnqueueManualE2E` 返回 `([]EnqueuedTask, error)`；全量拆分前无条件 `cleanupAllActiveE2ETasks`（取消同仓库所有活跃 `run_e2e` 任务，含 `module=""` 的旧全量任务）；逐模块 `enqueueSingleE2E`（Cancel-and-Replace 按 `(repo, module)` 粒度）
+- **fail-open 退化**：scanner 未注入 → 单任务；扫描失败 → warn + 回退单任务；`ErrNoE2EModulesFound` → API 422 / CLI 退出码 1
+- **API 响应**：单任务保持原格式向后兼容；多任务返回 `{"split": true, "tasks": [{"task_id": "...", "module": "..."}, ...]}`
+- **dtw 瘦客户端**：`--no-wait` 输出汇总表格；等待模式逐任务轮询；`--json` 直接输出 API JSON
+- **Store 泛化**：`FindActiveGenTestsTasks` → `FindActiveTasksByModule(ctx, repo, module, taskType)`；`ListActiveGenTestsModules` → `ListActiveModules(ctx, repo, taskType)`；旧方法保留为委托，零回归风险
+- **Processor 零改动**：各子任务独立路由到 `e2e.Service.Execute`，独立通知和报告，不做聚合（与 gen_tests M4.2.1 一致）
+- **不做什么**：聚合通知/汇总报告、`suite.yaml`、显式多模块参数、Webhook 触发（M5.4）
+- **装配层**：`serve.go` + 服务端 CLI 通过 `WithE2EModuleScanner(&giteaRepoFileChecker{...})` 注入；`giteaRepoFileChecker` 天然满足 `E2EModuleScanner` 接口
+- **设计文档**：`docs/plans/2026-05-11-m5.3-e2e-module-split-parallel-design.md`、`docs/plans/2026-05-11-m5.3-e2e-module-split-parallel-impl-plan.md`
 
 ## 测试服务器
 
