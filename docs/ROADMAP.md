@@ -871,11 +871,11 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 手动触发入口：REST API（`POST /api/v1/repos/{owner}/{repo}/e2e`）+ 服务端 CLI（`dtworkflow e2e run`）+ 瘦客户端（`dtw e2e run --repo X [--suite Y]`）
 
 ##### M5.2 失败分析与报告
-- [ ] AI 失败分类：真 bug / 脚本过时（UI 变更导致）/ 环境问题，分类结果写入输出 schema
-- [ ] 失败时自动创建 Gitea Issue（附截图、错误栈、操作路径、case.yaml 上下文）
-- [ ] 脚本过时类 Issue 标记 `auto-fix` 标签，走 Phase 3 修复链路
-- [ ] 测试报告生成（模块级 + 全量级汇总）
-- [ ] 通知适配：飞书 + Gitea 通知（开始 / 成功 / 失败三场景）
+- [x] AI 失败分类：真 bug / 脚本过时（UI 变更导致）/ 环境问题，分类结果写入输出 schema
+- [x] 失败时自动创建 Gitea Issue（附截图、错误栈、操作路径、case.yaml 上下文）
+- [x] 脚本过时类 Issue 标记 `fix-to-pr` 标签，走 Phase 3 修复链路
+- [x] 测试报告生成（模块级 + 全量级汇总）
+- [x] 通知适配：飞书 + Gitea 通知（开始 / 成功 / 失败三场景）
 
 ##### M5.3 模块拆分与并行执行
 - [ ] 全量执行时扫描 `e2e/` 目录，按模块拆分任务（复用 M4.2.1 模式）
@@ -919,7 +919,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 **第一轮**：
 - 开发者本地编写 E2E 用例（case.yaml + 脚本组）→ 提交到仓库 → `dtw e2e run --repo X --suite login` → 容器内 Claude 按 manifest 执行 → 测试报告 + 飞书通知
 - 测试失败 → AI 分类为"真 bug" → 自动创建 Issue（附截图和复现步骤）
-- 测试失败 → AI 分类为"脚本过时" → 创建 Issue + 标记 auto-fix → Phase 3 尝试修复
+- 测试失败 → AI 分类为"脚本过时" → 创建 Issue + 标记 fix-to-pr → Phase 3 尝试修复
 
 **第二轮**：
 - 合并 PR 后自动触发相关模块 E2E 回归 → 结果通知

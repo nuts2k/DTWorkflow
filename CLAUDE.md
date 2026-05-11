@@ -155,6 +155,24 @@ configs/        # 配置文件模板
 - **case.yaml schema**：用户在仓库 `e2e/{module}/cases/{caseName}/case.yaml` 中定义用例。Go 类型 `e2e.CaseSpec`（`internal/e2e/case.go`），YAML 字段：`name`（必填）、`description`、`timeout`（[30s, 30m] 范围，默认 5m）、`tags`、`expectations`（业务意图，auto-fix 修复基准）、`setup`（数据准备脚本）、`test`（必填，`.spec.ts` Playwright 脚本）、`teardown`（清理脚本）。脚本名禁止绝对路径/路径遍历/子目录，扩展名限 `.sql` / `.js` / `.ts` / `.spec.ts`。`suite.yaml` 推迟至 M5.3
 - **设计文档**：`docs/plans/2026-05-09-m5.1-e2e-infrastructure-design.md`、`docs/plans/2026-05-10-m5.1-e2e-infrastructure-impl-plan.md`
 
+## E2E 失败分析与报告（M5.2）
+
+- **失败分类**：Claude 在 `E2EOutput.Cases[].FailureCategory` 中输出三枚举——`bug`（应用行为不符合 expectations）/ `script_outdated`（页面元素/选择器变更）/ `environment`（服务不可用/网络/数据库超时）
+- **Issue 自动创建**：`e2e.Service.processFailures` 遍历失败用例，`bug` 和 `script_outdated` 创建 Gitea Issue（`environment` 跳过）；每 Issue 附标题、分类、错误详情、操作路径、case.yaml expectations；`script_outdated` 额外挂 `fix-to-pr` 标签触发 Phase 3 自动修复
+- **截图上传**：容器内截图写入 `/workspace/artifacts/`，宿主机映射 `{data_dir}/e2e-artifacts/{task_id}/`；`processFailures` 对每张截图调 `CreateIssueAttachment` 上传到对应 Issue；路径遍历防御通过 `filepath.Clean` + 前缀校验
+- **幂等保护**：`processFailures` 执行前读取已有 `e2e_results.created_issues`，已创建过 Issue 的 case 跳过；同一 task 重试不重复创建 Issue
+- **两阶段持久化**：阶段 1 `SaveE2EResult`（UPSERT 主结果，`created_issues='{}'`）；阶段 2 `UpdateE2ECreatedIssues`（partial UPDATE，不覆盖其它字段）
+- **数据库迁移**：v21 tasks 表追加 `run_e2e` 类型支持；v22 新增 `e2e_results` 表（`task_id UNIQUE` + `environment` / `created_issues` / `updated_at`）
+- **Gitea API 扩展**：`CreateIssue`（标题/正文/标签）、`ListRepoLabels`（查找 `fix-to-pr` 标签 ID）、`CreateIssueAttachment`（multipart 上传截图）
+- **Issue body 格式化**（`internal/e2e/formatter.go`）：`bug` 模板（错误详情 + 操作路径 + expectations）/ `script_outdated` 模板（额外 auto-fix 提示）；HTML 锚点 `<!-- dtworkflow:e2e:{taskID}:{casePath} -->` 用于幂等检测
+- **飞书通知**：三事件 `EventE2EStarted` / `EventE2EDone` / `EventE2EFailed` 专项卡片；失败卡片含失败列表 + 已创建 Issue 号；全通过 → 绿色，部分失败 → 橙色，全失败 → 红色
+- **Processor 集成**：`buildNotificationMessage` 为 E2E 任务扩展 metadata（`e2e_failed_list` JSON + `e2e_created_issues` CSV）
+- **Worker Artifact Volume**：`pool.go` 为 `run_e2e` 任务创建 `{DataDir}/e2e-artifacts/{taskID}/` 目录（chmod 0777）并 bind mount 到容器 `/workspace/artifacts`
+- **启动清理**：`serve.go` 启动时 `cleanupE2EArtifacts` 删除超过 retention 天数的 artifact 目录（默认 7 天，可配 1-90 天）
+- **装配层**：`serve.go` 通过 `WithIssueClient(giteaFixClient)` + `WithStore(store)` + `WithArtifactDir(dataDir)` 注入 M5.2 依赖；任一为 nil 时优雅降级保持 M5.1 行为
+- **Token 使用**：Issue 创建使用 `fix` 账号 token（`GiteaFixClient`），避免 review 账号自评审冲突
+- **设计文档**：`docs/plans/2026-05-11-m5.2-failure-analysis-report-design.md`、`docs/plans/2026-05-11-m5.2-failure-analysis-report-impl-plan.md`
+
 ## 测试服务器
 
 - SSH Host 别名：`companytest`（对应 `~/.ssh/config` 中的 Host 条目）
