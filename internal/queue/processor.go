@@ -642,6 +642,12 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 		if payload.Environment != "" {
 			metadata[notify.MetaKeyE2EEnv] = payload.Environment
 		}
+		if payload.Module != "" {
+			metadata[notify.MetaKeyE2EModule] = payload.Module
+		}
+		if payload.BaseRef != "" {
+			metadata[notify.MetaKeyE2EBaseRef] = payload.BaseRef
+		}
 		msg = notify.Message{
 			EventType: notify.EventE2EStarted,
 			Severity:  notify.SeverityInfo,
@@ -933,6 +939,42 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 			metadata[notify.MetaKeyE2EPassedCases] = fmt.Sprintf("%d", e2eResult.Output.PassedCases)
 			metadata[notify.MetaKeyE2EFailedCases] = fmt.Sprintf("%d", e2eResult.Output.FailedCases)
 			metadata[notify.MetaKeyE2EErrorCases] = fmt.Sprintf("%d", e2eResult.Output.ErrorCases)
+			metadata[notify.MetaKeyE2ESkippedCases] = fmt.Sprintf("%d", e2eResult.Output.SkippedCases)
+
+			// 构建失败用例列表 JSON
+			if e2eResult.Output.FailedCases > 0 || e2eResult.Output.ErrorCases > 0 {
+				type failedItem struct {
+					Name     string `json:"name"`
+					Category string `json:"category"`
+					Analysis string `json:"analysis"`
+				}
+				var items []failedItem
+				for _, c := range e2eResult.Output.Cases {
+					if c.Status != "failed" && c.Status != "error" {
+						continue
+					}
+					analysis := c.FailureAnalysis
+					if len([]rune(analysis)) > 80 {
+						analysis = string([]rune(analysis)[:80]) + "..."
+					}
+					items = append(items, failedItem{
+						Name:     c.Module + "/" + c.Name,
+						Category: c.FailureCategory,
+						Analysis: analysis,
+					})
+				}
+				if data, err := json.Marshal(items); err == nil {
+					metadata[notify.MetaKeyE2EFailedList] = string(data)
+				}
+			}
+		}
+		// M5.2: 已创建的 Issue 号
+		if e2eResult != nil && len(e2eResult.CreatedIssues) > 0 {
+			var nums []string
+			for _, n := range e2eResult.CreatedIssues {
+				nums = append(nums, fmt.Sprintf("%d", n))
+			}
+			metadata[notify.MetaKeyE2ECreatedIssues] = strings.Join(nums, ",")
 		}
 		target := notify.Target{
 			Owner: payload.RepoOwner,
