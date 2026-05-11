@@ -216,6 +216,14 @@ func (m *mockStore) UpdateE2ECreatedIssues(_ context.Context, _ string, _ map[st
 	return nil
 }
 
+func (m *mockStore) FindActiveTasksByModule(_ context.Context, _, _ string, _ model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
+func (m *mockStore) ListActiveModules(_ context.Context, _ string, _ model.TaskType) ([]string, error) {
+	return nil, nil
+}
+
 func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
 	if m.activeGenTestsModulesErr != nil {
 		return nil, m.activeGenTestsModulesErr

@@ -712,6 +712,10 @@ func (s *SQLiteStore) FindActiveIssueTasks(ctx context.Context, repoFullName str
 // Cancel-and-Replace 失效。COALESCE(..., ”) 将 NULL 归一化为空串后再比较，
 // 确保"整仓粒度"与"具体 module 粒度"的 Cancel-and-Replace 都能正确生效。
 func (s *SQLiteStore) FindActiveGenTestsTasks(ctx context.Context, repoFullName, module string) ([]*model.TaskRecord, error) {
+	return s.FindActiveTasksByModule(ctx, repoFullName, module, model.TaskTypeGenTests)
+}
+
+func (s *SQLiteStore) FindActiveTasksByModule(ctx context.Context, repoFullName, module string, taskType model.TaskType) ([]*model.TaskRecord, error) {
 	query := `SELECT ` + taskColumns + `
 	FROM tasks
 	WHERE repo_full_name = ?
@@ -722,7 +726,7 @@ func (s *SQLiteStore) FindActiveGenTestsTasks(ctx context.Context, repoFullName,
 
 	rows, err := s.db.QueryContext(ctx, query,
 		repoFullName,
-		string(model.TaskTypeGenTests),
+		string(taskType),
 		module,
 		string(model.TaskStatusPending),
 		string(model.TaskStatusQueued),
@@ -730,7 +734,7 @@ func (s *SQLiteStore) FindActiveGenTestsTasks(ctx context.Context, repoFullName,
 		string(model.TaskStatusRetrying),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("查找活跃 gen_tests 任务失败: %w", err)
+		return nil, fmt.Errorf("查找活跃 %s 任务失败: %w", taskType, err)
 	}
 	defer rows.Close()
 
@@ -738,12 +742,12 @@ func (s *SQLiteStore) FindActiveGenTestsTasks(ctx context.Context, repoFullName,
 	for rows.Next() {
 		record, err := scanTaskRecord(rows)
 		if err != nil {
-			return nil, fmt.Errorf("扫描活跃 gen_tests 任务失败: %w", err)
+			return nil, fmt.Errorf("扫描活跃 %s 任务失败: %w", taskType, err)
 		}
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历活跃 gen_tests 任务失败: %w", err)
+		return nil, fmt.Errorf("遍历活跃 %s 任务失败: %w", taskType, err)
 	}
 	return records, nil
 }
@@ -996,6 +1000,10 @@ func (s *SQLiteStore) GetTestGenResultByTaskID(ctx context.Context, taskID strin
 // 由调用侧（已 import internal/test）用 test.ModuleKey 清洗比对，维持 store 包
 // 对业务的零依赖（见设计文档 §3.2）。
 func (s *SQLiteStore) ListActiveGenTestsModules(ctx context.Context, repoFullName string) ([]string, error) {
+	return s.ListActiveModules(ctx, repoFullName, model.TaskTypeGenTests)
+}
+
+func (s *SQLiteStore) ListActiveModules(ctx context.Context, repoFullName string, taskType model.TaskType) ([]string, error) {
 	query := `SELECT COALESCE(json_extract(payload, '$.module'), '') AS module
 	FROM tasks
 	WHERE task_type = ?
@@ -1004,7 +1012,7 @@ func (s *SQLiteStore) ListActiveGenTestsModules(ctx context.Context, repoFullNam
 	ORDER BY created_at ASC`
 
 	rows, err := s.db.QueryContext(ctx, query,
-		string(model.TaskTypeGenTests),
+		string(taskType),
 		repoFullName,
 		string(model.TaskStatusPending),
 		string(model.TaskStatusQueued),
@@ -1012,7 +1020,7 @@ func (s *SQLiteStore) ListActiveGenTestsModules(ctx context.Context, repoFullNam
 		string(model.TaskStatusRetrying),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("查询活跃 gen_tests module 列表失败: %w", err)
+		return nil, fmt.Errorf("查询活跃 %s module 列表失败: %w", taskType, err)
 	}
 	defer rows.Close()
 
@@ -1020,12 +1028,12 @@ func (s *SQLiteStore) ListActiveGenTestsModules(ctx context.Context, repoFullNam
 	for rows.Next() {
 		var m string
 		if err := rows.Scan(&m); err != nil {
-			return nil, fmt.Errorf("扫描 gen_tests module 失败: %w", err)
+			return nil, fmt.Errorf("扫描 %s module 失败: %w", taskType, err)
 		}
 		modules = append(modules, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历 gen_tests module 失败: %w", err)
+		return nil, fmt.Errorf("遍历 %s module 失败: %w", taskType, err)
 	}
 	return modules, nil
 }

@@ -115,6 +115,14 @@ func (m *mockStoreForRecovery) UpdateE2ECreatedIssues(_ context.Context, _ strin
 	return nil
 }
 
+func (m *mockStoreForRecovery) FindActiveTasksByModule(_ context.Context, _, _ string, _ model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
+func (m *mockStoreForRecovery) ListActiveModules(_ context.Context, _ string, _ model.TaskType) ([]string, error) {
+	return nil, nil
+}
+
 // mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
 type mockEnqueuerForRecovery struct {
 	enqueueErr error

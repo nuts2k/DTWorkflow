@@ -101,6 +101,14 @@ type Store interface {
 	// 原样返回不去重，由调用侧负责规范化。
 	ListActiveGenTestsModules(ctx context.Context, repoFullName string) ([]string, error)
 
+	// FindActiveTasksByModule 查找同一仓库 + module 粒度的活跃任务
+	// （pending/queued/running/retrying）。泛化自 FindActiveGenTestsTasks。
+	// module 为空时匹配 payload.module 字段缺失的记录。
+	FindActiveTasksByModule(ctx context.Context, repoFullName, module string, taskType model.TaskType) ([]*model.TaskRecord, error)
+
+	// ListActiveModules 返回指定仓库下活跃任务的 module 列表。泛化自 ListActiveGenTestsModules。
+	ListActiveModules(ctx context.Context, repoFullName string, taskType model.TaskType) ([]string, error)
+
 	// SaveE2EResult 以 UPSERT 方式写入 e2e_results（阶段 1：聚合统计，created_issues={}）。
 	// record.ID 为空时内部生成 UUID。以 task_id 为冲突键。
 	SaveE2EResult(ctx context.Context, record *E2EResultRecord) error

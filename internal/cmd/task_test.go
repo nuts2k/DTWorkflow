@@ -128,6 +128,14 @@ func (m *mockTaskStore) UpdateE2ECreatedIssues(_ context.Context, _ string, _ ma
 	return nil
 }
 
+func (m *mockTaskStore) FindActiveTasksByModule(_ context.Context, _, _ string, _ model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
+func (m *mockTaskStore) ListActiveModules(_ context.Context, _ string, _ model.TaskType) ([]string, error) {
+	return nil, nil
+}
+
 type stubTaskEnqueuer struct {
 	asynqID     string
 	enqueueErr  error

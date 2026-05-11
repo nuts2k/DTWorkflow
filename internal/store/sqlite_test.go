@@ -2352,3 +2352,94 @@ func TestUpdateE2ECreatedIssues_NotFound(t *testing.T) {
 		t.Errorf("期望 ErrE2EResultNotFound，实际=%v", err)
 	}
 }
+
+func TestFindActiveTasksByModule_GenTests(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	r1 := newTestGenTestsRecord("task-gen-1", "repo/a", "backend", model.TaskStatusRunning, base)
+
+	r2 := newTestGenTestsRecord("task-e2e-1", "repo/a", "backend", model.TaskStatusRunning, base.Add(time.Second))
+	r2.TaskType = model.TaskTypeRunE2E
+	r2.Payload.TaskType = model.TaskTypeRunE2E
+
+	if err := s.CreateTask(ctx, r1); err != nil {
+		t.Fatalf("CreateTask r1: %v", err)
+	}
+	if err := s.CreateTask(ctx, r2); err != nil {
+		t.Fatalf("CreateTask r2: %v", err)
+	}
+
+	tasks, err := s.FindActiveTasksByModule(ctx, "repo/a", "backend", model.TaskTypeGenTests)
+	if err != nil {
+		t.Fatalf("FindActiveTasksByModule: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != r1.ID {
+		t.Fatalf("期望只有 gen_tests 任务，实际得到 %d 条", len(tasks))
+	}
+}
+
+func TestFindActiveTasksByModule_RunE2E(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	r1 := newTestGenTestsRecord("task-e2e-order", "repo/a", "order", model.TaskStatusRunning, base)
+	r1.TaskType = model.TaskTypeRunE2E
+	r1.Payload.TaskType = model.TaskTypeRunE2E
+
+	r2 := newTestGenTestsRecord("task-e2e-auth", "repo/a", "auth", model.TaskStatusRunning, base.Add(time.Second))
+	r2.TaskType = model.TaskTypeRunE2E
+	r2.Payload.TaskType = model.TaskTypeRunE2E
+
+	if err := s.CreateTask(ctx, r1); err != nil {
+		t.Fatalf("CreateTask r1: %v", err)
+	}
+	if err := s.CreateTask(ctx, r2); err != nil {
+		t.Fatalf("CreateTask r2: %v", err)
+	}
+
+	tasks, err := s.FindActiveTasksByModule(ctx, "repo/a", "order", model.TaskTypeRunE2E)
+	if err != nil {
+		t.Fatalf("FindActiveTasksByModule: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != r1.ID {
+		t.Fatalf("期望 1 条 order 模块任务，实际得到 %d 条", len(tasks))
+	}
+}
+
+func TestListActiveModules_IsolatesByTaskType(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	r1 := newTestGenTestsRecord("task-gen-backend", "repo/a", "backend", model.TaskStatusRunning, base)
+
+	r2 := newTestGenTestsRecord("task-e2e-order", "repo/a", "order", model.TaskStatusRunning, base.Add(time.Second))
+	r2.TaskType = model.TaskTypeRunE2E
+	r2.Payload.TaskType = model.TaskTypeRunE2E
+
+	if err := s.CreateTask(ctx, r1); err != nil {
+		t.Fatalf("CreateTask r1: %v", err)
+	}
+	if err := s.CreateTask(ctx, r2); err != nil {
+		t.Fatalf("CreateTask r2: %v", err)
+	}
+
+	genModules, err := s.ListActiveModules(ctx, "repo/a", model.TaskTypeGenTests)
+	if err != nil {
+		t.Fatalf("ListActiveModules gen_tests: %v", err)
+	}
+	if len(genModules) != 1 || genModules[0] != "backend" {
+		t.Fatalf("gen_tests modules 期望 [backend]，实际=%v", genModules)
+	}
+
+	e2eModules, err := s.ListActiveModules(ctx, "repo/a", model.TaskTypeRunE2E)
+	if err != nil {
+		t.Fatalf("ListActiveModules run_e2e: %v", err)
+	}
+	if len(e2eModules) != 1 || e2eModules[0] != "order" {
+		t.Fatalf("run_e2e modules 期望 [order]，实际=%v", e2eModules)
+	}
+}
