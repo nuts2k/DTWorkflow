@@ -2255,3 +2255,100 @@ func TestListActiveGenTestsModules_Empty(t *testing.T) {
 		t.Errorf("期望空切片，得到 %v", mods)
 	}
 }
+
+func TestSaveE2EResult(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	// 先创建 task 满足 FK
+	task := &model.TaskRecord{
+		ID:       "task-e2e-1",
+		TaskType: model.TaskTypeRunE2E,
+		Status:   model.TaskStatusRunning,
+		Payload:  model.TaskPayload{RepoFullName: "owner/repo"},
+	}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	record := &E2EResultRecord{
+		TaskID:        "task-e2e-1",
+		Repo:          "owner/repo",
+		Environment:   "staging",
+		TotalCases:    3,
+		PassedCases:   2,
+		FailedCases:   1,
+		Success:       false,
+		DurationMs:    12000,
+		CreatedIssues: map[string]int64{},
+	}
+
+	if err := s.SaveE2EResult(ctx, record); err != nil {
+		t.Fatalf("SaveE2EResult: %v", err)
+	}
+	if record.ID == "" {
+		t.Fatal("期望 ID 被自动生成")
+	}
+
+	got, err := s.GetE2EResultByTaskID(ctx, "task-e2e-1")
+	if err != nil {
+		t.Fatalf("GetE2EResultByTaskID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("期望非 nil 结果")
+	}
+	if got.TotalCases != 3 || got.FailedCases != 1 {
+		t.Errorf("统计不匹配: total=%d failed=%d", got.TotalCases, got.FailedCases)
+	}
+	if got.Environment != "staging" {
+		t.Errorf("环境不匹配: %s", got.Environment)
+	}
+}
+
+func TestUpdateE2ECreatedIssues(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	task := &model.TaskRecord{
+		ID:       "task-e2e-2",
+		TaskType: model.TaskTypeRunE2E,
+		Status:   model.TaskStatusRunning,
+		Payload:  model.TaskPayload{RepoFullName: "owner/repo"},
+	}
+	_ = s.CreateTask(ctx, task)
+
+	record := &E2EResultRecord{
+		TaskID:        "task-e2e-2",
+		Repo:          "owner/repo",
+		CreatedIssues: map[string]int64{},
+	}
+	_ = s.SaveE2EResult(ctx, record)
+
+	issues := map[string]int64{
+		"e2e/order/cases/create-order": 42,
+		"e2e/auth/cases/login":         43,
+	}
+	if err := s.UpdateE2ECreatedIssues(ctx, record.ID, issues); err != nil {
+		t.Fatalf("UpdateE2ECreatedIssues: %v", err)
+	}
+
+	got, _ := s.GetE2EResultByTaskID(ctx, "task-e2e-2")
+	if len(got.CreatedIssues) != 2 {
+		t.Fatalf("期望 2 个 issue，实际=%d", len(got.CreatedIssues))
+	}
+	if got.CreatedIssues["e2e/order/cases/create-order"] != 42 {
+		t.Errorf("issue number 不匹配")
+	}
+}
+
+func TestUpdateE2ECreatedIssues_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	err := s.UpdateE2ECreatedIssues(context.Background(), "nonexistent", map[string]int64{"a": 1})
+	if !errors.Is(err, ErrE2EResultNotFound) {
+		t.Errorf("期望 ErrE2EResultNotFound，实际=%v", err)
+	}
+}

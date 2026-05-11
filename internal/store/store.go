@@ -13,6 +13,7 @@ var (
 	ErrInvalidID             = errors.New("任务 ID 不能为空")
 	ErrNilRecord             = errors.New("record 不能为 nil")
 	ErrTestGenResultNotFound = errors.New("测试生成结果不存在")
+	ErrE2EResultNotFound     = errors.New("E2E 结果不存在")
 )
 
 // Store 任务持久化接口
@@ -100,6 +101,17 @@ type Store interface {
 	// 原样返回不去重，由调用侧负责规范化。
 	ListActiveGenTestsModules(ctx context.Context, repoFullName string) ([]string, error)
 
+	// SaveE2EResult 以 UPSERT 方式写入 e2e_results（阶段 1：聚合统计，created_issues={}）。
+	// record.ID 为空时内部生成 UUID。以 task_id 为冲突键。
+	SaveE2EResult(ctx context.Context, record *E2EResultRecord) error
+
+	// GetE2EResultByTaskID 按 task_id 查询 E2E 结果。未找到返回 (nil, nil)。
+	GetE2EResultByTaskID(ctx context.Context, taskID string) (*E2EResultRecord, error)
+
+	// UpdateE2ECreatedIssues 阶段 2：只更新 created_issues JSON + updated_at。
+	// id 为 e2e_results.id（非 task_id）。记录不存在返回 ErrE2EResultNotFound。
+	UpdateE2ECreatedIssues(ctx context.Context, id string, issues map[string]int64) error
+
 	// Ping 检测数据库连接是否可用，用于健康检查
 	Ping(ctx context.Context) error
 
@@ -137,6 +149,25 @@ type TestGenResultRecord struct {
 	OutputJSON         string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+// E2EResultRecord 对应 e2e_results 表的单行。
+type E2EResultRecord struct {
+	ID            string
+	TaskID        string
+	Repo          string
+	Environment   string
+	Module        string
+	TotalCases    int
+	PassedCases   int
+	FailedCases   int
+	ErrorCases    int
+	SkippedCases  int
+	Success       bool
+	DurationMs    int64
+	CreatedIssues map[string]int64 // case_path → issue_number（JSON 序列化存储）
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // ListOptions 列表查询选项
