@@ -291,10 +291,12 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	// 并记录 warn 日志（见 internal/queue/enqueue.go 注入点注释）。
 	var enqueueOpts []queue.EnqueueOption
 	if giteaGenTestsClient != nil {
+		repoFileChecker := &giteaRepoFileChecker{client: giteaGenTestsClient}
 		enqueueOpts = append(enqueueOpts,
 			queue.WithBranchCleaner(queue.NewBranchCleaner(giteaGenTestsClient, slog.Default())),
-			queue.WithModuleScanner(&giteaRepoFileChecker{client: giteaGenTestsClient}),
+			queue.WithModuleScanner(repoFileChecker),
 			queue.WithPRClient(giteaGenTestsClient),
+			queue.WithE2EModuleScanner(repoFileChecker),
 		)
 	}
 	if giteaClient != nil {

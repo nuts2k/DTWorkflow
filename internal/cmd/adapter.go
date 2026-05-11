@@ -101,6 +101,7 @@ var _ fix.FixConfigProvider = (*configAdapter)(nil)
 var _ testgen.TestConfigProvider = (*configAdapter)(nil)
 var _ testgen.RepoFileChecker = (*giteaRepoFileChecker)(nil)
 var _ e2e.E2EConfigProvider = (*configAdapter)(nil)
+var _ e2e.E2EModuleScanner = (*giteaRepoFileChecker)(nil)
 
 // configAdapter 将 config.Manager 适配为 review.ConfigProvider 接口
 type configAdapter struct {
