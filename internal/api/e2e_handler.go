@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/validation"
@@ -117,20 +119,40 @@ func (h *handlers) triggerE2E(c *gin.Context) {
 		BaseURLOverride: req.BaseURL,
 	}
 
-	taskID, err := h.deps.EnqueueHandler.EnqueueManualE2E(ctx, payload, triggeredBy)
+	results, err := h.deps.EnqueueHandler.EnqueueManualE2E(ctx, payload, triggeredBy)
 	if err != nil {
+		if errors.Is(err, e2esvc.ErrNoE2EModulesFound) {
+			Error(c, http.StatusUnprocessableEntity, ErrCodeBadRequest,
+				"仓库中未发现 E2E 测试模块（需 e2e/{module}/cases/ 目录结构）")
+			return
+		}
 		h.deps.Logger.Error("入队 e2e 失败",
 			"owner", owner, "repo", repo, "error", err)
 		Error(c, http.StatusInternalServerError, ErrCodeInternalError, "入队 e2e 失败")
 		return
 	}
 
+	if len(results) == 1 {
+		Success(c, http.StatusAccepted, gin.H{
+			"task_id": results[0].TaskID,
+			"repo":    repoInfo.FullName,
+			"module":  results[0].Module,
+			"env":     req.Env,
+			"status":  "pending",
+		})
+		return
+	}
+
+	type taskInfo struct {
+		TaskID string `json:"task_id"`
+		Module string `json:"module"`
+	}
+	tasks := make([]taskInfo, 0, len(results))
+	for _, r := range results {
+		tasks = append(tasks, taskInfo{TaskID: r.TaskID, Module: r.Module})
+	}
 	Success(c, http.StatusAccepted, gin.H{
-		"task_id": taskID,
-		"repo":    repoInfo.FullName,
-		"module":  req.Module,
-		"case":    req.Case,
-		"env":     req.Env,
-		"status":  "pending",
+		"split": true,
+		"tasks": tasks,
 	})
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
+	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
@@ -30,8 +31,9 @@ type EnqueueHandler struct {
 	branchCleaner  BranchCleaner              // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
 	prClient       genTestsPRClient           // M4.2.1: cleanupAllAutoTestBranches
 	moduleScanner  test.RepoFileChecker       // M4.2.1: ScanRepoModules
-	configProvider ChangeDrivenConfigProvider // M4.3: 变更驱动配置读取
-	prFilesLister  PRFilesLister              // M4.3: PR 变更文件列表查询
+	configProvider  ChangeDrivenConfigProvider // M4.3: 变更驱动配置读取
+	prFilesLister   PRFilesLister              // M4.3: PR 变更文件列表查询
+	e2eModuleScanner e2esvc.E2EModuleScanner   // M5.3: 可选，nil 时全量模式退化为单任务
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -87,6 +89,11 @@ type PRFilesLister interface {
 // WithPRFilesLister 注入 PR 文件列表查询能力。
 func WithPRFilesLister(lister PRFilesLister) EnqueueOption {
 	return func(h *EnqueueHandler) { h.prFilesLister = lister }
+}
+
+// WithE2EModuleScanner 注入 E2EModuleScanner 用于 M5.3 全量模式模块发现。
+func WithE2EModuleScanner(s e2esvc.E2EModuleScanner) EnqueueOption {
+	return func(h *EnqueueHandler) { h.e2eModuleScanner = s }
 }
 
 // NewEnqueueHandler 创建 EnqueueHandler 实例。
@@ -1029,25 +1036,120 @@ func generateManualDeliveryID() string {
 	return fmt.Sprintf("manual-%d-%s", time.Now().UnixMilli(), uuid.New().String()[:8])
 }
 
-// EnqueueManualE2E 手动入队 E2E 测试任务。
-func (h *EnqueueHandler) EnqueueManualE2E(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+// listActiveE2ETasks 查找同模块活跃 E2E 任务（fail-open）。
+func (h *EnqueueHandler) listActiveE2ETasks(ctx context.Context, repoFullName, module string) []*model.TaskRecord {
+	tasks, err := h.store.FindActiveTasksByModule(ctx, repoFullName, module, model.TaskTypeRunE2E)
+	if err != nil {
+		h.logger.WarnContext(ctx, "查找活跃 run_e2e 任务失败,跳过取消",
+			"repo", repoFullName, "module", module, "error", err)
+		return nil
+	}
+	return tasks
+}
+
+// cleanupAllActiveE2ETasks 全量拆分前清理同仓库所有活跃 run_e2e 任务。
+func (h *EnqueueHandler) cleanupAllActiveE2ETasks(ctx context.Context, repoFullName string) {
+	modules, err := h.store.ListActiveModules(ctx, repoFullName, model.TaskTypeRunE2E)
+	if err != nil {
+		h.logger.WarnContext(ctx, "cleanupAllE2E: 查询活跃 run_e2e module 列表失败",
+			"repo", repoFullName, "error", err)
+		return
+	}
+	for _, mod := range modules {
+		tasks, tErr := h.store.FindActiveTasksByModule(ctx, repoFullName, mod, model.TaskTypeRunE2E)
+		if tErr != nil {
+			h.logger.WarnContext(ctx, "cleanupAllE2E: 查询活跃 run_e2e 任务失败",
+				"repo", repoFullName, "module", mod, "error", tErr)
+			continue
+		}
+		h.cancelTasks(ctx, tasks)
+	}
+}
+
+// enqueueSingleE2E 封装单个 E2E 任务的入队 + Cancel-and-Replace。
+func (h *EnqueueHandler) enqueueSingleE2E(ctx context.Context, payload model.TaskPayload, triggeredBy string) (EnqueuedTask, error) {
 	payload.TaskType = model.TaskTypeRunE2E
 	if payload.DeliveryID == "" {
-		payload.DeliveryID = uuid.New().String()
+		payload.DeliveryID = generateManualDeliveryID()
 	}
+
+	activeTasks := h.listActiveE2ETasks(ctx, payload.RepoFullName, payload.Module)
 
 	record := &model.TaskRecord{
 		TaskType:     model.TaskTypeRunE2E,
-		Status:       model.TaskStatusPending,
 		Priority:     model.PriorityNormal,
-		Payload:      payload,
 		RepoFullName: payload.RepoFullName,
 		DeliveryID:   payload.DeliveryID,
 		TriggeredBy:  triggeredBy,
 	}
 
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
-		return "", fmt.Errorf("入队 run_e2e 失败: %w", err)
+		return EnqueuedTask{}, err
 	}
-	return record.ID, nil
+	h.cancelTasks(ctx, activeTasks)
+
+	h.logger.InfoContext(ctx, "run_e2e 任务已入队",
+		"task_id", record.ID, "repo", payload.RepoFullName,
+		"module", payload.Module, "triggered_by", triggeredBy)
+	return EnqueuedTask{TaskID: record.ID, Module: payload.Module}, nil
+}
+
+// EnqueueManualE2E 手动入队 E2E 测试任务。
+// M5.3：全量模式（module 空 + e2eModuleScanner 已注入 + baseRef 非空）时
+// 自动扫描 e2e/ 目录拆分子任务。
+func (h *EnqueueHandler) EnqueueManualE2E(ctx context.Context, payload model.TaskPayload, triggeredBy string) ([]EnqueuedTask, error) {
+	if payload.RepoFullName == "" || payload.CloneURL == "" {
+		return nil, fmt.Errorf("payload 数据不完整: RepoFullName 或 CloneURL 为空")
+	}
+
+	// 全量模式：module 空 + scanner 已注入 + baseRef 非空
+	if payload.Module == "" && h.e2eModuleScanner != nil && payload.BaseRef != "" {
+		modules, err := e2esvc.ScanE2EModules(ctx, h.e2eModuleScanner,
+			payload.RepoOwner, payload.RepoName, payload.BaseRef)
+		if err != nil {
+			if errors.Is(err, e2esvc.ErrNoE2EModulesFound) {
+				return nil, err
+			}
+			h.logger.WarnContext(ctx, "ScanE2EModules 失败，回退到单任务逻辑",
+				"repo", payload.RepoFullName, "error", err)
+			result, singleErr := h.enqueueSingleE2E(ctx, payload, triggeredBy)
+			if singleErr != nil {
+				return nil, singleErr
+			}
+			return []EnqueuedTask{result}, nil
+		}
+
+		if len(modules) >= 2 {
+			h.cleanupAllActiveE2ETasks(ctx, payload.RepoFullName)
+		}
+
+		var results []EnqueuedTask
+		for _, mod := range modules {
+			subPayload := payload
+			subPayload.Module = mod
+			subPayload.DeliveryID = ""
+			result, subErr := h.enqueueSingleE2E(ctx, subPayload, triggeredBy)
+			if subErr != nil {
+				h.logger.WarnContext(ctx, "E2E 子任务入队失败",
+					"repo", payload.RepoFullName, "module", mod, "error", subErr)
+				continue
+			}
+			results = append(results, result)
+		}
+		if len(results) == 0 {
+			return nil, fmt.Errorf("所有 E2E 子任务入队均失败")
+		}
+
+		h.logger.InfoContext(ctx, "E2E 全量拆分入队完成",
+			"repo", payload.RepoFullName, "discovered", len(modules),
+			"enqueued", len(results), "triggered_by", triggeredBy)
+		return results, nil
+	}
+
+	// 非全量模式：单任务入队
+	result, err := h.enqueueSingleE2E(ctx, payload, triggeredBy)
+	if err != nil {
+		return nil, err
+	}
+	return []EnqueuedTask{result}, nil
 }

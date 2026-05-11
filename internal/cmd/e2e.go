@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/spf13/cobra"
 
+	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
@@ -157,7 +159,9 @@ func runE2E(cmd *cobra.Command, _ []string) error {
 	}
 
 	// 4. 构造 EnqueueHandler
-	handler := queue.NewEnqueueHandler(qClient, qClient, s, slog.Default())
+	handler := queue.NewEnqueueHandler(qClient, qClient, s, slog.Default(),
+		queue.WithE2EModuleScanner(&giteaRepoFileChecker{client: gc}),
+	)
 
 	// 5. 构造 payload 并入队
 	payload := model.TaskPayload{
@@ -173,12 +177,19 @@ func runE2E(cmd *cobra.Command, _ []string) error {
 		BaseURLOverride: e2eBaseURL,
 	}
 
-	taskID, err := handler.EnqueueManualE2E(ctx, payload, buildCLITriggeredBy())
+	results, err := handler.EnqueueManualE2E(ctx, payload, buildCLITriggeredBy())
 	if err != nil {
+		if errors.Is(err, e2esvc.ErrNoE2EModulesFound) {
+			return &ExitCodeError{Code: 1, Err: fmt.Errorf("仓库中未发现 E2E 测试模块（需 e2e/{module}/cases/ 目录结构）")}
+		}
 		return &ExitCodeError{Code: 1, Err: fmt.Errorf("入队失败: %w", err)}
 	}
 
-	printE2EResult(taskID, payload)
+	if len(results) == 1 {
+		printE2EResult(results[0].TaskID, payload)
+	} else {
+		printE2ESplitResult(results, payload)
+	}
 	return nil
 }
 
@@ -218,6 +229,34 @@ func printE2EResult(taskID string, payload model.TaskPayload) {
 			fmt.Fprintf(&sb, "  case = %s\n", r.CaseName)
 		}
 		fmt.Fprintf(&sb, "  ref = %s\n", r.Ref)
+		return sb.String()
+	})
+}
+
+func printE2ESplitResult(results []queue.EnqueuedTask, payload model.TaskPayload) {
+	type e2eSplitTask struct {
+		TaskID string `json:"task_id"`
+		Module string `json:"module"`
+	}
+	type splitResult struct {
+		Split bool           `json:"split"`
+		Repo  string         `json:"repo"`
+		Env   string         `json:"env,omitempty"`
+		Tasks []e2eSplitTask `json:"tasks"`
+	}
+	tasks := make([]e2eSplitTask, 0, len(results))
+	for _, r := range results {
+		tasks = append(tasks, e2eSplitTask{TaskID: r.TaskID, Module: r.Module})
+	}
+	data := splitResult{Split: true, Repo: payload.RepoFullName, Env: payload.Environment, Tasks: tasks}
+	PrintResult(data, func(v any) string {
+		r := v.(splitResult)
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "E2E 测试已拆分为 %d 个模块任务：\n\n", len(r.Tasks))
+		fmt.Fprintf(&sb, "  %-16s %s\n", "模块", "任务 ID")
+		for _, t := range r.Tasks {
+			fmt.Fprintf(&sb, "  %-16s %s\n", t.Module, t.TaskID)
+		}
 		return sb.String()
 	})
 }

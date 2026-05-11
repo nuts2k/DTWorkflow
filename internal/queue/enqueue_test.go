@@ -2908,3 +2908,156 @@ func TestHandleMergedPR_RepoOverrideEnabled(t *testing.T) {
 		}
 	}
 }
+
+// ==========================================================================
+// M5.3: EnqueueManualE2E 多模块拆分测试
+// ==========================================================================
+
+// mockE2EScanner implements e2e.E2EModuleScanner for enqueue tests.
+type mockE2EScanner struct {
+	dirs map[string][]string
+	errs map[string]error
+}
+
+func (m *mockE2EScanner) ListDir(_ context.Context, _, _, _, dir string) ([]string, error) {
+	if err, ok := m.errs[dir]; ok {
+		return nil, err
+	}
+	return m.dirs[dir], nil
+}
+
+func TestEnqueueManualE2E_SplitMode(t *testing.T) {
+	ms := newMockStore()
+	mc := &mockEnqueuer{}
+	scanner := &mockE2EScanner{
+		dirs: map[string][]string{
+			"e2e":       {"order", "auth"},
+			"e2e/order": {"cases"},
+			"e2e/auth":  {"cases"},
+		},
+	}
+	h := NewEnqueueHandler(mc, nil, ms, slog.Default(),
+		WithE2EModuleScanner(scanner),
+	)
+
+	payload := model.TaskPayload{
+		RepoOwner:    "o",
+		RepoName:     "r",
+		RepoFullName: "o/r",
+		CloneURL:     "https://example.com/o/r.git",
+		BaseRef:      "main",
+	}
+
+	results, err := h.EnqueueManualE2E(context.Background(), payload, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(results))
+	}
+	if results[0].Module != "order" || results[1].Module != "auth" {
+		t.Errorf("unexpected modules: %v, %v", results[0].Module, results[1].Module)
+	}
+}
+
+func TestEnqueueManualE2E_NoScanner_SingleTask(t *testing.T) {
+	ms := newMockStore()
+	mc := &mockEnqueuer{}
+	h := NewEnqueueHandler(mc, nil, ms, slog.Default())
+
+	payload := model.TaskPayload{
+		RepoOwner:    "o",
+		RepoName:     "r",
+		RepoFullName: "o/r",
+		CloneURL:     "https://example.com/o/r.git",
+		BaseRef:      "main",
+	}
+
+	results, err := h.EnqueueManualE2E(context.Background(), payload, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(results))
+	}
+}
+
+func TestEnqueueManualE2E_ScanFails_FallbackSingle(t *testing.T) {
+	ms := newMockStore()
+	mc := &mockEnqueuer{}
+	scanner := &mockE2EScanner{
+		errs: map[string]error{"e2e": errors.New("network error")},
+	}
+	h := NewEnqueueHandler(mc, nil, ms, slog.Default(),
+		WithE2EModuleScanner(scanner),
+	)
+
+	payload := model.TaskPayload{
+		RepoOwner:    "o",
+		RepoName:     "r",
+		RepoFullName: "o/r",
+		CloneURL:     "https://example.com/o/r.git",
+		BaseRef:      "main",
+	}
+
+	results, err := h.EnqueueManualE2E(context.Background(), payload, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected fallback to 1 task, got %d", len(results))
+	}
+}
+
+func TestEnqueueManualE2E_NoModulesFound_ReturnsError(t *testing.T) {
+	ms := newMockStore()
+	mc := &mockEnqueuer{}
+	scanner := &mockE2EScanner{
+		dirs: map[string][]string{"e2e": {}},
+	}
+	h := NewEnqueueHandler(mc, nil, ms, slog.Default(),
+		WithE2EModuleScanner(scanner),
+	)
+
+	payload := model.TaskPayload{
+		RepoOwner:    "o",
+		RepoName:     "r",
+		RepoFullName: "o/r",
+		CloneURL:     "https://example.com/o/r.git",
+		BaseRef:      "main",
+	}
+
+	_, err := h.EnqueueManualE2E(context.Background(), payload, "test")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestEnqueueManualE2E_WithModule_SingleTask(t *testing.T) {
+	ms := newMockStore()
+	mc := &mockEnqueuer{}
+	scanner := &mockE2EScanner{}
+	h := NewEnqueueHandler(mc, nil, ms, slog.Default(),
+		WithE2EModuleScanner(scanner),
+	)
+
+	payload := model.TaskPayload{
+		RepoOwner:    "o",
+		RepoName:     "r",
+		RepoFullName: "o/r",
+		CloneURL:     "https://example.com/o/r.git",
+		BaseRef:      "main",
+		Module:       "order",
+	}
+
+	results, err := h.EnqueueManualE2E(context.Background(), payload, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(results))
+	}
+	if results[0].Module != "order" {
+		t.Errorf("expected module 'order', got '%s'", results[0].Module)
+	}
+}
