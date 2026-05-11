@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -46,6 +47,8 @@ func FormatFeishuCard(msg Message) (map[string]any, error) {
 	switch msg.EventType {
 	case EventGenTestsStarted, EventGenTestsDone, EventGenTestsFailed:
 		mdParts = append(mdParts, renderGenTestsFields(msg)...)
+	case EventE2EStarted, EventE2EDone, EventE2EFailed:
+		mdParts = append(mdParts, renderE2EFields(msg)...)
 	}
 
 	if msg.Body != "" {
@@ -130,6 +133,12 @@ func resolveHeaderStyle(msg Message) (title, color string) {
 		return "测试生成完成", "green"
 	case EventGenTestsFailed:
 		return genTestsFailedHeader(msg)
+	case EventE2EStarted:
+		return "E2E 测试开始", "blue"
+	case EventE2EDone:
+		return "E2E 测试通过", "green"
+	case EventE2EFailed:
+		return e2eFailedHeader(msg)
 	default:
 		return msg.Title, "blue"
 	}
@@ -254,6 +263,12 @@ func resolveButtonStyle(msg Message) (text, btnType string) {
 		return "查看测试 PR", "primary"
 	case EventGenTestsFailed:
 		return "查看详情", "default"
+	case EventE2EStarted:
+		return "查看详情", "default"
+	case EventE2EDone:
+		return "查看详情", "primary"
+	case EventE2EFailed:
+		return "查看详情", "default"
 	default:
 		return "查看详情", "default"
 	}
@@ -261,4 +276,107 @@ func resolveButtonStyle(msg Message) (text, btnType string) {
 
 func isRetryingMessage(msg Message) bool {
 	return msg.Metadata != nil && msg.Metadata[MetaKeyTaskStatus] == "retrying"
+}
+
+// e2eFailedHeader 根据通过/总数比例决定 E2E 失败卡片的标题与颜色。
+// passed == "0" 或 passed == total（全部失败）→ 红色；其余部分失败 → 橙色。
+func e2eFailedHeader(msg Message) (title, color string) {
+	total := msg.Metadata[MetaKeyE2ETotalCases]
+	passed := msg.Metadata[MetaKeyE2EPassedCases]
+	if passed == "0" || passed == total {
+		return "E2E 测试失败", "red"
+	}
+	return "E2E 测试部分失败", "orange"
+}
+
+// renderE2EFields 组装 E2E 卡片特有的 markdown 字段。
+func renderE2EFields(msg Message) []string {
+	if msg.Metadata == nil {
+		return nil
+	}
+	var parts []string
+	if v := msg.Metadata[MetaKeyE2EEnv]; v != "" {
+		parts = append(parts, fmt.Sprintf("**环境**: %s", v))
+	}
+	if msg.EventType == EventE2EStarted {
+		if v := msg.Metadata[MetaKeyE2EModule]; v != "" {
+			parts = append(parts, fmt.Sprintf("**范围**: %s", v))
+		}
+		return parts
+	}
+
+	// Done / Failed：用例统计
+	total := msg.Metadata[MetaKeyE2ETotalCases]
+	passed := msg.Metadata[MetaKeyE2EPassedCases]
+	failed := msg.Metadata[MetaKeyE2EFailedCases]
+	errCases := msg.Metadata[MetaKeyE2EErrorCases]
+	skipped := msg.Metadata[MetaKeyE2ESkippedCases]
+
+	if msg.EventType == EventE2EDone {
+		parts = append(parts, fmt.Sprintf("**用例统计**: %s 个全部通过", total))
+	} else {
+		parts = append(parts, fmt.Sprintf("**用例统计**: 通过 %s / 失败 %s / 错误 %s / 跳过 %s",
+			passed, failed, errCases, skipped))
+	}
+
+	// 失败用例列表
+	if failedJSON := msg.Metadata[MetaKeyE2EFailedList]; failedJSON != "" {
+		parts = append(parts, renderE2EFailedList(failedJSON)...)
+	}
+
+	// 已创建 Issue
+	if issues := msg.Metadata[MetaKeyE2ECreatedIssues]; issues != "" {
+		parts = append(parts, fmt.Sprintf("**已创建 Issue**: %s",
+			formatIssueNumbers(issues, msg.Metadata)))
+	}
+
+	return parts
+}
+
+type e2eFailedItem struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	Analysis string `json:"analysis"`
+}
+
+// renderE2EFailedList 解析失败用例 JSON 列表，最多渲染 5 条。
+func renderE2EFailedList(jsonStr string) []string {
+	var items []e2eFailedItem
+	if err := json.Unmarshal([]byte(jsonStr), &items); err != nil {
+		return nil
+	}
+
+	var parts []string
+	parts = append(parts, "**失败用例**:")
+	maxShow := 5
+	for i, item := range items {
+		if i >= maxShow {
+			parts = append(parts, fmt.Sprintf("  ...及其他 %d 个失败用例", len(items)-maxShow))
+			break
+		}
+		prefix := "  ✗"
+		if item.Category == "environment" {
+			prefix = "  ⚠"
+		}
+		analysis := item.Analysis
+		analysisRunes := []rune(analysis)
+		if len(analysisRunes) > 80 {
+			analysis = string(analysisRunes[:80]) + "..."
+		}
+		parts = append(parts, fmt.Sprintf("%s %s — %s: %s", prefix, item.Name, item.Category, analysis))
+	}
+	return parts
+}
+
+// formatIssueNumbers 将逗号分隔的 Issue 编号字符串格式化为 "#42, #43" 形式。
+func formatIssueNumbers(csv string, _ map[string]string) string {
+	nums := strings.Split(csv, ",")
+	var formatted []string
+	for _, n := range nums {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			formatted = append(formatted, "#"+n)
+		}
+	}
+	return strings.Join(formatted, ", ")
 }

@@ -61,6 +61,12 @@ const (
 	MetaKeyE2EPassedCases = "e2e_passed_cases"
 	MetaKeyE2EFailedCases = "e2e_failed_cases"
 	MetaKeyE2EErrorCases  = "e2e_error_cases"
+	// M5.2 E2E 失败分析报告新增 metadata key。
+	MetaKeyE2ESkippedCases  = "e2e_skipped_cases"
+	MetaKeyE2EModule        = "e2e_module"
+	MetaKeyE2EBaseRef       = "e2e_base_ref"
+	MetaKeyE2EFailedList    = "e2e_failed_list"     // JSON: [{"name":"...","category":"...","analysis":"..."}]
+	MetaKeyE2ECreatedIssues = "e2e_created_issues"  // "42,43"
 )
 
 // Severity 通知紧急程度
