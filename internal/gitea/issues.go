@@ -42,6 +42,23 @@ func (c *Client) ListRepoIssues(ctx context.Context, owner, repo string, opts Li
 	return issues, resp, nil
 }
 
+// CreateIssue 创建 Issue。
+func (c *Client) CreateIssue(ctx context.Context, owner, repo string, opts CreateIssueOption) (*Issue, *Response, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues",
+		url.PathEscape(owner), url.PathEscape(repo))
+	req, err := c.newRequest(ctx, http.MethodPost, path, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var issue Issue
+	resp, err := c.doRequest(req, &issue)
+	if err != nil {
+		return nil, resp, err
+	}
+	return &issue, resp, nil
+}
+
 // GetIssue 获取 Issue 详情
 func (c *Client) GetIssue(ctx context.Context, owner, repo string, index int64) (*Issue, *Response, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d",
