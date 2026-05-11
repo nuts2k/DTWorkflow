@@ -865,7 +865,7 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - [x] 新建 `internal/e2e` 包（Service/Execute 模式，仿 `internal/review` / `internal/test`）
 - [x] `TaskTypeRunE2E` 任务类型定义 + asynq 路由注册
 - [x] 测试环境对接：环境配置管理（测试 URL、数据库连接、账号等）、部署状态检测（确认环境可用后再执行）
-- [ ] `case.yaml` / `suite.yaml` schema 定义（执行清单格式）
+- [x] `case.yaml` schema 定义（执行清单格式，`suite.yaml` 推迟至 M5.3）
 - [x] E2E Prompt 设计：指导 Claude 读取 manifest、按阶段执行脚本（setup → test → teardown）、收集截图和错误上下文
 - [x] E2E 输出 JSON schema（`E2EOutput`：用例级 pass/fail/error + 截图路径 + 错误详情）
 - [x] 手动触发入口：REST API（`POST /api/v1/repos/{owner}/{repo}/e2e`）+ 服务端 CLI（`dtworkflow e2e run`）+ 瘦客户端（`dtw e2e run --repo X [--suite Y]`）
