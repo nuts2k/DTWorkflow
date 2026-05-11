@@ -24,7 +24,8 @@ type CaseResult struct {
 	TeardownResult  *PhaseResult `json:"teardown_result,omitempty"`
 	FailureCategory string       `json:"failure_category,omitempty"`
 	FailureAnalysis string       `json:"failure_analysis,omitempty"`
-	Screenshots     []string     `json:"screenshots,omitempty"`
+	Screenshots     []string      `json:"screenshots,omitempty"`
+	Expectations    []Expectation `json:"expectations,omitempty"` // M5.2: case.yaml expectations 回填
 }
 
 type PhaseResult struct {
@@ -42,9 +43,11 @@ type ScriptResult struct {
 }
 
 type E2EResult struct {
-	Output     *E2EOutput
-	RawOutput  string
-	DurationMs int64
+	Output        *E2EOutput
+	RawOutput     string
+	DurationMs    int64
+	Environment   string           // M5.2: 解析后的环境名
+	CreatedIssues map[string]int64 // M5.2: case_path → issue_number
 }
 
 const maxOutputLen = 2048
