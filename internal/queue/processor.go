@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -974,6 +975,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 			for _, n := range e2eResult.CreatedIssues {
 				nums = append(nums, fmt.Sprintf("%d", n))
 			}
+			sort.Strings(nums)
 			metadata[notify.MetaKeyE2ECreatedIssues] = strings.Join(nums, ",")
 		}
 		target := notify.Target{

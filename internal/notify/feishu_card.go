@@ -279,11 +279,10 @@ func isRetryingMessage(msg Message) bool {
 }
 
 // e2eFailedHeader 根据通过/总数比例决定 E2E 失败卡片的标题与颜色。
-// passed == "0" 或 passed == total（全部失败）→ 红色；其余部分失败 → 橙色。
+// passed == "0"（全部失败）→ 红色；其余部分失败 → 橙色。
 func e2eFailedHeader(msg Message) (title, color string) {
-	total := msg.Metadata[MetaKeyE2ETotalCases]
 	passed := msg.Metadata[MetaKeyE2EPassedCases]
-	if passed == "0" || passed == total {
+	if passed == "0" {
 		return "E2E 测试失败", "red"
 	}
 	return "E2E 测试部分失败", "orange"
