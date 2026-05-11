@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -166,7 +168,7 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 		NetworkName: p.config.NetworkName,
 		WorkDir:     p.config.WorkDir,
 		OpenStdin:   useStdin,
-		Binds:       p.buildBinds(payload.TaskType),
+		Binds:       p.buildBinds(payload),
 	}
 
 	// 确保 Docker 网络存在（支持失败后重试）
@@ -581,15 +583,16 @@ func (p *Pool) Stats() PoolStats {
 	}
 }
 
-// buildBinds 根据任务类型构建额外的容器挂载列表。
+// buildBinds 根据任务 payload 构建额外的容器挂载列表。
 // fix_issue / gen_tests 使用 ImageFull 时，若配置了 MavenCacheVolume / NpmCacheVolume，
 // 将其挂载到对应路径，实现跨容器依赖缓存复用。
-func (p *Pool) buildBinds(taskType model.TaskType) []string {
-	if p.config.ImageFull == "" {
-		return nil
-	}
-	switch taskType {
+// run_e2e 任务若配置了 DataDir，为每个任务创建独立 artifact 目录并挂载到容器内 /workspace/artifacts。
+func (p *Pool) buildBinds(payload model.TaskPayload) []string {
+	switch payload.TaskType {
 	case model.TaskTypeFixIssue, model.TaskTypeGenTests:
+		if p.config.ImageFull == "" {
+			return nil
+		}
 		var binds []string
 		if p.config.MavenCacheVolume != "" {
 			binds = append(binds, p.config.MavenCacheVolume+":/workspace/.m2/repository")
@@ -598,6 +601,16 @@ func (p *Pool) buildBinds(taskType model.TaskType) []string {
 			binds = append(binds, p.config.NpmCacheVolume+":/workspace/.npm")
 		}
 		return binds
+	case model.TaskTypeRunE2E:
+		if p.config.DataDir != "" && payload.TaskID != "" {
+			artifactDir := filepath.Join(p.config.DataDir, "e2e-artifacts", payload.TaskID)
+			if err := os.MkdirAll(artifactDir, 0o777); err != nil {
+				slog.Warn("创建 E2E artifact 目录失败", "path", artifactDir, "error", err)
+				return nil
+			}
+			return []string{artifactDir + ":/workspace/artifacts"}
+		}
+		return nil
 	}
 	return nil
 }

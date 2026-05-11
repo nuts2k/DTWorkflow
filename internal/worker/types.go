@@ -91,6 +91,7 @@ type PoolConfig struct {
 	ImageE2E         string // E2E 镜像（Playwright + Chromium），可选
 	MavenCacheVolume string // Maven 缓存 Docker named volume，非空时挂载到 /workspace/.m2/repository（仅 ImageFull 容器）
 	NpmCacheVolume   string // npm 缓存 Docker named volume，非空时挂载到 /workspace/.npm（仅 ImageFull 容器）
+	DataDir          string // 宿主机数据目录，用于 E2E artifact volume 挂载
 	CPULimit         string // 容器 CPU 限制，如 "2.0"
 	MemoryLimit      string // 容器内存限制，如 "4g"
 	GiteaURL         string // Gitea 实例地址
