@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -123,6 +124,34 @@ func (c *Client) newRequestWithQuery(ctx context.Context, method, path string, p
 	if len(params) > 0 {
 		req.URL.RawQuery = params.Encode()
 	}
+	return req, nil
+}
+
+// newMultipartRequest 构造 multipart/form-data 请求，用于文件上传。
+func (c *Client) newMultipartRequest(ctx context.Context, path, fieldName, fileName string, reader io.Reader) (*http.Request, error) {
+	u := c.baseURL.JoinPath(path)
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile(fieldName, fileName)
+	if err != nil {
+		return nil, fmt.Errorf("创建 multipart field: %w", err)
+	}
+	if _, err := io.Copy(part, reader); err != nil {
+		return nil, fmt.Errorf("写入 multipart 数据: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("关闭 multipart writer: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "token "+c.token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("Content-Type", w.FormDataContentType())
 	return req, nil
 }
 
