@@ -2,9 +2,8 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"log/slog"
-
-	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 )
 
 // E2EModuleScanner 扫描仓库 E2E 模块的窄接口。
@@ -22,7 +21,7 @@ func ScanE2EModules(ctx context.Context, scanner E2EModuleScanner,
 
 	topDirs, err := scanner.ListDir(ctx, owner, repo, ref, "e2e")
 	if err != nil {
-		if gitea.IsNotFound(err) {
+		if errors.Is(err, ErrDirNotFound) {
 			return nil, ErrNoE2EModulesFound
 		}
 		return nil, err

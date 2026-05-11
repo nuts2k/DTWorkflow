@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
+	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
@@ -3121,8 +3122,8 @@ func TestEnqueueManualE2E_NoModulesFound_ReturnsError(t *testing.T) {
 	}
 
 	_, err := h.EnqueueManualE2E(context.Background(), payload, "test")
-	if err == nil {
-		t.Fatal("expected error")
+	if !errors.Is(err, e2esvc.ErrNoE2EModulesFound) {
+		t.Fatalf("expected ErrNoE2EModulesFound, got: %v", err)
 	}
 }
 

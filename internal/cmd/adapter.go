@@ -206,6 +206,9 @@ func (c *giteaRepoFileChecker) ListDir(ctx context.Context, owner, repo, ref, di
 	}
 	entries, _, err := c.client.ListDirContents(ctx, owner, repo, dir, ref)
 	if err != nil {
+		if gitea.IsNotFound(err) {
+			return nil, fmt.Errorf("ListDir(%s): %w", dir, e2e.ErrDirNotFound)
+		}
 		return nil, fmt.Errorf("ListDir(%s): %w", dir, err)
 	}
 	var dirs []string

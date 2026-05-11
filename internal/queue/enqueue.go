@@ -1055,6 +1055,7 @@ func (h *EnqueueHandler) cleanupAllActiveE2ETasks(ctx context.Context, repoFullN
 			"repo", repoFullName, "error", err)
 		return
 	}
+	// ListActiveModules 无 DISTINCT，可能返回重复 module；cancelTasks 幂等，重复调用无副作用
 	for _, mod := range modules {
 		tasks, tErr := h.store.FindActiveTasksByModule(ctx, repoFullName, mod, model.TaskTypeRunE2E)
 		if tErr != nil {

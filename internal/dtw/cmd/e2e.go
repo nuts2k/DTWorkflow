@@ -75,7 +75,7 @@ var e2eRunCmd = &cobra.Command{
 			return fmt.Errorf("提交 E2E 任务失败: %w", err)
 		}
 
-		// 多模块拆分场景
+		// 多模块拆分场景（API 仅在多任务时设置 split=true，> 1 为防御性检查）
 		if result.Split && len(result.Tasks) > 1 {
 			if e2eNoWait {
 				if flagJSON {

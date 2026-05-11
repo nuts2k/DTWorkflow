@@ -3,10 +3,7 @@ package e2e
 import (
 	"context"
 	"errors"
-	"net/http"
 	"testing"
-
-	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 )
 
 type mockE2EScanner struct {
@@ -76,7 +73,7 @@ func TestScanE2EModules_TopDirFails(t *testing.T) {
 
 func TestScanE2EModules_TopDirNotFound_ReturnsNoModules(t *testing.T) {
 	scanner := &mockE2EScanner{
-		errs: map[string]error{"e2e": &gitea.ErrorResponse{StatusCode: http.StatusNotFound}},
+		errs: map[string]error{"e2e": ErrDirNotFound},
 	}
 	_, err := ScanE2EModules(context.Background(), scanner, "o", "r", "main")
 	if !errors.Is(err, ErrNoE2EModulesFound) {

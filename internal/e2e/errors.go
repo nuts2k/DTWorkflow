@@ -9,4 +9,5 @@ var (
 	ErrNoCasesFound        = errors.New("e2e: 指定范围内无用例")
 	ErrE2EParseFailure     = errors.New("e2e: 输出解析失败")
 	ErrNoE2EModulesFound   = errors.New("e2e: 未发现包含 cases/ 的模块")
+	ErrDirNotFound         = errors.New("e2e: 目录不存在")
 )
