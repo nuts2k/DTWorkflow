@@ -152,7 +152,16 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*E2ER
 	var savedRecordID string
 	var savedIssueNumbers map[string]int64
 	if s.store != nil && output != nil {
+		// 先读取旧记录，避免阶段 1 UPSERT 把阶段 2 写入的 created_issues 清空。
+		if existing, err := s.store.GetE2EResultByTaskID(ctx, payload.TaskID); err == nil && existing != nil {
+			savedRecordID = existing.ID
+			savedIssueNumbers = cloneCreatedIssues(existing.CreatedIssues)
+		} else if err != nil {
+			s.logger.WarnContext(ctx, "查询已有 E2E 结果失败", "error", err)
+		}
+
 		rec := &store.E2EResultRecord{
+			ID:            savedRecordID,
 			TaskID:        payload.TaskID,
 			Repo:          payload.RepoFullName,
 			Environment:   envName,
@@ -164,17 +173,12 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*E2ER
 			SkippedCases:  output.SkippedCases,
 			Success:       output.Success,
 			DurationMs:    result.DurationMs,
-			CreatedIssues: map[string]int64{},
+			CreatedIssues: cloneCreatedIssues(savedIssueNumbers),
 		}
 		if err := s.store.SaveE2EResult(ctx, rec); err != nil {
 			s.logger.WarnContext(ctx, "E2E 结果持久化阶段 1 失败", "error", err)
 		} else {
 			savedRecordID = rec.ID
-		}
-
-		// 查询已有 Issue（幂等 guard）
-		if existing, err := s.store.GetE2EResultByTaskID(ctx, payload.TaskID); err == nil && existing != nil {
-			savedIssueNumbers = existing.CreatedIssues
 		}
 	}
 	if savedIssueNumbers == nil {
@@ -325,7 +329,7 @@ func (s *Service) processFailures(ctx context.Context, payload model.TaskPayload
 	var fixToPRLabelID int64 = -1 // -1 表示未查询
 
 	for _, c := range result.Output.Cases {
-		if c.Status != "failed" || c.FailureCategory == "environment" {
+		if (c.Status != "failed" && c.Status != "error") || c.FailureCategory == "environment" {
 			continue
 		}
 		if _, exists := savedIssueNumbers[c.CasePath]; exists {
@@ -460,4 +464,12 @@ func splitRepo(fullName string) (owner, repo string, ok bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+func cloneCreatedIssues(src map[string]int64) map[string]int64 {
+	dst := make(map[string]int64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }

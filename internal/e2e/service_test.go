@@ -156,10 +156,19 @@ func TestBuildClaudeCmd(t *testing.T) {
 
 // --- M5.2: processFailures 测试 mock ---
 
-type mockPool struct{}
+type mockPool struct {
+	result *worker.ExecutionResult
+	err    error
+}
 
 func (m *mockPool) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload,
 	_ []string, _ []byte) (*worker.ExecutionResult, error) {
+	if m.err != nil {
+		return m.result, m.err
+	}
+	if m.result != nil {
+		return m.result, nil
+	}
 	return &worker.ExecutionResult{}, nil
 }
 
@@ -189,8 +198,9 @@ func (m *mockIssueClient) CreateIssueAttachment(_ context.Context, _, _ string,
 }
 
 type mockE2EStore struct {
-	saved   *store.E2EResultRecord
-	updated map[string]int64
+	existing *store.E2EResultRecord
+	saved    *store.E2EResultRecord
+	updated  map[string]int64
 }
 
 func (m *mockE2EStore) SaveE2EResult(_ context.Context, record *store.E2EResultRecord) error {
@@ -200,6 +210,9 @@ func (m *mockE2EStore) SaveE2EResult(_ context.Context, record *store.E2EResultR
 }
 
 func (m *mockE2EStore) GetE2EResultByTaskID(_ context.Context, taskID string) (*store.E2EResultRecord, error) {
+	if m.existing != nil && m.existing.TaskID == taskID {
+		return m.existing, nil
+	}
 	if m.saved != nil && m.saved.TaskID == taskID {
 		return m.saved, nil
 	}
@@ -272,6 +285,36 @@ func TestProcessFailures_ScriptOutdatedWithLabel(t *testing.T) {
 
 	if len(ic.createdIssues) != 1 {
 		t.Fatalf("期望创建 1 个 Issue，实际=%d", len(ic.createdIssues))
+	}
+	if len(ic.createdIssues[0].Labels) != 1 || ic.createdIssues[0].Labels[0] != 5 {
+		t.Errorf("script_outdated 应携带 fix-to-pr 标签 ID=5，实际=%v", ic.createdIssues[0].Labels)
+	}
+}
+
+func TestProcessFailures_ErrorStatusScriptOutdatedCreatesIssue(t *testing.T) {
+	ic := &mockIssueClient{
+		labels: []gitea.Label{{ID: 5, Name: "fix-to-pr"}},
+	}
+	svc := NewService(&mockPool{}, &mockConfigProvider{},
+		WithIssueClient(ic),
+		WithServiceLogger(slog.Default()),
+	)
+
+	result := &E2EResult{
+		Output: &E2EOutput{
+			Cases: []CaseResult{
+				{Name: "seed", Module: "order", CasePath: "e2e/order/cases/seed",
+					Status: "error", FailureCategory: "script_outdated"},
+			},
+		},
+		CreatedIssues: make(map[string]int64),
+	}
+
+	payload := model.TaskPayload{TaskID: "t-error", RepoFullName: "owner/repo"}
+	_ = svc.processFailures(context.Background(), payload, result, map[string]int64{}, "https://app.example.com")
+
+	if len(ic.createdIssues) != 1 {
+		t.Fatalf("error 状态的 script_outdated 应创建 1 个 Issue，实际=%d", len(ic.createdIssues))
 	}
 	if len(ic.createdIssues[0].Labels) != 1 || ic.createdIssues[0].Labels[0] != 5 {
 		t.Errorf("script_outdated 应携带 fix-to-pr 标签 ID=5，实际=%v", ic.createdIssues[0].Labels)
@@ -359,6 +402,52 @@ func TestProcessFailures_CreateIssueError_Degraded(t *testing.T) {
 	}
 	if len(result.CreatedIssues) != 0 {
 		t.Errorf("创建失败时 CreatedIssues 应为空，实际=%d", len(result.CreatedIssues))
+	}
+}
+
+func TestExecute_PreservesExistingCreatedIssues(t *testing.T) {
+	const casePath = "e2e/order/cases/create-order"
+	raw := `{"success":false,"total_cases":1,"passed_cases":0,"failed_cases":1,"error_cases":0,"skipped_cases":0,"cases":[{"name":"create-order","module":"order","case_path":"` + casePath + `","status":"failed","duration_ms":1000,"failure_category":"bug"}]}`
+	ic := &mockIssueClient{}
+	st := &mockE2EStore{
+		existing: &store.E2EResultRecord{
+			ID:            "existing-id",
+			TaskID:        "task-existing",
+			CreatedIssues: map[string]int64{casePath: 42},
+		},
+	}
+	svc := NewService(
+		&mockPool{result: &worker.ExecutionResult{Output: raw}},
+		&mockConfigProvider{
+			override: config.E2EOverride{DefaultEnv: "staging"},
+			environments: map[string]config.E2EEnvironment{
+				"staging": {BaseURL: "https://app.example.com"},
+			},
+		},
+		WithIssueClient(ic),
+		WithStore(st),
+		WithServiceLogger(slog.Default()),
+	)
+
+	result, err := svc.Execute(context.Background(), model.TaskPayload{
+		TaskID:       "task-existing",
+		RepoFullName: "owner/repo",
+		BaseRef:      "main",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(ic.createdIssues) != 0 {
+		t.Fatalf("已有 created_issues 时不应重复创建 Issue，实际=%d", len(ic.createdIssues))
+	}
+	if st.saved == nil {
+		t.Fatal("期望阶段 1 保存 E2E 结果")
+	}
+	if st.saved.CreatedIssues[casePath] != 42 {
+		t.Fatalf("阶段 1 保存不应清空已有 created_issues，实际=%v", st.saved.CreatedIssues)
+	}
+	if result.CreatedIssues[casePath] != 42 {
+		t.Fatalf("返回结果应保留已有 Issue，实际=%v", result.CreatedIssues)
 	}
 }
 

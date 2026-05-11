@@ -608,6 +608,10 @@ func (p *Pool) buildBinds(payload model.TaskPayload) []string {
 				slog.Warn("创建 E2E artifact 目录失败", "path", artifactDir, "error", err)
 				return nil
 			}
+			if err := os.Chmod(artifactDir, 0o777); err != nil {
+				slog.Warn("设置 E2E artifact 目录权限失败", "path", artifactDir, "error", err)
+				return nil
+			}
 			return []string{artifactDir + ":/workspace/artifacts"}
 		}
 		return nil

@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -829,7 +831,8 @@ func TestModuleKeyForContainerWithFramework(t *testing.T) {
 // 由于 internal/test → internal/worker 存在反向依赖（import cycle），
 // 此处使用本地等价实现（moduleKeyForContainer + framework 后缀）重现 BuildAutoTestBranchName 逻辑，
 // 与 worker 实现做交叉验证。期望值手动维护自 internal/test.BuildAutoTestBranchName 的定义：
-//   auto-test/<moduleKey>[-framework]
+//
+//	auto-test/<moduleKey>[-framework]
 func TestModuleKeyConsistencyWithTestPackage(t *testing.T) {
 	cases := []struct {
 		module    string
@@ -903,6 +906,34 @@ func TestResolveImage_RunE2E(t *testing.T) {
 	p2 := &Pool{config: PoolConfig{Image: "worker:latest"}}
 	if got := p2.resolveImage(model.TaskTypeRunE2E); got != "worker:latest" {
 		t.Errorf("resolveImage(RunE2E, 无 ImageE2E) = %q, 期望 worker:latest（回退基础镜像）", got)
+	}
+}
+
+func TestBuildBinds_RunE2EArtifactDirIsWorldWritable(t *testing.T) {
+	dataDir := t.TempDir()
+	p := &Pool{config: PoolConfig{DataDir: dataDir}}
+	payload := model.TaskPayload{
+		TaskID:   "task-1",
+		TaskType: model.TaskTypeRunE2E,
+	}
+
+	binds := p.buildBinds(payload)
+	if len(binds) != 1 {
+		t.Fatalf("期望 1 个 bind，实际=%d", len(binds))
+	}
+
+	artifactDir := filepath.Join(dataDir, "e2e-artifacts", "task-1")
+	wantBind := artifactDir + ":/workspace/artifacts"
+	if binds[0] != wantBind {
+		t.Fatalf("bind = %q，期望 %q", binds[0], wantBind)
+	}
+
+	info, err := os.Stat(artifactDir)
+	if err != nil {
+		t.Fatalf("artifact 目录不存在: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o777 {
+		t.Fatalf("artifact 目录权限 = %o，期望 777", got)
 	}
 }
 
