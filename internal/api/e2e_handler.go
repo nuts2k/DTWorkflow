@@ -137,6 +137,7 @@ func (h *handlers) triggerE2E(c *gin.Context) {
 			"task_id": results[0].TaskID,
 			"repo":    repoInfo.FullName,
 			"module":  results[0].Module,
+			"case":    req.Case,
 			"env":     req.Env,
 			"status":  "pending",
 		})

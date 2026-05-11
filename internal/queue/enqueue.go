@@ -24,16 +24,16 @@ var _ webhook.Handler = (*EnqueueHandler)(nil)
 
 // EnqueueHandler 实现 webhook.Handler 接口,将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
-	client         Enqueuer
-	canceller      TaskCanceller // M2.4: 任务取消能力
-	store          store.Store
-	logger         *slog.Logger
-	branchCleaner  BranchCleaner              // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
-	prClient       genTestsPRClient           // M4.2.1: cleanupAllAutoTestBranches
-	moduleScanner  test.RepoFileChecker       // M4.2.1: ScanRepoModules
-	configProvider  ChangeDrivenConfigProvider // M4.3: 变更驱动配置读取
-	prFilesLister   PRFilesLister              // M4.3: PR 变更文件列表查询
-	e2eModuleScanner e2esvc.E2EModuleScanner   // M5.3: 可选，nil 时全量模式退化为单任务
+	client           Enqueuer
+	canceller        TaskCanceller // M2.4: 任务取消能力
+	store            store.Store
+	logger           *slog.Logger
+	branchCleaner    BranchCleaner              // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
+	prClient         genTestsPRClient           // M4.2.1: cleanupAllAutoTestBranches
+	moduleScanner    test.RepoFileChecker       // M4.2.1: ScanRepoModules
+	configProvider   ChangeDrivenConfigProvider // M4.3: 变更驱动配置读取
+	prFilesLister    PRFilesLister              // M4.3: PR 变更文件列表查询
+	e2eModuleScanner e2esvc.E2EModuleScanner    // M5.3: 可选，nil 时全量模式退化为单任务
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -1119,9 +1119,7 @@ func (h *EnqueueHandler) EnqueueManualE2E(ctx context.Context, payload model.Tas
 			return []EnqueuedTask{result}, nil
 		}
 
-		if len(modules) >= 2 {
-			h.cleanupAllActiveE2ETasks(ctx, payload.RepoFullName)
-		}
+		h.cleanupAllActiveE2ETasks(ctx, payload.RepoFullName)
 
 		var results []EnqueuedTask
 		for _, mod := range modules {

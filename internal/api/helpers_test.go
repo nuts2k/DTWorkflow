@@ -151,6 +151,13 @@ func (m *mockStore) FindActiveGenTestsTasks(_ context.Context, _ string, _ strin
 	return nil, nil
 }
 
+func isActiveTaskStatus(status model.TaskStatus) bool {
+	return status == model.TaskStatusPending ||
+		status == model.TaskStatusQueued ||
+		status == model.TaskStatusRunning ||
+		status == model.TaskStatusRetrying
+}
+
 func (m *mockStore) HasNewerReviewTask(_ context.Context, _ string, _ int64, _ time.Time) (bool, error) {
 	return false, nil
 }
@@ -213,12 +220,46 @@ func (m *mockStore) UpdateE2ECreatedIssues(_ context.Context, _ string, _ map[st
 	return nil
 }
 
-func (m *mockStore) FindActiveTasksByModule(_ context.Context, _, _ string, _ model.TaskType) ([]*model.TaskRecord, error) {
-	return nil, nil
+func (m *mockStore) FindActiveTasksByModule(_ context.Context, repoFullName, module string, taskType model.TaskType) ([]*model.TaskRecord, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []*model.TaskRecord
+	for _, task := range m.tasks {
+		if task.RepoFullName != repoFullName {
+			continue
+		}
+		if task.TaskType != taskType {
+			continue
+		}
+		if !isActiveTaskStatus(task.Status) {
+			continue
+		}
+		if task.Payload.Module != module {
+			continue
+		}
+		cp := *task
+		result = append(result, &cp)
+	}
+	return result, nil
 }
 
-func (m *mockStore) ListActiveModules(_ context.Context, _ string, _ model.TaskType) ([]string, error) {
-	return nil, nil
+func (m *mockStore) ListActiveModules(_ context.Context, repoFullName string, taskType model.TaskType) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var modules []string
+	for _, task := range m.tasks {
+		if task.RepoFullName != repoFullName {
+			continue
+		}
+		if task.TaskType != taskType {
+			continue
+		}
+		if !isActiveTaskStatus(task.Status) {
+			continue
+		}
+		modules = append(modules, task.Payload.Module)
+	}
+	return modules, nil
 }
 
 // mockEnqueuer 实现 queue.Enqueuer 接口

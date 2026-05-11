@@ -216,12 +216,53 @@ func (m *mockStore) UpdateE2ECreatedIssues(_ context.Context, _ string, _ map[st
 	return nil
 }
 
-func (m *mockStore) FindActiveTasksByModule(_ context.Context, _, _ string, _ model.TaskType) ([]*model.TaskRecord, error) {
-	return nil, nil
+func (m *mockStore) FindActiveTasksByModule(_ context.Context, repoFullName, module string, taskType model.TaskType) ([]*model.TaskRecord, error) {
+	if m.findActivePRTasksErr != nil {
+		return nil, m.findActivePRTasksErr
+	}
+	var tasks []*model.TaskRecord
+	for _, task := range m.tasks {
+		if task.RepoFullName != repoFullName {
+			continue
+		}
+		if task.TaskType != taskType {
+			continue
+		}
+		if task.Status != model.TaskStatusPending &&
+			task.Status != model.TaskStatusQueued &&
+			task.Status != model.TaskStatusRunning &&
+			task.Status != model.TaskStatusRetrying {
+			continue
+		}
+		if task.Payload.Module != module {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
 }
 
-func (m *mockStore) ListActiveModules(_ context.Context, _ string, _ model.TaskType) ([]string, error) {
-	return nil, nil
+func (m *mockStore) ListActiveModules(_ context.Context, repoFullName string, taskType model.TaskType) ([]string, error) {
+	if m.activeGenTestsModulesErr != nil {
+		return nil, m.activeGenTestsModulesErr
+	}
+	var modules []string
+	for _, task := range m.tasks {
+		if task.RepoFullName != repoFullName {
+			continue
+		}
+		if task.TaskType != taskType {
+			continue
+		}
+		if task.Status != model.TaskStatusPending &&
+			task.Status != model.TaskStatusQueued &&
+			task.Status != model.TaskStatusRunning &&
+			task.Status != model.TaskStatusRetrying {
+			continue
+		}
+		modules = append(modules, task.Payload.Module)
+	}
+	return modules, nil
 }
 
 func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]string, error) {
@@ -2957,6 +2998,58 @@ func TestEnqueueManualE2E_SplitMode(t *testing.T) {
 	}
 	if results[0].Module != "order" || results[1].Module != "auth" {
 		t.Errorf("unexpected modules: %v, %v", results[0].Module, results[1].Module)
+	}
+}
+
+func TestEnqueueManualE2E_FullScanSingleModule_CleansExistingFullTask(t *testing.T) {
+	ms := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{}
+	scanner := &mockE2EScanner{
+		dirs: map[string][]string{
+			"e2e":       {"order"},
+			"e2e/order": {"cases"},
+		},
+	}
+	h := NewEnqueueHandler(mc, canceller, ms, slog.Default(),
+		WithE2EModuleScanner(scanner),
+	)
+
+	oldTask := &model.TaskRecord{
+		ID:           "old-full-e2e",
+		AsynqID:      "asynq-old-full",
+		TaskType:     model.TaskTypeRunE2E,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityNormal,
+		RepoFullName: "o/r",
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeRunE2E,
+			RepoFullName: "o/r",
+			Module:       "",
+		},
+	}
+	ms.tasks[oldTask.ID] = oldTask
+
+	payload := model.TaskPayload{
+		RepoOwner:    "o",
+		RepoName:     "r",
+		RepoFullName: "o/r",
+		CloneURL:     "https://example.com/o/r.git",
+		BaseRef:      "main",
+	}
+
+	results, err := h.EnqueueManualE2E(context.Background(), payload, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 || results[0].Module != "order" {
+		t.Fatalf("expected single order task, got: %+v", results)
+	}
+	if oldTask.Status != model.TaskStatusCancelled {
+		t.Fatalf("old full E2E task status = %q, want cancelled", oldTask.Status)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-old-full" {
+		t.Fatalf("deleteCalls = %v, want [asynq-old-full]", canceller.deleteCalls)
 	}
 }
 
