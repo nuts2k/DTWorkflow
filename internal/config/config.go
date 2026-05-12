@@ -137,7 +137,8 @@ type TaskTimeouts struct {
 	AnalyzeIssue time.Duration `mapstructure:"analyze_issue"` // M3.4: 默认 15m
 	FixIssue     time.Duration `mapstructure:"fix_issue"`
 	GenTests     time.Duration `mapstructure:"gen_tests"`
-	RunE2E       time.Duration `mapstructure:"run_e2e"` // M5.1: 默认 60m
+	RunE2E       time.Duration `mapstructure:"run_e2e"`       // M5.1: 默认 60m
+	TriageE2E    time.Duration `mapstructure:"triage_e2e"`    // M5.4: 默认 10m
 }
 
 // E2EAccountConfig 测试账号配置。

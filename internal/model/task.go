@@ -12,6 +12,7 @@ const (
 	TaskTypeGenTests       TaskType = "gen_tests"
 	TaskTypeGenDailyReport TaskType = "gen_daily_report"
 	TaskTypeRunE2E         TaskType = "run_e2e"
+	TaskTypeTriageE2E      TaskType = "triage_e2e"
 )
 
 // TaskPriority 任务优先级（asynq 使用整数，越小越高）
@@ -40,7 +41,7 @@ const (
 // IsValid 检查任务类型是否为已知值
 func (t TaskType) IsValid() bool {
 	switch t {
-	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport, TaskTypeRunE2E:
+	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport, TaskTypeRunE2E, TaskTypeTriageE2E:
 		return true
 	}
 	return false

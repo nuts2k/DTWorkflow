@@ -150,6 +150,22 @@ func TestTaskTimeout_AnalyzeIssue_Configured(t *testing.T) {
 	}
 }
 
+func TestTaskTimeout_TriageE2E_Default(t *testing.T) {
+	cfg := TaskTimeoutsConfig{}
+	got := TaskTimeout(model.TaskTypeTriageE2E, cfg)
+	if got != 10*time.Minute {
+		t.Errorf("want 10m, got %v", got)
+	}
+}
+
+func TestTaskTimeout_TriageE2E_Configured(t *testing.T) {
+	cfg := TaskTimeoutsConfig{TriageE2E: 5 * time.Minute}
+	got := TaskTimeout(model.TaskTypeTriageE2E, cfg)
+	if got != 5*time.Minute {
+		t.Errorf("want 5m, got %v", got)
+	}
+}
+
 func TestPriorityToQueue(t *testing.T) {
 	tests := []struct {
 		priority model.TaskPriority
