@@ -30,6 +30,10 @@ const (
 	EventE2EStarted EventType = "e2e.started"
 	EventE2EDone    EventType = "e2e.done"
 	EventE2EFailed  EventType = "e2e.failed"
+	// M5.4：E2E 回归分析（triage）通知事件。
+	EventE2ETriageStarted EventType = "e2e.triage.started"
+	EventE2ETriageDone    EventType = "e2e.triage.done"
+	EventE2ETriageFailed  EventType = "e2e.triage.failed"
 )
 
 // Metadata key 常量，用于 Message.Metadata 的键名，确保生产端和消费端类型安全。
@@ -67,6 +71,11 @@ const (
 	MetaKeyE2EBaseRef       = "e2e_base_ref"
 	MetaKeyE2EFailedList    = "e2e_failed_list"     // JSON: [{"name":"...","category":"...","analysis":"..."}]
 	MetaKeyE2ECreatedIssues = "e2e_created_issues"  // "42,43"
+
+	// M5.4 E2E 回归分析（triage）专用 metadata key。
+	MetaKeyTriageModules        = "triage_modules"         // JSON: [{"name":"...","reason":"..."}]
+	MetaKeyTriageSkippedModules = "triage_skipped_modules"  // JSON: [{"name":"...","reason":"..."}]
+	MetaKeyTriageAnalysis       = "triage_analysis"
 )
 
 // Severity 通知紧急程度

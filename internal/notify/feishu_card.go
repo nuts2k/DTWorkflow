@@ -49,6 +49,8 @@ func FormatFeishuCard(msg Message) (map[string]any, error) {
 		mdParts = append(mdParts, renderGenTestsFields(msg)...)
 	case EventE2EStarted, EventE2EDone, EventE2EFailed:
 		mdParts = append(mdParts, renderE2EFields(msg)...)
+	case EventE2ETriageStarted, EventE2ETriageDone, EventE2ETriageFailed:
+		mdParts = append(mdParts, renderE2ETriageFields(msg)...)
 	}
 
 	if msg.Body != "" {
@@ -139,6 +141,12 @@ func resolveHeaderStyle(msg Message) (title, color string) {
 		return "E2E 测试通过", "green"
 	case EventE2EFailed:
 		return e2eFailedHeader(msg)
+	case EventE2ETriageStarted:
+		return "E2E 回归分析开始", "blue"
+	case EventE2ETriageDone:
+		return "E2E 回归分析完成", "green"
+	case EventE2ETriageFailed:
+		return "E2E 回归分析失败", "red"
 	default:
 		return msg.Title, "blue"
 	}
@@ -269,6 +277,12 @@ func resolveButtonStyle(msg Message) (text, btnType string) {
 		return "查看详情", "primary"
 	case EventE2EFailed:
 		return "查看详情", "default"
+	case EventE2ETriageStarted:
+		return "查看详情", "default"
+	case EventE2ETriageDone:
+		return "查看详情", "primary"
+	case EventE2ETriageFailed:
+		return "查看详情", "default"
 	default:
 		return "查看详情", "default"
 	}
@@ -364,6 +378,71 @@ func renderE2EFailedList(jsonStr string) []string {
 		}
 		parts = append(parts, fmt.Sprintf("%s %s — %s: %s", prefix, item.Name, item.Category, analysis))
 	}
+	return parts
+}
+
+// triageModuleItem 表示 triage_modules / triage_skipped_modules JSON 中的单个模块条目。
+type triageModuleItem struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+// renderE2ETriageFields 组装 E2E 回归分析卡片特有的 markdown 字段。
+func renderE2ETriageFields(msg Message) []string {
+	if msg.Metadata == nil {
+		return nil
+	}
+	var parts []string
+
+	switch msg.EventType {
+	case EventE2ETriageDone:
+		// 解析选中模块
+		var modules []triageModuleItem
+		if raw := msg.Metadata[MetaKeyTriageModules]; raw != "" {
+			_ = json.Unmarshal([]byte(raw), &modules)
+		}
+		if len(modules) > 0 {
+			parts = append(parts, "**选中模块**:")
+			for _, m := range modules {
+				line := fmt.Sprintf("  - %s", m.Name)
+				if m.Reason != "" {
+					line += fmt.Sprintf(" -- %s", m.Reason)
+				}
+				parts = append(parts, line)
+			}
+		} else {
+			parts = append(parts, "**结果**: 本次变更无需 E2E 回归")
+		}
+
+		// 解析跳过模块
+		var skipped []triageModuleItem
+		if raw := msg.Metadata[MetaKeyTriageSkippedModules]; raw != "" {
+			_ = json.Unmarshal([]byte(raw), &skipped)
+		}
+		if len(skipped) > 0 {
+			parts = append(parts, "**跳过模块**:")
+			for _, m := range skipped {
+				line := fmt.Sprintf("  - %s", m.Name)
+				if m.Reason != "" {
+					line += fmt.Sprintf(" -- %s", m.Reason)
+				}
+				parts = append(parts, line)
+			}
+		}
+
+		// 分析摘要（截断 200 字符）
+		if analysis := msg.Metadata[MetaKeyTriageAnalysis]; analysis != "" {
+			r := []rune(analysis)
+			if len(r) > 200 {
+				analysis = string(r[:200]) + "..."
+			}
+			parts = append(parts, fmt.Sprintf("**分析摘要**: %s", analysis))
+		}
+
+	case EventE2ETriageFailed:
+		parts = append(parts, "**提示**: 回归分析失败，可手动触发 E2E 测试")
+	}
+
 	return parts
 }
 
