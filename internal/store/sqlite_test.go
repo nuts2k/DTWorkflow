@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
@@ -2458,5 +2459,105 @@ func TestMigration_TriageE2ETaskType(t *testing.T) {
 	err := store.CreateTask(ctx, rec)
 	if err != nil {
 		t.Fatalf("CreateTask with triage_e2e should succeed: %v", err)
+	}
+}
+
+func TestMigration_V23_PreservesTaskForeignKeys(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("打开内存 SQLite 失败: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			t.Fatalf("设置 PRAGMA 失败 (%s): %v", pragma, err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		t.Fatalf("创建 schema_migrations 失败: %v", err)
+	}
+
+	for _, m := range migrations {
+		if m.Version >= 23 {
+			break
+		}
+		if err := executeMigration(db, m); err != nil {
+			t.Fatalf("执行迁移 v%d 失败: %v", m.Version, err)
+		}
+	}
+
+	ctx := context.Background()
+	s := &SQLiteStore{db: db}
+	task := newTestRecord("task-preserve-fk", "", model.TaskTypeRunE2E)
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("创建关联 task 失败: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO review_results (id, task_id, repo_full_name, pr_number, verdict)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"review-preserve-fk", task.ID, "owner/repo", 1, "approve"); err != nil {
+		t.Fatalf("插入 review_results 失败: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO test_gen_results (id, task_id, repo_full_name, module, framework, base_ref)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"testgen-preserve-fk", task.ID, "owner/repo", "backend", "junit5", "main"); err != nil {
+		t.Fatalf("插入 test_gen_results 失败: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO e2e_results (id, task_id, repo, environment, module)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"e2e-preserve-fk", task.ID, "owner/repo", "staging", "auth"); err != nil {
+		t.Fatalf("插入 e2e_results 失败: %v", err)
+	}
+
+	var v23 migration
+	for _, m := range migrations {
+		if m.Version == 23 {
+			v23 = m
+			break
+		}
+	}
+	if v23.Version != 23 {
+		t.Fatal("未找到 v23 迁移")
+	}
+	if err := executeMigration(db, v23); err != nil {
+		t.Fatalf("执行迁移 v23 失败: %v", err)
+	}
+
+	for _, tc := range []struct {
+		table string
+		id    string
+	}{
+		{"review_results", "review-preserve-fk"},
+		{"test_gen_results", "testgen-preserve-fk"},
+		{"e2e_results", "e2e-preserve-fk"},
+	} {
+		var got string
+		query := fmt.Sprintf("SELECT task_id FROM %s WHERE id = ?", tc.table)
+		if err := db.QueryRowContext(ctx, query, tc.id).Scan(&got); err != nil {
+			t.Fatalf("查询 %s.task_id 失败: %v", tc.table, err)
+		}
+		if got != task.ID {
+			t.Fatalf("%s.task_id = %q, want %q", tc.table, got, task.ID)
+		}
+	}
+	if err := checkForeignKeys(db, 23); err != nil {
+		t.Fatalf("v23 后外键检查失败: %v", err)
+	}
+
+	triage := newTestRecord("task-triage-after-v23", "", model.TaskTypeTriageE2E)
+	if err := s.CreateTask(ctx, triage); err != nil {
+		t.Fatalf("v23 后创建 triage_e2e 任务失败: %v", err)
 	}
 }

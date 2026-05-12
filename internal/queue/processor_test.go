@@ -3796,6 +3796,77 @@ func TestProcessor_TriageE2E_SuccessEmptyModules(t *testing.T) {
 	}
 }
 
+func TestProcessor_TriageE2E_PartialRunE2EEnqueueFailureMarksFailed(t *testing.T) {
+	s := newMockStore()
+	s.createErrAt = 2
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:       model.TaskTypeTriageE2E,
+		DeliveryID:     "dlv-triage-chain-partial-1",
+		RepoOwner:      "org",
+		RepoName:       "repo",
+		RepoFullName:   "org/repo",
+		CloneURL:       "https://gitea.example.com/org/repo.git",
+		BaseRef:        "main",
+		MergeCommitSHA: "merge-sha",
+		Environment:    "staging",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "proc-task-triage-chain-partial",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: "org/repo",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{
+		ExitCode: 0,
+		Output:   `{"modules":[{"name":"auth","reason":"affected"},{"name":"payment","reason":"affected"}],"analysis":"2 modules"}`,
+	}}
+	enqueueHandler := NewEnqueueHandler(&mockEnqueuer{enqueuedID: "asynq-x"}, nil, s, slog.Default(),
+		WithE2EModuleScanner(&mockProcessorE2EScanner{modules: []string{"auth", "payment"}}))
+	p := NewProcessor(pool, s, notifier, slog.Default(),
+		WithEnqueueHandler(enqueueHandler))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("部分 run_e2e 入队失败应返回错误")
+	}
+	if !errors.Is(err, errTriageDispatchPartialFailure) {
+		t.Fatalf("error should wrap partial failure, got: %v", err)
+	}
+	if errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("部分失败应保留 asynq 重试机会，不应 SkipRetry: %v", err)
+	}
+
+	got := s.tasks["proc-task-triage-chain-partial"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want failed（测试 context 无 asynq retry 元数据）", got.Status)
+	}
+	if got.Error == "" || !strings.Contains(got.Error, "部分") {
+		t.Fatalf("failed triage task should record partial failure, error=%q", got.Error)
+	}
+
+	runE2ECount := 0
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeRunE2E {
+			runE2ECount++
+		}
+	}
+	if runE2ECount != 1 {
+		t.Fatalf("应只保留已成功入队的 1 个 run_e2e 任务，实际=%d", runE2ECount)
+	}
+	if len(notifier.messages) != 2 || notifier.messages[1].EventType != notify.EventE2ETriageFailed {
+		t.Fatalf("应发送 triage failed 通知，messages=%v", notifier.messages)
+	}
+}
+
 // TestProcessor_TriageE2E_ParseFailure 验证 triage_e2e 输出解析失败时：
 // 1. 返回 error（允许 asynq 重试，不使用 SkipRetry）
 // 2. 任务标记为 failed（因为没有更多重试机会）

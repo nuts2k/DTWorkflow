@@ -478,10 +478,15 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		dispatchResult, err := p.handleTriageE2EResult(ctx, record, triageResult)
 		if err != nil {
 			triageDispatchErr = err
-			record.Status = model.TaskStatusFailed
+			if errors.Is(err, errTriageDispatchPartialFailure) && shouldRetry(ctx) {
+				record.Status = model.TaskStatusRetrying
+			} else {
+				record.Status = model.TaskStatusFailed
+			}
 			record.Error = test.SanitizeErrorMessage(err.Error())
-			p.logger.ErrorContext(ctx, "triage_e2e: 链式入队失败，任务标记为 failed",
+			p.logger.ErrorContext(ctx, "triage_e2e: 链式入队失败，任务状态已更新",
 				"task_id", record.ID,
+				"status", record.Status,
 				"requested", dispatchResult.Requested,
 				"enqueued", dispatchResult.Enqueued,
 				"failed", dispatchResult.Failed,
@@ -513,6 +518,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if triageDispatchErr != nil {
+		if errors.Is(triageDispatchErr, errTriageDispatchPartialFailure) {
+			return fmt.Errorf("triage_e2e 链式入队部分失败: %w", triageDispatchErr)
+		}
 		return fmt.Errorf("triage_e2e 链式入队失败: %v: %w", triageDispatchErr, asynq.SkipRetry)
 	}
 	if runErr != nil {
@@ -1555,6 +1563,8 @@ type triageDispatchResult struct {
 	Failed    int
 }
 
+var errTriageDispatchPartialFailure = errors.New("triage_e2e 部分 run_e2e 子任务入队失败")
+
 // handleTriageE2EResult 处理 triage_e2e 成功后的链式入队。
 // 遍历 triageResult.Modules，逐模块调用 EnqueueManualE2E 入队 run_e2e。
 // 入队前基于仓库实际 e2e/ 模块做白名单校验，避免 LLM 输出直接驱动任意任务。
@@ -1622,6 +1632,8 @@ func (p *Processor) handleTriageE2EResult(ctx context.Context, record *model.Tas
 			"requested", dispatch.Requested,
 			"enqueued", dispatch.Enqueued,
 			"failed", dispatch.Failed)
+		return dispatch, fmt.Errorf("%w: requested=%d enqueued=%d failed=%d",
+			errTriageDispatchPartialFailure, dispatch.Requested, dispatch.Enqueued, dispatch.Failed)
 	}
 	return dispatch, nil
 }

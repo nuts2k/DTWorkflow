@@ -7,8 +7,9 @@ import (
 
 // migration 表示一个版本化的数据库迁移
 type migration struct {
-	Version int
-	SQL     string
+	Version            int
+	SQL                string
+	DisableForeignKeys bool
 }
 
 // migrations 按版本号顺序排列的迁移列表
@@ -119,7 +120,8 @@ var migrations = []migration{
 	},
 	// M2.7: tasks 表 task_type CHECK 约束添加 gen_daily_report
 	{
-		Version: 16,
+		Version:            16,
+		DisableForeignKeys: true,
 		SQL: `
 			CREATE TABLE tasks_new (
 				id              TEXT PRIMARY KEY,
@@ -160,7 +162,8 @@ var migrations = []migration{
 	},
 	// M3.4: tasks 表 task_type CHECK 约束添加 analyze_issue
 	{
-		Version: 18,
+		Version:            18,
+		DisableForeignKeys: true,
 		SQL: `
 			CREATE TABLE tasks_new (
 				id              TEXT PRIMARY KEY,
@@ -305,7 +308,8 @@ var migrations = []migration{
 	},
 	// M5.2: tasks 表 task_type CHECK 约束追加 run_e2e（M5.1 遗漏）。
 	{
-		Version: 21,
+		Version:            21,
+		DisableForeignKeys: true,
 		SQL: `
 			CREATE TABLE tasks_new (
 				id              TEXT PRIMARY KEY,
@@ -369,7 +373,8 @@ var migrations = []migration{
 	},
 	// M5.4: tasks 表 task_type CHECK 约束追加 triage_e2e。
 	{
-		Version: 23,
+		Version:            23,
+		DisableForeignKeys: true,
 		SQL: `
 			CREATE TABLE tasks_new (
 				id              TEXT PRIMARY KEY,
@@ -428,6 +433,43 @@ func RunMigrations(db *sql.DB) error {
 
 // executeMigration 在事务中执行单个迁移，使用 defer 确保事务回滚安全
 func executeMigration(db *sql.DB, m migration) error {
+	if m.DisableForeignKeys {
+		return executeMigrationWithoutForeignKeys(db, m)
+	}
+	return executeMigrationInTx(db, m)
+}
+
+// executeMigrationWithoutForeignKeys 用于重建被子表引用的父表（例如 tasks）。
+// SQLite 在 DROP 父表时会执行外键动作；若保持 foreign_keys=ON，
+// 子表的 ON DELETE SET NULL 会把历史结果 task_id 清空。
+func executeMigrationWithoutForeignKeys(db *sql.DB, m migration) error {
+	if _, err := db.Exec("PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("迁移版本 %d 关闭外键约束失败: %w", m.Version, err)
+	}
+
+	foreignKeysRestored := false
+	defer func() {
+		if !foreignKeysRestored {
+			_, _ = db.Exec("PRAGMA foreign_keys=ON")
+		}
+	}()
+
+	if err := executeMigrationInTx(db, m); err != nil {
+		return err
+	}
+
+	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		return fmt.Errorf("迁移版本 %d 恢复外键约束失败: %w", m.Version, err)
+	}
+	foreignKeysRestored = true
+
+	if err := checkForeignKeys(db, m.Version); err != nil {
+		return err
+	}
+	return nil
+}
+
+func executeMigrationInTx(db *sql.DB, m migration) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("开启迁移事务失败 (版本 %d): %w", m.Version, err)
@@ -454,6 +496,30 @@ func executeMigration(db *sql.DB, m migration) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交迁移版本 %d 事务失败: %w", m.Version, err)
+	}
+	return nil
+}
+
+func checkForeignKeys(db *sql.DB, version int) error {
+	rows, err := db.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("迁移版本 %d 外键检查失败: %w", version, err)
+	}
+	defer rows.Close()
+
+	if rows.Next() {
+		var table string
+		var rowID sql.NullInt64
+		var parent string
+		var fkID int
+		if err := rows.Scan(&table, &rowID, &parent, &fkID); err != nil {
+			return fmt.Errorf("迁移版本 %d 读取外键检查结果失败: %w", version, err)
+		}
+		return fmt.Errorf("迁移版本 %d 后存在外键违规: table=%s rowid=%v parent=%s fkid=%d",
+			version, table, rowID, parent, fkID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("迁移版本 %d 遍历外键检查结果失败: %w", version, err)
 	}
 	return nil
 }
