@@ -169,6 +169,7 @@ type E2EConfig struct {
 	DefaultEnv            string                    `mapstructure:"default_env"`
 	ArtifactRetentionDays int                       `mapstructure:"artifact_retention_days"`
 	Environments          map[string]E2EEnvironment `mapstructure:"environments"`
+	Regression            *RegressionConfig         `mapstructure:"regression"`
 }
 
 // StreamMonitorConf 流式心跳监控配置
@@ -495,6 +496,19 @@ func (c *Config) Clone() *Config {
 		clone.TestGen.ChangeDriven = &cdCopy
 	}
 
+	// 全局 E2E.Regression 深拷贝
+	if c.E2E.Regression != nil {
+		regCopy := *c.E2E.Regression
+		if regCopy.Enabled != nil {
+			v := *regCopy.Enabled
+			regCopy.Enabled = &v
+		}
+		if regCopy.IgnorePaths != nil {
+			regCopy.IgnorePaths = append([]string(nil), regCopy.IgnorePaths...)
+		}
+		clone.E2E.Regression = &regCopy
+	}
+
 	// 深拷贝 API.Tokens
 	if c.API.Tokens != nil {
 		clone.API.Tokens = make([]TokenConfig, len(c.API.Tokens))
@@ -566,6 +580,26 @@ func (c *Config) Clone() *Config {
 					testGenCopy.ChangeDriven = &cdCopy
 				}
 				clone.Repos[i].TestGen = &testGenCopy
+			}
+			// 深拷贝 repo.E2E
+			if repo.E2E != nil {
+				e2eCopy := *repo.E2E
+				if repo.E2E.Enabled != nil {
+					v := *repo.E2E.Enabled
+					e2eCopy.Enabled = &v
+				}
+				if repo.E2E.Regression != nil {
+					regCopy := *repo.E2E.Regression
+					if regCopy.Enabled != nil {
+						v := *regCopy.Enabled
+						regCopy.Enabled = &v
+					}
+					if regCopy.IgnorePaths != nil {
+						regCopy.IgnorePaths = append([]string(nil), regCopy.IgnorePaths...)
+					}
+					e2eCopy.Regression = &regCopy
+				}
+				clone.Repos[i].E2E = &e2eCopy
 			}
 		}
 	}

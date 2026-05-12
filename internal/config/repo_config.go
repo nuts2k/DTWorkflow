@@ -208,8 +208,9 @@ func (c *Config) ResolveTestGenConfig(repoFullName string) TestGenOverride {
 
 // E2EOverride 仓库级 E2E 配置覆盖。
 type E2EOverride struct {
-	Enabled    *bool  `mapstructure:"enabled"`
-	DefaultEnv string `mapstructure:"default_env"`
+	Enabled    *bool              `mapstructure:"enabled"`
+	DefaultEnv string             `mapstructure:"default_env"`
+	Regression *RegressionConfig  `mapstructure:"regression"`
 }
 
 // ResolveE2EConfig 解析指定仓库的最终 E2E 配置覆盖。
@@ -220,6 +221,7 @@ func (c *Config) ResolveE2EConfig(repoFullName string) E2EOverride {
 	merged := E2EOverride{
 		Enabled:    c.E2E.Enabled,
 		DefaultEnv: c.E2E.DefaultEnv,
+		Regression: c.E2E.Regression,
 	}
 	for _, repo := range c.Repos {
 		if repo.Name != repoFullName || repo.E2E == nil {
@@ -230,6 +232,9 @@ func (c *Config) ResolveE2EConfig(repoFullName string) E2EOverride {
 		}
 		if repo.E2E.DefaultEnv != "" {
 			merged.DefaultEnv = repo.E2E.DefaultEnv
+		}
+		if repo.E2E.Regression != nil {
+			merged.Regression = repo.E2E.Regression
 		}
 		break
 	}
@@ -245,5 +250,16 @@ type ChangeDrivenConfig struct {
 
 // IsEnabled 返回变更驱动是否启用。nil 视为 false（默认关闭）。
 func (c ChangeDrivenConfig) IsEnabled() bool {
+	return c.Enabled != nil && *c.Enabled
+}
+
+// RegressionConfig E2E 回归自动化配置。
+type RegressionConfig struct {
+	Enabled     *bool    `mapstructure:"enabled"`
+	IgnorePaths []string `mapstructure:"ignore_paths"`
+}
+
+// IsEnabled 返回回归自动化是否启用。nil 视为 false（默认关闭）。
+func (c RegressionConfig) IsEnabled() bool {
 	return c.Enabled != nil && *c.Enabled
 }

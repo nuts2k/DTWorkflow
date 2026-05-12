@@ -645,3 +645,108 @@ func TestClone_ChangeDrivenDeepCopy(t *testing.T) {
 		t.Errorf("修改 clone 后原始 IgnorePaths 被改变: %v", original.TestGen.ChangeDriven.IgnorePaths)
 	}
 }
+
+func TestRegressionConfig_IsEnabled_NilDefault(t *testing.T) {
+	t.Parallel()
+
+	var rc RegressionConfig
+	if rc.IsEnabled() {
+		t.Error("nil Enabled should be disabled")
+	}
+}
+
+func TestRegressionConfig_IsEnabled_True(t *testing.T) {
+	t.Parallel()
+
+	v := true
+	rc := RegressionConfig{Enabled: &v}
+	if !rc.IsEnabled() {
+		t.Error("explicit true should be enabled")
+	}
+}
+
+func TestResolveE2EConfig_RegressionOverride(t *testing.T) {
+	t.Parallel()
+
+	v := true
+	cfg := &Config{
+		E2E: E2EConfig{DefaultEnv: "staging"},
+		Repos: []RepoConfig{{
+			Name: "org/repo",
+			E2E: &E2EOverride{
+				Regression: &RegressionConfig{Enabled: &v},
+			},
+		}},
+	}
+	resolved := cfg.ResolveE2EConfig("org/repo")
+	if resolved.Regression == nil || !resolved.Regression.IsEnabled() {
+		t.Error("repo-level regression override should apply")
+	}
+}
+
+func TestValidateE2E_RegressionEnabledNoDefaultEnv(t *testing.T) {
+	t.Parallel()
+
+	v := true
+	cfg := &Config{
+		E2E: E2EConfig{
+			Regression: &RegressionConfig{Enabled: &v},
+		},
+	}
+	errs := validateE2EConfig(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "default_env 不能为空") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("应报错 default_env 不能为空")
+	}
+}
+
+func TestValidateE2E_RegressionEnabledE2EDisabled(t *testing.T) {
+	t.Parallel()
+
+	v := true
+	f := false
+	cfg := &Config{
+		E2E: E2EConfig{
+			Enabled:    &f,
+			DefaultEnv: "staging",
+			Regression: &RegressionConfig{Enabled: &v},
+		},
+	}
+	errs := validateE2EConfig(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "矛盾") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("应报错 regression.enabled=true 与 e2e.enabled=false 矛盾")
+	}
+}
+
+func TestValidateE2E_RegressionInvalidIgnorePath(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		E2E: E2EConfig{
+			Regression: &RegressionConfig{
+				IgnorePaths: []string{"[invalid"},
+			},
+		},
+	}
+	errs := validateE2EConfig(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "语法不合法") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("应报错非法 glob 语法")
+	}
+}

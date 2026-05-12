@@ -408,6 +408,22 @@ func validateE2EConfig(cfg *Config) []error {
 		errs = append(errs, fmt.Errorf("e2e.artifact_retention_days 必须在 [1, 90] 范围内，当前值: %d",
 			cfg.E2E.ArtifactRetentionDays))
 	}
+	if cfg.E2E.Regression != nil {
+		reg := cfg.E2E.Regression
+		for i, pattern := range reg.IgnorePaths {
+			if !doublestar.ValidatePattern(pattern) {
+				errs = append(errs, fmt.Errorf("e2e.regression.ignore_paths[%d] 语法不合法: %q", i, pattern))
+			}
+		}
+		if reg.IsEnabled() {
+			if cfg.E2E.Enabled != nil && !*cfg.E2E.Enabled {
+				errs = append(errs, fmt.Errorf("e2e.regression.enabled=true 但 e2e.enabled=false，矛盾"))
+			}
+			if cfg.E2E.DefaultEnv == "" {
+				errs = append(errs, fmt.Errorf("e2e.regression.enabled=true 时 e2e.default_env 不能为空"))
+			}
+		}
+	}
 	return errs
 }
 
