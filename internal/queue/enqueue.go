@@ -409,6 +409,7 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 
 	payload := model.TaskPayload{
 		TaskType:       model.TaskTypeTriageE2E,
+		DeliveryID:     deliveryID,
 		RepoOwner:      event.Repository.Owner,
 		RepoName:       event.Repository.Name,
 		RepoFullName:   repo,

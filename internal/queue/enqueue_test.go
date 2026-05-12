@@ -293,9 +293,11 @@ func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]st
 type mockEnqueuer struct {
 	enqueueErr error
 	enqueuedID string
+	payloads   []model.TaskPayload
 }
 
-func (mc *mockEnqueuer) Enqueue(_ context.Context, _ model.TaskPayload, opts EnqueueOptions) (string, error) {
+func (mc *mockEnqueuer) Enqueue(_ context.Context, payload model.TaskPayload, opts EnqueueOptions) (string, error) {
+	mc.payloads = append(mc.payloads, payload)
 	if mc.enqueueErr != nil {
 		return "", mc.enqueueErr
 	}
@@ -3317,6 +3319,9 @@ func TestHandleMergedE2ERegression_Normal(t *testing.T) {
 	if task.Payload.TaskType != model.TaskTypeTriageE2E {
 		t.Errorf("payload.TaskType = %q, want %q", task.Payload.TaskType, model.TaskTypeTriageE2E)
 	}
+	if task.Payload.DeliveryID != "delivery-merged-104:triage_e2e" {
+		t.Errorf("payload.DeliveryID = %q, want %q", task.Payload.DeliveryID, "delivery-merged-104:triage_e2e")
+	}
 	if task.Payload.Environment != "staging" {
 		t.Errorf("payload.Environment = %q, want %q", task.Payload.Environment, "staging")
 	}
@@ -3346,6 +3351,12 @@ func TestHandleMergedE2ERegression_Normal(t *testing.T) {
 	}
 	if task.DeliveryID != "delivery-merged-104:triage_e2e" {
 		t.Errorf("DeliveryID = %q, want %q", task.DeliveryID, "delivery-merged-104:triage_e2e")
+	}
+	if len(mc.payloads) != 1 {
+		t.Fatalf("asynq payload count = %d, want 1", len(mc.payloads))
+	}
+	if mc.payloads[0].DeliveryID != task.DeliveryID {
+		t.Errorf("asynq payload DeliveryID = %q, want %q", mc.payloads[0].DeliveryID, task.DeliveryID)
 	}
 }
 

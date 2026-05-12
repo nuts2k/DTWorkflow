@@ -23,9 +23,11 @@ import (
 
 // mockPoolRunner 模拟 PoolRunner 接口
 type mockPoolRunner struct {
-	result *worker.ExecutionResult
-	err    error
-	calls  int
+	result    *worker.ExecutionResult
+	err       error
+	calls     int
+	lastCmd   []string
+	lastStdin []byte
 }
 
 func (m *mockPoolRunner) Run(_ context.Context, _ model.TaskPayload) (*worker.ExecutionResult, error) {
@@ -33,8 +35,10 @@ func (m *mockPoolRunner) Run(_ context.Context, _ model.TaskPayload) (*worker.Ex
 	return m.result, m.err
 }
 
-func (m *mockPoolRunner) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
+func (m *mockPoolRunner) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload, cmd []string, stdin []byte) (*worker.ExecutionResult, error) {
 	m.calls++
+	m.lastCmd = append([]string(nil), cmd...)
+	m.lastStdin = append([]byte(nil), stdin...)
 	return m.result, m.err
 }
 
@@ -3641,6 +3645,9 @@ func TestProcessor_TriageE2E_SuccessWithModules(t *testing.T) {
 
 	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
 		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if !strings.Contains(strings.Join(pool.lastCmd, " "), "Edit,Write,MultiEdit,NotebookEdit") {
+		t.Fatalf("triage_e2e disallowedTools 未包含 MultiEdit: %v", pool.lastCmd)
 	}
 
 	// 验证原始任务状态

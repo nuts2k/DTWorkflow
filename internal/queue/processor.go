@@ -311,7 +311,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			MergeCommitSHA: payload.MergeCommitSHA,
 			ChangedFiles:   payload.ChangedFiles,
 		})
-		triageCmd := []string{"claude", "-p", "--output-format", "json", "--disallowedTools", "Edit,Write,NotebookEdit", "-"}
+		triageCmd := []string{"claude", "-p", "--output-format", "json", "--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit", "-"}
 		result, runErr = p.pool.RunWithCommandAndStdin(ctx, payload, triageCmd, []byte(triagePrompt))
 		if runErr == nil && result != nil && result.ExitCode == 0 {
 			if strings.TrimSpace(result.Output) == "" {

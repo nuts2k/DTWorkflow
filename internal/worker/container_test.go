@@ -1037,7 +1037,7 @@ func TestBuildContainerCmd_TriageE2E(t *testing.T) {
 	}
 	cmd := buildContainerCmd(payload)
 
-	// 验证命令格式：claude -p --output-format json --disallowedTools Edit,Write,NotebookEdit -
+	// 验证命令格式：claude -p --output-format json --disallowedTools Edit,Write,MultiEdit,NotebookEdit -
 	if len(cmd) < 7 {
 		t.Fatalf("命令长度不足: %v", cmd)
 	}
@@ -1061,9 +1061,9 @@ func TestBuildContainerCmd_TriageE2E(t *testing.T) {
 	if !strings.Contains(joined, "--disallowedTools") {
 		t.Errorf("命令应包含 --disallowedTools（只读模式）: %s", joined)
 	}
-	// 禁止 Edit,Write,NotebookEdit（与 review_pr / analyze_issue 一致）
-	if !strings.Contains(joined, "Edit,Write,NotebookEdit") {
-		t.Errorf("--disallowedTools 应禁止 Edit,Write,NotebookEdit: %s", joined)
+	// 禁止所有写文件工具，保持 triage_e2e 只读。
+	if !strings.Contains(joined, "Edit,Write,MultiEdit,NotebookEdit") {
+		t.Errorf("--disallowedTools 应禁止 Edit,Write,MultiEdit,NotebookEdit: %s", joined)
 	}
 }
 

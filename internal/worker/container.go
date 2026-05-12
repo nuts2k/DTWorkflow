@@ -307,7 +307,7 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 	case model.TaskTypeTriageE2E:
 		// 生产路径：Processor 通过 pool.RunWithCommandAndStdin 传入 cmd + prompt，不经过此函数。
 		// 此 case 仅在 pool.Run fallback 场景保留（如未来无 Processor 的测试/调试工具直接调 Pool）。
-		return []string{"claude", "-p", "--output-format", "json", "--disallowedTools", "Edit,Write,NotebookEdit", "-"}
+		return []string{"claude", "-p", "--output-format", "json", "--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit", "-"}
 	default:
 		return []string{
 			"claude", "-p",
