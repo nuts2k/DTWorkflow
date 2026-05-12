@@ -2443,3 +2443,20 @@ func TestListActiveModules_IsolatesByTaskType(t *testing.T) {
 		t.Fatalf("run_e2e modules 期望 [order]，实际=%v", e2eModules)
 	}
 }
+
+func TestMigration_TriageE2ETaskType(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	rec := &model.TaskRecord{
+		ID:           "test-triage-001",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusPending,
+		Priority:     model.PriorityNormal,
+		Payload:      model.TaskPayload{TaskType: model.TaskTypeTriageE2E},
+		RepoFullName: "org/repo",
+	}
+	err := store.CreateTask(ctx, rec)
+	if err != nil {
+		t.Fatalf("CreateTask with triage_e2e should succeed: %v", err)
+	}
+}
