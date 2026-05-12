@@ -3767,6 +3767,55 @@ func TestProcessor_TriageE2E_ParseFailure(t *testing.T) {
 	}
 }
 
+// TestProcessor_TriageE2E_EmptyOutputFailure 验证 triage_e2e 退出码为 0 但输出为空时不能误判成功。
+func TestProcessor_TriageE2E_EmptyOutputFailure(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeTriageE2E,
+		DeliveryID:   "dlv-triage-empty-output-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "proc-task-triage-empty-output",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: "org/repo",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{
+			ExitCode: 0,
+			Output:   "   \n\t",
+		},
+	}
+
+	p := NewProcessor(pool, s, nil, slog.Default())
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("空输出应返回 error")
+	}
+	if !errors.Is(err, e2e.ErrE2ETriageParseFailure) {
+		t.Fatalf("error should wrap ErrE2ETriageParseFailure, got: %v", err)
+	}
+	got := s.tasks["proc-task-triage-empty-output"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if got.Error == "" {
+		t.Fatal("失败任务 Error 不应为空")
+	}
+}
+
 // TestProcessor_TriageE2E_NoEnqueueHandler 验证 enqueueHandler 未注入时：
 // 1. 不 panic
 // 2. 任务仍标记为 succeeded

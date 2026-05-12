@@ -115,8 +115,14 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	case model.TaskTypeRunE2E:
 		env = append(env, fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)))
 	case model.TaskTypeTriageE2E:
-		// triage_e2e 只读分析：注入 BASE_REF 供 entrypoint checkout 对应提交
-		env = append(env, fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)))
+		// triage_e2e 只读分析：注入精确 SHA，避免队列延迟后误分析更新的 base 分支。
+		env = append(env,
+			fmt.Sprintf("PR_NUMBER=%d", payload.PRNumber),
+			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
+			fmt.Sprintf("BASE_SHA=%s", sanitizeEnvValue(payload.BaseSHA)),
+			fmt.Sprintf("HEAD_SHA=%s", sanitizeEnvValue(payload.HeadSHA)),
+			fmt.Sprintf("MERGE_COMMIT_SHA=%s", sanitizeEnvValue(payload.MergeCommitSHA)),
+		)
 	}
 
 	env = append(env, payload.ExtraEnvs...)
@@ -206,10 +212,10 @@ func sanitizeModuleBranchRef(s string) string {
 // sanitizePromptInput 仅做长度截断和换行/NUL 清理，不足以防御 prompt injection。
 //
 // 当前缓解措施：
-//   1. 容器隔离：ReadonlyRootfs、CapDrop ALL、no-new-privileges
-//   2. 资源限制：CPU、内存、PID 数量上限
-//   3. 网络隔离：独立 bridge 网络
-//   4. 输入截断：sanitizePromptInput 限制各字段最大长度
+//  1. 容器隔离：ReadonlyRootfs、CapDrop ALL、no-new-privileges
+//  2. 资源限制：CPU、内存、PID 数量上限
+//  3. 网络隔离：独立 bridge 网络
+//  4. 输入截断：sanitizePromptInput 限制各字段最大长度
 //
 // 后续改进计划：
 //   - 考虑通过文件传入用户输入（而非命令行参数），降低注入面

@@ -34,6 +34,8 @@ type PullRequestRef struct {
 	HeadRef string
 	BaseSHA string
 	HeadSHA string
+	// MergeCommitSHA 来自 Gitea PR webhook 顶层 commit_id，merged 事件中用于固定本次合并提交。
+	MergeCommitSHA string
 }
 
 type IssueRef struct {
@@ -69,9 +71,9 @@ type IssueLabelEvent struct {
 	AutoFixChanged bool
 	AutoFixAdded   bool
 	AutoFixRemoved bool
-	FixToPRChanged bool  // M3.4: fix-to-pr 标签变化
-	FixToPRAdded   bool  // M3.4: fix-to-pr 标签添加
-	FixToPRRemoved bool  // M3.4: fix-to-pr 标签移除
+	FixToPRChanged bool // M3.4: fix-to-pr 标签变化
+	FixToPRAdded   bool // M3.4: fix-to-pr 标签添加
+	FixToPRRemoved bool // M3.4: fix-to-pr 标签移除
 }
 
 func (e IssueLabelEvent) Name() string {

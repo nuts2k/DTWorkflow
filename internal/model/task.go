@@ -87,7 +87,10 @@ type TaskPayload struct {
 	PRTitle  string `json:"pr_title,omitempty"`
 	BaseRef  string `json:"base_ref,omitempty"`
 	HeadRef  string `json:"head_ref,omitempty"`
+	BaseSHA  string `json:"base_sha,omitempty"`
 	HeadSHA  string `json:"head_sha,omitempty"`
+	// MergeCommitSHA 固定 PR merged 事件对应的目标提交，避免队列延迟后误分析更新的 base 分支。
+	MergeCommitSHA string `json:"merge_commit_sha,omitempty"`
 
 	// Issue 修复定位
 	IssueNumber int64  `json:"issue_number,omitempty"`

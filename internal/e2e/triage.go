@@ -24,6 +24,16 @@ const maxTriageReasonLen = 2048
 const maxTriageAnalysisLen = 2048
 const maxTriageChangedFiles = 50
 
+// TriagePromptContext 描述一次回归分析需要的稳定 Git 上下文。
+type TriagePromptContext struct {
+	Repo           string
+	BaseRef        string
+	BaseSHA        string
+	HeadSHA        string
+	MergeCommitSHA string
+	ChangedFiles   []string
+}
+
 // ParseTriageResult 双层 JSON 解析（CLI 信封 → TriageE2EOutput）。
 func ParseTriageResult(raw string) (*TriageE2EOutput, error) {
 	jsonStr := extractTriageJSON(raw)
@@ -141,16 +151,34 @@ func extractTriageJSON(s string) string {
 
 // BuildTriagePrompt 构建 triage 分析 prompt。
 func BuildTriagePrompt(repo, baseRef string, changedFiles []string) string {
+	return BuildTriagePromptWithContext(TriagePromptContext{
+		Repo:         repo,
+		BaseRef:      baseRef,
+		ChangedFiles: changedFiles,
+	})
+}
+
+// BuildTriagePromptWithContext 构建带精确提交信息的 triage 分析 prompt。
+func BuildTriagePromptWithContext(ctx TriagePromptContext) string {
 	var b strings.Builder
 
 	// 上下文
 	b.WriteString("## Context\n\n")
-	fmt.Fprintf(&b, "Repository: %s\n", repo)
-	fmt.Fprintf(&b, "Base branch: %s\n", baseRef)
-	fmt.Fprintf(&b, "Changed files count: %d\n\n", len(changedFiles))
+	fmt.Fprintf(&b, "Repository: %s\n", ctx.Repo)
+	fmt.Fprintf(&b, "Base branch: %s\n", ctx.BaseRef)
+	if ctx.BaseSHA != "" {
+		fmt.Fprintf(&b, "Base SHA before merge: %s\n", ctx.BaseSHA)
+	}
+	if ctx.HeadSHA != "" {
+		fmt.Fprintf(&b, "PR head SHA: %s\n", ctx.HeadSHA)
+	}
+	if ctx.MergeCommitSHA != "" {
+		fmt.Fprintf(&b, "Merged commit SHA: %s\n", ctx.MergeCommitSHA)
+	}
+	fmt.Fprintf(&b, "Changed files count: %d\n\n", len(ctx.ChangedFiles))
 
 	// 变更文件列表
-	files := changedFiles
+	files := ctx.ChangedFiles
 	truncated := false
 	if len(files) > maxTriageChangedFiles {
 		files = files[:maxTriageChangedFiles]
@@ -161,7 +189,7 @@ func BuildTriagePrompt(repo, baseRef string, changedFiles []string) string {
 		fmt.Fprintf(&b, "- %s\n", f)
 	}
 	if truncated {
-		fmt.Fprintf(&b, "\n... and %d more files (truncated)\n", len(changedFiles)-maxTriageChangedFiles)
+		fmt.Fprintf(&b, "\n... and %d more files (truncated)\n", len(ctx.ChangedFiles)-maxTriageChangedFiles)
 	}
 
 	// 分析指令
@@ -169,7 +197,14 @@ func BuildTriagePrompt(repo, baseRef string, changedFiles []string) string {
 	b.WriteString("Analyze the changed files above and determine which E2E test modules need to be run for regression testing.\n\n")
 	b.WriteString("1. Read the `e2e/` directory to discover all available E2E test modules (each subdirectory under `e2e/` is a module)\n")
 	b.WriteString("2. For each module, read `e2e/{module}/cases/*/case.yaml` to understand what the tests cover\n")
-	b.WriteString("3. Analyze git diff (use `git diff HEAD~1`) to understand the nature of changes\n")
+	b.WriteString("3. Analyze the exact merged change. Prefer these commands in order:\n")
+	if ctx.BaseSHA != "" && ctx.HeadSHA != "" {
+		fmt.Fprintf(&b, "   - `git diff %s...%s`\n", ctx.BaseSHA, ctx.HeadSHA)
+	}
+	if ctx.MergeCommitSHA != "" {
+		fmt.Fprintf(&b, "   - `git diff %s^1 %s`\n", ctx.MergeCommitSHA, ctx.MergeCommitSHA)
+	}
+	b.WriteString("   - If exact commits are unavailable, rely on the changed file list above and explain the limitation\n")
 	b.WriteString("4. Determine which E2E modules are affected by the changes based on:\n")
 	b.WriteString("   - Direct code path overlap (changed files are used by test scenarios)\n")
 	b.WriteString("   - Shared dependencies (changed code is imported by modules under test)\n")

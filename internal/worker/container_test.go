@@ -973,13 +973,17 @@ func TestBuildContainerEnv_TriageE2E(t *testing.T) {
 		ClaudeAPIKey:       "test-key",
 	}
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeTriageE2E,
-		RepoOwner:    "owner",
-		RepoName:     "repo",
-		RepoFullName: "owner/repo",
-		CloneURL:     "https://gitea.test/owner/repo.git",
-		BaseRef:      "main",
-		ChangedFiles: []string{"internal/api/handler.go", "internal/model/user.go"},
+		TaskType:       model.TaskTypeTriageE2E,
+		RepoOwner:      "owner",
+		RepoName:       "repo",
+		RepoFullName:   "owner/repo",
+		CloneURL:       "https://gitea.test/owner/repo.git",
+		PRNumber:       42,
+		BaseRef:        "main",
+		BaseSHA:        "base123",
+		HeadSHA:        "head456",
+		MergeCommitSHA: "merge789",
+		ChangedFiles:   []string{"internal/api/handler.go", "internal/model/user.go"},
 	}
 	env := buildContainerEnv(config, payload)
 	envMap := envSliceToMap(env)
@@ -992,12 +996,24 @@ func TestBuildContainerEnv_TriageE2E(t *testing.T) {
 	if envMap["BASE_REF"] != "main" {
 		t.Errorf("BASE_REF = %q, 期望 main", envMap["BASE_REF"])
 	}
+	if envMap["PR_NUMBER"] != "42" {
+		t.Errorf("PR_NUMBER = %q, 期望 42", envMap["PR_NUMBER"])
+	}
+	if envMap["BASE_SHA"] != "base123" {
+		t.Errorf("BASE_SHA = %q, 期望 base123", envMap["BASE_SHA"])
+	}
+	if envMap["HEAD_SHA"] != "head456" {
+		t.Errorf("HEAD_SHA = %q, 期望 head456", envMap["HEAD_SHA"])
+	}
+	if envMap["MERGE_COMMIT_SHA"] != "merge789" {
+		t.Errorf("MERGE_COMMIT_SHA = %q, 期望 merge789", envMap["MERGE_COMMIT_SHA"])
+	}
 	// TASK_TYPE 应为 triage_e2e
 	if envMap["TASK_TYPE"] != "triage_e2e" {
 		t.Errorf("TASK_TYPE = %q, 期望 triage_e2e", envMap["TASK_TYPE"])
 	}
 	// 不应包含 gen_tests / fix_issue / run_e2e 专属字段
-	for _, key := range []string{"MODULE", "MODULE_SANITIZED", "ISSUE_NUMBER", "PR_NUMBER"} {
+	for _, key := range []string{"MODULE", "MODULE_SANITIZED", "ISSUE_NUMBER"} {
 		if _, ok := envMap[key]; ok {
 			t.Errorf("triage_e2e 不应包含 %s", key)
 		}

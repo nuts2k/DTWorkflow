@@ -16,6 +16,15 @@ type Parser struct{}
 
 func NewParser() *Parser { return &Parser{} }
 
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func (p *Parser) Parse(eventType, deliveryID string, body []byte) (Event, error) {
 	switch eventType {
 	case "pull_request":
@@ -59,15 +68,16 @@ func (p *Parser) parsePullRequest(deliveryID string, body []byte) (Event, error)
 			DefaultBranch: payload.Repository.DefaultBranch,
 		},
 		PullRequest: PullRequestRef{
-			Number:  payload.PullRequest.Number,
-			Title:   payload.PullRequest.Title,
-			Body:    payload.PullRequest.Body,
-			HTMLURL: payload.PullRequest.HTMLURL,
-			Merged:  payload.PullRequest.Merged,
-			BaseRef: payload.PullRequest.Base.Ref,
-			HeadRef: payload.PullRequest.Head.Ref,
-			BaseSHA: payload.PullRequest.Base.SHA,
-			HeadSHA: payload.PullRequest.Head.SHA,
+			Number:         payload.PullRequest.Number,
+			Title:          payload.PullRequest.Title,
+			Body:           payload.PullRequest.Body,
+			HTMLURL:        payload.PullRequest.HTMLURL,
+			Merged:         payload.PullRequest.Merged,
+			BaseRef:        payload.PullRequest.Base.Ref,
+			HeadRef:        payload.PullRequest.Head.Ref,
+			BaseSHA:        payload.PullRequest.Base.SHA,
+			HeadSHA:        payload.PullRequest.Head.SHA,
+			MergeCommitSHA: firstNonEmpty(payload.CommitID, payload.MergeCommitSHA, payload.MergedCommitID),
 		},
 		Sender: UserRef{
 			Login:    payload.Sender.Login,

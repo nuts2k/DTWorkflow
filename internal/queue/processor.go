@@ -302,10 +302,21 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			result = adaptE2EResult(e2eResult)
 		}
 	case payload.TaskType == model.TaskTypeTriageE2E:
-		triagePrompt := e2e.BuildTriagePrompt(payload.RepoFullName, payload.BaseRef, payload.ChangedFiles)
+		triagePrompt := e2e.BuildTriagePromptWithContext(e2e.TriagePromptContext{
+			Repo:           payload.RepoFullName,
+			BaseRef:        payload.BaseRef,
+			BaseSHA:        payload.BaseSHA,
+			HeadSHA:        payload.HeadSHA,
+			MergeCommitSHA: payload.MergeCommitSHA,
+			ChangedFiles:   payload.ChangedFiles,
+		})
 		triageCmd := []string{"claude", "-p", "--output-format", "json", "--disallowedTools", "Edit,Write,NotebookEdit", "-"}
 		result, runErr = p.pool.RunWithCommandAndStdin(ctx, payload, triageCmd, []byte(triagePrompt))
-		if runErr == nil && result != nil && result.ExitCode == 0 && result.Output != "" {
+		if runErr == nil && result != nil && result.ExitCode == 0 {
+			if strings.TrimSpace(result.Output) == "" {
+				runErr = fmt.Errorf("%w: 输出为空", e2e.ErrE2ETriageParseFailure)
+				break
+			}
 			var parseErr error
 			triageResult, parseErr = e2e.ParseTriageResult(result.Output)
 			if parseErr != nil {

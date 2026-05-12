@@ -94,6 +94,28 @@ func TestBuildTriagePrompt_Basic(t *testing.T) {
 	}
 }
 
+func TestBuildTriagePromptWithContext_ExactDiffCommands(t *testing.T) {
+	prompt := BuildTriagePromptWithContext(TriagePromptContext{
+		Repo:           "org/repo",
+		BaseRef:        "main",
+		BaseSHA:        "base123",
+		HeadSHA:        "head456",
+		MergeCommitSHA: "merge789",
+		ChangedFiles:   []string{"src/api/order.go"},
+	})
+	for _, want := range []string{
+		"Base SHA before merge: base123",
+		"PR head SHA: head456",
+		"Merged commit SHA: merge789",
+		"git diff base123...head456",
+		"git diff merge789^1 merge789",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt should contain %q", want)
+		}
+	}
+}
+
 func TestBuildTriagePrompt_Truncation(t *testing.T) {
 	files := make([]string, 60)
 	for i := range files {

@@ -24,16 +24,16 @@ var _ webhook.Handler = (*EnqueueHandler)(nil)
 
 // EnqueueHandler 实现 webhook.Handler 接口,将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
-	client           Enqueuer
-	canceller        TaskCanceller // M2.4: 任务取消能力
-	store            store.Store
-	logger           *slog.Logger
-	branchCleaner    BranchCleaner              // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
-	prClient         genTestsPRClient           // M4.2.1: cleanupAllAutoTestBranches
-	moduleScanner    test.RepoFileChecker       // M4.2.1: ScanRepoModules
-	configProvider   ChangeDrivenConfigProvider // M4.3: 变更驱动配置读取
-	prFilesLister    PRFilesLister              // M4.3: PR 变更文件列表查询
-	e2eModuleScanner  e2esvc.E2EModuleScanner    // M5.3: 可选，nil 时全量模式退化为单任务
+	client            Enqueuer
+	canceller         TaskCanceller // M2.4: 任务取消能力
+	store             store.Store
+	logger            *slog.Logger
+	branchCleaner     BranchCleaner               // M4.2: 可选,Cancel-and-Replace 时清理旧 auto-test 分支
+	prClient          genTestsPRClient            // M4.2.1: cleanupAllAutoTestBranches
+	moduleScanner     test.RepoFileChecker        // M4.2.1: ScanRepoModules
+	configProvider    ChangeDrivenConfigProvider  // M4.3: 变更驱动配置读取
+	prFilesLister     PRFilesLister               // M4.3: PR 变更文件列表查询
+	e2eModuleScanner  e2esvc.E2EModuleScanner     // M5.3: 可选，nil 时全量模式退化为单任务
 	e2eConfigProvider E2ERegressionConfigProvider // M5.4: 可选，nil 时跳过 E2E 回归入队
 }
 
@@ -362,6 +362,10 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 		return
 	}
 	e2eCfg := h.e2eConfigProvider.ResolveE2EConfig(repo)
+	if e2eCfg.Enabled != nil && !*e2eCfg.Enabled {
+		h.logger.DebugContext(ctx, "e2e-regression: e2e disabled for repo", "repo", repo)
+		return
+	}
 	if e2eCfg.Regression == nil || !e2eCfg.Regression.IsEnabled() {
 		return
 	}
@@ -404,14 +408,18 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 	}
 
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeTriageE2E,
-		RepoOwner:    event.Repository.Owner,
-		RepoName:     event.Repository.Name,
-		RepoFullName: repo,
-		CloneURL:     event.Repository.CloneURL,
-		BaseRef:      pr.BaseRef,
-		Environment:  e2eCfg.DefaultEnv,
-		ChangedFiles: sourceFiles,
+		TaskType:       model.TaskTypeTriageE2E,
+		RepoOwner:      event.Repository.Owner,
+		RepoName:       event.Repository.Name,
+		RepoFullName:   repo,
+		CloneURL:       event.Repository.CloneURL,
+		PRNumber:       pr.Number,
+		BaseRef:        pr.BaseRef,
+		BaseSHA:        pr.BaseSHA,
+		HeadSHA:        pr.HeadSHA,
+		MergeCommitSHA: pr.MergeCommitSHA,
+		Environment:    e2eCfg.DefaultEnv,
+		ChangedFiles:   sourceFiles,
 	}
 
 	// Cancel-and-Replace：取消同仓库旧 triage

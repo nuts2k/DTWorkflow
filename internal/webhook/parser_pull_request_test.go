@@ -97,6 +97,9 @@ func TestParsePullRequest_MergedFields(t *testing.T) {
 	if prEvent.PullRequest.HeadSHA != "abc123" {
 		t.Errorf("HeadSHA = %q, want %q", prEvent.PullRequest.HeadSHA, "abc123")
 	}
+	if prEvent.PullRequest.MergeCommitSHA != "merge789" {
+		t.Errorf("MergeCommitSHA = %q, want %q", prEvent.PullRequest.MergeCommitSHA, "merge789")
+	}
 	if prEvent.PullRequest.Title != "Implement feature X" {
 		t.Errorf("Title = %q, want %q", prEvent.PullRequest.Title, "Implement feature X")
 	}

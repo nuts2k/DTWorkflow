@@ -8,6 +8,25 @@ set -euo pipefail
 
 log() { echo "[entrypoint] $*" >&2; }
 
+harden_readonly_git() {
+    local mode="$1"
+    # 禁止 push，并把 origin 重置为不含 token 的 URL，避免 Claude 通过 .git/config 读取凭证。
+    git remote set-url --push origin no-push-allowed
+    git remote set-url origin "${REPO_CLONE_URL}"
+    git config credential.helper ''
+
+    # 拦截 commit 尝试，和只读 prompt / disallowedTools 形成双层防线。
+    mkdir -p .git/hooks
+    cat > .git/hooks/pre-commit << 'HOOK'
+#!/bin/sh
+echo "ERROR: commits are disabled in read-only mode" >&2
+exit 1
+HOOK
+    chmod +x .git/hooks/pre-commit
+
+    log "${mode}安全加固已启用（push 已禁用，commit 已拦截，凭证已清除）"
+}
+
 setup_build_cache() {
     # Maven/Gradle 缓存重定向到持久化 volume（/workspace/.m2/repository、/workspace/.gradle）。
     #
@@ -266,9 +285,37 @@ HOOK
     triage_e2e)
         log "=== triage_e2e 模式：只读克隆 + checkout ==="
         if [ -n "${BASE_REF:-}" ]; then
-            log "Checkout BASE_REF: ${BASE_REF}"
+            log "Fetch BASE_REF: ${BASE_REF}"
             git fetch origin "${BASE_REF}" >&2 2>&1
+        fi
+        if [ "${PR_NUMBER:-0}" != "0" ]; then
+            log "尝试获取 PR #${PR_NUMBER} head ref，供精确 diff 使用"
+            git fetch origin "pull/${PR_NUMBER}/head:pr-${PR_NUMBER}" >&2 2>&1 || \
+                log "警告：PR #${PR_NUMBER} head ref 不可用，将依赖已获取提交"
+        fi
+
+        TRIAGE_TARGET_SHA="${MERGE_COMMIT_SHA:-${HEAD_SHA:-}}"
+        if [ -n "${TRIAGE_TARGET_SHA}" ]; then
+            if ! git cat-file -e "${TRIAGE_TARGET_SHA}^{commit}" 2>/dev/null; then
+                log "目标提交不在本地，尝试按 SHA 获取: ${TRIAGE_TARGET_SHA}"
+                git fetch origin "${TRIAGE_TARGET_SHA}" >&2 2>&1 || true
+            fi
+            if git cat-file -e "${TRIAGE_TARGET_SHA}^{commit}" 2>/dev/null; then
+                log "Checkout triage target SHA: ${TRIAGE_TARGET_SHA}"
+                git checkout --detach "${TRIAGE_TARGET_SHA}" >&2 2>&1
+            else
+                log "ERROR: 无法获取 triage_e2e 目标提交 ${TRIAGE_TARGET_SHA}，拒绝分析可能漂移的 base 分支"
+                exit 2
+            fi
+        elif [ -n "${BASE_REF:-}" ]; then
+            log "未提供目标 SHA，兼容旧任务：checkout BASE_REF=${BASE_REF}"
             git checkout FETCH_HEAD -B "${BASE_REF}" >&2 2>&1
+        fi
+
+        if [ -n "${BASE_SHA:-}" ] && ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            log "尝试获取 PR base SHA，供精确 diff 使用: ${BASE_SHA}"
+            git fetch origin "${BASE_SHA}" >&2 2>&1 || \
+                log "警告：无法按 SHA 获取 base commit ${BASE_SHA}，prompt 将回退 changed files"
         fi
         ;;
     run_e2e)
@@ -326,25 +373,11 @@ esac
 
 log "仓库准备完成 ($(git log --oneline -1))"
 
-# --- 评审模式安全加固：锁定 Git 写操作 ---
+# --- 只读任务安全加固：锁定 Git 写操作并清除持久化凭证 ---
 if [ "${TASK_TYPE:-}" = "review_pr" ]; then
-    # P0: 将 push URL 置为无效，防止任何 push 操作
-    git remote set-url --push origin no-push-allowed
-
-    # P1: 设置 pre-commit hook 拦截所有 commit 尝试
-    mkdir -p .git/hooks
-    cat > .git/hooks/pre-commit << 'HOOK'
-#!/bin/sh
-echo "ERROR: commits are disabled in review mode" >&2
-exit 1
-HOOK
-    chmod +x .git/hooks/pre-commit
-
-    # P1: 清除 Git 凭证，防止 Claude Code 通过 Bash 读取 token 后手动 push
-    git remote set-url origin "${REPO_CLONE_URL}"
-    git config credential.helper ''
-
-    log "评审模式安全加固已启用（push 已禁用，commit 已拦截，凭证已清除）"
+    harden_readonly_git "评审模式"
+elif [ "${TASK_TYPE:-}" = "triage_e2e" ]; then
+    harden_readonly_git "E2E 回归分析模式"
 fi
 
 # 清除敏感环境变量，防止 Claude Code 通过 Bash 读取

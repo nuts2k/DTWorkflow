@@ -27,22 +27,25 @@ type giteaPullRequestPayload struct {
 }
 
 type giteaPullRequestEventPayload struct {
-	Action      string                  `json:"action"`
-	Repository  giteaRepositoryPayload  `json:"repository"`
-	PullRequest giteaPullRequestPayload `json:"pull_request"`
-	Sender      struct {
+	Action         string                  `json:"action"`
+	CommitID       string                  `json:"commit_id"`
+	MergeCommitSHA string                  `json:"merge_commit_sha"`
+	MergedCommitID string                  `json:"merged_commit_id"`
+	Repository     giteaRepositoryPayload  `json:"repository"`
+	PullRequest    giteaPullRequestPayload `json:"pull_request"`
+	Sender         struct {
 		Login    string `json:"login"`
 		FullName string `json:"full_name"`
 	} `json:"sender"`
 }
 
 type giteaIssuePayload struct {
-	Number  int64              `json:"number"`
-	Title   string             `json:"title"`
-	Body    string             `json:"body"`
-	HTMLURL string             `json:"html_url"`
-	State   string             `json:"state"`
-	Ref     string             `json:"ref"`
+	Number  int64               `json:"number"`
+	Title   string              `json:"title"`
+	Body    string              `json:"body"`
+	HTMLURL string              `json:"html_url"`
+	State   string              `json:"state"`
+	Ref     string              `json:"ref"`
 	Labels  []giteaLabelPayload `json:"labels"` // Gitea 1.21+: label_updated 事件中标签在此字段
 }
 

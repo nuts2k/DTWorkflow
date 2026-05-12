@@ -2338,9 +2338,12 @@ func newMergedPREvent(prNumber int64, headRef, baseRef string) webhook.PullReque
 			CloneURL: "https://gitea.example.com/org/repo.git",
 		},
 		PullRequest: webhook.PullRequestRef{
-			Number:  prNumber,
-			BaseRef: baseRef,
-			HeadRef: headRef,
+			Number:         prNumber,
+			BaseRef:        baseRef,
+			HeadRef:        headRef,
+			BaseSHA:        fmt.Sprintf("base-sha-%d", prNumber),
+			HeadSHA:        fmt.Sprintf("head-sha-%d", prNumber),
+			MergeCommitSHA: fmt.Sprintf("merge-sha-%d", prNumber),
 		},
 	}
 }
@@ -3215,6 +3218,30 @@ func TestHandleMergedE2ERegression_Disabled(t *testing.T) {
 	}
 }
 
+// TestHandleMergedE2ERegression_E2EDisabled e2e.enabled=false 时即使 regression.enabled=true 也不入队。
+func TestHandleMergedE2ERegression_E2EDisabled(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			Enabled:    boolPtr(false),
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+	)
+
+	event := newMergedPREvent(1011, "feature/foo", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("e2e.enabled=false should not enqueue, got %d tasks", len(s.tasks))
+	}
+}
+
 // TestHandleMergedE2ERegression_ConfigProviderNil e2eConfigProvider 未注入时静默跳过。
 func TestHandleMergedE2ERegression_ConfigProviderNil(t *testing.T) {
 	s := newMockStore()
@@ -3294,6 +3321,18 @@ func TestHandleMergedE2ERegression_Normal(t *testing.T) {
 	}
 	if task.Payload.BaseRef != "main" {
 		t.Errorf("payload.BaseRef = %q, want %q", task.Payload.BaseRef, "main")
+	}
+	if task.Payload.PRNumber != 104 {
+		t.Errorf("payload.PRNumber = %d, want 104", task.Payload.PRNumber)
+	}
+	if task.Payload.BaseSHA != "base-sha-104" {
+		t.Errorf("payload.BaseSHA = %q, want base-sha-104", task.Payload.BaseSHA)
+	}
+	if task.Payload.HeadSHA != "head-sha-104" {
+		t.Errorf("payload.HeadSHA = %q, want head-sha-104", task.Payload.HeadSHA)
+	}
+	if task.Payload.MergeCommitSHA != "merge-sha-104" {
+		t.Errorf("payload.MergeCommitSHA = %q, want merge-sha-104", task.Payload.MergeCommitSHA)
 	}
 	if len(task.Payload.ChangedFiles) != 2 {
 		t.Errorf("payload.ChangedFiles len = %d, want 2", len(task.Payload.ChangedFiles))

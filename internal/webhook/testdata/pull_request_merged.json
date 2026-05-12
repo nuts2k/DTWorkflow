@@ -1,5 +1,6 @@
 {
   "action": "closed",
+  "commit_id": "merge789",
   "repository": {
     "full_name": "owner/repo",
     "clone_url": "https://gitea.example.com/owner/repo.git",
