@@ -184,6 +184,42 @@ func TestFilterSourceFiles_AllPass(t *testing.T) {
 	assertStringSliceEqual(t, files, got)
 }
 
+func TestFilterRegressionFiles_KeepsConfigDependencyAndScripts(t *testing.T) {
+	files := []string{
+		"src/main.go",
+		"package.json",
+		"package-lock.json",
+		"config/app.yaml",
+		"scripts/migrate.sh",
+		"Dockerfile",
+		"Makefile",
+		"README.md",
+		"docs/guide.yaml",
+		"assets/logo.png",
+	}
+	got := filterRegressionFiles(files, nil)
+	want := []string{
+		"src/main.go",
+		"package.json",
+		"package-lock.json",
+		"config/app.yaml",
+		"scripts/migrate.sh",
+		"Dockerfile",
+		"Makefile",
+	}
+	assertStringSliceEqual(t, want, got)
+}
+
+func TestFilterRegressionFiles_ExtraIgnorePaths(t *testing.T) {
+	files := []string{
+		"src/main.go",
+		"e2e/order/cases/login/case.yaml",
+	}
+	got := filterRegressionFiles(files, []string{"e2e/**"})
+	want := []string{"src/main.go"}
+	assertStringSliceEqual(t, want, got)
+}
+
 func TestMatchFilesToModules_RootModule(t *testing.T) {
 	modules := []test.DiscoveredModule{
 		{Path: "", Framework: test.FrameworkJUnit5},

@@ -57,6 +57,46 @@ func TestParseTriageResult_EmptyModuleName(t *testing.T) {
 	}
 }
 
+func TestParseTriageResult_InvalidModuleName(t *testing.T) {
+	raw := `{"modules":[{"name":"../admin","reason":"bad"}]}`
+	_, err := ParseTriageResult(raw)
+	if err == nil {
+		t.Fatal("expected error for invalid module name")
+	}
+	if !errors.Is(err, ErrE2ETriageParseFailure) {
+		t.Errorf("error should wrap ErrE2ETriageParseFailure, got: %v", err)
+	}
+}
+
+func TestParseTriageResult_DedupeModules(t *testing.T) {
+	raw := `{"modules":[{"name":"order","reason":"first"},{"name":"order","reason":"second"}],"skipped_modules":[{"name":"auth","reason":"first"},{"name":"auth","reason":"second"}]}`
+	out, err := ParseTriageResult(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Modules) != 1 || out.Modules[0].Reason != "first" {
+		t.Fatalf("modules = %+v, want first order only", out.Modules)
+	}
+	if len(out.SkippedModules) != 1 || out.SkippedModules[0].Reason != "first" {
+		t.Fatalf("skipped_modules = %+v, want first auth only", out.SkippedModules)
+	}
+}
+
+func TestParseTriageResult_TooManyModules(t *testing.T) {
+	var modules []string
+	for i := 0; i < maxTriageModules+1; i++ {
+		modules = append(modules, fmt.Sprintf(`{"name":"m%d","reason":"r"}`, i))
+	}
+	raw := `{"modules":[` + strings.Join(modules, ",") + `]}`
+	_, err := ParseTriageResult(raw)
+	if err == nil {
+		t.Fatal("expected error for too many modules")
+	}
+	if !errors.Is(err, ErrE2ETriageParseFailure) {
+		t.Errorf("error should wrap ErrE2ETriageParseFailure, got: %v", err)
+	}
+}
+
 func TestParseTriageResult_CLIEnvelope(t *testing.T) {
 	inner := `{"modules":[{"name":"payment","reason":"payment API changed"}],"analysis":"done"}`
 	raw := `{"result":"` + strings.ReplaceAll(inner, `"`, `\"`) + `","cost_usd":0.01}`

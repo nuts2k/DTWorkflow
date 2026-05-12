@@ -276,6 +276,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	var testResult *test.TestGenResult
 	var e2eResult *e2e.E2EResult
 	var triageResult *e2e.TriageE2EOutput
+	var triageDispatchErr error
 	var result *worker.ExecutionResult
 	var runErr error
 	// 路由：review_pr → reviewService，analyze_issue/fix_issue → fixService，
@@ -473,6 +474,21 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		)
 	}
 
+	if record.Status == model.TaskStatusSucceeded && triageResult != nil {
+		dispatchResult, err := p.handleTriageE2EResult(ctx, record, triageResult)
+		if err != nil {
+			triageDispatchErr = err
+			record.Status = model.TaskStatusFailed
+			record.Error = test.SanitizeErrorMessage(err.Error())
+			p.logger.ErrorContext(ctx, "triage_e2e: 链式入队失败，任务标记为 failed",
+				"task_id", record.ID,
+				"requested", dispatchResult.Requested,
+				"enqueued", dispatchResult.Enqueued,
+				"failed", dispatchResult.Failed,
+				"error", err)
+		}
+	}
+
 	// CompletedAt 仅在任务达到最终状态时设置
 	if record.Status == model.TaskStatusSucceeded || record.Status == model.TaskStatusFailed {
 		completedAt := time.Now()
@@ -493,13 +509,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if finalStatePersisted {
-		// triage_e2e 成功时链式入队 run_e2e
-		if record.Status == model.TaskStatusSucceeded && triageResult != nil {
-			p.handleTriageE2EResult(ctx, record, triageResult)
-		}
 		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, e2eResult, triageResult)
 	}
 
+	if triageDispatchErr != nil {
+		return fmt.Errorf("triage_e2e 链式入队失败: %v: %w", triageDispatchErr, asynq.SkipRetry)
+	}
 	if runErr != nil {
 		return fmt.Errorf("任务执行失败: %w", runErr)
 	}
@@ -1534,20 +1549,39 @@ func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (
 	return nil, fmt.Errorf("找不到任务记录, delivery_id=%s, task_type=%s", payload.DeliveryID, payload.TaskType)
 }
 
+type triageDispatchResult struct {
+	Requested int
+	Enqueued  int
+	Failed    int
+}
+
 // handleTriageE2EResult 处理 triage_e2e 成功后的链式入队。
 // 遍历 triageResult.Modules，逐模块调用 EnqueueManualE2E 入队 run_e2e。
-// 单模块入队失败仅 warn 不阻断其他模块，与 gen_tests D6 模式一致。
-func (p *Processor) handleTriageE2EResult(ctx context.Context, record *model.TaskRecord, output *e2e.TriageE2EOutput) {
+// 入队前基于仓库实际 e2e/ 模块做白名单校验，避免 LLM 输出直接驱动任意任务。
+func (p *Processor) handleTriageE2EResult(ctx context.Context, record *model.TaskRecord, output *e2e.TriageE2EOutput) (triageDispatchResult, error) {
+	var dispatch triageDispatchResult
 	if len(output.Modules) == 0 {
 		p.logger.InfoContext(ctx, "triage_e2e: 无需回归，modules 为空",
 			"task_id", record.ID)
-		return
+		return dispatch, nil
 	}
+	dispatch.Requested = len(output.Modules)
 	if p.enqueueHandler == nil {
 		p.logger.ErrorContext(ctx, "triage_e2e: enqueueHandler 未注入，无法链式入队",
 			"task_id", record.ID)
-		return
+		return dispatch, fmt.Errorf("enqueueHandler 未注入，无法链式入队 run_e2e")
 	}
+
+	available, err := p.loadAvailableE2EModules(ctx, record)
+	if err != nil {
+		return dispatch, err
+	}
+	for _, mod := range output.Modules {
+		if _, ok := available[mod.Name]; !ok {
+			return dispatch, fmt.Errorf("triage 输出模块 %q 不存在于仓库 e2e/ 可用模块", mod.Name)
+		}
+	}
+
 	triggeredBy := fmt.Sprintf("triage_e2e:%s", record.ID)
 	for _, mod := range output.Modules {
 		payload := model.TaskPayload{
@@ -1562,10 +1596,64 @@ func (p *Processor) handleTriageE2EResult(ctx context.Context, record *model.Tas
 			MergeCommitSHA: record.Payload.MergeCommitSHA,
 			Environment:    record.Payload.Environment,
 		}
-		if _, err := p.enqueueHandler.EnqueueManualE2E(ctx, payload, triggeredBy); err != nil {
+		tasks, err := p.enqueueHandler.EnqueueManualE2E(ctx, payload, triggeredBy)
+		if err != nil {
+			dispatch.Failed++
 			p.logger.WarnContext(ctx, "triage_e2e: 链式入队失败",
 				"task_id", record.ID,
 				"module", mod.Name, "error", err)
+			continue
 		}
+		if len(tasks) == 0 {
+			dispatch.Failed++
+			p.logger.WarnContext(ctx, "triage_e2e: 链式入队未返回任务",
+				"task_id", record.ID,
+				"module", mod.Name)
+			continue
+		}
+		dispatch.Enqueued += len(tasks)
+	}
+	if dispatch.Enqueued == 0 {
+		return dispatch, fmt.Errorf("所有 run_e2e 子任务入队均失败，modules=%d", dispatch.Requested)
+	}
+	if dispatch.Failed > 0 {
+		p.logger.WarnContext(ctx, "triage_e2e: 部分 run_e2e 子任务入队失败",
+			"task_id", record.ID,
+			"requested", dispatch.Requested,
+			"enqueued", dispatch.Enqueued,
+			"failed", dispatch.Failed)
+	}
+	return dispatch, nil
+}
+
+func (p *Processor) loadAvailableE2EModules(ctx context.Context, record *model.TaskRecord) (map[string]struct{}, error) {
+	if p.enqueueHandler.e2eModuleScanner == nil {
+		return nil, fmt.Errorf("E2E 模块扫描器未注入，无法校验 triage 输出模块")
+	}
+	payload := record.Payload
+	ref := triageModuleScanRef(payload)
+	if ref == "" {
+		return nil, fmt.Errorf("缺少可用于扫描 E2E 模块的 ref")
+	}
+	modules, err := e2e.ScanE2EModules(ctx, p.enqueueHandler.e2eModuleScanner,
+		payload.RepoOwner, payload.RepoName, ref)
+	if err != nil {
+		return nil, fmt.Errorf("扫描 E2E 模块失败: %w", err)
+	}
+	available := make(map[string]struct{}, len(modules))
+	for _, mod := range modules {
+		available[mod] = struct{}{}
+	}
+	return available, nil
+}
+
+func triageModuleScanRef(payload model.TaskPayload) string {
+	switch {
+	case payload.MergeCommitSHA != "":
+		return payload.MergeCommitSHA
+	case payload.HeadSHA != "":
+		return payload.HeadSHA
+	default:
+		return payload.BaseRef
 	}
 }

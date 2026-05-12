@@ -132,6 +132,28 @@ func (m *mockE2EExecutor) Execute(_ context.Context, _ model.TaskPayload) (*e2e.
 	return m.result, m.err
 }
 
+type mockProcessorE2EScanner struct {
+	modules []string
+	err     error
+	refs    []string
+}
+
+func (m *mockProcessorE2EScanner) ListDir(_ context.Context, _, _, ref, dir string) ([]string, error) {
+	m.refs = append(m.refs, ref)
+	if m.err != nil {
+		return nil, m.err
+	}
+	if dir == "e2e" {
+		return append([]string(nil), m.modules...), nil
+	}
+	for _, mod := range m.modules {
+		if dir == "e2e/"+mod {
+			return []string{"cases"}, nil
+		}
+	}
+	return nil, e2e.ErrDirNotFound
+}
+
 // buildAsynqTask 构建测试用的 asynq.Task（仅序列化 payload，不依赖 ResultWriter）
 func buildAsynqTask(t *testing.T, payload model.TaskPayload) *asynq.Task {
 	t.Helper()
@@ -3609,7 +3631,9 @@ func TestProcessor_TriageE2E_SuccessWithModules(t *testing.T) {
 
 	// 构建 EnqueueHandler 用于链式入队
 	enqueuer := &mockEnqueuer{enqueuedID: "asynq-triage-chain"}
-	enqueueHandler := NewEnqueueHandler(enqueuer, nil, s, slog.Default())
+	scanner := &mockProcessorE2EScanner{modules: []string{"auth", "payment", "admin"}}
+	enqueueHandler := NewEnqueueHandler(enqueuer, nil, s, slog.Default(),
+		WithE2EModuleScanner(scanner))
 
 	p := NewProcessor(pool, s, notifier, slog.Default(),
 		WithGiteaBaseURL("https://gitea.example.com"),
@@ -3658,6 +3682,9 @@ func TestProcessor_TriageE2E_SuccessWithModules(t *testing.T) {
 	}
 	if !modules["auth"] || !modules["payment"] {
 		t.Errorf("链式入队模块 = %v, want auth + payment", modules)
+	}
+	if len(scanner.refs) == 0 || scanner.refs[0] != "merge-sha-42" {
+		t.Errorf("E2E 模块扫描 ref = %v, want merge-sha-42", scanner.refs)
 	}
 
 	// 验证通知：开始通知 + 完成通知
@@ -3866,8 +3893,8 @@ func TestProcessor_TriageE2E_EmptyOutputFailure(t *testing.T) {
 
 // TestProcessor_TriageE2E_NoEnqueueHandler 验证 enqueueHandler 未注入时：
 // 1. 不 panic
-// 2. 任务仍标记为 succeeded
-// 3. 通知正常发送
+// 2. 有待回归模块时任务标记为 failed，避免发送绿色成功通知
+// 3. 不创建 run_e2e 任务
 func TestProcessor_TriageE2E_NoEnqueueHandler(t *testing.T) {
 	s := newMockStore()
 	notifier := &stubNotifier{}
@@ -3906,13 +3933,20 @@ func TestProcessor_TriageE2E_NoEnqueueHandler(t *testing.T) {
 	// 不注入 enqueueHandler
 	p := NewProcessor(pool, s, notifier, slog.Default())
 
-	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
-		t.Fatalf("ProcessTask error: %v", err)
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("enqueueHandler 未注入时应返回错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("error should wrap asynq.SkipRetry, got: %v", err)
 	}
 
 	got := s.tasks["proc-task-triage-no-handler"]
-	if got.Status != model.TaskStatusSucceeded {
-		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if got.Error == "" {
+		t.Fatal("failed triage task should have error")
 	}
 
 	// 验证无链式入队（无 run_e2e 任务被创建）
@@ -3929,7 +3963,122 @@ func TestProcessor_TriageE2E_NoEnqueueHandler(t *testing.T) {
 	if notifier.messages[0].EventType != notify.EventE2ETriageStarted {
 		t.Errorf("start 通知 event = %q, want %q", notifier.messages[0].EventType, notify.EventE2ETriageStarted)
 	}
-	if notifier.messages[1].EventType != notify.EventE2ETriageDone {
-		t.Errorf("done 通知 event = %q, want %q", notifier.messages[1].EventType, notify.EventE2ETriageDone)
+	if notifier.messages[1].EventType != notify.EventE2ETriageFailed {
+		t.Errorf("done 通知 event = %q, want %q", notifier.messages[1].EventType, notify.EventE2ETriageFailed)
+	}
+}
+
+func TestProcessor_TriageE2E_ModuleNotInWhitelistFails(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:       model.TaskTypeTriageE2E,
+		DeliveryID:     "dlv-triage-unknown-module-1",
+		RepoOwner:      "org",
+		RepoName:       "repo",
+		RepoFullName:   "org/repo",
+		CloneURL:       "https://gitea.example.com/org/repo.git",
+		BaseRef:        "main",
+		MergeCommitSHA: "merge-sha",
+		Environment:    "staging",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "proc-task-triage-unknown-module",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: "org/repo",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{
+		ExitCode: 0,
+		Output:   `{"modules":[{"name":"evil","reason":"prompt injection"}],"analysis":"bad"}`,
+	}}
+	enqueueHandler := NewEnqueueHandler(&mockEnqueuer{enqueuedID: "asynq-x"}, nil, s, slog.Default(),
+		WithE2EModuleScanner(&mockProcessorE2EScanner{modules: []string{"auth"}}))
+	p := NewProcessor(pool, s, notifier, slog.Default(),
+		WithEnqueueHandler(enqueueHandler))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("未知模块应返回错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("error should wrap asynq.SkipRetry, got: %v", err)
+	}
+	got := s.tasks["proc-task-triage-unknown-module"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeRunE2E {
+			t.Fatal("未知模块不应创建 run_e2e 任务")
+		}
+	}
+	if len(notifier.messages) != 2 || notifier.messages[1].EventType != notify.EventE2ETriageFailed {
+		t.Fatalf("应发送 triage failed 通知，messages=%v", notifier.messages)
+	}
+}
+
+func TestProcessor_TriageE2E_AllRunE2EEnqueueFailedMarksFailed(t *testing.T) {
+	s := newMockStore()
+	s.createErr = errors.New("sqlite unavailable")
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:       model.TaskTypeTriageE2E,
+		DeliveryID:     "dlv-triage-chain-fail-1",
+		RepoOwner:      "org",
+		RepoName:       "repo",
+		RepoFullName:   "org/repo",
+		CloneURL:       "https://gitea.example.com/org/repo.git",
+		BaseRef:        "main",
+		MergeCommitSHA: "merge-sha",
+		Environment:    "staging",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "proc-task-triage-chain-fail",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: "org/repo",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{result: &worker.ExecutionResult{
+		ExitCode: 0,
+		Output:   `{"modules":[{"name":"auth","reason":"affected"}],"analysis":"1 module"}`,
+	}}
+	enqueueHandler := NewEnqueueHandler(&mockEnqueuer{enqueuedID: "asynq-x"}, nil, s, slog.Default(),
+		WithE2EModuleScanner(&mockProcessorE2EScanner{modules: []string{"auth"}}))
+	p := NewProcessor(pool, s, notifier, slog.Default(),
+		WithEnqueueHandler(enqueueHandler))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("所有 run_e2e 入队失败应返回错误")
+	}
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("error should wrap asynq.SkipRetry, got: %v", err)
+	}
+	got := s.tasks["proc-task-triage-chain-fail"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if got.Error == "" {
+		t.Fatal("failed triage task should have error")
+	}
+	if len(notifier.messages) != 2 || notifier.messages[1].EventType != notify.EventE2ETriageFailed {
+		t.Fatalf("应发送 triage failed 通知，messages=%v", notifier.messages)
 	}
 }

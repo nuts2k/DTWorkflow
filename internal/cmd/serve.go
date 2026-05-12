@@ -296,7 +296,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	mux.Handle(queue.AsynqTypeAnalyzeIssue, processor) // M3.4
 	mux.Handle(queue.AsynqTypeFixIssue, processor)
 	mux.Handle(queue.AsynqTypeGenTests, processor)
-	mux.Handle(queue.AsynqTypeRunE2E, processor)      // M5.1
+	mux.Handle(queue.AsynqTypeRunE2E, processor)    // M5.1
 	mux.Handle(queue.AsynqTypeTriageE2E, processor) // M5.4
 
 	// M2.7: 每日报告 Handler 装配

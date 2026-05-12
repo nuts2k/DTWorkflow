@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"otws19.zicp.vip/kelin/dtworkflow/internal/validation"
 )
 
 // TriageE2EOutput triage 分析输出结构。
@@ -23,6 +25,7 @@ type TriageModule struct {
 const maxTriageReasonLen = 2048
 const maxTriageAnalysisLen = 2048
 const maxTriageChangedFiles = 50
+const maxTriageModules = 30
 
 // TriagePromptContext 描述一次回归分析需要的稳定 Git 上下文。
 type TriagePromptContext struct {
@@ -84,9 +87,15 @@ func validateTriageOutput(out *TriageE2EOutput) error {
 	if out.Modules == nil {
 		return fmt.Errorf("%w: modules 字段缺失", ErrE2ETriageParseFailure)
 	}
+	if len(out.Modules) > maxTriageModules {
+		return fmt.Errorf("%w: modules 数量超过上限 %d", ErrE2ETriageParseFailure, maxTriageModules)
+	}
 	for i, m := range out.Modules {
 		if strings.TrimSpace(m.Name) == "" {
 			return fmt.Errorf("%w: modules[%d].name 为空", ErrE2ETriageParseFailure, i)
+		}
+		if err := validation.E2EModule(m.Name); err != nil {
+			return fmt.Errorf("%w: modules[%d].name 非法: %v", ErrE2ETriageParseFailure, i, err)
 		}
 	}
 	return nil
@@ -102,6 +111,27 @@ func sanitizeTriageOutput(out *TriageE2EOutput) {
 		out.SkippedModules[i].Reason = sanitizeTriageText(out.SkippedModules[i].Reason, maxTriageReasonLen)
 		out.SkippedModules[i].Name = strings.TrimSpace(out.SkippedModules[i].Name)
 	}
+	out.Modules = dedupeTriageModules(out.Modules, 0)
+	out.SkippedModules = dedupeTriageModules(out.SkippedModules, maxTriageModules)
+}
+
+func dedupeTriageModules(modules []TriageModule, limit int) []TriageModule {
+	if len(modules) == 0 {
+		return modules
+	}
+	seen := make(map[string]struct{}, len(modules))
+	result := make([]TriageModule, 0, len(modules))
+	for _, mod := range modules {
+		if _, ok := seen[mod.Name]; ok {
+			continue
+		}
+		seen[mod.Name] = struct{}{}
+		result = append(result, mod)
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result
 }
 
 // sanitizeTriageText 过滤控制字符（保留换行和 tab）并截断到 maxLen。

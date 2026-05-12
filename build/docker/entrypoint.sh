@@ -389,6 +389,8 @@ log "仓库准备完成 ($(git log --oneline -1))"
 # --- 只读任务安全加固：锁定 Git 写操作并清除持久化凭证 ---
 if [ "${TASK_TYPE:-}" = "review_pr" ]; then
     harden_readonly_git "评审模式"
+elif [ "${TASK_TYPE:-}" = "run_e2e" ]; then
+    harden_readonly_git "E2E 测试模式"
 elif [ "${TASK_TYPE:-}" = "triage_e2e" ]; then
     harden_readonly_git "E2E 回归分析模式"
 fi

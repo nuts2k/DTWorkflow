@@ -69,12 +69,12 @@ const (
 	MetaKeyE2ESkippedCases  = "e2e_skipped_cases"
 	MetaKeyE2EModule        = "e2e_module"
 	MetaKeyE2EBaseRef       = "e2e_base_ref"
-	MetaKeyE2EFailedList    = "e2e_failed_list"     // JSON: [{"name":"...","category":"...","analysis":"..."}]
-	MetaKeyE2ECreatedIssues = "e2e_created_issues"  // "42,43"
+	MetaKeyE2EFailedList    = "e2e_failed_list"    // JSON: [{"name":"...","category":"...","analysis":"..."}]
+	MetaKeyE2ECreatedIssues = "e2e_created_issues" // "42,43"
 
 	// M5.4 E2E 回归分析（triage）专用 metadata key。
 	MetaKeyTriageModules        = "triage_modules"         // JSON: [{"name":"...","reason":"..."}]
-	MetaKeyTriageSkippedModules = "triage_skipped_modules"  // JSON: [{"name":"...","reason":"..."}]
+	MetaKeyTriageSkippedModules = "triage_skipped_modules" // JSON: [{"name":"...","reason":"..."}]
 	MetaKeyTriageAnalysis       = "triage_analysis"
 )
 

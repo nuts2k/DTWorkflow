@@ -381,9 +381,9 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 		return
 	}
 	filenames := extractRegressionFilenames(allFiles)
-	sourceFiles := filterSourceFiles(filenames, e2eCfg.Regression.IgnorePaths)
-	if len(sourceFiles) == 0 {
-		h.logger.DebugContext(ctx, "e2e-regression: 无源码变更",
+	regressionFiles := filterRegressionFiles(filenames, e2eCfg.Regression.IgnorePaths)
+	if len(regressionFiles) == 0 {
+		h.logger.DebugContext(ctx, "e2e-regression: 无需回归的变更",
 			"repo", repo, "pr", pr.Number)
 		return
 	}
@@ -420,7 +420,7 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 		HeadSHA:        pr.HeadSHA,
 		MergeCommitSHA: pr.MergeCommitSHA,
 		Environment:    e2eCfg.DefaultEnv,
-		ChangedFiles:   sourceFiles,
+		ChangedFiles:   regressionFiles,
 	}
 
 	// Cancel-and-Replace：取消同仓库旧 triage
@@ -444,7 +444,7 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 	h.cancelTasks(ctx, oldTasks)
 	h.logger.InfoContext(ctx, "e2e-regression: triage_e2e 已入队",
 		"repo", repo, "pr", pr.Number,
-		"task_id", record.ID, "source_files", len(sourceFiles))
+		"task_id", record.ID, "regression_files", len(regressionFiles))
 }
 
 // buildE2ERegressionDeliveryID 构建 E2E 回归复合 delivery ID。

@@ -39,7 +39,7 @@ type TestGenOverride struct {
 
 // NotifyOverride 仓库级通知配置覆盖。
 type NotifyOverride struct {
-	Routes []RouteConfig  `mapstructure:"routes"`
+	Routes []RouteConfig   `mapstructure:"routes"`
 	Feishu *FeishuOverride `mapstructure:"feishu"`
 }
 
@@ -208,9 +208,9 @@ func (c *Config) ResolveTestGenConfig(repoFullName string) TestGenOverride {
 
 // E2EOverride 仓库级 E2E 配置覆盖。
 type E2EOverride struct {
-	Enabled    *bool              `mapstructure:"enabled"`
-	DefaultEnv string             `mapstructure:"default_env"`
-	Regression *RegressionConfig  `mapstructure:"regression"`
+	Enabled    *bool             `mapstructure:"enabled"`
+	DefaultEnv string            `mapstructure:"default_env"`
+	Regression *RegressionConfig `mapstructure:"regression"`
 }
 
 // ResolveE2EConfig 解析指定仓库的最终 E2E 配置覆盖。

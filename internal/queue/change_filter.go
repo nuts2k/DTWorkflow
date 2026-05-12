@@ -25,11 +25,23 @@ var defaultIgnoredExtensions = map[string]bool{
 	".sh":      true,
 }
 
+var regressionIgnoredExtensions = map[string]bool{
+	".md": true, ".txt": true, ".rst": true,
+	".svg": true, ".png": true, ".jpg": true, ".jpeg": true,
+	".gif": true, ".ico": true,
+}
+
 var defaultIgnoredFiles = map[string]bool{
 	".gitignore": true, ".editorconfig": true,
 	".dockerignore": true, ".env": true,
 	"Makefile": true, "Dockerfile": true,
 	"LICENSE": true,
+}
+
+var regressionIgnoredFiles = map[string]bool{
+	".gitignore": true, ".editorconfig": true,
+	".dockerignore": true,
+	"LICENSE":       true,
 }
 
 var defaultIgnoredPrefixes = []string{
@@ -102,6 +114,20 @@ func filterSourceFiles(files []string, extraIgnorePaths []string) []string {
 	return result
 }
 
+// filterRegressionFiles 过滤 E2E 回归自动化无需关心的纯文档/静态资源变更。
+// 与 gen_tests 的源码过滤不同，配置、依赖、脚本、Dockerfile/Makefile 等文件
+// 都可能改变端到端行为，因此不能复用 defaultIgnoredExtensions。
+func filterRegressionFiles(files []string, extraIgnorePaths []string) []string {
+	var result []string
+	for _, file := range files {
+		if shouldIgnoreRegressionFile(file, extraIgnorePaths) {
+			continue
+		}
+		result = append(result, file)
+	}
+	return result
+}
+
 func shouldIgnoreFile(file string, extraIgnorePaths []string) bool {
 	base := path.Base(file)
 
@@ -122,6 +148,33 @@ func shouldIgnoreFile(file string, extraIgnorePaths []string) bool {
 
 	for _, pattern := range testFilePatterns {
 		if matched, _ := doublestar.Match(pattern, base); matched {
+			return true
+		}
+	}
+
+	for _, pattern := range extraIgnorePaths {
+		if matched, _ := doublestar.Match(pattern, file); matched {
+			return true
+		}
+	}
+
+	return false
+}
+
+func shouldIgnoreRegressionFile(file string, extraIgnorePaths []string) bool {
+	base := path.Base(file)
+
+	if regressionIgnoredFiles[base] {
+		return true
+	}
+
+	ext := strings.ToLower(filepath.Ext(file))
+	if regressionIgnoredExtensions[ext] {
+		return true
+	}
+
+	for _, prefix := range defaultIgnoredPrefixes {
+		if strings.HasPrefix(file, prefix) {
 			return true
 		}
 	}
