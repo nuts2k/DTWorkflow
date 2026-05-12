@@ -83,6 +83,7 @@ worker:
     fix_issue: "45m"       # M3.4: 含分析 + 修复 + 测试
     gen_tests: "30m"
     run_e2e: "60m"
+    # triage_e2e: 10m  # E2E 回归分析超时（默认 10 分钟）
   # 流式心跳监控（stream-json 活跃度检测）
   # 启用后容器内 claude -p 改用 stream-json 输出格式，
   # 通过监控 stdout 事件流检测容器是否卡住。
@@ -216,6 +217,37 @@ repos:
       # review_on_failure: true          # 仓库级：失败也触发 review（D5）
       # change_driven:
       #   enabled: true       # 仓库级启用变更驱动
+
+# E2E 测试配置（M5.1）
+# 说明：
+# - enabled 为可选（未设置时默认启用）。显式 false 时全局禁用 E2E 测试。
+# - default_env 指定默认环境名（自动触发场景必填）。
+# - environments 定义命名环境列表。
+# - regression (M5.4) 控制 PR 合并后自动 E2E 回归。
+e2e:
+  # enabled: true
+  default_env: ""                # 默认环境名（回归自动化必填）
+  artifact_retention_days: 7     # 截图/artifact 保留天数
+  environments: {}
+  # environments:
+  #   staging:
+  #     base_url: "https://staging.example.com"
+  #     db:
+  #       host: "db.staging.example.com"
+  #       port: 3306
+  #       user: "test"
+  #       password: "test"
+  #       database: "app_test"
+  #     accounts:
+  #       admin:
+  #         username: "admin"
+  #         password: "admin123"
+  # M5.4: E2E 回归自动化（PR 合并后自动触发）
+  regression:
+    enabled: false          # 默认关闭，显式启用
+    ignore_paths:           # 宿主侧初筛忽略路径（doublestar glob）
+      # - "docs/**"
+      # - "scripts/**"
 
 # 每日评审统计报告
 # 定时通过飞书发送前一天的 PR 评审统计摘要。

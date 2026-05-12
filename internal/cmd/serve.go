@@ -288,6 +288,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		}
 		e2eSvc := e2esvc.NewService(deps.Pool, cfgAdapter, e2eOpts...)
 		processorOpts = append(processorOpts, queue.WithE2EService(e2eSvc))
+		processorOpts = append(processorOpts, queue.WithEnqueueHandler(deps.EnqueueHandler)) // M5.4: triage_e2e 成功后链式入队 run_e2e
 	}
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), processorOpts...)
 	mux := asynq.NewServeMux()
@@ -295,7 +296,8 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	mux.Handle(queue.AsynqTypeAnalyzeIssue, processor) // M3.4
 	mux.Handle(queue.AsynqTypeFixIssue, processor)
 	mux.Handle(queue.AsynqTypeGenTests, processor)
-	mux.Handle(queue.AsynqTypeRunE2E, processor) // M5.1
+	mux.Handle(queue.AsynqTypeRunE2E, processor)      // M5.1
+	mux.Handle(queue.AsynqTypeTriageE2E, processor) // M5.4
 
 	// M2.7: 每日报告 Handler 装配
 	var dailyReportHandler *report.DailyReportHandler

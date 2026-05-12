@@ -304,6 +304,7 @@ func BuildServiceDeps(cfg serveConfig) (*ServiceDeps, func(), error) {
 	}
 	if cfg.AppCfg != nil {
 		enqueueOpts = append(enqueueOpts, queue.WithConfigProvider(cfg.AppCfg))
+		enqueueOpts = append(enqueueOpts, queue.WithE2ERegressionConfigProvider(cfg.AppCfg)) // M5.4
 	}
 	handler := queue.NewEnqueueHandler(queueClient, queueClient, s, slog.Default(), enqueueOpts...)
 
