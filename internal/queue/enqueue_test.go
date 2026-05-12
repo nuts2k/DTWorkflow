@@ -3155,3 +3155,382 @@ func TestEnqueueManualE2E_WithModule_SingleTask(t *testing.T) {
 		t.Errorf("expected module 'order', got '%s'", results[0].Module)
 	}
 }
+
+// ==========================================================================
+// M5.4: E2E 回归自动化 — handleMergedE2ERegression 测试
+// ==========================================================================
+
+// mockE2EConfigProvider 测试用 E2ERegressionConfigProvider
+type mockE2EConfigProvider struct {
+	cfg config.E2EOverride
+}
+
+func (m *mockE2EConfigProvider) ResolveE2EConfig(_ string) config.E2EOverride {
+	return m.cfg
+}
+
+// TestHandleMergedE2ERegression_BotPRSkipped Bot PR（auto-test/* 和 auto-fix/*）
+// 在调度层统一过滤，不会触发 E2E 回归入队。
+func TestHandleMergedE2ERegression_BotPRSkipped(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+	)
+
+	for _, headRef := range []string{"auto-test/backend", "auto-fix/issue-1"} {
+		event := newMergedPREvent(100, headRef, "main")
+		if err := h.HandlePullRequest(context.Background(), event); err != nil {
+			t.Fatalf("headRef=%s: unexpected error: %v", headRef, err)
+		}
+		if len(s.tasks) != 0 {
+			t.Errorf("headRef=%s: bot PR should be skipped, got %d tasks", headRef, len(s.tasks))
+		}
+	}
+}
+
+// TestHandleMergedE2ERegression_Disabled regression.enabled=false 时不入队。
+func TestHandleMergedE2ERegression_Disabled(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(false)},
+		}}),
+	)
+
+	event := newMergedPREvent(101, "feature/foo", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("disabled regression should not enqueue, got %d tasks", len(s.tasks))
+	}
+}
+
+// TestHandleMergedE2ERegression_ConfigProviderNil e2eConfigProvider 未注入时静默跳过。
+func TestHandleMergedE2ERegression_ConfigProviderNil(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	event := newMergedPREvent(102, "feature/foo", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("nil e2eConfigProvider should silently skip, got %d tasks", len(s.tasks))
+	}
+}
+
+// TestHandleMergedE2ERegression_NoSourceFiles 纯文档 PR 过滤后为空，不入队。
+func TestHandleMergedE2ERegression_NoSourceFiles(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "README.md", Status: "modified"},
+			{Filename: "docs/guide.md", Status: "added"},
+		}}),
+	)
+
+	event := newMergedPREvent(103, "feature/docs-only", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("docs-only PR should not enqueue triage_e2e, got %d tasks", len(s.tasks))
+	}
+}
+
+// TestHandleMergedE2ERegression_Normal 正常入队 triage_e2e，验证 payload 正确性。
+func TestHandleMergedE2ERegression_Normal(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-triage"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+			{Filename: "src/Helper.java", Status: "added"},
+		}}),
+	)
+
+	event := newMergedPREvent(104, "feature/new-api", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 应创建 1 个 triage_e2e 任务
+	var triageTasks []*model.TaskRecord
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeTriageE2E {
+			triageTasks = append(triageTasks, task)
+		}
+	}
+	if len(triageTasks) != 1 {
+		t.Fatalf("expected 1 triage_e2e task, got %d (total tasks: %d)", len(triageTasks), len(s.tasks))
+	}
+
+	task := triageTasks[0]
+	if task.Payload.TaskType != model.TaskTypeTriageE2E {
+		t.Errorf("payload.TaskType = %q, want %q", task.Payload.TaskType, model.TaskTypeTriageE2E)
+	}
+	if task.Payload.Environment != "staging" {
+		t.Errorf("payload.Environment = %q, want %q", task.Payload.Environment, "staging")
+	}
+	if task.Payload.BaseRef != "main" {
+		t.Errorf("payload.BaseRef = %q, want %q", task.Payload.BaseRef, "main")
+	}
+	if len(task.Payload.ChangedFiles) != 2 {
+		t.Errorf("payload.ChangedFiles len = %d, want 2", len(task.Payload.ChangedFiles))
+	}
+	if task.TriggeredBy != "webhook:pr_merged:104" {
+		t.Errorf("TriggeredBy = %q, want %q", task.TriggeredBy, "webhook:pr_merged:104")
+	}
+	if task.DeliveryID != "delivery-merged-104:triage_e2e" {
+		t.Errorf("DeliveryID = %q, want %q", task.DeliveryID, "delivery-merged-104:triage_e2e")
+	}
+}
+
+// TestHandleMergedE2ERegression_Idempotent 同一 webhook 重发不重复入队。
+func TestHandleMergedE2ERegression_Idempotent(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-triage-dup"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+	)
+
+	event := newMergedPREvent(105, "feature/dup", "main")
+	// 第一次调用
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("first call error: %v", err)
+	}
+
+	triageCount := 0
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeTriageE2E {
+			triageCount++
+		}
+	}
+	if triageCount != 1 {
+		t.Fatalf("first call: expected 1 triage_e2e task, got %d", triageCount)
+	}
+
+	// 第二次调用（相同 delivery_id 和 event）
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("second call error: %v", err)
+	}
+
+	triageCount = 0
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeTriageE2E {
+			triageCount++
+		}
+	}
+	if triageCount != 1 {
+		t.Errorf("idempotent check failed: expected 1 triage_e2e task after replay, got %d", triageCount)
+	}
+}
+
+// TestHandleMergedPullRequest_GenTestsAndE2EParallel 同一 PR 同时触发 gen_tests 和 E2E 回归。
+func TestHandleMergedPullRequest_GenTestsAndE2EParallel(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-parallel"}
+	scanner := &mockModuleScanner{
+		files: map[string]bool{"pom.xml": true},
+	}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		// gen_tests 配置
+		WithConfigProvider(&mockConfigProvider{cfg: config.TestGenOverride{
+			ChangeDriven: &config.ChangeDrivenConfig{Enabled: boolPtr(true)},
+		}}),
+		// E2E 回归配置
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+		WithModuleScanner(scanner),
+	)
+
+	event := newMergedPREvent(106, "feature/both", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	genTestsCount := 0
+	triageCount := 0
+	for _, task := range s.tasks {
+		switch task.TaskType {
+		case model.TaskTypeGenTests:
+			genTestsCount++
+		case model.TaskTypeTriageE2E:
+			triageCount++
+		}
+	}
+
+	if genTestsCount != 1 {
+		t.Errorf("expected 1 gen_tests task, got %d", genTestsCount)
+	}
+	if triageCount != 1 {
+		t.Errorf("expected 1 triage_e2e task, got %d", triageCount)
+	}
+}
+
+// TestHandleMergedE2ERegression_RegressionNil Regression 字段为 nil 时不入队。
+func TestHandleMergedE2ERegression_RegressionNil(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: nil,
+		}}),
+	)
+
+	event := newMergedPREvent(107, "feature/foo", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("nil Regression should not enqueue, got %d tasks", len(s.tasks))
+	}
+}
+
+// TestHandleMergedE2ERegression_CancelOldTriage 入队新 triage 后取消旧的活跃 triage。
+func TestHandleMergedE2ERegression_CancelOldTriage(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-triage-new"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/Main.java", Status: "modified"},
+		}}),
+	)
+
+	// 预置旧的活跃 triage 任务
+	oldTask := &model.TaskRecord{
+		ID:           "old-triage-1",
+		AsynqID:      "asynq-old-triage",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityNormal,
+		RepoFullName: "org/repo",
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeTriageE2E,
+			RepoFullName: "org/repo",
+			Module:       "",
+		},
+	}
+	s.tasks[oldTask.ID] = oldTask
+
+	event := newMergedPREvent(108, "feature/cancel-old", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 旧任务应被取消
+	if oldTask.Status != model.TaskStatusCancelled {
+		t.Errorf("old triage task status = %q, want cancelled", oldTask.Status)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-old-triage" {
+		t.Errorf("deleteCalls = %v, want [asynq-old-triage]", canceller.deleteCalls)
+	}
+
+	// 新 triage 任务应已创建
+	triageCount := 0
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeTriageE2E && task.Status != model.TaskStatusCancelled {
+			triageCount++
+		}
+	}
+	if triageCount != 1 {
+		t.Errorf("expected 1 active triage_e2e task, got %d", triageCount)
+	}
+}
+
+// TestBuildE2ERegressionDeliveryID 验证复合 delivery ID 构建。
+func TestBuildE2ERegressionDeliveryID(t *testing.T) {
+	id := buildE2ERegressionDeliveryID("webhook-abc")
+	if id != "webhook-abc:triage_e2e" {
+		t.Errorf("buildE2ERegressionDeliveryID = %q, want %q", id, "webhook-abc:triage_e2e")
+	}
+
+	empty := buildE2ERegressionDeliveryID("")
+	if empty != "" {
+		t.Errorf("buildE2ERegressionDeliveryID('') = %q, want empty", empty)
+	}
+}
+
+// TestHandleMergedE2ERegression_PRFilesListerNil prFilesLister 未注入时静默跳过。
+func TestHandleMergedE2ERegression_PRFilesListerNil(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		// 注意：不注入 WithPRFilesLister
+	)
+
+	event := newMergedPREvent(109, "feature/no-lister", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("nil prFilesLister should skip E2E regression, got %d tasks", len(s.tasks))
+	}
+}
+
+// TestHandleMergedE2ERegression_IgnorePaths 自定义 ignore_paths 生效。
+func TestHandleMergedE2ERegression_IgnorePaths(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-x"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{
+				Enabled:     boolPtr(true),
+				IgnorePaths: []string{"e2e/**"},
+			},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "e2e/order/cases/login/case.yaml", Status: "modified"},
+		}}),
+	)
+
+	event := newMergedPREvent(110, "feature/e2e-only", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.tasks) != 0 {
+		t.Errorf("files matching ignore_paths should be filtered, got %d tasks", len(s.tasks))
+	}
+}

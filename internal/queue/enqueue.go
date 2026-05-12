@@ -33,7 +33,8 @@ type EnqueueHandler struct {
 	moduleScanner    test.RepoFileChecker       // M4.2.1: ScanRepoModules
 	configProvider   ChangeDrivenConfigProvider // M4.3: 变更驱动配置读取
 	prFilesLister    PRFilesLister              // M4.3: PR 变更文件列表查询
-	e2eModuleScanner e2esvc.E2EModuleScanner    // M5.3: 可选，nil 时全量模式退化为单任务
+	e2eModuleScanner  e2esvc.E2EModuleScanner    // M5.3: 可选，nil 时全量模式退化为单任务
+	e2eConfigProvider E2ERegressionConfigProvider // M5.4: 可选，nil 时跳过 E2E 回归入队
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -94,6 +95,16 @@ func WithPRFilesLister(lister PRFilesLister) EnqueueOption {
 // WithE2EModuleScanner 注入 E2EModuleScanner 用于 M5.3 全量模式模块发现。
 func WithE2EModuleScanner(s e2esvc.E2EModuleScanner) EnqueueOption {
 	return func(h *EnqueueHandler) { h.e2eModuleScanner = s }
+}
+
+// E2ERegressionConfigProvider E2E 回归配置读取窄接口。
+type E2ERegressionConfigProvider interface {
+	ResolveE2EConfig(repoFullName string) config.E2EOverride
+}
+
+// WithE2ERegressionConfigProvider 注入 E2E 回归配置读取能力。
+func WithE2ERegressionConfigProvider(p E2ERegressionConfigProvider) EnqueueOption {
+	return func(h *EnqueueHandler) { h.e2eConfigProvider = p }
 }
 
 // NewEnqueueHandler 创建 EnqueueHandler 实例。
@@ -214,18 +225,34 @@ func (h *EnqueueHandler) handleReviewPullRequest(ctx context.Context, event webh
 	return nil
 }
 
-// handleMergedPullRequest 处理 PR 合并事件，按变更驱动策略入队 gen_tests。
+// handleMergedPullRequest 处理 PR 合并事件，调度变更驱动 gen_tests 和 E2E 回归。
+// Bot PR（auto-test/* / auto-fix/*）在此层统一过滤，子处理函数不再重复检查。
 func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webhook.PullRequestEvent) error {
-	repo := event.Repository.FullName
 	pr := event.PullRequest
 
-	// 1. Bot PR 过滤
+	// Bot PR 过滤：防自触发循环
 	if strings.HasPrefix(pr.HeadRef, "auto-test/") || strings.HasPrefix(pr.HeadRef, "auto-fix/") {
-		h.logger.DebugContext(ctx, "change-driven: skipping bot PR", "repo", repo, "head_ref", pr.HeadRef)
+		h.logger.DebugContext(ctx, "merged: skipping bot PR",
+			"repo", event.Repository.FullName, "head_ref", pr.HeadRef)
 		return nil
 	}
 
-	// 2. 配置检查
+	// 变更驱动 gen_tests（M4.3）
+	genErr := h.handleMergedGenTests(ctx, event)
+
+	// E2E 回归入队（M5.4）— 独立于 gen_tests，失败不阻断彼此
+	h.handleMergedE2ERegression(ctx, event)
+
+	return genErr
+}
+
+// handleMergedGenTests 处理 PR 合并事件，按变更驱动策略入队 gen_tests。
+// 调用方已完成 Bot PR 过滤，此函数不再重复检查。
+func (h *EnqueueHandler) handleMergedGenTests(ctx context.Context, event webhook.PullRequestEvent) error {
+	repo := event.Repository.FullName
+	pr := event.PullRequest
+
+	// 1. 配置检查
 	if h.configProvider == nil {
 		return nil
 	}
@@ -240,7 +267,7 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		return nil
 	}
 
-	// 3. 获取变更文件
+	// 2. 获取变更文件
 	if h.prFilesLister == nil {
 		return nil
 	}
@@ -249,7 +276,7 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		return fmt.Errorf("list PR files: %w", err)
 	}
 
-	// 4. 预过滤
+	// 3. 预过滤
 	filenames := extractFilenames(changedFiles)
 	sourceFiles := filterSourceFiles(filenames, changeDriven.IgnorePaths)
 	if len(sourceFiles) == 0 {
@@ -258,7 +285,7 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		return nil
 	}
 
-	// 5. 模块扫描
+	// 4. 模块扫描
 	if h.moduleScanner == nil {
 		return nil
 	}
@@ -272,7 +299,7 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		return fmt.Errorf("scan modules: %w", err)
 	}
 
-	// 6. 文件→模块归组
+	// 5. 文件→模块归组
 	moduleFiles := matchFilesToModules(sourceFiles, modules)
 	if len(moduleFiles) == 0 {
 		h.logger.DebugContext(ctx, "change-driven: no modules matched",
@@ -280,7 +307,7 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		return nil
 	}
 
-	// 7. 逐模块入队
+	// 6. 逐模块入队
 	triggeredBy := fmt.Sprintf("webhook:pr_merged:%d", pr.Number)
 	h.logger.InfoContext(ctx, "change-driven: enqueueing gen_tests",
 		"repo", repo, "pr", pr.Number,
@@ -321,6 +348,102 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 		return fmt.Errorf("change-driven: 部分模块入队失败: repo=%s pr=%d successes=%d failures=%d", repo, pr.Number, successes, failures)
 	}
 	return nil
+}
+
+// handleMergedE2ERegression 处理 PR 合并事件，按 E2E 回归策略入队 triage_e2e。
+// 调用方已完成 Bot PR 过滤，此函数不再重复检查。
+// 失败仅记 warn 日志，不返回 error，不阻断 gen_tests 主流程。
+func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event webhook.PullRequestEvent) {
+	repo := event.Repository.FullName
+	pr := event.PullRequest
+
+	// 1. 配置检查
+	if h.e2eConfigProvider == nil {
+		return
+	}
+	e2eCfg := h.e2eConfigProvider.ResolveE2EConfig(repo)
+	if e2eCfg.Regression == nil || !e2eCfg.Regression.IsEnabled() {
+		return
+	}
+
+	// 2. 宿主侧初筛
+	if h.prFilesLister == nil {
+		return
+	}
+	allFiles, err := h.listAllPullRequestFiles(ctx, event.Repository.Owner, event.Repository.Name, pr.Number)
+	if err != nil {
+		h.logger.WarnContext(ctx, "e2e-regression: 获取 PR 文件失败",
+			"repo", repo, "pr", pr.Number, "error", err)
+		return
+	}
+	filenames := extractFilenames(allFiles)
+	sourceFiles := filterSourceFiles(filenames, e2eCfg.Regression.IgnorePaths)
+	if len(sourceFiles) == 0 {
+		h.logger.DebugContext(ctx, "e2e-regression: 无源码变更",
+			"repo", repo, "pr", pr.Number)
+		return
+	}
+
+	// 3. 构建 payload 入队 triage_e2e
+	deliveryID := buildE2ERegressionDeliveryID(event.DeliveryID)
+
+	// 幂等检查
+	if deliveryID != "" {
+		existing, findErr := h.store.FindByDeliveryID(ctx, deliveryID, model.TaskTypeTriageE2E)
+		if findErr != nil {
+			h.logger.WarnContext(ctx, "e2e-regression: 幂等检查失败",
+				"repo", repo, "delivery_id", deliveryID, "error", findErr)
+			return
+		}
+		if existing != nil {
+			h.logger.InfoContext(ctx, "e2e-regression: triage_e2e 任务已存在,跳过",
+				"repo", repo, "delivery_id", deliveryID,
+				"task_id", existing.ID, "status", existing.Status)
+			return
+		}
+	}
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeTriageE2E,
+		RepoOwner:    event.Repository.Owner,
+		RepoName:     event.Repository.Name,
+		RepoFullName: repo,
+		CloneURL:     event.Repository.CloneURL,
+		BaseRef:      pr.BaseRef,
+		Environment:  e2eCfg.DefaultEnv,
+		ChangedFiles: sourceFiles,
+	}
+
+	// Cancel-and-Replace：取消同仓库旧 triage
+	oldTasks, _ := h.store.FindActiveTasksByModule(ctx, repo, "", model.TaskTypeTriageE2E)
+
+	triggeredBy := fmt.Sprintf("webhook:pr_merged:%d", pr.Number)
+	record := &model.TaskRecord{
+		TaskType:     model.TaskTypeTriageE2E,
+		Priority:     model.PriorityNormal,
+		RepoFullName: repo,
+		DeliveryID:   deliveryID,
+		TriggeredBy:  triggeredBy,
+	}
+
+	if err := h.enqueueTask(ctx, payload, record); err != nil {
+		h.logger.WarnContext(ctx, "e2e-regression: 入队失败",
+			"repo", repo, "error", err)
+		return
+	}
+
+	h.cancelTasks(ctx, oldTasks)
+	h.logger.InfoContext(ctx, "e2e-regression: triage_e2e 已入队",
+		"repo", repo, "pr", pr.Number,
+		"task_id", record.ID, "source_files", len(sourceFiles))
+}
+
+// buildE2ERegressionDeliveryID 构建 E2E 回归复合 delivery ID。
+func buildE2ERegressionDeliveryID(webhookDeliveryID string) string {
+	if webhookDeliveryID == "" {
+		return ""
+	}
+	return webhookDeliveryID + ":triage_e2e"
 }
 
 func (h *EnqueueHandler) listAllPullRequestFiles(ctx context.Context, owner, repo string, prNumber int64) ([]*gitea.ChangedFile, error) {
