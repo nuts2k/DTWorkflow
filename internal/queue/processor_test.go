@@ -33,6 +33,11 @@ func (m *mockPoolRunner) Run(_ context.Context, _ model.TaskPayload) (*worker.Ex
 	return m.result, m.err
 }
 
+func (m *mockPoolRunner) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
+	m.calls++
+	return m.result, m.err
+}
+
 type stubNotifier struct {
 	messages     []notify.Message
 	err          error
@@ -1827,6 +1832,10 @@ func TestProcessTask_RecordNotFound(t *testing.T) {
 type cancelPoolRunner struct{}
 
 func (c *cancelPoolRunner) Run(_ context.Context, _ model.TaskPayload) (*worker.ExecutionResult, error) {
+	return nil, context.Canceled
+}
+
+func (c *cancelPoolRunner) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload, _ []string, _ []byte) (*worker.ExecutionResult, error) {
 	return nil, context.Canceled
 }
 

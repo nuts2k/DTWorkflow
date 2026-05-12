@@ -38,6 +38,8 @@ var _ asynq.Handler = (*Processor)(nil)
 // PoolRunner 抽象 Pool.Run 接口，便于 mock 测试
 type PoolRunner interface {
 	Run(ctx context.Context, payload model.TaskPayload) (*worker.ExecutionResult, error)
+	RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload,
+		cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
 }
 
 // TaskNotifier 抽象通知发送接口，便于在 Processor 中解耦 Router 实现并进行测试。
@@ -300,7 +302,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			result = adaptE2EResult(e2eResult)
 		}
 	case payload.TaskType == model.TaskTypeTriageE2E:
-		result, runErr = p.pool.Run(ctx, payload)
+		triagePrompt := e2e.BuildTriagePrompt(payload.RepoFullName, payload.BaseRef, payload.ChangedFiles)
+		triageCmd := []string{"claude", "-p", "--output-format", "json", "--disallowedTools", "Edit,Write,NotebookEdit", "-"}
+		result, runErr = p.pool.RunWithCommandAndStdin(ctx, payload, triageCmd, []byte(triagePrompt))
 		if runErr == nil && result != nil && result.ExitCode == 0 && result.Output != "" {
 			var parseErr error
 			triageResult, parseErr = e2e.ParseTriageResult(result.Output)
