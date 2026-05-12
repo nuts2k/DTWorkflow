@@ -1068,7 +1068,7 @@ func TestProcessTask_Retrying_SendsNotification(t *testing.T) {
 		},
 	}
 	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default())
-	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil, nil)
 	if len(notifier.messages) != 1 {
 		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
 	}
@@ -1538,7 +1538,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 			PRNumber:     1,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("RepoOwner 为空时不应生成通知消息")
 	}
@@ -1546,7 +1546,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 
 func TestBuildNotificationMessage_NilRecord(t *testing.T) {
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
-	_, ok := p.buildNotificationMessage(nil, nil, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(nil, nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("nil record 不应生成通知消息")
 	}
@@ -1566,7 +1566,7 @@ func TestBuildNotificationMessage_FixIssue_InvalidNumber(t *testing.T) {
 			IssueNumber: 0,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("IssueNumber=0 不应生成通知消息")
 	}
@@ -2852,7 +2852,7 @@ func TestBuildNotificationMessage_FixIssue_SuccessInjectsPRMetadata(t *testing.T
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -2895,7 +2895,7 @@ func TestBuildNotificationMessage_FixIssue_FailureOmitsPRMetadata(t *testing.T) 
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -2980,7 +2980,7 @@ func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3023,7 +3023,7 @@ func TestBuildNotificationMessage_Failed_HasNotifyTimeNoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3061,7 +3061,7 @@ func TestBuildNotificationMessage_Retrying_HasNotifyTimeNoDuration(t *testing.T)
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3099,7 +3099,7 @@ func TestBuildNotificationMessage_FixIssue_Succeeded_HasDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3137,7 +3137,7 @@ func TestBuildNotificationMessage_FixIssue_Failed_NoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -3228,7 +3228,7 @@ func TestBuildNotificationMessage_GenTests_SucceededMetadata(t *testing.T) {
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -3299,7 +3299,7 @@ func TestBuildNotificationMessage_GenTests_FailureCategorySeverity(t *testing.T)
 				output.InfoSufficient = true
 			}
 			tr := &testgen.TestGenResult{Output: output}
-			msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil)
+			msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil, nil)
 			if !ok {
 				t.Fatal("buildNotificationMessage 应返回 true")
 			}
@@ -3337,7 +3337,7 @@ func TestBuildNotificationMessage_GenTests_Retrying(t *testing.T) {
 			Module:       "svc/user",
 		},
 	}
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -3381,7 +3381,7 @@ func TestSendCompletionNotification_GenTests_WarningsAppended(t *testing.T) {
 			Warnings:       []string{"AUTO_TEST_BRANCH_RESET_REMOTE_FAILED"},
 		},
 	}
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil)
 	if len(notifier.messages) != 2 {
 		t.Fatalf("应发出 2 条通知（Done + Warnings），实际 %d", len(notifier.messages))
 	}
@@ -3440,7 +3440,7 @@ func TestSendCompletionNotification_GenTests_SyncsPRComment(t *testing.T) {
 		},
 	}
 
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil)
 
 	if len(notifier.commentCalls) != 1 {
 		t.Fatalf("应同步 1 条 PR 评论，实际 %d 条", len(notifier.commentCalls))
@@ -3492,7 +3492,7 @@ func TestSendCompletionNotification_GenTests_RetryingDoesNotSyncPRComment(t *tes
 		},
 	}
 
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil)
 
 	if len(notifier.commentCalls) != 0 {
 		t.Fatalf("retrying 阶段不应同步 PR 评论，实际 %d 条", len(notifier.commentCalls))
@@ -3521,11 +3521,309 @@ func TestSendCompletionNotification_ReviewStillWorksWithNilTestResult(t *testing
 			PRNumber:     1,
 		},
 	}
-	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil, nil)
 	if len(notifier.messages) != 1 {
 		t.Fatalf("review 路径应发送 1 条通知，实际 %d", len(notifier.messages))
 	}
 	if notifier.messages[0].EventType != notify.EventPRReviewDone {
 		t.Errorf("event = %q, want %q", notifier.messages[0].EventType, notify.EventPRReviewDone)
+	}
+}
+
+// TestProcessor_TriageE2E_SuccessWithModules 验证 triage_e2e 成功且输出包含模块时：
+// 1. 任务标记为 succeeded
+// 2. 链式入队 run_e2e 任务（每个模块一个）
+// 3. 发送 E2ETriageStarted + E2ETriageDone 通知
+func TestProcessor_TriageE2E_SuccessWithModules(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeTriageE2E,
+		DeliveryID:   "dlv-triage-success-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		BaseRef:      "main",
+		Environment:  "staging",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "proc-task-triage-success",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: "org/repo",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	triageJSON := `{"modules":[{"name":"auth","reason":"login flow changed"},{"name":"payment","reason":"checkout affected"}],"skipped_modules":[{"name":"admin","reason":"no overlap"}],"analysis":"2 modules affected"}`
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{
+			ExitCode: 0,
+			Output:   triageJSON,
+		},
+	}
+
+	// 构建 EnqueueHandler 用于链式入队
+	enqueuer := &mockEnqueuer{enqueuedID: "asynq-triage-chain"}
+	enqueueHandler := NewEnqueueHandler(enqueuer, nil, s, slog.Default())
+
+	p := NewProcessor(pool, s, notifier, slog.Default(),
+		WithEnqueueHandler(enqueueHandler))
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	// 验证原始任务状态
+	got := s.tasks["proc-task-triage-success"]
+	if got.Status != model.TaskStatusSucceeded {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+
+	// 验证链式入队：应有 2 个新的 run_e2e 任务被创建
+	var e2eTasks []*model.TaskRecord
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeRunE2E {
+			e2eTasks = append(e2eTasks, task)
+		}
+	}
+	if len(e2eTasks) != 2 {
+		t.Fatalf("链式入队的 run_e2e 任务数 = %d, want 2", len(e2eTasks))
+	}
+	// 验证模块名
+	modules := map[string]bool{}
+	for _, task := range e2eTasks {
+		modules[task.Payload.Module] = true
+		// 验证继承字段
+		if task.Payload.Environment != "staging" {
+			t.Errorf("run_e2e environment = %q, want %q", task.Payload.Environment, "staging")
+		}
+		if task.Payload.BaseRef != "main" {
+			t.Errorf("run_e2e base_ref = %q, want %q", task.Payload.BaseRef, "main")
+		}
+		if task.Payload.CloneURL != "https://gitea.example.com/org/repo.git" {
+			t.Errorf("run_e2e clone_url = %q, want original", task.Payload.CloneURL)
+		}
+	}
+	if !modules["auth"] || !modules["payment"] {
+		t.Errorf("链式入队模块 = %v, want auth + payment", modules)
+	}
+
+	// 验证通知：开始通知 + 完成通知
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2 (start + done)", len(notifier.messages))
+	}
+	if notifier.messages[0].EventType != notify.EventE2ETriageStarted {
+		t.Errorf("第 1 条通知 event = %q, want %q", notifier.messages[0].EventType, notify.EventE2ETriageStarted)
+	}
+	if notifier.messages[1].EventType != notify.EventE2ETriageDone {
+		t.Errorf("第 2 条通知 event = %q, want %q", notifier.messages[1].EventType, notify.EventE2ETriageDone)
+	}
+	// 验证 metadata 含 triage 模块信息
+	meta := notifier.messages[1].Metadata
+	if meta[notify.MetaKeyTriageModules] == "" {
+		t.Error("完成通知应包含 triage_modules metadata")
+	}
+	if meta[notify.MetaKeyTriageAnalysis] != "2 modules affected" {
+		t.Errorf("triage_analysis = %q, want %q", meta[notify.MetaKeyTriageAnalysis], "2 modules affected")
+	}
+}
+
+// TestProcessor_TriageE2E_SuccessEmptyModules 验证 triage_e2e 成功但模块列表为空时：
+// 1. 任务标记为 succeeded
+// 2. 不链式入队（无模块需要回归）
+// 3. 发送 E2ETriageDone 通知
+func TestProcessor_TriageE2E_SuccessEmptyModules(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeTriageE2E,
+		DeliveryID:   "dlv-triage-empty-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		BaseRef:      "main",
+		Environment:  "staging",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "proc-task-triage-empty",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: "org/repo",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	triageJSON := `{"modules":[],"skipped_modules":[{"name":"auth","reason":"no impact"}],"analysis":"no modules affected"}`
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{
+			ExitCode: 0,
+			Output:   triageJSON,
+		},
+	}
+
+	enqueuer := &mockEnqueuer{enqueuedID: "asynq-triage-empty"}
+	enqueueHandler := NewEnqueueHandler(enqueuer, nil, s, slog.Default())
+
+	p := NewProcessor(pool, s, notifier, slog.Default(),
+		WithEnqueueHandler(enqueueHandler))
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	got := s.tasks["proc-task-triage-empty"]
+	if got.Status != model.TaskStatusSucceeded {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+
+	// 验证无链式入队
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeRunE2E {
+			t.Fatal("不应创建 run_e2e 任务，modules 为空")
+		}
+	}
+
+	// 验证通知
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2", len(notifier.messages))
+	}
+	if notifier.messages[1].EventType != notify.EventE2ETriageDone {
+		t.Errorf("完成通知 event = %q, want %q", notifier.messages[1].EventType, notify.EventE2ETriageDone)
+	}
+}
+
+// TestProcessor_TriageE2E_ParseFailure 验证 triage_e2e 输出解析失败时：
+// 1. 返回 error（允许 asynq 重试，不使用 SkipRetry）
+// 2. 任务标记为 failed（因为没有更多重试机会）
+func TestProcessor_TriageE2E_ParseFailure(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeTriageE2E,
+		DeliveryID:   "dlv-triage-parse-fail-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "proc-task-triage-parse-fail",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: "org/repo",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{
+			ExitCode: 0,
+			Output:   "this is not valid JSON at all",
+		},
+	}
+
+	p := NewProcessor(pool, s, nil, slog.Default())
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("解析失败应返回 error")
+	}
+	// 不应包含 SkipRetry（允许重试）
+	if errors.Is(err, asynq.SkipRetry) {
+		t.Fatal("解析失败不应包含 asynq.SkipRetry，应允许重试")
+	}
+
+	got := s.tasks["proc-task-triage-parse-fail"]
+	if got.Status != model.TaskStatusFailed {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusFailed)
+	}
+	if got.Error == "" {
+		t.Fatal("失败任务 Error 不应为空")
+	}
+}
+
+// TestProcessor_TriageE2E_NoEnqueueHandler 验证 enqueueHandler 未注入时：
+// 1. 不 panic
+// 2. 任务仍标记为 succeeded
+// 3. 通知正常发送
+func TestProcessor_TriageE2E_NoEnqueueHandler(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeTriageE2E,
+		DeliveryID:   "dlv-triage-no-handler-1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		BaseRef:      "main",
+		Environment:  "staging",
+	}
+
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "proc-task-triage-no-handler",
+		TaskType:     model.TaskTypeTriageE2E,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: "org/repo",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	triageJSON := `{"modules":[{"name":"auth","reason":"affected"}],"skipped_modules":[],"analysis":"1 module"}`
+	pool := &mockPoolRunner{
+		result: &worker.ExecutionResult{
+			ExitCode: 0,
+			Output:   triageJSON,
+		},
+	}
+
+	// 不注入 enqueueHandler
+	p := NewProcessor(pool, s, notifier, slog.Default())
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	got := s.tasks["proc-task-triage-no-handler"]
+	if got.Status != model.TaskStatusSucceeded {
+		t.Fatalf("status = %q, want %q", got.Status, model.TaskStatusSucceeded)
+	}
+
+	// 验证无链式入队（无 run_e2e 任务被创建）
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeRunE2E {
+			t.Fatal("enqueueHandler 未注入时不应创建 run_e2e 任务")
+		}
+	}
+
+	// 验证通知仍正常
+	if len(notifier.messages) != 2 {
+		t.Fatalf("notification count = %d, want 2", len(notifier.messages))
+	}
+	if notifier.messages[0].EventType != notify.EventE2ETriageStarted {
+		t.Errorf("start 通知 event = %q, want %q", notifier.messages[0].EventType, notify.EventE2ETriageStarted)
+	}
+	if notifier.messages[1].EventType != notify.EventE2ETriageDone {
+		t.Errorf("done 通知 event = %q, want %q", notifier.messages[1].EventType, notify.EventE2ETriageDone)
 	}
 }

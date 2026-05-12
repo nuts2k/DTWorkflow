@@ -105,6 +105,11 @@ func WithE2EService(svc E2EExecutor) ProcessorOption {
 	}
 }
 
+// WithEnqueueHandler 注入 EnqueueHandler，triage_e2e 成功后链式入队 run_e2e。
+func WithEnqueueHandler(h *EnqueueHandler) ProcessorOption {
+	return func(p *Processor) { p.enqueueHandler = h }
+}
+
 // ReviewEnabledChecker 是 Processor 层的窄接口（ISP）
 // 仅暴露 Enabled 检查所需的最小能力
 type ReviewEnabledChecker interface {
@@ -144,6 +149,7 @@ type Processor struct {
 	fixService           FixExecutor          // M3.2 激活；M3.1 始终为 nil，fix_issue 走 pool.Run()
 	testService          TestExecutor         // 可选；注入后 gen_tests 走 test.Service，否则回退 pool.Run()
 	e2eService           E2EExecutor          // 可选；注入后 run_e2e 走 e2e.Service，否则回退 pool.Run()
+	enqueueHandler       *EnqueueHandler      // 可选；triage_e2e 成功后链式入队 run_e2e
 	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 
@@ -267,6 +273,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	var fixResult *fix.FixResult
 	var testResult *test.TestGenResult
 	var e2eResult *e2e.E2EResult
+	var triageResult *e2e.TriageE2EOutput
 	var result *worker.ExecutionResult
 	var runErr error
 	// 路由：review_pr → reviewService，analyze_issue/fix_issue → fixService，
@@ -291,6 +298,15 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		e2eResult, runErr = p.e2eService.Execute(ctx, payload)
 		if e2eResult != nil {
 			result = adaptE2EResult(e2eResult)
+		}
+	case payload.TaskType == model.TaskTypeTriageE2E:
+		result, runErr = p.pool.Run(ctx, payload)
+		if runErr == nil && result != nil && result.ExitCode == 0 && result.Output != "" {
+			var parseErr error
+			triageResult, parseErr = e2e.ParseTriageResult(result.Output)
+			if parseErr != nil {
+				runErr = parseErr
+			}
 		}
 	default:
 		result, runErr = p.pool.Run(ctx, payload)
@@ -396,7 +412,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		// gen_tests 任务的 runErr 可能由 test.ErrTestGenParseFailure 派生或
 		// 夹带仓库 / module 等 Claude 可间接控制的字段，统一走 SanitizeErrorMessage
 		// 兜底过滤控制字符 / URL，保证 record.Error 不成为 prompt injection 落点。
-		if payload.TaskType == model.TaskTypeGenTests || payload.TaskType == model.TaskTypeRunE2E {
+		if payload.TaskType == model.TaskTypeGenTests || payload.TaskType == model.TaskTypeRunE2E || payload.TaskType == model.TaskTypeTriageE2E {
 			record.Error = test.SanitizeErrorMessage(runErr.Error())
 		} else {
 			record.Error = runErr.Error()
@@ -462,7 +478,11 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if finalStatePersisted {
-		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, e2eResult)
+		// triage_e2e 成功时链式入队 run_e2e
+		if record.Status == model.TaskStatusSucceeded && triageResult != nil {
+			p.handleTriageE2EResult(ctx, record, triageResult)
+		}
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, e2eResult, triageResult)
 	}
 
 	if runErr != nil {
@@ -661,6 +681,22 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 			Body:     fmt.Sprintf("正在执行 E2E 测试\n\n仓库：%s", payload.RepoFullName),
 			Metadata: metadata,
 		}
+	case model.TaskTypeTriageE2E:
+		if payload.RepoFullName == "" {
+			return notify.Message{}, false
+		}
+		msg = notify.Message{
+			EventType: notify.EventE2ETriageStarted,
+			Severity:  notify.SeverityInfo,
+			Target: notify.Target{
+				Owner: payload.RepoOwner,
+				Repo:  payload.RepoName,
+				IsPR:  false,
+			},
+			Title:    "E2E 回归分析开始",
+			Body:     fmt.Sprintf("正在分析变更影响的 E2E 模块\n\n仓库：%s", payload.RepoFullName),
+			Metadata: map[string]string{},
+		}
 	default:
 		return notify.Message{}, false
 	}
@@ -676,11 +712,11 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 // sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知。
 // 内部创建独立后台 context，与 asynq 任务 ctx 的生命周期解耦，
 // 确保即使 asynq ctx 已过期（如任务超时）仍能发出通知。
-func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult) {
+func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult, triageResult *e2e.TriageE2EOutput) {
 	if p.notifier == nil || record == nil {
 		return
 	}
-	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult, testResult, e2eResult)
+	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult, testResult, e2eResult, triageResult)
 	if !ok {
 		// 主消息未构建成功（例如 gen_tests 缺 RepoFullName）仍尝试 Warnings 追加——
 		// 但无主消息时 Warnings 也无处附着，直接返回。
@@ -705,8 +741,9 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 // buildNotificationMessage 构建任务完成通知消息。
 // M4.2：新增 testResult 形参，用于 gen_tests 任务（EventGenTestsDone / EventGenTestsFailed）。
 // M5.1：新增 e2eResult 形参，用于 run_e2e 任务（EventE2EDone / EventE2EFailed）。
+// M5.4：新增 triageResult 形参，用于 triage_e2e 任务（EventE2ETriageDone / EventE2ETriageFailed）。
 // 其它类型调用时传 nil。
-func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult) (notify.Message, bool) {
+func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult, triageResult *e2e.TriageE2EOutput) (notify.Message, bool) {
 	if record == nil {
 		return notify.Message{}, false
 	}
@@ -1008,6 +1045,56 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 				Severity:  notify.SeverityWarning,
 				Target:    target,
 				Title:     "E2E 测试失败",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		}
+	case model.TaskTypeTriageE2E:
+		if payload.RepoFullName == "" {
+			return notify.Message{}, false
+		}
+		metadata := map[string]string{}
+		if triageResult != nil {
+			if data, err := json.Marshal(triageResult.Modules); err == nil {
+				metadata[notify.MetaKeyTriageModules] = string(data)
+			}
+			if data, err := json.Marshal(triageResult.SkippedModules); err == nil {
+				metadata[notify.MetaKeyTriageSkippedModules] = string(data)
+			}
+			if triageResult.Analysis != "" {
+				metadata[notify.MetaKeyTriageAnalysis] = triageResult.Analysis
+			}
+		}
+		target := notify.Target{
+			Owner: payload.RepoOwner,
+			Repo:  payload.RepoName,
+			IsPR:  false,
+		}
+		switch record.Status {
+		case model.TaskStatusSucceeded:
+			msg = notify.Message{
+				EventType: notify.EventE2ETriageDone,
+				Severity:  notify.SeverityInfo,
+				Target:    target,
+				Title:     "E2E 回归分析完成",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		case model.TaskStatusRetrying:
+			msg = notify.Message{
+				EventType: notify.EventE2ETriageFailed,
+				Severity:  notify.SeverityWarning,
+				Target:    target,
+				Title:     "E2E 回归分析重试中",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		default:
+			msg = notify.Message{
+				EventType: notify.EventE2ETriageFailed,
+				Severity:  notify.SeverityWarning,
+				Target:    target,
+				Title:     "E2E 回归分析失败",
 				Body:      body,
 				Metadata:  metadata,
 			}
@@ -1343,7 +1430,7 @@ func adaptTestResult(r *test.TestGenResult) *worker.ExecutionResult {
 // 标记任务 failed、尽可能保留结构化结果、持久化、发送通知，并返回 SkipRetry 错误。
 func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, logMsg string) error {
 	record.Status = model.TaskStatusFailed
-	if record.Payload.TaskType == model.TaskTypeGenTests || record.Payload.TaskType == model.TaskTypeRunE2E {
+	if record.Payload.TaskType == model.TaskTypeGenTests || record.Payload.TaskType == model.TaskTypeRunE2E || record.Payload.TaskType == model.TaskTypeTriageE2E {
 		record.Error = test.SanitizeErrorMessage(runErr.Error())
 	} else {
 		record.Error = runErr.Error()
@@ -1377,7 +1464,7 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 			"error", err,
 		)
 	} else {
-		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, nil)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, nil, nil)
 	}
 	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
 }
@@ -1437,4 +1524,38 @@ func (p *Processor) findRecord(ctx context.Context, payload model.TaskPayload) (
 	}
 
 	return nil, fmt.Errorf("找不到任务记录, delivery_id=%s, task_type=%s", payload.DeliveryID, payload.TaskType)
+}
+
+// handleTriageE2EResult 处理 triage_e2e 成功后的链式入队。
+// 遍历 triageResult.Modules，逐模块调用 EnqueueManualE2E 入队 run_e2e。
+// 单模块入队失败仅 warn 不阻断其他模块，与 gen_tests D6 模式一致。
+func (p *Processor) handleTriageE2EResult(ctx context.Context, record *model.TaskRecord, output *e2e.TriageE2EOutput) {
+	if len(output.Modules) == 0 {
+		p.logger.InfoContext(ctx, "triage_e2e: 无需回归，modules 为空",
+			"task_id", record.ID)
+		return
+	}
+	if p.enqueueHandler == nil {
+		p.logger.ErrorContext(ctx, "triage_e2e: enqueueHandler 未注入，无法链式入队",
+			"task_id", record.ID)
+		return
+	}
+	triggeredBy := fmt.Sprintf("triage_e2e:%s", record.ID)
+	for _, mod := range output.Modules {
+		payload := model.TaskPayload{
+			TaskType:     model.TaskTypeRunE2E,
+			RepoOwner:    record.Payload.RepoOwner,
+			RepoName:     record.Payload.RepoName,
+			RepoFullName: record.Payload.RepoFullName,
+			CloneURL:     record.Payload.CloneURL,
+			Module:       mod.Name,
+			BaseRef:      record.Payload.BaseRef,
+			Environment:  record.Payload.Environment,
+		}
+		if _, err := p.enqueueHandler.EnqueueManualE2E(ctx, payload, triggeredBy); err != nil {
+			p.logger.WarnContext(ctx, "triage_e2e: 链式入队失败",
+				"task_id", record.ID,
+				"module", mod.Name, "error", err)
+		}
+	}
 }
