@@ -114,6 +114,9 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		env = append(env, fmt.Sprintf("MODULE_SANITIZED=%s", moduleKeyForContainerWithFramework(payload.Module, payload.Framework)))
 	case model.TaskTypeRunE2E:
 		env = append(env, fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)))
+	case model.TaskTypeTriageE2E:
+		// triage_e2e 只读分析：注入 BASE_REF 供 entrypoint checkout 对应提交
+		env = append(env, fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)))
 	}
 
 	env = append(env, payload.ExtraEnvs...)
@@ -291,6 +294,11 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 		}
 	case model.TaskTypeRunE2E:
 		return []string{"claude", "-p", "--output-format", "json", "-"}
+	case model.TaskTypeTriageE2E:
+		// triage_e2e 只读分析：stdin 传入 prompt，禁止文件写工具（与 review_pr / analyze_issue 一致）。
+		// 实际执行路径由 Processor 层调用 pool.RunWithCommandAndStdin 传入 e2e.BuildTriagePrompt 构建的 prompt；
+		// 此处为 pool.Run fallback，stdin 为空时 Claude CLI 会等待输入。
+		return []string{"claude", "-p", "--output-format", "json", "--disallowedTools", "Edit,Write,NotebookEdit", "-"}
 	default:
 		return []string{
 			"claude", "-p",

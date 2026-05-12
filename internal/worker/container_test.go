@@ -941,6 +941,108 @@ func TestBuildBinds_RunE2EArtifactDirIsWorldWritable(t *testing.T) {
 // 由于 test → worker 反向依赖无法在此 import internal/test，手动维护等价期望值。
 // 若本测试失败，需同步检查 internal/test.ModuleKey 是否也有对应变更；
 // 若 moduleKeyForContainer 需要修改，必须同步更新 internal/test.ModuleKey。
+// --- M5.4: triage_e2e 容器配置测试 ---
+
+func TestResolveImage_TriageE2E(t *testing.T) {
+	// triage_e2e 使用轻量镜像（cfg.Image），不用 ImageFull 或 ImageE2E
+	p := &Pool{config: PoolConfig{Image: "worker:latest", ImageFull: "worker-full:latest", ImageE2E: "worker-e2e:latest"}}
+	if got := p.resolveImage(model.TaskTypeTriageE2E); got != "worker:latest" {
+		t.Errorf("resolveImage(TriageE2E) = %q, 期望 worker:latest（轻量镜像）", got)
+	}
+}
+
+func TestSelectGiteaToken_TriageE2E(t *testing.T) {
+	// triage_e2e 使用 review token（默认 GiteaToken），与 review_pr / analyze_issue 一致
+	config := PoolConfig{
+		GiteaToken:         "tok-review",
+		GiteaTokenFix:      "tok-fix",
+		GiteaTokenGenTests: "tok-gen-tests",
+	}
+	got := selectGiteaToken(config, model.TaskTypeTriageE2E)
+	if got != "tok-review" {
+		t.Errorf("selectGiteaToken(TriageE2E) = %q, 期望 tok-review", got)
+	}
+}
+
+func TestBuildContainerEnv_TriageE2E(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:           "https://gitea.test",
+		GiteaToken:         "tok-review",
+		GiteaTokenFix:      "tok-fix",
+		GiteaTokenGenTests: "tok-gen-tests",
+		ClaudeAPIKey:       "test-key",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeTriageE2E,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.test/owner/repo.git",
+		BaseRef:      "main",
+		ChangedFiles: []string{"internal/api/handler.go", "internal/model/user.go"},
+	}
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+
+	// triage_e2e 使用 review token
+	if envMap["GITEA_TOKEN"] != "tok-review" {
+		t.Errorf("GITEA_TOKEN = %q, 期望 tok-review（review token）", envMap["GITEA_TOKEN"])
+	}
+	// 注入 BASE_REF
+	if envMap["BASE_REF"] != "main" {
+		t.Errorf("BASE_REF = %q, 期望 main", envMap["BASE_REF"])
+	}
+	// TASK_TYPE 应为 triage_e2e
+	if envMap["TASK_TYPE"] != "triage_e2e" {
+		t.Errorf("TASK_TYPE = %q, 期望 triage_e2e", envMap["TASK_TYPE"])
+	}
+	// 不应包含 gen_tests / fix_issue / run_e2e 专属字段
+	for _, key := range []string{"MODULE", "MODULE_SANITIZED", "ISSUE_NUMBER", "PR_NUMBER"} {
+		if _, ok := envMap[key]; ok {
+			t.Errorf("triage_e2e 不应包含 %s", key)
+		}
+	}
+}
+
+func TestBuildContainerCmd_TriageE2E(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeTriageE2E,
+		RepoFullName: "owner/repo",
+		BaseRef:      "main",
+		ChangedFiles: []string{"src/main.go"},
+	}
+	cmd := buildContainerCmd(payload)
+
+	// 验证命令格式：claude -p --output-format json --disallowedTools Edit,Write,NotebookEdit -
+	if len(cmd) < 7 {
+		t.Fatalf("命令长度不足: %v", cmd)
+	}
+	if cmd[0] != "claude" {
+		t.Errorf("cmd[0] = %q, 期望 claude", cmd[0])
+	}
+	if cmd[1] != "-p" {
+		t.Errorf("cmd[1] = %q, 期望 -p", cmd[1])
+	}
+	// 最后一个参数应为 "-"（stdin 模式）
+	if cmd[len(cmd)-1] != "-" {
+		t.Errorf("最后一个参数应为 - (stdin 模式), 得到 %q", cmd[len(cmd)-1])
+	}
+
+	joined := strings.Join(cmd, " ")
+	// 应包含 --output-format json
+	if !strings.Contains(joined, "--output-format json") {
+		t.Errorf("命令应包含 --output-format json: %s", joined)
+	}
+	// 应包含 --disallowedTools（只读模式）
+	if !strings.Contains(joined, "--disallowedTools") {
+		t.Errorf("命令应包含 --disallowedTools（只读模式）: %s", joined)
+	}
+	// 禁止 Edit,Write,NotebookEdit（与 review_pr / analyze_issue 一致）
+	if !strings.Contains(joined, "Edit,Write,NotebookEdit") {
+		t.Errorf("--disallowedTools 应禁止 Edit,Write,NotebookEdit: %s", joined)
+	}
+}
+
 func TestModuleKeyForContainerParity(t *testing.T) {
 	cases := []struct {
 		module string

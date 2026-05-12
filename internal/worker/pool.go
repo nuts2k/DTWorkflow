@@ -631,6 +631,9 @@ func (p *Pool) resolveImage(taskType model.TaskType) string {
 		if p.config.ImageE2E != "" {
 			return p.config.ImageE2E
 		}
+	case model.TaskTypeTriageE2E:
+		// 轻量镜像（与 review_pr / analyze_issue 一致），无需 ImageFull 或 ImageE2E
+		return p.config.Image
 	}
 	return p.config.Image
 }

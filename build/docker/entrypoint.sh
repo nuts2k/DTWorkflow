@@ -263,6 +263,14 @@ HOOK
             git checkout -B "${AUTO_TEST_BRANCH}" "origin/${BASE_REF}"
         fi
         ;;
+    triage_e2e)
+        log "=== triage_e2e 模式：只读克隆 + checkout ==="
+        if [ -n "${BASE_REF:-}" ]; then
+            log "Checkout BASE_REF: ${BASE_REF}"
+            git fetch origin "${BASE_REF}" >&2 2>&1
+            git checkout FETCH_HEAD -B "${BASE_REF}" >&2 2>&1
+        fi
+        ;;
     run_e2e)
         # M5.1: E2E 测试模式（只读，不需要 push 能力）
         if [ -n "${BASE_REF:-}" ]; then
