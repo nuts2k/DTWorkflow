@@ -894,10 +894,25 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 > PR 合并后自动触发回归测试套件；可选扩展 AI 探索性测试能力。
 
 ##### M5.4 回归自动化
-- [ ] PR 合并后自动触发 E2E 回归套件（复用 M4.3 变更驱动模式，Webhook PR merged 事件）
-- [ ] 按变更范围选择性触发相关模块（非全量回归）
+
+> 两阶段流水线：PR 合并 → 阶段 1 轻量容器内 Claude 分析 git diff 与 `e2e/` 用例关联性，输出应执行的模块列表 → 阶段 2 按模块拆分入队，复用 M5.1/M5.2/M5.3 并行执行。
+> 详细设计见 `docs/plans/2026-05-12-m5.4-e2e-regression-automation-design.md`。
+
+- [ ] 新增 `TaskTypeTriageE2E` 任务类型（轻量镜像、只读、review token）
+- [ ] PR 合并后自动触发 E2E 回归（Webhook PR merged 事件 → `handleMergedE2ERegression`，与 M4.3 gen_tests 变更驱动并列）
+- [ ] AI 智能模块选择（Claude 容器内读取 git diff + `e2e/**/case.yaml`，输出 `TriageE2EOutput` JSON：选中模块 + 跳过模块 + 理由）
+- [ ] Processor 链式入队（分析完成后逐模块调 `EnqueueManualE2E`，与 gen_tests 完成后入队 review 的 D6 模式一致）
+- [ ] 宿主侧初筛（复用 M4.3 `filterSourceFiles`，纯文档 PR 不启动分析容器）
+- [ ] 配置结构（`e2e.regression.enabled` / `ignore_paths`，默认关闭；校验 `default_env` 非空）
+- [ ] 通知三事件（`EventE2ETriageStarted/Done/Failed` 飞书卡片；modules 为空时通知"无需回归"）
+- [ ] 失败策略：重试耗尽后跳过 + 通知（fail-closed，不做全量降级）
+
+##### M5.4.1 E2E 趋势分析与每日报告
+
+> 基于 `e2e_results` 表数据聚合，提供 E2E 测试运营可观测性。复用 M2.7 每日报告框架。
+
 - [ ] 测试结果趋势分析（成功率、耗时趋势、高频失败用例）
-- [ ] 每日 E2E 测试统计报告（复用 M2.7 报告框架）
+- [ ] 每日 E2E 测试统计报告（复用 M2.7 报告框架，飞书定时推送）
 
 ##### M5.5 探索性测试（可选扩展）
 - [ ] AI 自主探索应用：基于页面结构和路由自动发现可测试路径
@@ -913,9 +928,17 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - AI 失败分析 + Issue 自动创建
 - 手动触发入口（CLI / API / dtw）
 
-**第二轮**：
-- PR 合并后回归自动化
-- 测试结果趋势分析
+**第二轮 M5.4**：
+- 两阶段 E2E 回归流水线（`TaskTypeTriageE2E` 分析 + 链式入队 `run_e2e` 执行）
+- AI 智能模块选择（`TriageE2EOutput`：选中/跳过模块 + 理由）
+- PR 合并 Webhook 触发 + 宿主侧初筛 + 配置结构（`e2e.regression`）
+- triage 三事件飞书通知
+
+**M5.4.1**：
+- E2E 测试结果趋势分析
+- 每日 E2E 统计报告（复用 M2.7 框架）
+
+**M5.5**：
 - 探索性测试能力（可选）
 
 ### 验证标准
@@ -925,8 +948,19 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 - 测试失败 → AI 分类为"真 bug" → 自动创建 Issue（附截图和复现步骤）
 - 测试失败 → AI 分类为"脚本过时" → 创建 Issue + 标记 fix-to-pr → Phase 3 尝试修复
 
-**第二轮**：
-- 合并 PR 后自动触发相关模块 E2E 回归 → 结果通知
+**第二轮 M5.4**：
+- 合并包含源码变更的 PR → 宿主侧初筛过滤文档/配置 → 入队 triage_e2e → Claude 分析 git diff + case.yaml → 输出模块列表 → 链式入队 run_e2e → 各模块并行执行 → 结果通知
+- 纯文档/配置 PR 合并后过滤后无源码文件，不启动分析容器
+- Bot 自身的 PR（`auto-test/*`、`auto-fix/*`）合并后不触发（防自触发循环）
+- Claude 判断无需回归 → 飞书通知"本次变更无需 E2E 回归"
+- 分析失败重试耗尽 → 跳过 + 飞书通知（不做全量降级）
+- `regression.enabled=false` 的仓库不触发
+
+**M5.4.1**：
+- 每日 E2E 统计报告定时触发 → 飞书收到统计摘要卡片
+- 趋势分析：成功率/耗时/高频失败用例可查询
+
+**M5.5**：
 - 探索性测试发现已知 bug → 报告中列出可复现路径
 
 ---
@@ -959,7 +993,9 @@ Phase 1 (基础设施)
 | Phase 4 第一轮 | 手动触发测试生成——复用执行镜像 + PR 创建能力 | Phase 3 第二轮之后 |
 | Phase 4 第二轮 | 变更驱动测试——PR 合并后自动补测试 | Phase 4 第一轮之后 |
 | Phase 5 第一轮 | 手动触发 E2E 执行——执行引擎 + 失败分析 + 报告 | Phase 4 之后 |
-| Phase 5 第二轮 | 回归自动化 + 探索性测试——PR 合并触发 + AI 探索 | Phase 5 第一轮之后 |
+| Phase 5 M5.4 | E2E 回归自动化——PR 合并触发两阶段流水线（AI 分析 + 并行执行） | Phase 5 第一轮之后 |
+| Phase 5 M5.4.1 | E2E 趋势分析与每日报告——运营可观测性 | M5.4 之后 |
+| Phase 5 M5.5 | 探索性测试——AI 自主探索（可选扩展） | M5.4.1 之后或并行 |
 
 ---
 

@@ -187,6 +187,24 @@ configs/        # 配置文件模板
 - **装配层**：`serve.go` + 服务端 CLI 通过 `WithE2EModuleScanner(&giteaRepoFileChecker{...})` 注入；`giteaRepoFileChecker` 天然满足 `E2EModuleScanner` 接口
 - **设计文档**：`docs/plans/2026-05-11-m5.3-e2e-module-split-parallel-design.md`、`docs/plans/2026-05-11-m5.3-e2e-module-split-parallel-impl-plan.md`
 
+## E2E 回归自动化（M5.4）
+
+- **两阶段流水线**：PR 合并 → 阶段 1（`triage_e2e`）轻量容器内 Claude 分析 git diff + `e2e/**/case.yaml` 关联性，输出应执行的模块列表 → 阶段 2 按模块拆分入队 `run_e2e`，复用 M5.1/M5.2/M5.3 全部能力并行执行
+- **TaskType**：新增 `TaskTypeTriageE2E = "triage_e2e"`；轻量镜像（与 `review_pr` / `analyze_issue` 一致）；只读模式（ReadonlyRootfs + `--disallowedTools` + prompt READ-ONLY 约束）；review 账号 token；默认超时 10 分钟
+- **触发流程**：Webhook PR merged → `handleMergedE2ERegression`（与 M4.3 gen_tests 变更驱动并列，互不干扰）→ Bot PR 过滤 → 配置检查（`regression.enabled`）→ 宿主侧初筛（复用 `filterSourceFiles`）→ 入队 `triage_e2e`
+- **分析 Prompt**：四段式（上下文 + 分析指令 + 约束 + 输出格式）；变更文件列表最多 50 个截断；Claude 容器内自读 `e2e/` 目录和 case.yaml；禁止修改任何文件
+- **TriageE2EOutput**：`modules []TriageModule`（必填，可空数组）+ `skipped_modules []TriageModule` + `analysis string`；`TriageModule` 含 `name` + `reason`；`sanitizeTriageOutput` 脱敏自由文本
+- **Processor 链式入队**：分析完成后 `handleTriageE2EResult` 逐模块调 `EnqueueManualE2E`；`triggered_by = "triage_e2e:{taskID}"`；modules 为空时通知"无需回归" + succeeded；单模块入队失败仅 warn 不阻断其他模块；与 gen_tests 完成后入队 review（D6）模式一致
+- **失败策略**：解析失败允许 asynq 重试；重试耗尽后跳过 + 通知（fail-closed，不做全量降级）
+- **配置**：`e2e.regression.enabled *bool`（nil=false 默认关闭）+ `ignore_paths []string`（doublestar glob）；仓库级整体替换覆盖；校验：`regression.enabled=true` 要求 `e2e.enabled` 不为 `false` + `default_env` 非空
+- **环境**：回归触发使用 `e2e.default_env`（自动触发无人指定环境）
+- **通知**：三事件 `EventE2ETriageStarted` / `EventE2ETriageDone` / `EventE2ETriageFailed` 飞书卡片；链式入队的 `run_e2e` 复用现有 M5.1 三事件
+- **幂等保护**：`buildE2ERegressionDeliveryID` 构建 `{webhookDeliveryID}:triage_e2e` 复合 ID；Cancel-and-Replace 按 `(repo, TaskTypeTriageE2E)` 粒度
+- **持久化**：不新增结果表；`TaskRecord.Result` 保存原始 JSON 输出，`triggered_by` 可反查链式入队的 `run_e2e` 任务
+- **手动触发**：不新增 triage 手动入口，用户直接用 `dtw e2e run`
+- **装配层**：`serve_deps.go` 注入 `WithE2ERegressionConfigProvider(cfgAdapter)` + `WithEnqueueHandler(enqueueHandler)`；`selectGiteaToken` 新增 `triage_e2e` → review token
+- **设计文档**：`docs/plans/2026-05-12-m5.4-e2e-regression-automation-design.md`
+
 ## 测试服务器
 
 - SSH Host 别名：`companytest`（对应 `~/.ssh/config` 中的 Host 条目）
