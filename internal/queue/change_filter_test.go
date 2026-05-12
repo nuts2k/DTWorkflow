@@ -53,7 +53,7 @@ func TestExtractFilenames(t *testing.T) {
 			want: []string{"real.go"},
 		},
 		{
-			name: "nil slice",
+			name:  "nil slice",
 			input: nil,
 			want:  nil,
 		},
@@ -65,6 +65,18 @@ func TestExtractFilenames(t *testing.T) {
 			assertStringSliceEqual(t, tt.want, got)
 		})
 	}
+}
+
+func TestExtractRegressionFilenames_IncludesDeletedAndRenamedPreviousPath(t *testing.T) {
+	files := []*gitea.ChangedFile{
+		{Filename: "src/deleted.go", Status: "deleted"},
+		{Filename: "src/new.go", PreviousFilename: "src/old.go", Status: "renamed"},
+		{Filename: "src/new.go", Status: "modified"},
+		nil,
+	}
+	got := extractRegressionFilenames(files)
+	want := []string{"src/deleted.go", "src/new.go", "src/old.go"}
+	assertStringSliceEqual(t, want, got)
 }
 
 func TestFilterSourceFiles_Extensions(t *testing.T) {

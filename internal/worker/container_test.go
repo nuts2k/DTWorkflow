@@ -872,12 +872,14 @@ func TestBuildContainerEnv_RunE2E(t *testing.T) {
 		ClaudeAPIKey: "test-key",
 	}
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeRunE2E,
-		RepoOwner:    "owner",
-		RepoName:     "repo",
-		RepoFullName: "owner/repo",
-		CloneURL:     "https://gitea.test/owner/repo.git",
-		BaseRef:      "main",
+		TaskType:       model.TaskTypeRunE2E,
+		RepoOwner:      "owner",
+		RepoName:       "repo",
+		RepoFullName:   "owner/repo",
+		CloneURL:       "https://gitea.test/owner/repo.git",
+		BaseRef:        "main",
+		HeadSHA:        "head123",
+		MergeCommitSHA: "merge456",
 		ExtraEnvs: []string{
 			"E2E_BASE_URL=https://staging.example.com",
 			"E2E_DB_HOST=db.internal",
@@ -888,6 +890,12 @@ func TestBuildContainerEnv_RunE2E(t *testing.T) {
 
 	if envMap["BASE_REF"] != "main" {
 		t.Errorf("BASE_REF = %q, 期望 main", envMap["BASE_REF"])
+	}
+	if envMap["HEAD_SHA"] != "head123" {
+		t.Errorf("HEAD_SHA = %q, 期望 head123", envMap["HEAD_SHA"])
+	}
+	if envMap["MERGE_COMMIT_SHA"] != "merge456" {
+		t.Errorf("MERGE_COMMIT_SHA = %q, 期望 merge456", envMap["MERGE_COMMIT_SHA"])
 	}
 	if envMap["E2E_BASE_URL"] != "https://staging.example.com" {
 		t.Errorf("E2E_BASE_URL = %q, 期望 https://staging.example.com", envMap["E2E_BASE_URL"])

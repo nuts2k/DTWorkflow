@@ -380,7 +380,7 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 			"repo", repo, "pr", pr.Number, "error", err)
 		return
 	}
-	filenames := extractFilenames(allFiles)
+	filenames := extractRegressionFilenames(allFiles)
 	sourceFiles := filterSourceFiles(filenames, e2eCfg.Regression.IgnorePaths)
 	if len(sourceFiles) == 0 {
 		h.logger.DebugContext(ctx, "e2e-regression: 无源码变更",
@@ -414,6 +414,7 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 		RepoFullName:   repo,
 		CloneURL:       event.Repository.CloneURL,
 		PRNumber:       pr.Number,
+		PRTitle:        pr.Title,
 		BaseRef:        pr.BaseRef,
 		BaseSHA:        pr.BaseSHA,
 		HeadSHA:        pr.HeadSHA,

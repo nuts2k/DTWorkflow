@@ -2344,6 +2344,31 @@ func TestBuildPRURL(t *testing.T) {
 	}
 }
 
+func TestBuildPRMetadataAndTarget_SkipPRFieldsWithoutNumber(t *testing.T) {
+	p := &Processor{giteaBaseURL: "https://gitea.example.com"}
+	payload := model.TaskPayload{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		PRTitle:   "缺少 PR 编号的回归分析",
+	}
+
+	metadata := p.buildPRMetadata(payload)
+	if metadata[notify.MetaKeyPRURL] != "" {
+		t.Errorf("pr_url = %q, want empty", metadata[notify.MetaKeyPRURL])
+	}
+	if metadata[notify.MetaKeyPRTitle] != "缺少 PR 编号的回归分析" {
+		t.Errorf("pr_title = %q, want 缺少 PR 编号的回归分析", metadata[notify.MetaKeyPRTitle])
+	}
+
+	target := buildPRTarget(payload)
+	if target.IsPR {
+		t.Errorf("target.IsPR = true, want false")
+	}
+	if target.Number != 0 {
+		t.Errorf("target.Number = %d, want 0", target.Number)
+	}
+}
+
 func TestFormatIssueSummary(t *testing.T) {
 	issues := []review.ReviewIssue{
 		{Severity: "CRITICAL"},
@@ -3547,14 +3572,18 @@ func TestProcessor_TriageE2E_SuccessWithModules(t *testing.T) {
 	s := newMockStore()
 	notifier := &stubNotifier{}
 	payload := model.TaskPayload{
-		TaskType:     model.TaskTypeTriageE2E,
-		DeliveryID:   "dlv-triage-success-1",
-		RepoOwner:    "org",
-		RepoName:     "repo",
-		RepoFullName: "org/repo",
-		CloneURL:     "https://gitea.example.com/org/repo.git",
-		BaseRef:      "main",
-		Environment:  "staging",
+		TaskType:       model.TaskTypeTriageE2E,
+		DeliveryID:     "dlv-triage-success-1",
+		RepoOwner:      "org",
+		RepoName:       "repo",
+		RepoFullName:   "org/repo",
+		CloneURL:       "https://gitea.example.com/org/repo.git",
+		PRNumber:       42,
+		PRTitle:        "重构登录流程",
+		BaseRef:        "main",
+		HeadSHA:        "head-sha-42",
+		MergeCommitSHA: "merge-sha-42",
+		Environment:    "staging",
 	}
 
 	now := time.Now()
@@ -3583,6 +3612,7 @@ func TestProcessor_TriageE2E_SuccessWithModules(t *testing.T) {
 	enqueueHandler := NewEnqueueHandler(enqueuer, nil, s, slog.Default())
 
 	p := NewProcessor(pool, s, notifier, slog.Default(),
+		WithGiteaBaseURL("https://gitea.example.com"),
 		WithEnqueueHandler(enqueueHandler))
 
 	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
@@ -3616,6 +3646,12 @@ func TestProcessor_TriageE2E_SuccessWithModules(t *testing.T) {
 		if task.Payload.BaseRef != "main" {
 			t.Errorf("run_e2e base_ref = %q, want %q", task.Payload.BaseRef, "main")
 		}
+		if task.Payload.HeadSHA != "head-sha-42" {
+			t.Errorf("run_e2e head_sha = %q, want head-sha-42", task.Payload.HeadSHA)
+		}
+		if task.Payload.MergeCommitSHA != "merge-sha-42" {
+			t.Errorf("run_e2e merge_commit_sha = %q, want merge-sha-42", task.Payload.MergeCommitSHA)
+		}
 		if task.Payload.CloneURL != "https://gitea.example.com/org/repo.git" {
 			t.Errorf("run_e2e clone_url = %q, want original", task.Payload.CloneURL)
 		}
@@ -3631,11 +3667,23 @@ func TestProcessor_TriageE2E_SuccessWithModules(t *testing.T) {
 	if notifier.messages[0].EventType != notify.EventE2ETriageStarted {
 		t.Errorf("第 1 条通知 event = %q, want %q", notifier.messages[0].EventType, notify.EventE2ETriageStarted)
 	}
+	if !notifier.messages[0].Target.IsPR || notifier.messages[0].Target.Number != 42 {
+		t.Errorf("开始通知 Target = %+v, want PR #42", notifier.messages[0].Target)
+	}
 	if notifier.messages[1].EventType != notify.EventE2ETriageDone {
 		t.Errorf("第 2 条通知 event = %q, want %q", notifier.messages[1].EventType, notify.EventE2ETriageDone)
 	}
+	if !notifier.messages[1].Target.IsPR || notifier.messages[1].Target.Number != 42 {
+		t.Errorf("完成通知 Target = %+v, want PR #42", notifier.messages[1].Target)
+	}
 	// 验证 metadata 含 triage 模块信息
 	meta := notifier.messages[1].Metadata
+	if meta[notify.MetaKeyPRTitle] != "重构登录流程" {
+		t.Errorf("pr_title = %q, want 重构登录流程", meta[notify.MetaKeyPRTitle])
+	}
+	if meta[notify.MetaKeyPRURL] != "https://gitea.example.com/org/repo/pulls/42" {
+		t.Errorf("pr_url = %q, want https://gitea.example.com/org/repo/pulls/42", meta[notify.MetaKeyPRURL])
+	}
 	if meta[notify.MetaKeyTriageModules] == "" {
 		t.Error("完成通知应包含 triage_modules metadata")
 	}

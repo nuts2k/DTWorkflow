@@ -113,7 +113,11 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		// 不能在此 import test，改用本地等价实现 moduleKeyForContainer。
 		env = append(env, fmt.Sprintf("MODULE_SANITIZED=%s", moduleKeyForContainerWithFramework(payload.Module, payload.Framework)))
 	case model.TaskTypeRunE2E:
-		env = append(env, fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)))
+		env = append(env,
+			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
+			fmt.Sprintf("HEAD_SHA=%s", sanitizeEnvValue(payload.HeadSHA)),
+			fmt.Sprintf("MERGE_COMMIT_SHA=%s", sanitizeEnvValue(payload.MergeCommitSHA)),
+		)
 	case model.TaskTypeTriageE2E:
 		// triage_e2e 只读分析：注入精确 SHA，避免队列延迟后误分析更新的 base 分支。
 		env = append(env,

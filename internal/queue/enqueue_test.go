@@ -2339,6 +2339,7 @@ func newMergedPREvent(prNumber int64, headRef, baseRef string) webhook.PullReque
 		},
 		PullRequest: webhook.PullRequestRef{
 			Number:         prNumber,
+			Title:          fmt.Sprintf("PR %d", prNumber),
 			BaseRef:        baseRef,
 			HeadRef:        headRef,
 			BaseSHA:        fmt.Sprintf("base-sha-%d", prNumber),
@@ -3325,6 +3326,9 @@ func TestHandleMergedE2ERegression_Normal(t *testing.T) {
 	if task.Payload.PRNumber != 104 {
 		t.Errorf("payload.PRNumber = %d, want 104", task.Payload.PRNumber)
 	}
+	if task.Payload.PRTitle != "PR 104" {
+		t.Errorf("payload.PRTitle = %q, want PR 104", task.Payload.PRTitle)
+	}
 	if task.Payload.BaseSHA != "base-sha-104" {
 		t.Errorf("payload.BaseSHA = %q, want base-sha-104", task.Payload.BaseSHA)
 	}
@@ -3545,6 +3549,39 @@ func TestHandleMergedE2ERegression_PRFilesListerNil(t *testing.T) {
 	}
 	if len(s.tasks) != 0 {
 		t.Errorf("nil prFilesLister should skip E2E regression, got %d tasks", len(s.tasks))
+	}
+}
+
+func TestHandleMergedE2ERegression_DeletedSourceFileTriggersTriage(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-triage-deleted"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithE2ERegressionConfigProvider(&mockE2EConfigProvider{cfg: config.E2EOverride{
+			DefaultEnv: "staging",
+			Regression: &config.RegressionConfig{Enabled: boolPtr(true)},
+		}}),
+		WithPRFilesLister(&mockPRFilesLister{files: []*gitea.ChangedFile{
+			{Filename: "src/legacy.go", Status: "deleted"},
+		}}),
+	)
+
+	event := newMergedPREvent(111, "feature/delete-legacy", "main")
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var triage *model.TaskRecord
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeTriageE2E {
+			triage = task
+			break
+		}
+	}
+	if triage == nil {
+		t.Fatal("删除源码文件也应触发 triage_e2e")
+	}
+	if len(triage.Payload.ChangedFiles) != 1 || triage.Payload.ChangedFiles[0] != "src/legacy.go" {
+		t.Fatalf("ChangedFiles = %v, want [src/legacy.go]", triage.Payload.ChangedFiles)
 	}
 }
 

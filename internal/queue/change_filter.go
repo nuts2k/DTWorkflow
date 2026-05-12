@@ -16,13 +16,13 @@ var defaultIgnoredExtensions = map[string]bool{
 	".yaml": true, ".yml": true,
 	".json": true,
 	".toml": true, ".ini": true, ".cfg": true,
-	".xml": true,
+	".xml":  true,
 	".lock": true,
-	".svg": true, ".png": true, ".jpg": true, ".jpeg": true,
+	".svg":  true, ".png": true, ".jpg": true, ".jpeg": true,
 	".gif": true, ".ico": true,
-	".csv": true,
+	".csv":     true,
 	".license": true,
-	".sh": true,
+	".sh":      true,
 }
 
 var defaultIgnoredFiles = map[string]bool{
@@ -57,6 +57,34 @@ func extractFilenames(files []*gitea.ChangedFile) []string {
 		}
 		if f.Filename != "" {
 			result = append(result, f.Filename)
+		}
+	}
+	return result
+}
+
+// extractRegressionFilenames 提取 E2E 回归初筛使用的变更文件名。
+// 与 gen_tests 不同，删除源码文件也可能引发回归，因此不能排除 status=deleted。
+// renamed 场景同时纳入新旧路径，方便 triage prompt 看到完整影响面。
+func extractRegressionFilenames(files []*gitea.ChangedFile) []string {
+	var result []string
+	seen := make(map[string]struct{}, len(files))
+	appendUnique := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		appendUnique(f.Filename)
+		if strings.EqualFold(f.Status, "renamed") {
+			appendUnique(f.PreviousFilename)
 		}
 	}
 	return result

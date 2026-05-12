@@ -750,3 +750,111 @@ func TestValidateE2E_RegressionInvalidIgnorePath(t *testing.T) {
 		t.Error("应报错非法 glob 语法")
 	}
 }
+
+func TestValidateE2E_RepoRegressionInvalidIgnorePath(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Repos: []RepoConfig{{
+			Name: "org/repo",
+			E2E: &E2EOverride{
+				Regression: &RegressionConfig{IgnorePaths: []string{"[invalid"}},
+			},
+		}},
+	}
+	errs := validateE2EConfig(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "repos[0].e2e.regression.ignore_paths") &&
+			strings.Contains(e.Error(), "语法不合法") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("应报错仓库级非法 regression ignore_paths")
+	}
+}
+
+func TestValidateE2E_RepoRegressionEnabledFinalDefaultEnvMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Repos: []RepoConfig{{
+			Name: "org/repo",
+			E2E: &E2EOverride{
+				Regression: &RegressionConfig{Enabled: boolPtr(true)},
+			},
+		}},
+	}
+	errs := validateE2EConfig(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "repos[0].e2e.regression.enabled=true") &&
+			strings.Contains(e.Error(), "default_env 不能为空") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("应报错仓库级 regression 启用但最终 default_env 为空")
+	}
+}
+
+func TestValidateE2E_RepoRegressionEnabledFinalE2EDisabled(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		E2E: E2EConfig{
+			Enabled:    boolPtr(false),
+			DefaultEnv: "staging",
+			Environments: map[string]E2EEnvironment{
+				"staging": {BaseURL: "https://staging.example.com"},
+			},
+		},
+		Repos: []RepoConfig{{
+			Name: "org/repo",
+			E2E: &E2EOverride{
+				Regression: &RegressionConfig{Enabled: boolPtr(true)},
+			},
+		}},
+	}
+	errs := validateE2EConfig(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "repos[0].e2e.regression.enabled=true") &&
+			strings.Contains(e.Error(), "矛盾") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("应报错仓库级 regression 启用但最终 e2e.enabled=false")
+	}
+}
+
+func TestValidateE2E_RepoE2EDisabledConflictsWithInheritedRegression(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		E2E: E2EConfig{
+			DefaultEnv: "staging",
+			Environments: map[string]E2EEnvironment{
+				"staging": {BaseURL: "https://staging.example.com"},
+			},
+			Regression: &RegressionConfig{Enabled: boolPtr(true)},
+		},
+		Repos: []RepoConfig{{
+			Name: "org/repo",
+			E2E:  &E2EOverride{Enabled: boolPtr(false)},
+		}},
+	}
+	errs := validateE2EConfig(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "repos[0].e2e.regression.enabled=true") &&
+			strings.Contains(e.Error(), "矛盾") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("应报错仓库禁用 e2e 但继承启用的 regression")
+	}
+}

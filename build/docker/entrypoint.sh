@@ -320,7 +320,20 @@ HOOK
         ;;
     run_e2e)
         # M5.1: E2E 测试模式（只读，不需要 push 能力）
-        if [ -n "${BASE_REF:-}" ]; then
+        E2E_TARGET_SHA="${MERGE_COMMIT_SHA:-${HEAD_SHA:-}}"
+        if [ -n "${E2E_TARGET_SHA}" ]; then
+            if ! git cat-file -e "${E2E_TARGET_SHA}^{commit}" 2>/dev/null; then
+                log "E2E: 目标提交不在本地，尝试按 SHA 获取: ${E2E_TARGET_SHA}"
+                git fetch origin "${E2E_TARGET_SHA}" >&2 2>&1 || true
+            fi
+            if git cat-file -e "${E2E_TARGET_SHA}^{commit}" 2>/dev/null; then
+                log "E2E: checkout target SHA=${E2E_TARGET_SHA}"
+                git checkout --detach "${E2E_TARGET_SHA}" >&2 2>&1
+            else
+                log "ERROR: 无法获取 run_e2e 目标提交 ${E2E_TARGET_SHA}，拒绝分析可能漂移的 base 分支"
+                exit 2
+            fi
+        elif [ -n "${BASE_REF:-}" ]; then
             log "E2E: fetch + checkout BASE_REF=${BASE_REF}"
             git fetch origin "${BASE_REF}" >&2 2>&1
             git checkout FETCH_HEAD >&2 2>&1

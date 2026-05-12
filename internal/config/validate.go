@@ -411,11 +411,7 @@ func validateE2EConfig(cfg *Config) []error {
 	}
 	if cfg.E2E.Regression != nil {
 		reg := cfg.E2E.Regression
-		for i, pattern := range reg.IgnorePaths {
-			if !doublestar.ValidatePattern(pattern) {
-				errs = append(errs, fmt.Errorf("e2e.regression.ignore_paths[%d] 语法不合法: %q", i, pattern))
-			}
-		}
+		errs = append(errs, validateRegressionConfig("e2e.regression", reg)...)
 		if reg.IsEnabled() {
 			if cfg.E2E.Enabled != nil && !*cfg.E2E.Enabled {
 				errs = append(errs, fmt.Errorf("e2e.regression.enabled=true 但 e2e.enabled=false，矛盾"))
@@ -423,6 +419,46 @@ func validateE2EConfig(cfg *Config) []error {
 			if cfg.E2E.DefaultEnv == "" {
 				errs = append(errs, fmt.Errorf("e2e.regression.enabled=true 时 e2e.default_env 不能为空"))
 			}
+		}
+	}
+	for i, repo := range cfg.Repos {
+		if repo.E2E == nil {
+			continue
+		}
+		prefix := fmt.Sprintf("repos[%d].e2e", i)
+		if repo.E2E.DefaultEnv != "" {
+			if _, ok := cfg.E2E.Environments[repo.E2E.DefaultEnv]; !ok {
+				errs = append(errs, fmt.Errorf("%s.default_env %q 未在 e2e.environments 中定义", prefix, repo.E2E.DefaultEnv))
+			}
+		}
+		if repo.E2E.Regression != nil {
+			errs = append(errs, validateRegressionConfig(prefix+".regression", repo.E2E.Regression)...)
+		}
+		resolved := cfg.ResolveE2EConfig(repo.Name)
+		if resolved.Regression == nil {
+			continue
+		}
+		if !resolved.Regression.IsEnabled() {
+			continue
+		}
+		if resolved.Enabled != nil && !*resolved.Enabled {
+			errs = append(errs, fmt.Errorf("%s.regression.enabled=true 但最终 e2e.enabled=false，矛盾", prefix))
+		}
+		if resolved.DefaultEnv == "" {
+			errs = append(errs, fmt.Errorf("%s.regression.enabled=true 时最终 e2e.default_env 不能为空", prefix))
+		}
+	}
+	return errs
+}
+
+func validateRegressionConfig(prefix string, reg *RegressionConfig) []error {
+	if reg == nil {
+		return nil
+	}
+	var errs []error
+	for i, pattern := range reg.IgnorePaths {
+		if !doublestar.ValidatePattern(pattern) {
+			errs = append(errs, fmt.Errorf("%s.ignore_paths[%d] 语法不合法: %q", prefix, i, pattern))
 		}
 	}
 	return errs

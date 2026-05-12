@@ -528,7 +528,7 @@ func buildPRURL(giteaBaseURL string, payload model.TaskPayload) string {
 // buildPRMetadata 构造 PR 相关通知的公共 metadata 字段
 func (p *Processor) buildPRMetadata(payload model.TaskPayload) map[string]string {
 	metadata := map[string]string{}
-	if p.giteaBaseURL != "" {
+	if p.giteaBaseURL != "" && payload.PRNumber > 0 {
 		metadata[notify.MetaKeyPRURL] = buildPRURL(p.giteaBaseURL, payload)
 	}
 	if payload.PRTitle != "" {
@@ -543,7 +543,7 @@ func buildPRTarget(payload model.TaskPayload) notify.Target {
 		Owner:  payload.RepoOwner,
 		Repo:   payload.RepoName,
 		Number: payload.PRNumber,
-		IsPR:   true,
+		IsPR:   payload.PRNumber > 0,
 	}
 }
 
@@ -700,17 +700,14 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 		if payload.RepoFullName == "" {
 			return notify.Message{}, false
 		}
+		metadata := p.buildPRMetadata(payload)
 		msg = notify.Message{
 			EventType: notify.EventE2ETriageStarted,
 			Severity:  notify.SeverityInfo,
-			Target: notify.Target{
-				Owner: payload.RepoOwner,
-				Repo:  payload.RepoName,
-				IsPR:  false,
-			},
-			Title:    "E2E 回归分析开始",
-			Body:     fmt.Sprintf("正在分析变更影响的 E2E 模块\n\n仓库：%s", payload.RepoFullName),
-			Metadata: map[string]string{},
+			Target:    buildPRTarget(payload),
+			Title:     "E2E 回归分析开始",
+			Body:      fmt.Sprintf("正在分析变更影响的 E2E 模块\n\n仓库：%s", payload.RepoFullName),
+			Metadata:  metadata,
 		}
 	default:
 		return notify.Message{}, false
@@ -1068,7 +1065,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		if payload.RepoFullName == "" {
 			return notify.Message{}, false
 		}
-		metadata := map[string]string{}
+		metadata := p.buildPRMetadata(payload)
 		if triageResult != nil {
 			if data, err := json.Marshal(triageResult.Modules); err == nil {
 				metadata[notify.MetaKeyTriageModules] = string(data)
@@ -1080,11 +1077,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 				metadata[notify.MetaKeyTriageAnalysis] = triageResult.Analysis
 			}
 		}
-		target := notify.Target{
-			Owner: payload.RepoOwner,
-			Repo:  payload.RepoName,
-			IsPR:  false,
-		}
+		target := buildPRTarget(payload)
 		switch record.Status {
 		case model.TaskStatusSucceeded:
 			msg = notify.Message{
@@ -1558,14 +1551,16 @@ func (p *Processor) handleTriageE2EResult(ctx context.Context, record *model.Tas
 	triggeredBy := fmt.Sprintf("triage_e2e:%s", record.ID)
 	for _, mod := range output.Modules {
 		payload := model.TaskPayload{
-			TaskType:     model.TaskTypeRunE2E,
-			RepoOwner:    record.Payload.RepoOwner,
-			RepoName:     record.Payload.RepoName,
-			RepoFullName: record.Payload.RepoFullName,
-			CloneURL:     record.Payload.CloneURL,
-			Module:       mod.Name,
-			BaseRef:      record.Payload.BaseRef,
-			Environment:  record.Payload.Environment,
+			TaskType:       model.TaskTypeRunE2E,
+			RepoOwner:      record.Payload.RepoOwner,
+			RepoName:       record.Payload.RepoName,
+			RepoFullName:   record.Payload.RepoFullName,
+			CloneURL:       record.Payload.CloneURL,
+			Module:         mod.Name,
+			BaseRef:        record.Payload.BaseRef,
+			HeadSHA:        record.Payload.HeadSHA,
+			MergeCommitSHA: record.Payload.MergeCommitSHA,
+			Environment:    record.Payload.Environment,
 		}
 		if _, err := p.enqueueHandler.EnqueueManualE2E(ctx, payload, triggeredBy); err != nil {
 			p.logger.WarnContext(ctx, "triage_e2e: 链式入队失败",
