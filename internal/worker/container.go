@@ -295,9 +295,8 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 	case model.TaskTypeRunE2E:
 		return []string{"claude", "-p", "--output-format", "json", "-"}
 	case model.TaskTypeTriageE2E:
-		// triage_e2e 只读分析：stdin 传入 prompt，禁止文件写工具（与 review_pr / analyze_issue 一致）。
-		// 实际执行路径由 Processor 层调用 pool.RunWithCommandAndStdin 传入 e2e.BuildTriagePrompt 构建的 prompt；
-		// 此处为 pool.Run fallback，stdin 为空时 Claude CLI 会等待输入。
+		// 生产路径：Processor 通过 pool.RunWithCommandAndStdin 传入 cmd + prompt，不经过此函数。
+		// 此 case 仅在 pool.Run fallback 场景保留（如未来无 Processor 的测试/调试工具直接调 Pool）。
 		return []string{"claude", "-p", "--output-format", "json", "--disallowedTools", "Edit,Write,NotebookEdit", "-"}
 	default:
 		return []string{

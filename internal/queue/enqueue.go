@@ -427,8 +427,8 @@ func (h *EnqueueHandler) handleMergedE2ERegression(ctx context.Context, event we
 	}
 
 	if err := h.enqueueTask(ctx, payload, record); err != nil {
-		h.logger.WarnContext(ctx, "e2e-regression: 入队失败",
-			"repo", repo, "error", err)
+		h.logger.ErrorContext(ctx, "e2e-regression: 入队失败，该 webhook 的 triage 触发将丢失",
+			"repo", repo, "pr", pr.Number, "error", err)
 		return
 	}
 
