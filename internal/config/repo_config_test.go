@@ -541,6 +541,44 @@ func TestResolveTestGenConfig(t *testing.T) {
 	})
 }
 
+func TestResolveIterateConfig(t *testing.T) {
+	cfg := &Config{
+		Iterate: IterateConfig{
+			Enabled:              true,
+			MaxRounds:            3,
+			Label:                "auto-iterate",
+			NotificationMode:     "progress",
+			FixSeverityThreshold: "error",
+			ReportPath:           "docs/review_history",
+		},
+		Repos: []RepoConfig{
+			{
+				Name: "owner/repo",
+				Iterate: &IterateOverride{
+					MaxRounds:            5,
+					FixSeverityThreshold: "warning",
+				},
+			},
+		},
+	}
+	got := cfg.ResolveIterateConfig("owner/repo")
+	if got.MaxRounds != 5 {
+		t.Errorf("MaxRounds = %d, want 5", got.MaxRounds)
+	}
+	if got.FixSeverityThreshold != "warning" {
+		t.Errorf("FixSeverityThreshold = %q, want warning", got.FixSeverityThreshold)
+	}
+	if got.Label != "auto-iterate" {
+		t.Errorf("Label = %q, want auto-iterate", got.Label)
+	}
+
+	// 无覆盖时回退到全局
+	got2 := cfg.ResolveIterateConfig("other/repo")
+	if got2.MaxRounds != 3 {
+		t.Errorf("fallback MaxRounds = %d, want 3", got2.MaxRounds)
+	}
+}
+
 // TestConfigClone_TestGenReviewOnFailureDeepCopy 校验 ReviewOnFailure *bool 深拷贝独立性。
 //
 // 覆盖 config.go 两处分支：

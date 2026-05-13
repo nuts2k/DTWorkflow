@@ -28,6 +28,7 @@ type Config struct {
 	TestGen     TestGenOverride   `mapstructure:"test_gen"` // M4.1
 	E2E         E2EConfig         `mapstructure:"e2e"`
 	DailyReport DailyReportConfig `mapstructure:"daily_report"`
+	Iterate     IterateConfig     `mapstructure:"iterate"`
 	API         APIConfig         `mapstructure:"api" yaml:"api"`
 	Repos       []RepoConfig      `mapstructure:"repos"`
 }
@@ -190,6 +191,16 @@ type DailyReportConfig struct {
 	SkipEmpty     bool   `mapstructure:"skip_empty"`
 	FeishuWebhook string `mapstructure:"feishu_webhook"`
 	FeishuSecret  string `mapstructure:"feishu_secret"`
+}
+
+// IterateConfig 迭代式评审修复全局配置。
+type IterateConfig struct {
+	Enabled              bool   `mapstructure:"enabled"`                // 总开关，默认关闭
+	MaxRounds            int    `mapstructure:"max_rounds"`             // 迭代上限，默认 3
+	Label                string `mapstructure:"label"`                  // 触发标签名，默认 "auto-iterate"
+	NotificationMode     string `mapstructure:"notification_mode"`      // progress / silent，默认 progress
+	FixSeverityThreshold string `mapstructure:"fix_severity_threshold"` // 修复 ERROR 及以上，默认 "error"
+	ReportPath           string `mapstructure:"report_path"`            // 修复报告目录，默认 "docs/review_history"
 }
 
 type NotifyConfig struct {
@@ -362,6 +373,14 @@ func WithDefaults() ManagerOption {
 		// M4.1: test_gen 默认值
 		// max_retry_rounds 默认 3（合法范围 [1, 10]）；其他字段零值即合法默认。
 		m.v.SetDefault("test_gen.max_retry_rounds", 3)
+
+		// M6.1: iterate 默认值
+		m.v.SetDefault("iterate.enabled", false)
+		m.v.SetDefault("iterate.max_rounds", 3)
+		m.v.SetDefault("iterate.label", "auto-iterate")
+		m.v.SetDefault("iterate.notification_mode", "progress")
+		m.v.SetDefault("iterate.fix_severity_threshold", "error")
+		m.v.SetDefault("iterate.report_path", "docs/review_history")
 
 		return nil
 	}
@@ -580,6 +599,11 @@ func (c *Config) Clone() *Config {
 					testGenCopy.ChangeDriven = &cdCopy
 				}
 				clone.Repos[i].TestGen = &testGenCopy
+			}
+			// 深拷贝 repo.Iterate
+			if repo.Iterate != nil {
+				iterateCopy := *repo.Iterate
+				clone.Repos[i].Iterate = &iterateCopy
 			}
 			// 深拷贝 repo.E2E
 			if repo.E2E != nil {
