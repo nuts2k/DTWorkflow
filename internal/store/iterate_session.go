@@ -118,6 +118,18 @@ func (s *SQLiteStore) GetLatestRound(ctx context.Context, sessionID int64) (*Ite
 	return s.scanIterationRound(row)
 }
 
+func (s *SQLiteStore) GetIterationRound(ctx context.Context, sessionID int64, roundNumber int) (*IterationRoundRecord, error) {
+	const query = `
+		SELECT id, session_id, round_number, review_task_id, fix_task_id,
+		       issues_found, issues_fixed, fix_report_path, fix_summary, is_recovery,
+		       started_at, completed_at
+		FROM iteration_rounds
+		WHERE session_id = ? AND round_number = ?
+		LIMIT 1`
+	row := s.db.QueryRowContext(ctx, query, sessionID, roundNumber)
+	return s.scanIterationRound(row)
+}
+
 func (s *SQLiteStore) CountNonRecoveryRounds(ctx context.Context, sessionID int64) (int, error) {
 	const query = `SELECT COUNT(*) FROM iteration_rounds WHERE session_id = ? AND is_recovery = 0`
 	var count int

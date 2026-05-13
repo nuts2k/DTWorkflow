@@ -26,6 +26,11 @@ import (
 // 编译时检查 *EnqueueHandler 实现 webhook.Handler 接口
 var _ webhook.Handler = (*EnqueueHandler)(nil)
 
+const (
+	defaultIterationRoundWaitTimeout  = 10 * time.Second
+	defaultIterationRoundPollInterval = 200 * time.Millisecond
+)
+
 // IterateSessionStore 迭代会话的窄 Store 接口。
 type IterateSessionStore interface {
 	FindActiveIterationSession(ctx context.Context, repoFullName string, prNumber int64) (*store.IterationSessionRecord, error)
@@ -34,6 +39,7 @@ type IterateSessionStore interface {
 	CreateIterationRound(ctx context.Context, round *store.IterationRoundRecord) error
 	UpdateIterationRound(ctx context.Context, round *store.IterationRoundRecord) error
 	GetLatestRound(ctx context.Context, sessionID int64) (*store.IterationRoundRecord, error)
+	GetIterationRound(ctx context.Context, sessionID int64, roundNumber int) (*store.IterationRoundRecord, error)
 	CountNonRecoveryRounds(ctx context.Context, sessionID int64) (int, error)
 	GetRecentRoundsIssuesFixed(ctx context.Context, sessionID int64, n int) ([]int, error)
 	GetCompletedRoundsForSession(ctx context.Context, sessionID int64) ([]*store.IterationRoundRecord, error)
@@ -74,6 +80,8 @@ type EnqueueHandler struct {
 	iterateLabels     IterateLabelManager         // M6.1: Gitea 标签管理
 	iterateCommenter  IteratePRCommenter          // M6.1: PR 评论
 	iterateNotifier   TaskNotifier                // M6.1: 迭代通知发送
+	roundWaitTimeout  time.Duration               // M6.1: 等待上一轮 fix_review 精确落库的最长时间
+	roundPollInterval time.Duration               // M6.1: 轮询上一轮落库状态的间隔
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -186,10 +194,12 @@ func NewEnqueueHandler(client Enqueuer, canceller TaskCanceller, store store.Sto
 		logger = slog.Default()
 	}
 	h := &EnqueueHandler{
-		client:    client,
-		canceller: canceller,
-		store:     store,
-		logger:    logger,
+		client:            client,
+		canceller:         canceller,
+		store:             store,
+		logger:            logger,
+		roundWaitTimeout:  defaultIterationRoundWaitTimeout,
+		roundPollInterval: defaultIterationRoundPollInterval,
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -279,17 +289,19 @@ func (h *EnqueueHandler) handleReviewPullRequest(ctx context.Context, event webh
 		} else if session != nil && session.Status == "fixing" && h.isFixReviewPush(event) {
 			// fix_review 自身的 push：仅取消旧 review_pr，不取消 fix_review
 			h.cancelTasks(ctx, filterTasksByType(activeTasks, model.TaskTypeReviewPR))
-			// 更新会话状态：fixing → reviewing
-			session.Status = "reviewing"
-			if updateErr := h.iterateStore.UpdateIterationSession(ctx, session); updateErr != nil {
-				h.logger.WarnContext(ctx, "更新迭代会话状态失败",
-					"session_id", session.ID, "error", updateErr)
-			}
+			// 状态仍保持 fixing，等待 fix_review 任务完成后由 Processor 精确落库并切换为 reviewing。
+			// 这避免 review_pr 过快完成时，在上一轮修复结果尚未持久化前创建下一轮。
 		} else if session != nil {
 			// 用户手动 push 且存在迭代会话：同时取消 review_pr 和 fix_review
-			fixTasks, _ := h.iterateStore.FindActivePRTasksMulti(ctx,
+			fixTasks, fixErr := h.iterateStore.FindActivePRTasksMulti(ctx,
 				event.Repository.FullName, event.PullRequest.Number,
 				[]model.TaskType{model.TaskTypeFixReview})
+			if fixErr != nil {
+				h.logger.WarnContext(ctx, "查询活跃 fix_review 任务失败，无法完整取消旧迭代修复",
+					"repo", event.Repository.FullName,
+					"pr", event.PullRequest.Number,
+					"error", fixErr)
+			}
 			h.cancelTasks(ctx, append(activeTasks, fixTasks...))
 		} else {
 			// 无迭代会话：正常取消旧 review_pr
@@ -1321,6 +1333,27 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	// 获取最新轮次，检查是否为恢复场景
 	latestRound, _ := h.iterateStore.GetLatestRound(ctx, session.ID)
 
+	if latestRound != nil && latestRound.FixTaskID != "" && latestRound.CompletedAt == nil {
+		waitedRound, waitErr := h.waitForIterationRoundCompleted(ctx, session.ID, latestRound.RoundNumber)
+		if waitErr != nil {
+			h.logger.WarnContext(ctx, "上一轮 fix_review 尚未完成落库，跳过本次迭代链式入队",
+				"session_id", session.ID,
+				"latest_round", latestRound.RoundNumber,
+				"fix_task_id", latestRound.FixTaskID,
+				"error", waitErr)
+			return false
+		}
+		latestRound = waitedRound
+	}
+
+	if latestRound != nil && latestRound.FixTaskID != "" && latestRound.CompletedAt == nil {
+		h.logger.WarnContext(ctx, "上一轮 fix_review 仍未完成落库，跳过本次迭代链式入队",
+			"session_id", session.ID,
+			"latest_round", latestRound.RoundNumber,
+			"fix_task_id", latestRound.FixTaskID)
+		return false
+	}
+
 	// 上一轮修复完成，发 PR 评论摘要
 	if latestRound != nil && latestRound.FixTaskID != "" && latestRound.IssuesFixed > 0 {
 		h.postFixRoundComment(ctx, payload, latestRound.RoundNumber, latestRound.IssuesFixed, latestRound.FixReportPath)
@@ -1418,10 +1451,13 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 		} else if len(completedRounds) > 0 {
 			var fixes []iterate.FixSummary
 			for _, r := range completedRounds {
+				if r.RoundNumber >= roundNumber {
+					continue
+				}
 				fixes = append(fixes, iterate.FixSummary{
 					Round:       r.RoundNumber,
 					IssuesFixed: r.IssuesFixed,
-					Summary:     r.FixSummary,
+					Summary:     iterate.SanitizeFixReviewError(r.FixSummary),
 				})
 			}
 			if data, err := json.Marshal(fixes); err == nil {
@@ -1488,6 +1524,39 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	}
 
 	return true
+}
+
+func (h *EnqueueHandler) waitForIterationRoundCompleted(ctx context.Context, sessionID int64, roundNumber int) (*store.IterationRoundRecord, error) {
+	timeout := h.roundWaitTimeout
+	if timeout <= 0 {
+		timeout = defaultIterationRoundWaitTimeout
+	}
+	interval := h.roundPollInterval
+	if interval <= 0 {
+		interval = defaultIterationRoundPollInterval
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		round, err := h.iterateStore.GetIterationRound(waitCtx, sessionID, roundNumber)
+		if err != nil {
+			return nil, err
+		}
+		if round != nil && round.CompletedAt != nil {
+			return round, nil
+		}
+
+		select {
+		case <-waitCtx.Done():
+			return round, waitCtx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // AfterIterationApproved 在迭代中的 review_pr verdict=approve 时调用。

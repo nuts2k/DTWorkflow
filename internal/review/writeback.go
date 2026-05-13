@@ -134,7 +134,7 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 	if !parseFailed && result.Review != nil &&
 		(input.SeverityThreshold != "" || len(input.IgnorePatterns) > 0) {
 
-		filterResult = FilterIssues(result.Review.Issues, input.SeverityThreshold, input.IgnorePatterns)
+		_, filterResult = ApplyFilters(result.Review, input.SeverityThreshold, input.IgnorePatterns)
 
 		// 构建 visible 集合（用于快速查找）
 		visibleSet := make(map[string]bool, len(filterResult.Visible))
@@ -194,10 +194,10 @@ func (w *Writer) Write(ctx context.Context, input WritebackInput) (giteaReviewID
 		CostUSD:            costUSD,
 		SupersededCount:    input.SupersededCount,
 		PreviousHeadSHA:    input.PreviousHeadSHA,
-		VisibleIssues:      filterResult.Visible,        // M2.5
-		FilteredBySeverity: filterResult.BySeverity,      // M2.5
-		FilteredByFile:     filterResult.ByFile,          // M2.5
-		SeverityThreshold:  input.SeverityThreshold,      // M2.5
+		VisibleIssues:      filterResult.Visible,    // M2.5
+		FilteredBySeverity: filterResult.BySeverity, // M2.5
+		FilteredByFile:     filterResult.ByFile,     // M2.5
+		SeverityThreshold:  input.SeverityThreshold, // M2.5
 	})
 
 	// 8e: 映射 verdict

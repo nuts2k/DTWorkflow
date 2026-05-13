@@ -61,8 +61,9 @@ func BuildFixPrompt(ctx FixPromptContext) string {
 	b.WriteString("   - **skipped**: Skip with clear justification\n")
 	b.WriteString("2. When multiple reasonable approaches exist, you MUST list all alternatives with descriptions, pros, cons, and why each was not chosen.\n")
 	fmt.Fprintf(&b, "3. Generate a fix report markdown file at: %s\n", ctx.ReportPath)
-	b.WriteString("4. Commit ALL changes (code fixes + report file) in a SINGLE commit, then push.\n")
-	b.WriteString("5. The commit message should start with 'fix(review):' and summarize the fixes.\n\n")
+	b.WriteString("4. Commit ALL changes (code fixes + report file) in a SINGLE commit, then run dtworkflow-fix-review-push to push the current PR branch.\n")
+	b.WriteString("5. Do not run git push directly; dtworkflow-fix-review-push is the only permitted push command in fix_review mode.\n")
+	b.WriteString("6. The commit message should start with 'fix(review):' and summarize the fixes.\n\n")
 
 	b.WriteString("## Output Format\n\n")
 	b.WriteString("After completing fixes, output a JSON object with this schema:\n")

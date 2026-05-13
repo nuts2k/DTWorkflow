@@ -10,10 +10,10 @@ import (
 type SeverityLevel int
 
 const (
-	SeverityInfo     SeverityLevel = iota // 最低
+	SeverityInfo SeverityLevel = iota // 最低
 	SeverityWarning
 	SeverityError
-	SeverityCritical                      // 最高
+	SeverityCritical // 最高
 )
 
 // ParseSeverity 将字符串转为 SeverityLevel。
@@ -79,6 +79,27 @@ type FilterResult struct {
 	Filtered   int           // 被过滤掉的总数
 	BySeverity int           // 因 severity 阈值过滤的数量
 	ByFile     int           // 因文件 glob 匹配过滤的数量
+}
+
+// ApplyFilters 应用与 Gitea 回写一致的 issue 过滤和 verdict 重算规则。
+// 返回值用于其它调用链复用最终可见的评审语义，避免和 writeback 展示结果不一致。
+func ApplyFilters(output *ReviewOutput, severityThreshold string, ignorePatterns []string) (*ReviewOutput, FilterResult) {
+	if output == nil {
+		return nil, FilterResult{}
+	}
+	if severityThreshold == "" && len(ignorePatterns) == 0 {
+		clone := *output
+		clone.Issues = append([]ReviewIssue(nil), output.Issues...)
+		return &clone, FilterResult{Visible: clone.Issues}
+	}
+
+	filterResult := FilterIssues(output.Issues, severityThreshold, ignorePatterns)
+	clone := *output
+	clone.Issues = append([]ReviewIssue(nil), filterResult.Visible...)
+	if filterResult.Filtered > 0 {
+		clone.Verdict = recalcVerdict(filterResult.Visible, output.Verdict)
+	}
+	return &clone, filterResult
 }
 
 // FilterIssues 对 issue 列表应用 severity + 文件双重过滤。

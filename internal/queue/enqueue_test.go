@@ -40,6 +40,9 @@ type mockStore struct {
 
 	iterationSession            *store.IterationSessionRecord
 	latestIterationRound        *store.IterationRoundRecord
+	completedIterationRounds    []*store.IterationRoundRecord
+	getIterationRoundHook       func(roundNumber int) *store.IterationRoundRecord
+	findActivePRTasksMultiErr   error
 	updateIterationSessionCalls int
 	updateIterationRoundCalls   int
 }
@@ -333,6 +336,22 @@ func (m *mockStore) UpdateIterationRound(_ context.Context, round *store.Iterati
 func (m *mockStore) GetLatestRound(_ context.Context, _ int64) (*store.IterationRoundRecord, error) {
 	return m.latestIterationRound, nil
 }
+func (m *mockStore) GetIterationRound(_ context.Context, _ int64, roundNumber int) (*store.IterationRoundRecord, error) {
+	if m.getIterationRoundHook != nil {
+		if round := m.getIterationRoundHook(roundNumber); round != nil {
+			return round, nil
+		}
+	}
+	if m.latestIterationRound != nil && m.latestIterationRound.RoundNumber == roundNumber {
+		return m.latestIterationRound, nil
+	}
+	for _, round := range m.completedIterationRounds {
+		if round.RoundNumber == roundNumber {
+			return round, nil
+		}
+	}
+	return nil, nil
+}
 func (m *mockStore) CountNonRecoveryRounds(_ context.Context, _ int64) (int, error) {
 	return 0, nil
 }
@@ -340,9 +359,12 @@ func (m *mockStore) GetRecentRoundsIssuesFixed(_ context.Context, _ int64, _ int
 	return nil, nil
 }
 func (m *mockStore) GetCompletedRoundsForSession(_ context.Context, _ int64) ([]*store.IterationRoundRecord, error) {
-	return nil, nil
+	return m.completedIterationRounds, nil
 }
 func (m *mockStore) FindActivePRTasksMulti(_ context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error) {
+	if m.findActivePRTasksMultiErr != nil {
+		return nil, m.findActivePRTasksMultiErr
+	}
 	typeSet := make(map[model.TaskType]struct{}, len(taskTypes))
 	for _, taskType := range taskTypes {
 		typeSet[taskType] = struct{}{}
@@ -1134,11 +1156,11 @@ func TestHandlePullRequest_BotPushDuringIterationKeepsFixReview(t *testing.T) {
 	if oldFixReview.Status != model.TaskStatusQueued {
 		t.Fatalf("old fix_review status = %q, want queued", oldFixReview.Status)
 	}
-	if s.updateIterationSessionCalls != 1 {
-		t.Fatalf("UpdateIterationSession 调用次数 = %d, want 1", s.updateIterationSessionCalls)
+	if s.updateIterationSessionCalls != 0 {
+		t.Fatalf("UpdateIterationSession 调用次数 = %d, want 0", s.updateIterationSessionCalls)
 	}
-	if s.iterationSession.Status != "reviewing" {
-		t.Fatalf("session status = %q, want reviewing", s.iterationSession.Status)
+	if s.iterationSession.Status != "fixing" {
+		t.Fatalf("session status = %q, want fixing", s.iterationSession.Status)
 	}
 }
 
@@ -1293,6 +1315,101 @@ func TestAfterReviewCompleted_EnqueuesFixReviewWithIterationConfig(t *testing.T)
 	}
 	if s.latestIterationRound.FixTaskID != fixRecord.ID {
 		t.Fatalf("round FixTaskID = %q, want %q", s.latestIterationRound.FixTaskID, fixRecord.ID)
+	}
+}
+
+func TestAfterReviewCompleted_WaitsForPreviousFixReviewPersisted(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-next-fix-review"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
+			Enabled:              true,
+			MaxRounds:            3,
+			Label:                "auto-iterate",
+			NotificationMode:     "silent",
+			FixSeverityThreshold: "error",
+			ReportPath:           "docs/review_history",
+		}}),
+	)
+	h.roundWaitTimeout = time.Second
+	h.roundPollInterval = time.Millisecond
+
+	completedAt := time.Now()
+	pendingRound := &store.IterationRoundRecord{
+		ID:          10,
+		SessionID:   21,
+		RoundNumber: 1,
+		FixTaskID:   "fix-review-round-1",
+	}
+	completedRound := &store.IterationRoundRecord{
+		ID:          10,
+		SessionID:   21,
+		RoundNumber: 1,
+		FixTaskID:   "fix-review-round-1",
+		IssuesFixed: 2,
+		FixSummary:  "fixed https://secret.example/token",
+		CompletedAt: &completedAt,
+	}
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           21,
+		RepoFullName: "org/repo",
+		PRNumber:     45,
+		Status:       "reviewing",
+		MaxRounds:    3,
+	}
+	s.latestIterationRound = pendingRound
+	s.completedIterationRounds = []*store.IterationRoundRecord{completedRound}
+
+	calls := 0
+	s.getIterationRoundHook = func(roundNumber int) *store.IterationRoundRecord {
+		if roundNumber != 1 {
+			return nil
+		}
+		calls++
+		if calls == 1 {
+			return pendingRound
+		}
+		return completedRound
+	}
+
+	reviewTask := &model.TaskRecord{ID: "review-task-45"}
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     45,
+		PRTitle:      "Fix followup",
+		BaseRef:      "main",
+		HeadRef:      "feature/followup",
+		HeadSHA:      "head-sha",
+	}
+	issues := []review.ReviewIssue{{
+		File:     "main.go",
+		Line:     10,
+		Severity: "ERROR",
+		Message:  "bug",
+	}}
+
+	if !h.AfterReviewCompleted(context.Background(), reviewTask, payload, []string{"auto-iterate"}, issues) {
+		t.Fatal("上一轮落库完成后应继续触发下一轮 fix_review")
+	}
+	if calls < 2 {
+		t.Fatalf("GetIterationRound 调用次数 = %d, want >= 2", calls)
+	}
+	if len(mc.payloads) != 1 {
+		t.Fatalf("入队 payload 数量 = %d, want 1", len(mc.payloads))
+	}
+	fixPayload := mc.payloads[0]
+	if fixPayload.RoundNumber != 2 {
+		t.Fatalf("RoundNumber = %d, want 2", fixPayload.RoundNumber)
+	}
+	if !strings.Contains(fixPayload.PreviousFixes, "[link-redacted]") {
+		t.Fatalf("PreviousFixes 应脱敏并包含上一轮摘要，实际: %q", fixPayload.PreviousFixes)
+	}
+	if strings.Contains(fixPayload.PreviousFixes, "https://") {
+		t.Fatalf("PreviousFixes 不应包含原始链接，实际: %q", fixPayload.PreviousFixes)
 	}
 }
 

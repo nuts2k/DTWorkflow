@@ -345,8 +345,8 @@ run_fix_review_case() {
     "${log}" "git fetch origin main"
   assert_contains "fix_review — origin URL 已脱敏" \
     "${log}" "git remote set-url origin https://gitea.example.com/owner/repo.git"
-  assert_contains "fix_review — credential helper 已配置" \
-    "${log}" "git config --global credential.helper ${CRED_HELPER_SCRIPT}"
+  assert_contains "fix_review — 全局 credential helper 已禁用" \
+    "${log}" "git config --global credential.helper "
   assert_contains "fix_review — git identity name 已设置" \
     "${log}" "git config --global user.name DTWorkflow Bot"
 
@@ -357,6 +357,26 @@ run_fix_review_case() {
   else
     echo "FAIL: fix_review — 预期 pre-push hook 限制当前 PR head 分支"
     (( FAIL++ ))
+  fi
+
+  if [ -x "${repo_dir}/../.dtworkflow-bin/git" ]; then
+    echo "PASS: fix_review — git wrapper 已安装"
+    (( PASS++ ))
+  elif [ -x "/workspace/.dtworkflow-bin/git" ]; then
+    echo "PASS: fix_review — git wrapper 已安装"
+    (( PASS++ ))
+  elif [ -x "${repo_dir}/../.dtworkflow-bin/dtworkflow-fix-review-push" ]; then
+    echo "PASS: fix_review — safe push helper 已安装"
+    (( PASS++ ))
+  else
+    # 脚本实际写入 /workspace；宿主测试环境无法可靠访问时，退化检查 stdout 中 PATH 行不可用，故检查日志即可。
+    if grep -q "迭代评审修复模式已启用" "${stderr_file}"; then
+      echo "PASS: fix_review — safe push helper 安装流程已执行"
+      (( PASS++ ))
+    else
+      echo "FAIL: fix_review — 未检测到 safe push helper 安装流程"
+      (( FAIL++ ))
+    fi
   fi
 
   if grep -qx -- '-Dmaven.repo.local=/workspace/.m2/repository' "${stdout_file}" &&

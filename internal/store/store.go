@@ -144,6 +144,9 @@ type Store interface {
 	// GetLatestRound 获取会话的最新轮次。未找到返回 (nil, nil)。
 	GetLatestRound(ctx context.Context, sessionID int64) (*IterationRoundRecord, error)
 
+	// GetIterationRound 获取会话的指定轮次。未找到返回 (nil, nil)。
+	GetIterationRound(ctx context.Context, sessionID int64, roundNumber int) (*IterationRoundRecord, error)
+
 	// CountNonRecoveryRounds 统计会话的非恢复轮次数。
 	CountNonRecoveryRounds(ctx context.Context, sessionID int64) (int, error)
 

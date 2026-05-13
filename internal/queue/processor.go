@@ -61,6 +61,7 @@ type ReviewExecutor interface {
 	// WriteDegraded 在重试耗尽后发送降级评论（原始输出作为 COMMENT）。
 	// 仅在 Execute 因 ErrParseFailure 失败且所有重试用完时调用。
 	WriteDegraded(ctx context.Context, payload model.TaskPayload, result *review.ReviewResult) error
+	ResolveConfig(repoFullName string) review.ReviewConfig
 }
 
 // FixExecutor 窄接口，解耦 fix 包。
@@ -294,9 +295,20 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	var iterateResult *iterate.FixReviewResult
 	var result *worker.ExecutionResult
 	var runErr error
+
+	if payload.TaskType == model.TaskTypeFixReview {
+		var prepareErr error
+		payload, prepareErr = p.prepareFixReviewPayload(ctx, payload)
+		record.Payload = payload
+		if prepareErr != nil {
+			runErr = prepareErr
+		}
+	}
+
 	// 路由：review_pr → reviewService，analyze_issue/fix_issue → fixService，
 	// gen_tests → testService；对应 service 未注入时回退到 pool.Run。
 	switch {
+	case runErr != nil:
 	case payload.TaskType == model.TaskTypeReviewPR && p.reviewService != nil:
 		reviewResult, runErr = p.reviewService.Execute(ctx, payload)
 		if reviewResult != nil {
@@ -566,8 +578,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 		switch reviewResult.Review.Verdict {
 		case review.VerdictRequestChanges:
+			filteredReview := p.filteredReviewOutput(payload.RepoFullName, reviewResult.Review)
+			if filteredReview.Verdict != review.VerdictRequestChanges {
+				break
+			}
 			if p.enqueueHandler.AfterReviewCompleted(ctx, record, payload,
-				reviewResult.Labels, reviewResult.Review.Issues) {
+				reviewResult.Labels, filteredReview.Issues) {
 				suppressNotification = true
 			}
 		case review.VerdictApprove:
@@ -599,6 +615,57 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	return nil
 }
 
+func (p *Processor) filteredReviewOutput(repoFullName string, output *review.ReviewOutput) *review.ReviewOutput {
+	if output == nil || p.reviewService == nil {
+		return output
+	}
+	cfg := p.reviewService.ResolveConfig(repoFullName)
+	filtered, _ := review.ApplyFilters(output, cfg.Severity, cfg.IgnorePatterns)
+	if filtered == nil {
+		return output
+	}
+	return filtered
+}
+
+func (p *Processor) prepareFixReviewPayload(ctx context.Context, payload model.TaskPayload) (model.TaskPayload, error) {
+	if payload.SessionID == 0 || payload.RoundNumber <= 1 {
+		return payload, nil
+	}
+	payload.PreviousFixes = ""
+
+	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	completedRounds, err := p.store.GetCompletedRoundsForSession(persistCtx, payload.SessionID)
+	if err != nil {
+		p.logger.WarnContext(ctx, "查询已完成迭代轮次失败，继续使用空 PreviousFixes",
+			"session_id", payload.SessionID,
+			"round", payload.RoundNumber,
+			"error", err)
+		return payload, nil
+	}
+	var fixes []iterate.FixSummary
+	for _, r := range completedRounds {
+		if r.RoundNumber >= payload.RoundNumber {
+			continue
+		}
+		fixes = append(fixes, iterate.FixSummary{
+			Round:       r.RoundNumber,
+			IssuesFixed: r.IssuesFixed,
+			Summary:     iterate.SanitizeFixReviewError(r.FixSummary),
+		})
+	}
+	if len(fixes) == 0 {
+		return payload, nil
+	}
+	data, err := json.Marshal(fixes)
+	if err != nil {
+		return payload, fmt.Errorf("%w: 序列化 PreviousFixes 失败: %v", iterate.ErrFixReviewDeterministicFailure, err)
+	}
+	payload.PreviousFixes = string(data)
+	return payload, nil
+}
+
 func (p *Processor) persistIterationFixResult(ctx context.Context, payload model.TaskPayload, record *model.TaskRecord, result *iterate.FixReviewResult) {
 	if payload.SessionID == 0 || payload.RoundNumber == 0 || record == nil || result == nil || result.Output == nil {
 		return
@@ -607,7 +674,7 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	round, err := p.store.GetLatestRound(persistCtx, payload.SessionID)
+	round, err := p.store.GetIterationRound(persistCtx, payload.SessionID, payload.RoundNumber)
 	if err != nil {
 		p.logger.ErrorContext(ctx, "查询迭代轮次失败",
 			"session_id", payload.SessionID, "round", payload.RoundNumber, "error", err)
@@ -616,13 +683,6 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 	if round == nil {
 		p.logger.WarnContext(ctx, "迭代轮次不存在，跳过修复结果落库",
 			"session_id", payload.SessionID, "round", payload.RoundNumber)
-		return
-	}
-	if round.RoundNumber != payload.RoundNumber {
-		p.logger.WarnContext(ctx, "迭代轮次不匹配，跳过修复结果落库",
-			"session_id", payload.SessionID,
-			"payload_round", payload.RoundNumber,
-			"latest_round", round.RoundNumber)
 		return
 	}
 	if round.FixTaskID != "" && round.FixTaskID != record.ID {
@@ -640,7 +700,7 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 		now := time.Now()
 		round.FixTaskID = record.ID
 		round.IssuesFixed = issuesFixed
-		round.FixSummary = result.Output.Summary
+		round.FixSummary = iterate.SanitizeFixReviewError(result.Output.Summary)
 		if strings.TrimSpace(round.FixReportPath) == "" {
 			round.FixReportPath = payload.FixReportPath
 		}
@@ -708,13 +768,13 @@ func (p *Processor) persistIterationZeroFixResult(ctx context.Context, payload m
 	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	round, err := p.store.GetLatestRound(persistCtx, payload.SessionID)
+	round, err := p.store.GetIterationRound(persistCtx, payload.SessionID, payload.RoundNumber)
 	if err != nil {
 		p.logger.ErrorContext(ctx, "查询迭代轮次失败",
 			"session_id", payload.SessionID, "round", payload.RoundNumber, "error", err)
 		return
 	}
-	if round == nil || round.RoundNumber != payload.RoundNumber {
+	if round == nil {
 		return
 	}
 	if round.FixTaskID != "" && round.FixTaskID != record.ID {

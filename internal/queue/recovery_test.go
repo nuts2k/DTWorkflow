@@ -142,6 +142,9 @@ func (m *mockStoreForRecovery) UpdateIterationRound(_ context.Context, _ *store.
 func (m *mockStoreForRecovery) GetLatestRound(_ context.Context, _ int64) (*store.IterationRoundRecord, error) {
 	return nil, nil
 }
+func (m *mockStoreForRecovery) GetIterationRound(_ context.Context, _ int64, _ int) (*store.IterationRoundRecord, error) {
+	return nil, nil
+}
 func (m *mockStoreForRecovery) CountNonRecoveryRounds(_ context.Context, _ int64) (int, error) {
 	return 0, nil
 }

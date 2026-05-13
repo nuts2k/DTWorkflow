@@ -65,6 +65,48 @@ HELPER
     git config --global user.email "dtworkflow-bot@noreply.local"
 }
 
+enable_fix_review_git() {
+    # fix_review 只允许通过受控脚本推送当前 PR head 分支。
+    git remote set-url origin "${REPO_CLONE_URL}"
+    git config --global credential.helper ''
+    git config --global user.name "DTWorkflow Bot"
+    git config --global user.email "dtworkflow-bot@noreply.local"
+
+    CRED_HELPER_SCRIPT="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
+    cat > "${CRED_HELPER_SCRIPT}" <<HELPER
+#!/bin/sh
+echo "username=token"
+echo "password=${GITEA_TOKEN}"
+HELPER
+    chmod 700 "${CRED_HELPER_SCRIPT}"
+
+    SAFE_BIN_DIR="$(dirname "${REPO_DIR}")/.dtworkflow-bin"
+    mkdir -p "${SAFE_BIN_DIR}"
+    REAL_GIT_BIN="$(command -v git)"
+
+    cat > "${SAFE_BIN_DIR}/dtworkflow-fix-review-push" <<PUSH
+#!/bin/sh
+set -eu
+if [ "\$#" -ne 0 ]; then
+    echo "ERROR: dtworkflow-fix-review-push does not accept arguments" >&2
+    exit 2
+fi
+exec "${REAL_GIT_BIN}" -c credential.helper="${CRED_HELPER_SCRIPT}" push origin "HEAD:refs/heads/${HEAD_REF}"
+PUSH
+    chmod 700 "${SAFE_BIN_DIR}/dtworkflow-fix-review-push"
+
+    cat > "${SAFE_BIN_DIR}/git" <<WRAP
+#!/bin/sh
+if [ "\${1:-}" = "push" ]; then
+    echo "ERROR: fix_review must push with dtworkflow-fix-review-push" >&2
+    exit 2
+fi
+exec "${REAL_GIT_BIN}" "\$@"
+WRAP
+    chmod 700 "${SAFE_BIN_DIR}/git"
+    export PATH="${SAFE_BIN_DIR}:${PATH}"
+}
+
 append_autofix_override() {
     local mode="$1"
     if [ -f CLAUDE.md ]; then
@@ -77,6 +119,7 @@ append_autofix_override() {
 「禁止 git commit」「禁止 git push」「禁止安装依赖」的限制在本次任务中**不适用**。
 你被明确授权且必须执行 git checkout -b、git add、git commit、git push 以及
 npm install 等操作以完成修复任务。
+如果当前模式是 fix_review，必须使用 dtworkflow-fix-review-push 推送当前 PR 分支，不要直接执行 git push。
 OVERRIDE
         # 关键：标记 CLAUDE.md 为 assume-unchanged，防止 git add 时将覆盖段提交到 PR。
         git update-index --assume-unchanged CLAUDE.md
@@ -189,7 +232,7 @@ case "${TASK_TYPE:-}" in
             log "fix_review: 已获取 base 分支 ${BASE_REF}"
         fi
 
-        enable_write_git
+        enable_fix_review_git
         setup_build_cache
         append_autofix_override "fix_review"
 

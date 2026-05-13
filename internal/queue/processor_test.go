@@ -12,6 +12,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/iterate"
@@ -77,6 +78,7 @@ type mockReviewExecutor struct {
 	result             *review.ReviewResult
 	err                error
 	writeDegradedErr   error
+	cfg                review.ReviewConfig
 	calls              int
 	writeDegradedCalls int
 }
@@ -89,6 +91,10 @@ func (m *mockReviewExecutor) Execute(_ context.Context, _ model.TaskPayload) (*r
 func (m *mockReviewExecutor) WriteDegraded(_ context.Context, _ model.TaskPayload, _ *review.ReviewResult) error {
 	m.writeDegradedCalls++
 	return m.writeDegradedErr
+}
+
+func (m *mockReviewExecutor) ResolveConfig(_ string) review.ReviewConfig {
+	return m.cfg
 }
 
 type mockFixExecutor struct {
@@ -139,13 +145,15 @@ func (m *mockE2EExecutor) Execute(_ context.Context, _ model.TaskPayload) (*e2e.
 }
 
 type mockIterateExecutor struct {
-	result *iterate.FixReviewResult
-	err    error
-	calls  int
+	result      *iterate.FixReviewResult
+	err         error
+	calls       int
+	lastPayload model.TaskPayload
 }
 
-func (m *mockIterateExecutor) Execute(_ context.Context, _ model.TaskPayload) (*iterate.FixReviewResult, error) {
+func (m *mockIterateExecutor) Execute(_ context.Context, payload model.TaskPayload) (*iterate.FixReviewResult, error) {
 	m.calls++
+	m.lastPayload = payload
 	return m.result, m.err
 }
 
@@ -297,6 +305,16 @@ func TestProcessTask_FixReviewSuccessPersistsIterationState(t *testing.T) {
 		RoundNumber: 2,
 		FixTaskID:   record.ID,
 	}
+	s.completedIterationRounds = []*store.IterationRoundRecord{
+		{
+			ID:          98,
+			SessionID:   7,
+			RoundNumber: 1,
+			IssuesFixed: 1,
+			FixSummary:  "fixed https://secret.example/token",
+			CompletedAt: &now,
+		},
+	}
 	iterExec := &mockIterateExecutor{
 		result: &iterate.FixReviewResult{
 			RawOutput: "raw-fix-review-output",
@@ -319,6 +337,9 @@ func TestProcessTask_FixReviewSuccessPersistsIterationState(t *testing.T) {
 	if iterExec.calls != 1 {
 		t.Fatalf("iterate Execute 调用次数 = %d, want 1", iterExec.calls)
 	}
+	if !strings.Contains(iterExec.lastPayload.PreviousFixes, "[link-redacted]") {
+		t.Fatalf("PreviousFixes 未重新构建或未脱敏: %q", iterExec.lastPayload.PreviousFixes)
+	}
 	if s.updateIterationRoundCalls != 1 {
 		t.Fatalf("UpdateIterationRound 调用次数 = %d, want 1", s.updateIterationRoundCalls)
 	}
@@ -330,6 +351,9 @@ func TestProcessTask_FixReviewSuccessPersistsIterationState(t *testing.T) {
 	}
 	if s.latestIterationRound.FixReportPath != payload.FixReportPath {
 		t.Fatalf("FixReportPath = %q, want %q", s.latestIterationRound.FixReportPath, payload.FixReportPath)
+	}
+	if strings.Contains(s.latestIterationRound.FixSummary, "https://") {
+		t.Fatalf("FixSummary 应脱敏，实际: %q", s.latestIterationRound.FixSummary)
 	}
 	if s.iterationSession.TotalIssuesFixed != 3 {
 		t.Fatalf("TotalIssuesFixed = %d, want 3", s.iterationSession.TotalIssuesFixed)
@@ -1511,6 +1535,70 @@ func TestProcessTask_ReviewSuccess_SeverityCounts(t *testing.T) {
 	// 验证任务记录状态正确（评审结果成功处理）
 	if got.Error != "" {
 		t.Errorf("无 writeback 错误时 Error 应为空，实际: %q", got.Error)
+	}
+}
+
+func TestProcessTask_ReviewRequestChangesFilteredOutDoesNotIterate(t *testing.T) {
+	s := newMockStore()
+	enqueuer := &mockEnqueuer{enqueuedID: "asynq-filtered-iterate"}
+	enqueueHandler := NewEnqueueHandler(enqueuer, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
+			Enabled:              true,
+			MaxRounds:            3,
+			Label:                "auto-iterate",
+			NotificationMode:     "progress",
+			FixSeverityThreshold: "error",
+			ReportPath:           "docs/review_history",
+		}}),
+	)
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeReviewPR,
+		DeliveryID:   "dlv-filtered-iterate",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     77,
+		HeadRef:      "feature/docs",
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "review-filtered-iterate",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+
+	reviewExec := &mockReviewExecutor{
+		cfg: review.ReviewConfig{IgnorePatterns: []string{"docs/**"}},
+		result: &review.ReviewResult{
+			RawOutput: "filtered review",
+			Labels:    []string{"auto-iterate"},
+			Review: &review.ReviewOutput{
+				Summary: "docs issue",
+				Verdict: review.VerdictRequestChanges,
+				Issues: []review.ReviewIssue{
+					{File: "docs/guide.md", Severity: "ERROR", Message: "ignored docs issue"},
+				},
+			},
+		},
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(),
+		WithReviewService(reviewExec),
+		WithEnqueueHandler(enqueueHandler))
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if len(enqueuer.payloads) != 0 {
+		t.Fatalf("过滤后不应入队 fix_review，实际 payloads=%v", enqueuer.payloads)
 	}
 }
 

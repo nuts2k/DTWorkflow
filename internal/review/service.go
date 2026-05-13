@@ -186,7 +186,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 			SupersededCount:   payload.SupersededCount,
 			PreviousHeadSHA:   payload.PreviousHeadSHA,
 			SeverityThreshold: cfg.Severity,       // M2.5 新增
-			IgnorePatterns:    cfg.IgnorePatterns,  // M2.5 新增
+			IgnorePatterns:    cfg.IgnorePatterns, // M2.5 新增
 		}
 		reviewID, wbErr := s.writer.Write(ctx, input)
 		if reviewID != 0 {
@@ -327,6 +327,11 @@ func parseLocation(loc string) (file string, line int) {
 
 // resolveConfig 从 ConfigProvider 获取配置并转换为内部 ReviewConfig
 func (s *Service) resolveConfig(repoFullName string) ReviewConfig {
+	return s.ResolveConfig(repoFullName)
+}
+
+// ResolveConfig 从 ConfigProvider 获取配置并转换为内部 ReviewConfig。
+func (s *Service) ResolveConfig(repoFullName string) ReviewConfig {
 	override := s.cfgProv.ResolveReviewConfig(repoFullName)
 
 	cfg := ReviewConfig{
@@ -336,7 +341,7 @@ func (s *Service) resolveConfig(repoFullName string) ReviewConfig {
 		LargePRThreshold:   override.LargePRThreshold,
 		TechStack:          override.TechStack,
 		CodeStandardsPaths: override.CodeStandardsPaths,
-		Severity:           override.Severity,      // M2.5 新增
+		Severity:           override.Severity,       // M2.5 新增
 		IgnorePatterns:     override.IgnorePatterns, // M2.5 新增
 		Model:              override.Model,
 		Effort:             override.Effort,
