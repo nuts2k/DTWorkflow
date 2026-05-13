@@ -234,6 +234,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		)
 		return fmt.Errorf("任务已取消，跳过执行: %w", asynq.SkipRetry)
 	}
+	if record.Status == model.TaskStatusSucceeded && payload.TaskType == model.TaskTypeFixReview {
+		return p.repairSucceededFixReviewIterationState(ctx, record, payload)
+	}
 
 	// 从 asynq context 中获取当前重试次数并更新记录
 	if retryCount, ok := asynq.GetRetryCount(ctx); ok {
@@ -559,7 +562,14 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	if finalStatePersisted && payload.TaskType == model.TaskTypeFixReview {
 		switch record.Status {
 		case model.TaskStatusSucceeded:
-			p.persistIterationFixResult(ctx, payload, record, iterateResult)
+			if err := p.persistIterationFixResult(ctx, payload, record, iterateResult); err != nil {
+				p.logger.ErrorContext(ctx, "fix_review 任务成功但迭代状态落库失败，触发重试",
+					"task_id", record.ID,
+					"session_id", payload.SessionID,
+					"round", payload.RoundNumber,
+					"error", err)
+				return fmt.Errorf("fix_review 迭代状态落库失败: %w", err)
+			}
 		case model.TaskStatusFailed:
 			p.persistIterationFixFailure(ctx, payload, record.Error)
 			p.sendIterationErrorNotification(ctx, record)
@@ -666,9 +676,26 @@ func (p *Processor) prepareFixReviewPayload(ctx context.Context, payload model.T
 	return payload, nil
 }
 
-func (p *Processor) persistIterationFixResult(ctx context.Context, payload model.TaskPayload, record *model.TaskRecord, result *iterate.FixReviewResult) {
+func (p *Processor) repairSucceededFixReviewIterationState(ctx context.Context, record *model.TaskRecord, payload model.TaskPayload) error {
+	p.logger.InfoContext(ctx, "fix_review 任务已成功，跳过容器重跑并修复迭代状态",
+		"task_id", record.ID,
+		"session_id", payload.SessionID,
+		"round", payload.RoundNumber)
+	iterateResult := &iterate.FixReviewResult{RawOutput: record.Result}
+	if output, ok := decodeFixReviewOutput(record.Result); ok {
+		iterateResult.Output = output
+	} else {
+		return fmt.Errorf("fix_review 已成功但无法解析历史结果用于状态修复")
+	}
+	if err := p.persistIterationFixResult(ctx, payload, record, iterateResult); err != nil {
+		return fmt.Errorf("fix_review 迭代状态修复失败: %w", err)
+	}
+	return nil
+}
+
+func (p *Processor) persistIterationFixResult(ctx context.Context, payload model.TaskPayload, record *model.TaskRecord, result *iterate.FixReviewResult) error {
 	if payload.SessionID == 0 || payload.RoundNumber == 0 || record == nil || result == nil || result.Output == nil {
-		return
+		return fmt.Errorf("fix_review 迭代落库上下文不完整")
 	}
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -678,12 +705,12 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 	if err != nil {
 		p.logger.ErrorContext(ctx, "查询迭代轮次失败",
 			"session_id", payload.SessionID, "round", payload.RoundNumber, "error", err)
-		return
+		return err
 	}
 	if round == nil {
 		p.logger.WarnContext(ctx, "迭代轮次不存在，跳过修复结果落库",
 			"session_id", payload.SessionID, "round", payload.RoundNumber)
-		return
+		return fmt.Errorf("迭代轮次不存在: session_id=%d round=%d", payload.SessionID, payload.RoundNumber)
 	}
 	if round.FixTaskID != "" && round.FixTaskID != record.ID {
 		p.logger.WarnContext(ctx, "迭代轮次 fix_task_id 不匹配，跳过修复结果落库",
@@ -691,7 +718,7 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 			"round", payload.RoundNumber,
 			"round_fix_task_id", round.FixTaskID,
 			"task_id", record.ID)
-		return
+		return fmt.Errorf("迭代轮次 fix_task_id 不匹配: round_fix_task_id=%s task_id=%s", round.FixTaskID, record.ID)
 	}
 
 	alreadyCompleted := round.CompletedAt != nil
@@ -711,7 +738,7 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 		if err := p.store.UpdateIterationRound(persistCtx, round); err != nil {
 			p.logger.ErrorContext(ctx, "更新迭代轮次修复结果失败",
 				"session_id", payload.SessionID, "round", payload.RoundNumber, "error", err)
-			return
+			return err
 		}
 	}
 
@@ -719,14 +746,18 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 	if err != nil {
 		p.logger.ErrorContext(ctx, "查询迭代会话失败",
 			"repo", payload.RepoFullName, "pr", payload.PRNumber, "error", err)
-		return
+		return err
 	}
 	if session == nil || session.ID != payload.SessionID {
-		return
+		return fmt.Errorf("活跃迭代会话不存在或不匹配: session_id=%d", payload.SessionID)
 	}
-	if !alreadyCompleted {
-		session.TotalIssuesFixed += issuesFixed
+	totalIssuesFixed, err := recomputeIterationTotalIssuesFixed(persistCtx, p.store, payload.SessionID, round)
+	if err != nil {
+		p.logger.ErrorContext(ctx, "重算迭代会话修复统计失败",
+			"session_id", payload.SessionID, "error", err)
+		return err
 	}
+	session.TotalIssuesFixed = totalIssuesFixed
 	if session.Status == "fixing" {
 		session.Status = "reviewing"
 	}
@@ -734,7 +765,9 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 	if err := p.store.UpdateIterationSession(persistCtx, session); err != nil {
 		p.logger.ErrorContext(ctx, "更新迭代会话修复统计失败",
 			"session_id", session.ID, "error", err)
+		return err
 	}
+	return nil
 }
 
 func (p *Processor) persistIterationFixFailure(ctx context.Context, payload model.TaskPayload, errMsg string) {

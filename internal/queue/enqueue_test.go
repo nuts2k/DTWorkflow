@@ -45,6 +45,9 @@ type mockStore struct {
 	findActivePRTasksMultiErr   error
 	updateIterationSessionCalls int
 	updateIterationRoundCalls   int
+	getLatestRoundErr           error
+	updateIterationRoundErr     error
+	updateIterationSessionErr   error
 }
 
 func newMockStore() *mockStore {
@@ -322,6 +325,9 @@ func (m *mockStore) FindOrCreateIterationSession(_ context.Context, _ string, _ 
 }
 func (m *mockStore) UpdateIterationSession(_ context.Context, session *store.IterationSessionRecord) error {
 	m.updateIterationSessionCalls++
+	if m.updateIterationSessionErr != nil {
+		return m.updateIterationSessionErr
+	}
 	m.iterationSession = session
 	return nil
 }
@@ -330,10 +336,29 @@ func (m *mockStore) CreateIterationRound(_ context.Context, _ *store.IterationRo
 }
 func (m *mockStore) UpdateIterationRound(_ context.Context, round *store.IterationRoundRecord) error {
 	m.updateIterationRoundCalls++
+	if m.updateIterationRoundErr != nil {
+		return m.updateIterationRoundErr
+	}
 	m.latestIterationRound = round
+	if round.CompletedAt != nil {
+		replaced := false
+		for i, existing := range m.completedIterationRounds {
+			if existing.ID == round.ID || (existing.SessionID == round.SessionID && existing.RoundNumber == round.RoundNumber) {
+				m.completedIterationRounds[i] = round
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			m.completedIterationRounds = append(m.completedIterationRounds, round)
+		}
+	}
 	return nil
 }
 func (m *mockStore) GetLatestRound(_ context.Context, _ int64) (*store.IterationRoundRecord, error) {
+	if m.getLatestRoundErr != nil {
+		return nil, m.getLatestRoundErr
+	}
 	return m.latestIterationRound, nil
 }
 func (m *mockStore) GetIterationRound(_ context.Context, _ int64, roundNumber int) (*store.IterationRoundRecord, error) {
@@ -1482,6 +1507,227 @@ func TestAfterReviewCompleted_RecoversTerminalFixReviewRound(t *testing.T) {
 	}
 	if !s.latestIterationRound.IsRecovery {
 		t.Fatal("恢复轮次应标记 IsRecovery=true")
+	}
+}
+
+func TestAfterReviewCompleted_RefreshesLabelsBeforeFixReview(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-no-label"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
+			Enabled:              true,
+			MaxRounds:            3,
+			Label:                "auto-iterate",
+			NotificationMode:     "silent",
+			FixSeverityThreshold: "error",
+			ReportPath:           "docs/review_history",
+		}}),
+		WithIterateLabels(&mockIterateLabelManager{labels: []string{"bug"}}),
+	)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           41,
+		RepoFullName: "org/repo",
+		PRNumber:     47,
+		Status:       "reviewing",
+		MaxRounds:    3,
+	}
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     47,
+		BaseRef:      "main",
+		HeadRef:      "feature/no-label",
+	}
+	issues := []review.ReviewIssue{{File: "main.go", Severity: "ERROR", Message: "bug"}}
+
+	if h.AfterReviewCompleted(context.Background(), &model.TaskRecord{ID: "review-47"}, payload, []string{"auto-iterate"}, issues) {
+		t.Fatal("当前标签已移除时不应触发 fix_review")
+	}
+	if len(mc.payloads) != 0 {
+		t.Fatalf("不应入队 fix_review，payloads=%v", mc.payloads)
+	}
+}
+
+func TestAfterReviewCompleted_FailsClosedWhenLatestRoundQueryFails(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-round-error"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
+			Enabled:              true,
+			MaxRounds:            3,
+			Label:                "auto-iterate",
+			NotificationMode:     "silent",
+			FixSeverityThreshold: "error",
+			ReportPath:           "docs/review_history",
+		}}),
+	)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           42,
+		RepoFullName: "org/repo",
+		PRNumber:     48,
+		Status:       "reviewing",
+		MaxRounds:    3,
+	}
+	s.getLatestRoundErr = errors.New("db busy")
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     48,
+		BaseRef:      "main",
+		HeadRef:      "feature/db-busy",
+	}
+	issues := []review.ReviewIssue{{File: "main.go", Severity: "ERROR", Message: "bug"}}
+
+	if h.AfterReviewCompleted(context.Background(), &model.TaskRecord{ID: "review-48"}, payload, []string{"auto-iterate"}, issues) {
+		t.Fatal("查询最新轮次失败时应 fail closed")
+	}
+	if len(mc.payloads) != 0 {
+		t.Fatalf("不应入队 fix_review，payloads=%v", mc.payloads)
+	}
+}
+
+func TestAfterReviewCompleted_RepairsSucceededFixReviewRound(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-repaired-next"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
+			Enabled:              true,
+			MaxRounds:            3,
+			Label:                "auto-iterate",
+			NotificationMode:     "silent",
+			FixSeverityThreshold: "error",
+			ReportPath:           "docs/review_history",
+		}}),
+	)
+	raw := `{"type":"result","result":"{\"fixes\":[{\"action\":\"modified\"},{\"action\":\"skipped\"}],\"summary\":\"fixed https://secret.example/token\"}"}`
+	fixTask := &model.TaskRecord{
+		ID:           "fix-review-succeeded-unpersisted",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusSucceeded,
+		Result:       raw,
+		RepoFullName: "org/repo",
+		PRNumber:     49,
+		Payload: model.TaskPayload{
+			FixReportPath: "docs/review_history/49-round1.md",
+		},
+	}
+	seedRecord(s, fixTask)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:               43,
+		RepoFullName:     "org/repo",
+		PRNumber:         49,
+		Status:           "fixing",
+		MaxRounds:        3,
+		TotalIssuesFixed: 0,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          50,
+		SessionID:   43,
+		RoundNumber: 1,
+		FixTaskID:   fixTask.ID,
+	}
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     49,
+		BaseRef:      "main",
+		HeadRef:      "feature/repaired",
+	}
+	issues := []review.ReviewIssue{{File: "main.go", Severity: "ERROR", Message: "bug"}}
+
+	if !h.AfterReviewCompleted(context.Background(), &model.TaskRecord{ID: "review-49"}, payload, []string{"auto-iterate"}, issues) {
+		t.Fatal("已成功但未完成落库的 fix_review 轮次应自愈并继续下一轮")
+	}
+	if s.iterationSession.TotalIssuesFixed != 1 {
+		t.Fatalf("TotalIssuesFixed = %d, want 1", s.iterationSession.TotalIssuesFixed)
+	}
+	if len(s.completedIterationRounds) == 0 {
+		t.Fatal("应记录已完成轮次")
+	}
+	if strings.Contains(s.completedIterationRounds[0].FixSummary, "https://") {
+		t.Fatalf("自愈摘要不应包含原始链接: %q", s.completedIterationRounds[0].FixSummary)
+	}
+	if len(mc.payloads) != 1 || mc.payloads[0].RoundNumber != 2 {
+		t.Fatalf("payloads = %+v, want next round 2", mc.payloads)
+	}
+}
+
+func TestAfterReviewCompleted_RepairRecomputesTotalIssuesFixed(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-recomputed-next"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
+			Enabled:              true,
+			MaxRounds:            4,
+			Label:                "auto-iterate",
+			NotificationMode:     "silent",
+			FixSeverityThreshold: "error",
+			ReportPath:           "docs/review_history",
+		}}),
+	)
+	now := time.Now()
+	raw := `{"type":"result","result":"{\"fixes\":[{\"action\":\"modified\"},{\"action\":\"alternative_chosen\"}],\"summary\":\"fixed\"}"}`
+	fixTask := &model.TaskRecord{
+		ID:           "fix-review-succeeded-partial-persist",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusSucceeded,
+		Result:       raw,
+		RepoFullName: "org/repo",
+		PRNumber:     50,
+	}
+	seedRecord(s, fixTask)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:               44,
+		RepoFullName:     "org/repo",
+		PRNumber:         50,
+		Status:           "fixing",
+		MaxRounds:        4,
+		TotalIssuesFixed: 0,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          51,
+		SessionID:   44,
+		RoundNumber: 2,
+		FixTaskID:   fixTask.ID,
+	}
+	s.completedIterationRounds = []*store.IterationRoundRecord{
+		{
+			ID:          50,
+			SessionID:   44,
+			RoundNumber: 1,
+			IssuesFixed: 1,
+			CompletedAt: &now,
+		},
+	}
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     50,
+		BaseRef:      "main",
+		HeadRef:      "feature/recomputed",
+	}
+	issues := []review.ReviewIssue{{File: "main.go", Severity: "ERROR", Message: "bug"}}
+
+	if !h.AfterReviewCompleted(context.Background(), &model.TaskRecord{ID: "review-50"}, payload, []string{"auto-iterate"}, issues) {
+		t.Fatal("已成功但未完成落库的 fix_review 轮次应自愈并继续下一轮")
+	}
+	if s.iterationSession.TotalIssuesFixed != 3 {
+		t.Fatalf("TotalIssuesFixed = %d, want 3", s.iterationSession.TotalIssuesFixed)
+	}
+	if len(mc.payloads) != 1 || mc.payloads[0].RoundNumber != 3 {
+		t.Fatalf("payloads = %+v, want next round 3", mc.payloads)
 	}
 }
 
@@ -2886,6 +3132,26 @@ type mockIterateConfigProvider struct {
 
 func (m *mockIterateConfigProvider) ResolveIterateConfig(_ string) config.IterateConfig {
 	return m.cfg
+}
+
+type mockIterateLabelManager struct {
+	labels []string
+	err    error
+}
+
+func (m *mockIterateLabelManager) ListLabels(_ context.Context, _, _ string, _ int64) ([]string, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return append([]string(nil), m.labels...), nil
+}
+
+func (m *mockIterateLabelManager) AddLabel(_ context.Context, _, _ string, _ int64, _ string) error {
+	return nil
+}
+
+func (m *mockIterateLabelManager) RemoveLabel(_ context.Context, _, _ string, _ int64, _ string) error {
+	return nil
 }
 
 // mockPRFilesLister 测试用 PRFilesLister

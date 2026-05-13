@@ -372,6 +372,20 @@ type giteaIterateAdapter struct {
 	logger *slog.Logger
 }
 
+func (a *giteaIterateAdapter) ListLabels(ctx context.Context, owner, repo string, prNumber int64) ([]string, error) {
+	labels, _, err := a.client.GetIssueLabels(ctx, owner, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("获取 PR 标签失败: %w", err)
+	}
+	result := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if l != nil {
+			result = append(result, l.Name)
+		}
+	}
+	return result, nil
+}
+
 func (a *giteaIterateAdapter) AddLabel(ctx context.Context, owner, repo string, prNumber int64, label string) error {
 	allLabels, _, err := a.client.ListRepoLabels(ctx, owner, repo)
 	if err != nil {

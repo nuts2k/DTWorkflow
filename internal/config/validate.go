@@ -567,12 +567,14 @@ func validateIterateConfig(cfg *Config) []error {
 	if it.MaxRounds != 0 && (it.MaxRounds < 1 || it.MaxRounds > 10) {
 		errs = append(errs, fmt.Errorf("iterate.max_rounds 必须在 [1, 10] 范围内，当前值: %d", it.MaxRounds))
 	}
+	notificationMode := strings.ToLower(strings.TrimSpace(it.NotificationMode))
 	validModes := map[string]bool{"progress": true, "silent": true, "": true}
-	if !validModes[it.NotificationMode] {
+	if !validModes[notificationMode] {
 		errs = append(errs, fmt.Errorf("iterate.notification_mode 合法值为 progress/silent，当前值: %q", it.NotificationMode))
 	}
+	fixSeverityThreshold := strings.ToLower(strings.TrimSpace(it.FixSeverityThreshold))
 	validSeverities := map[string]bool{"critical": true, "error": true, "warning": true, "": true}
-	if !validSeverities[it.FixSeverityThreshold] {
+	if !validSeverities[fixSeverityThreshold] {
 		errs = append(errs, fmt.Errorf("iterate.fix_severity_threshold 合法值为 critical/error/warning，当前值: %q", it.FixSeverityThreshold))
 	}
 
@@ -581,10 +583,10 @@ func validateIterateConfig(cfg *Config) []error {
 		if it.MaxRounds < 1 {
 			errs = append(errs, fmt.Errorf("iterate.max_rounds 启用时必须 >= 1，当前值: %d", it.MaxRounds))
 		}
-		if it.NotificationMode == "" {
+		if notificationMode == "" {
 			errs = append(errs, fmt.Errorf("iterate.notification_mode 启用时不能为空"))
 		}
-		if it.FixSeverityThreshold == "" {
+		if fixSeverityThreshold == "" {
 			errs = append(errs, fmt.Errorf("iterate.fix_severity_threshold 启用时不能为空"))
 		}
 		if strings.TrimSpace(it.Label) == "" {
@@ -606,7 +608,8 @@ func validateIterateConfig(cfg *Config) []error {
 		if repo.Iterate.MaxRounds != 0 && (repo.Iterate.MaxRounds < 1 || repo.Iterate.MaxRounds > 10) {
 			errs = append(errs, fmt.Errorf("repos[%d].iterate.max_rounds 必须在 [1, 10] 范围内，当前值: %d", i, repo.Iterate.MaxRounds))
 		}
-		if repo.Iterate.FixSeverityThreshold != "" && !validSeverities[repo.Iterate.FixSeverityThreshold] {
+		repoFixSeverityThreshold := strings.ToLower(strings.TrimSpace(repo.Iterate.FixSeverityThreshold))
+		if repoFixSeverityThreshold != "" && !validSeverities[repoFixSeverityThreshold] {
 			errs = append(errs, fmt.Errorf("repos[%d].iterate.fix_severity_threshold 合法值为 critical/error/warning，当前值: %q", i, repo.Iterate.FixSeverityThreshold))
 		}
 	}

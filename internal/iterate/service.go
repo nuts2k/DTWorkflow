@@ -119,6 +119,9 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 		return result, fmt.Errorf("%w: %v", ErrFixReviewParseFailure, parseErr)
 	}
 	result.Output = output
+	if CountFixedIssues(output) == 0 {
+		return result, fmt.Errorf("%w: 结构化结果未包含 modified 或 alternative_chosen", ErrNoChanges)
+	}
 
 	return result, nil
 }

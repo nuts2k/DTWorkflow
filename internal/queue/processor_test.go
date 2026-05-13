@@ -363,6 +363,191 @@ func TestProcessTask_FixReviewSuccessPersistsIterationState(t *testing.T) {
 	}
 }
 
+func TestProcessTask_FixReviewAlreadySucceededRepairsIterationState(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:      model.TaskTypeFixReview,
+		DeliveryID:    "iterate-70:fix_review:1",
+		RepoOwner:     "org",
+		RepoName:      "repo",
+		RepoFullName:  "org/repo",
+		PRNumber:      42,
+		SessionID:     70,
+		RoundNumber:   1,
+		FixReportPath: "docs/review_history/42-round1.md",
+	}
+	now := time.Now()
+	raw := `{"type":"result","result":"{\"fixes\":[{\"action\":\"modified\"}],\"summary\":\"fixed\"}"}`
+	record := &model.TaskRecord{
+		ID:           "fix-review-already-succeeded",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusSucceeded,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		Result:       raw,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           70,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Status:       "fixing",
+		MaxRounds:    3,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          170,
+		SessionID:   70,
+		RoundNumber: 1,
+		FixTaskID:   record.ID,
+	}
+	iterExec := &mockIterateExecutor{
+		err: errors.New("should not execute"),
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithIterateService(iterExec))
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if iterExec.calls != 0 {
+		t.Fatalf("已成功任务不应重跑容器，calls=%d", iterExec.calls)
+	}
+	if s.latestIterationRound.CompletedAt == nil {
+		t.Fatal("应补齐 round completed_at")
+	}
+	if s.iterationSession.Status != "reviewing" {
+		t.Fatalf("session status = %q, want reviewing", s.iterationSession.Status)
+	}
+}
+
+func TestProcessTask_FixReviewSuccessIterationPersistFailureReturnsError(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixReview,
+		DeliveryID:   "iterate-71:fix_review:1",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		SessionID:    71,
+		RoundNumber:  1,
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "fix-review-persist-failure",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           71,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Status:       "fixing",
+		MaxRounds:    3,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          171,
+		SessionID:   71,
+		RoundNumber: 1,
+		FixTaskID:   record.ID,
+	}
+	s.updateIterationRoundErr = errors.New("db down")
+	iterExec := &mockIterateExecutor{
+		result: &iterate.FixReviewResult{
+			RawOutput: `{"type":"result","result":"{\"fixes\":[{\"action\":\"modified\"}],\"summary\":\"fixed\"}"}`,
+			Output: &iterate.FixReviewOutput{
+				Fixes:   []iterate.FixItem{{Action: "modified"}},
+				Summary: "fixed",
+			},
+		},
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithIterateService(iterExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("迭代状态落库失败应返回错误")
+	}
+	if !strings.Contains(err.Error(), "迭代状态落库失败") {
+		t.Fatalf("error = %v, want contains 迭代状态落库失败", err)
+	}
+}
+
+func TestProcessTask_FixReviewAlreadyCompletedRecomputesTotalIssuesFixed(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixReview,
+		DeliveryID:   "iterate-72:fix_review:2",
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		SessionID:    72,
+		RoundNumber:  2,
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "fix-review-already-completed",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusSucceeded,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		Result:       `{"type":"result","result":"{\"fixes\":[{\"action\":\"modified\"},{\"action\":\"alternative_chosen\"}],\"summary\":\"fixed\"}"}`,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:               72,
+		RepoFullName:     "org/repo",
+		PRNumber:         42,
+		Status:           "fixing",
+		MaxRounds:        3,
+		TotalIssuesFixed: 0,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          172,
+		SessionID:   72,
+		RoundNumber: 2,
+		FixTaskID:   record.ID,
+		IssuesFixed: 2,
+		CompletedAt: &now,
+	}
+	s.completedIterationRounds = []*store.IterationRoundRecord{
+		{
+			ID:          171,
+			SessionID:   72,
+			RoundNumber: 1,
+			IssuesFixed: 1,
+			CompletedAt: &now,
+		},
+		s.latestIterationRound,
+	}
+	iterExec := &mockIterateExecutor{err: errors.New("should not execute")}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithIterateService(iterExec))
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+	if iterExec.calls != 0 {
+		t.Fatalf("已完成任务不应重跑容器，calls=%d", iterExec.calls)
+	}
+	if s.iterationSession.TotalIssuesFixed != 3 {
+		t.Fatalf("TotalIssuesFixed = %d, want 3", s.iterationSession.TotalIssuesFixed)
+	}
+}
+
 func TestProcessTask_FixReviewParseFailureRecordsZeroFixAndNotifies(t *testing.T) {
 	s := newMockStore()
 	notifier := &stubNotifier{}

@@ -72,7 +72,10 @@ func TestService_Execute_Success(t *testing.T) {
 }
 
 func TestService_Execute_UsesPayloadPromptConfig(t *testing.T) {
-	fixOutput := FixReviewOutput{Summary: "ok"}
+	fixOutput := FixReviewOutput{
+		Fixes:   []FixItem{{Action: "modified"}},
+		Summary: "ok",
+	}
 	fixJSON, _ := json.Marshal(fixOutput)
 	cliResult := fmt.Sprintf(`{"type":"success","is_error":false,"result":"%s"}`,
 		jsonEscape(string(fixJSON)))
@@ -102,6 +105,38 @@ func TestService_Execute_UsesPayloadPromptConfig(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "custom/reports/42-round2.md") {
 		t.Fatalf("prompt 未使用 payload report path: %s", prompt)
+	}
+}
+
+func TestService_Execute_NoFixedIssuesReturnsErrNoChanges(t *testing.T) {
+	fixOutput := FixReviewOutput{
+		Fixes:   []FixItem{{Action: "skipped"}},
+		Summary: "nothing changed",
+	}
+	fixJSON, _ := json.Marshal(fixOutput)
+	cliResult := fmt.Sprintf(`{"type":"result","subtype":"success","result":"%s"}`,
+		jsonEscape(string(fixJSON)))
+	issues := []review.ReviewIssue{{File: "main.go", Line: 10, Severity: "ERROR", Message: "bug"}}
+	issuesJSON, _ := json.Marshal(issues)
+
+	pool := &mockPool{output: cliResult}
+	svc := NewService(pool, nil)
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixReview,
+		RepoFullName: "owner/repo",
+		PRNumber:     42,
+		HeadRef:      "feature",
+		BaseRef:      "main",
+		RoundNumber:  1,
+		ReviewIssues: string(issuesJSON),
+	}
+
+	result, err := svc.Execute(context.Background(), payload)
+	if !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("error = %v, want ErrNoChanges", err)
+	}
+	if result == nil || result.Output == nil {
+		t.Fatal("零修复场景仍应保留结构化输出供上层落库")
 	}
 }
 

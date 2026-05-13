@@ -180,6 +180,23 @@ func TestValidate_IterateEnabledRequiresBotLogin(t *testing.T) {
 	}
 }
 
+func TestValidate_IterateSeverityAndNotificationModeCaseInsensitive(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Iterate = IterateConfig{
+		Enabled:              true,
+		MaxRounds:            3,
+		Label:                "auto-iterate",
+		NotificationMode:     "PROGRESS",
+		FixSeverityThreshold: "ERROR",
+		ReportPath:           "docs/review_history",
+		BotLogin:             "dtworkflow-bot",
+	}
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("大小写不同但合法的 iterate 配置应通过校验: %v", err)
+	}
+}
+
 func TestValidate_InvalidPort(t *testing.T) {
 	for _, port := range []int{0, -1, 65536, 100000} {
 		cfg := validBaseConfig()

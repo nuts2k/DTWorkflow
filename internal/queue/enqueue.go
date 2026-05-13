@@ -46,6 +46,10 @@ type IterateSessionStore interface {
 	FindActivePRTasksMulti(ctx context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error)
 }
 
+type completedIterationRoundsLister interface {
+	GetCompletedRoundsForSession(ctx context.Context, sessionID int64) ([]*store.IterationRoundRecord, error)
+}
+
 // IterateConfigProvider 迭代配置读取接口。
 type IterateConfigProvider interface {
 	ResolveIterateConfig(repoFullName string) config.IterateConfig
@@ -53,6 +57,7 @@ type IterateConfigProvider interface {
 
 // IterateLabelManager Gitea 标签管理窄接口。
 type IterateLabelManager interface {
+	ListLabels(ctx context.Context, owner, repo string, prNumber int64) ([]string, error)
 	AddLabel(ctx context.Context, owner, repo string, prNumber int64, label string) error
 	RemoveLabel(ctx context.Context, owner, repo string, prNumber int64, label string) error
 }
@@ -1311,7 +1316,8 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	if !cfg.Enabled {
 		return false
 	}
-	if !iterate.ContainsLabel(labels, cfg.Label) {
+	currentLabels, ok := h.currentIterationLabels(ctx, payload, labels)
+	if !ok || !iterate.ContainsLabel(currentLabels, cfg.Label) {
 		return false
 	}
 
@@ -1331,10 +1337,25 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	}
 
 	// 获取最新轮次，检查是否为恢复场景
-	latestRound, _ := h.iterateStore.GetLatestRound(ctx, session.ID)
+	latestRound, err := h.iterateStore.GetLatestRound(ctx, session.ID)
+	if err != nil {
+		h.logger.WarnContext(ctx, "查询最新迭代轮次失败，跳过本次迭代链式入队",
+			"session_id", session.ID,
+			"error", err)
+		return false
+	}
 
 	if latestRound != nil && latestRound.FixTaskID != "" && latestRound.CompletedAt == nil {
-		if h.latestFixReviewTaskTerminal(ctx, latestRound) {
+		if completed, recoverErr := h.tryCompleteSucceededFixReviewRound(ctx, payload, session, latestRound); recoverErr != nil {
+			h.logger.WarnContext(ctx, "自愈已成功 fix_review 轮次失败，跳过本次迭代链式入队",
+				"session_id", session.ID,
+				"latest_round", latestRound.RoundNumber,
+				"fix_task_id", latestRound.FixTaskID,
+				"error", recoverErr)
+			return false
+		} else if completed != nil {
+			latestRound = completed
+		} else if h.latestFixReviewTaskTerminal(ctx, latestRound) {
 			now := time.Now()
 			latestRound.CompletedAt = &now
 			latestRound.IssuesFixed = 0
@@ -1545,6 +1566,21 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	return true
 }
 
+func (h *EnqueueHandler) currentIterationLabels(ctx context.Context, payload model.TaskPayload, fallback []string) ([]string, bool) {
+	if h.iterateLabels == nil {
+		return fallback, true
+	}
+	labels, err := h.iterateLabels.ListLabels(ctx, payload.RepoOwner, payload.RepoName, payload.PRNumber)
+	if err != nil {
+		h.logger.WarnContext(ctx, "刷新 PR 标签失败，跳过迭代修复以避免使用过期标签",
+			"repo", payload.RepoFullName,
+			"pr", payload.PRNumber,
+			"error", err)
+		return nil, false
+	}
+	return labels, true
+}
+
 func (h *EnqueueHandler) latestFixReviewTaskTerminal(ctx context.Context, latestRound *store.IterationRoundRecord) bool {
 	if latestRound == nil || latestRound.FixTaskID == "" {
 		return false
@@ -1559,6 +1595,177 @@ func (h *EnqueueHandler) latestFixReviewTaskTerminal(ctx context.Context, latest
 	default:
 		return false
 	}
+}
+
+func (h *EnqueueHandler) tryCompleteSucceededFixReviewRound(ctx context.Context, payload model.TaskPayload, session *store.IterationSessionRecord, latestRound *store.IterationRoundRecord) (*store.IterationRoundRecord, error) {
+	if latestRound == nil || latestRound.FixTaskID == "" || latestRound.CompletedAt != nil {
+		return nil, nil
+	}
+	fixTask, err := h.store.GetTask(ctx, latestRound.FixTaskID)
+	if err != nil || fixTask == nil {
+		return nil, nil
+	}
+	if fixTask.Status != model.TaskStatusSucceeded {
+		return nil, nil
+	}
+	issuesFixed := countFixedIssuesFromTaskResult(fixTask.Result)
+	now := time.Now()
+	latestRound.CompletedAt = &now
+	latestRound.IssuesFixed = issuesFixed
+	if strings.TrimSpace(latestRound.FixSummary) == "" {
+		latestRound.FixSummary = extractFixReviewSummary(fixTask.Result)
+		if strings.TrimSpace(latestRound.FixSummary) == "" {
+			latestRound.FixSummary = "上一轮 fix_review 已成功，但迭代轮次状态由后续 review 自愈补齐"
+		}
+	}
+	latestRound.FixSummary = iterate.SanitizeFixReviewError(latestRound.FixSummary)
+	if strings.TrimSpace(latestRound.FixReportPath) == "" {
+		latestRound.FixReportPath = fixTask.Payload.FixReportPath
+	}
+	if strings.TrimSpace(latestRound.FixReportPath) == "" {
+		latestRound.FixReportPath = iterate.BuildReportPath("docs/review_history", payload.PRNumber, latestRound.RoundNumber)
+	}
+	if err := h.iterateStore.UpdateIterationRound(ctx, latestRound); err != nil {
+		return nil, err
+	}
+	if session != nil {
+		totalIssuesFixed, err := recomputeIterationTotalIssuesFixed(ctx, h.iterateStore, session.ID, latestRound)
+		if err != nil {
+			return nil, err
+		}
+		session.TotalIssuesFixed = totalIssuesFixed
+		if session.Status == "fixing" {
+			session.Status = "reviewing"
+		}
+		session.LastError = ""
+		if err := h.iterateStore.UpdateIterationSession(ctx, session); err != nil {
+			return nil, err
+		}
+	}
+	return latestRound, nil
+}
+
+func recomputeIterationTotalIssuesFixed(ctx context.Context, lister completedIterationRoundsLister, sessionID int64, fallback *store.IterationRoundRecord) (int, error) {
+	rounds, err := lister.GetCompletedRoundsForSession(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	seen := make(map[string]struct{}, len(rounds)+1)
+	for _, round := range rounds {
+		if round == nil || round.CompletedAt == nil {
+			continue
+		}
+		key := iterationRoundIdentity(round)
+		seen[key] = struct{}{}
+		total += round.IssuesFixed
+	}
+	if fallback != nil && fallback.CompletedAt != nil {
+		key := iterationRoundIdentity(fallback)
+		if _, ok := seen[key]; !ok {
+			total += fallback.IssuesFixed
+		}
+	}
+	return total, nil
+}
+
+func iterationRoundIdentity(round *store.IterationRoundRecord) string {
+	if round.ID != 0 {
+		return fmt.Sprintf("id:%d", round.ID)
+	}
+	return fmt.Sprintf("session:%d:round:%d", round.SessionID, round.RoundNumber)
+}
+
+func countFixedIssuesFromTaskResult(raw string) int {
+	output, ok := decodeFixReviewOutput(raw)
+	if !ok {
+		return 0
+	}
+	return iterate.CountFixedIssues(output)
+}
+
+func extractFixReviewSummary(raw string) string {
+	output, ok := decodeFixReviewOutput(raw)
+	if !ok || output == nil {
+		return ""
+	}
+	return iterate.SanitizeFixReviewError(output.Summary)
+}
+
+func decodeFixReviewOutput(raw string) (*iterate.FixReviewOutput, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false
+	}
+	for _, text := range candidateFixReviewResultTexts(raw) {
+		jsonText := extractFirstJSONObject(text)
+		if jsonText == "" {
+			continue
+		}
+		var output iterate.FixReviewOutput
+		if err := json.Unmarshal([]byte(jsonText), &output); err == nil {
+			return &output, true
+		}
+	}
+	return nil, false
+}
+
+func candidateFixReviewResultTexts(raw string) []string {
+	var candidates []string
+	lines := strings.Split(raw, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var resp review.CLIResponse
+		if err := json.Unmarshal([]byte(line), &resp); err == nil && (resp.Type == "result" || resp.Type == "success" || resp.Type == "") {
+			candidates = append(candidates, resp.Result)
+		}
+	}
+	candidates = append(candidates, raw)
+	return candidates
+}
+
+func extractFirstJSONObject(text string) string {
+	start := strings.Index(text, "{")
+	if start == -1 {
+		return ""
+	}
+	depth := 0
+	inString := false
+	escape := false
+	for i := start; i < len(text); i++ {
+		ch := text[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if ch == '\\' && inString {
+			escape = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				candidate := text[start : i+1]
+				if json.Valid([]byte(candidate)) {
+					return candidate
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func (h *EnqueueHandler) waitForIterationRoundCompleted(ctx context.Context, sessionID int64, roundNumber int) (*store.IterationRoundRecord, error) {

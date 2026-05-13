@@ -96,6 +96,15 @@ WRAP
     export PATH="${SAFE_BIN_DIR}:${PATH}"
 }
 
+capture_trusted_fix_review_git_state() {
+    # 保存父进程最终 push 所需的可信状态。Claude 执行期间可修改仓库内
+    # origin/hooks/wrapper，因此最终 push 不再信任这些可变状态。
+    DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN="$(command -v git)"
+    DTWORKFLOW_FIX_REVIEW_BASE_SHA="$("${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN}" rev-parse "origin/${HEAD_REF}")"
+    export DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN
+    export DTWORKFLOW_FIX_REVIEW_BASE_SHA
+}
+
 validate_fix_review_head_ref() {
     local ref="$1"
     # Git refname 本身允许分号、双引号等 shell 元字符；fix_review 只接受常规分支字符集。
@@ -111,6 +120,27 @@ push_fix_review_result() {
         log "ERROR: fix_review 缺少受控 push token"
         return 2
     fi
+    if [ -z "${DTWORKFLOW_FIX_REVIEW_CLONE_URL:-}" ]; then
+        log "ERROR: fix_review 缺少受控 push URL"
+        return 2
+    fi
+    if [ -z "${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN:-}" ] || [ ! -x "${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN}" ]; then
+        log "ERROR: fix_review 真实 git 路径不可用"
+        return 2
+    fi
+    if [ -z "${DTWORKFLOW_FIX_REVIEW_BASE_SHA:-}" ]; then
+        log "ERROR: fix_review 缺少基准提交 SHA"
+        return 2
+    fi
+    local head_sha
+    if ! head_sha="$("${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN}" rev-parse HEAD 2>/dev/null)"; then
+        log "ERROR: fix_review 无法解析当前 HEAD"
+        return 2
+    fi
+    if [ "${head_sha}" = "${DTWORKFLOW_FIX_REVIEW_BASE_SHA}" ]; then
+        log "ERROR: fix_review 未产生新提交，跳过受控 push"
+        return 2
+    fi
     local helper_script
     helper_script="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
     cat > "${helper_script}" <<HELPER
@@ -122,7 +152,11 @@ HELPER
 
     log "fix_review: 受控推送当前 PR head 分支 ${HEAD_REF}"
     set +e
-    git -c credential.helper="${helper_script}" push origin "HEAD:refs/heads/${HEAD_REF}" 2>&1 \
+    "${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN}" \
+        -c credential.helper= \
+        -c credential.helper="${helper_script}" \
+        -c core.hooksPath=/dev/null \
+        push "${DTWORKFLOW_FIX_REVIEW_CLONE_URL}" "HEAD:refs/heads/${HEAD_REF}" 2>&1 \
         | sed "s|${DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN}|***|g" >&2
     local push_status=${PIPESTATUS[0]}
     set -e
@@ -254,6 +288,7 @@ case "${TASK_TYPE:-}" in
         git fetch origin "${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" >&2 2>&1
         git checkout -B "${HEAD_REF}" "origin/${HEAD_REF}" >&2 2>&1
         git branch --set-upstream-to="origin/${HEAD_REF}" "${HEAD_REF}" >&2 2>&1 || true
+        capture_trusted_fix_review_git_state
         if [ -n "${BASE_REF:-}" ]; then
             git fetch origin "${BASE_REF}" >&2 2>&1 || true
             log "fix_review: 已获取 base 分支 ${BASE_REF}"
@@ -505,6 +540,7 @@ fi
 # 清除敏感环境变量，防止 Claude Code 通过 Bash 读取
 if [ "${TASK_TYPE:-}" = "fix_review" ]; then
     DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN="${GITEA_TOKEN:-}"
+    DTWORKFLOW_FIX_REVIEW_CLONE_URL="${REPO_CLONE_URL:-}"
 fi
 unset GITEA_TOKEN
 unset AUTH_URL

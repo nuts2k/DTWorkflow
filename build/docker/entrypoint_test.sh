@@ -17,6 +17,7 @@ mkdir -p "${TMPDIR}/fakebin" "${TMPDIR}/home"
 #   MOCK_MERGE_BASE_RESULT       : merge-base --is-ancestor 结果，ancestor|not-ancestor，默认 ancestor
 #   MOCK_LOG_AUTHORS             : log base..branch --pretty=%ae 输出（换行分隔作者），默认空（仅 bot）
 #   MOCK_GIT_PUSH_RESULT         : push 结果，success|fail，默认 success
+#   MOCK_FIX_REVIEW_HEAD_SHA     : fix_review 完成后的 HEAD sha，默认 fixedsha
 # rev-parse 返回：origin/auto-test/* -> branchsha；origin/* -> basesha；其它 -> abc123
 # ------------------------------------------------------------
 cat > "${TMPDIR}/fakebin/git" <<'EOF'
@@ -46,18 +47,19 @@ case "${1:-}" in
     ;;
   remote|config)
     ;;
-  rev-parse)
-    case "${2:-}" in
-      origin/auto-test/*)
-        if [ "${MOCK_REV_PARSE_BRANCH_FAIL:-}" = "1" ]; then
-          exit 1
-        fi
-        echo "branchsha"
-        ;;
-      origin/*) echo "basesha" ;;
-      *)        echo "abc123" ;;
-    esac
-    ;;
+	  rev-parse)
+	    case "${2:-}" in
+	      origin/auto-test/*)
+	        if [ "${MOCK_REV_PARSE_BRANCH_FAIL:-}" = "1" ]; then
+	          exit 1
+	        fi
+	        echo "branchsha"
+	        ;;
+	      origin/*) echo "basesha" ;;
+	      HEAD)     echo "${MOCK_FIX_REVIEW_HEAD_SHA:-fixedsha}" ;;
+	      *)        echo "abc123" ;;
+	    esac
+	    ;;
   merge-base)
     if [ "${2:-}" = "--is-ancestor" ]; then
       if [ "${MOCK_MERGE_BASE_RESULT:-ancestor}" = "not-ancestor" ]; then
@@ -360,7 +362,9 @@ run_fix_review_case() {
   fi
 
   assert_contains "fix_review — 任务命令成功后由入口脚本受控 push" \
-    "${log}" "push origin HEAD:refs/heads/feature/review-fix"
+    "${log}" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/feature/review-fix"
+  assert_contains "fix_review — 受控 push 禁用 hooks" \
+    "${log}" "-c core.hooksPath=/dev/null push https://gitea.example.com/owner/repo.git HEAD:refs/heads/feature/review-fix"
 
   if [ -x "${repo_dir}/../.dtworkflow-bin/git" ]; then
     echo "PASS: fix_review — git wrapper 已安装"
@@ -394,6 +398,43 @@ run_fix_review_case() {
 
   assert_not_contains "fix_review — push stderr 不泄漏 token" \
     "$(cat "${stderr_file}")" "token"
+}
+
+run_fix_review_noop_case() {
+  local repo_dir="${TMPDIR}/repo-fix-review-noop-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  local stdout_file="${TMPDIR}/fix-review-noop.out"
+  local stderr_file="${TMPDIR}/fix-review-noop.err"
+
+  set +e
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  MOCK_FIX_REVIEW_HEAD_SHA="basesha" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="fix_review" \
+  PR_NUMBER="42" \
+  HEAD_REF="feature/review-fix" \
+  BASE_REF="main" \
+  bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}"
+  local code=$?
+  set -e
+
+  if [ "${code}" -eq 2 ]; then
+    echo "PASS: fix_review — 未产生新提交时确定性失败"
+    (( PASS++ ))
+  else
+    echo "FAIL: fix_review — 未产生新提交时应 exit 2，实际 ${code}"
+    cat "${stderr_file}"
+    (( FAIL++ ))
+  fi
+  assert_contains "fix_review — no-op push 被拦截" \
+    "$(cat "${stderr_file}")" "未产生新提交"
+  assert_not_contains "fix_review — no-op 不执行 push" \
+    "$(cat "${TMPDIR}/git.log")" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/feature/review-fix"
 }
 
 run_fix_review_missing_head_case() {
@@ -473,6 +514,7 @@ run_build_cache_case "gen_tests should enable build cache redirect" "gen_tests"
 run_gen_tests_credentials_case
 run_stdout_case "gen_tests should not leak git output to stdout" "gen_tests"
 run_fix_review_case
+run_fix_review_noop_case
 run_fix_review_missing_head_case
 run_fix_review_invalid_head_case
 
