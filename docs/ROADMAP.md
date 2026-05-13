@@ -4,14 +4,14 @@
 
 ## 总览
 
-项目分为 **5 个阶段**，采用增量交付策略。每个阶段都产出可独立运行的功能，后续阶段在前者基础上扩展。
+项目分为 **6 个阶段**，采用增量交付策略。每个阶段都产出可独立运行的功能，后续阶段在前者基础上扩展。
 
 ```
-Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
-基础设施          PR 自动评审       Issue 自动修复    集中化测试        AI E2E 测试
-& 核心框架        (核心功能)        (核心功能)       (扩展功能)        (扩展功能)
-─────────────── ─────────────── ─────────────── ─────────────── ───────────────
-  基座搭建          首个业务价值      第二业务价值      测试体系补全      自动化闭环
+Phase 1          Phase 2          Phase 3          Phase 4          Phase 5          Phase 6
+基础设施          PR 自动评审       Issue 自动修复    集中化测试        AI E2E 测试      自动化闭环增强
+& 核心框架        (核心功能)        (核心功能)       (扩展功能)        (扩展功能)       (跨阶段能力)
+─────────────── ─────────────── ─────────────── ─────────────── ─────────────── ───────────────
+  基座搭建          首个业务价值      第二业务价值      测试体系补全      自动化闭环        迭代式闭环
 ```
 
 ---
@@ -965,18 +965,108 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5
 
 ---
 
+## Phase 6：自动化闭环增强
+
+**目标**：构建跨阶段的自动化闭环能力，将 Phase 2 的评审和 Phase 3 的修复串联为自驱动迭代流程
+
+**依赖**：Phase 2（PR 评审能力）+ Phase 3 M3.4/M3.5（容器写权限 + fix 账号凭证 + 执行镜像）
+
+### 里程碑
+
+#### M6.1 迭代式 PR 评审修复闭环
+
+> 详细设计见 `docs/superpowers/specs/2026-05-13-iterative-review-fix-design.md`。
+
+自动化 PR 评审→修复→再评审的迭代闭环。当 `review_pr` 评审发现阻碍合并的问题时，自动入队 `fix_review` 任务在容器中修复并 push 新提交，触发 `synchronized` 事件重新评审，循环直到通过或达到迭代上限。
+
+**核心流程**：
+- [ ] 事件驱动链式闭环：`review_pr`（request_changes）→ 检查 `auto-iterate` 标签 + 迭代状态 → 入队 `fix_review` → 容器内修复 + push → `synchronized` → `review_pr` → 循环
+- [ ] 新增 `TaskTypeFixReview` 任务类型，复用容器基础设施（fix 账号凭证、`ImageFull` 镜像），独立 prompt 和分支策略
+- [ ] 迭代会话状态管理：`iteration_sessions` + `iteration_rounds` 两表，partial unique index 支持会话复用
+- [ ] 数据库迁移 v24（两表创建 + `tasks` CHECK 约束追加 `fix_review`）
+
+**触发与控制**：
+- [ ] `auto-iterate` 标签触发（用户/程序设置，可在 PR 创建时由程序自动设置实现全自动化）
+- [ ] 固定迭代上限（默认 3 轮，可配置），连续两轮零修复提前终止
+- [ ] 按严重等级过滤需修复的问题（默认 ERROR 及以上，可配置）
+- [ ] `review_pr` 结果处理尾部追加链式入队判断，`ReviewResult` 新增 `Labels` 字段传递标签数据
+
+**区分 push 来源**：
+- [ ] 基于迭代会话 `fixing` 状态判断 `synchronized` 事件的 push 来源（fix_review 自身 push vs 用户手动 push）
+- [ ] fix_review push：仅取消旧 review_pr；用户 push：取消 review_pr + fix_review（`FindActivePRTasksMulti` 多 TaskType 查询）
+
+**修复报告与留档**：
+- [ ] 仓库内修复报告（`docs/review_history/{pr_number}-{date}-round{N}.md`），修复代码和报告同一 commit + 单次 push
+- [ ] 每个修复项记录决策依据，多选一场景列出所有备选方案（描述、优劣势、未选原因）
+- [ ] PR 评论精简摘要 + 飞书通知
+
+**通知策略**：
+- [ ] 可配置模式：`progress`（默认，每轮进度 + 终态汇总）/ `silent`（仅终态 + 异常告警）
+- [ ] 迭代进行中抑制 `review_pr` 和 `fix_review` 的独立通知（`suppressNotification` 标记）
+
+**Gitea 标签管理**：
+- [ ] 系统管理标签：`iterating`（进行中）/ `iterate-passed`（通过）/ `iterate-exhausted`（超限）
+- [ ] 标签操作由 `iterate.Service` 通过 review 账号执行
+
+**边界情况与防护**：
+- [ ] Cancel-and-Replace：用户手动 push 时取消 review_pr + fix_review，轮次不重置
+- [ ] 标签移除中断：自然停止，无需特殊处理
+- [ ] 幂等保护：DeliveryID 格式 `iterate-{session_id}:fix_review:{round_number}`
+- [ ] 失败处理：超时/崩溃沿用 asynq 重试（3 次指数退避）；确定性失败 SkipRetry；修复质量失败继续下一轮
+- [ ] 手动恢复：push 新提交 / reopen PR / CLI `dtworkflow iterate retry`，恢复轮次标记 `is_recovery` 不计入限额
+- [ ] 错误脱敏：`FixReviewOutput` 自由文本字段经 `SanitizeErrorMessage` 处理
+
+**配置结构**：
+```yaml
+iterate:
+  enabled: false                    # 总开关，默认关闭
+  max_rounds: 3                     # 迭代上限
+  label: "auto-iterate"             # 触发标签名
+  notification_mode: "progress"     # progress / silent
+  fix_severity_threshold: "error"   # 修复 ERROR 及以上
+  report_path: "docs/review_history"
+```
+
+**模块划分**：
+- `internal/iterate/`：新增包（service / result / prompt / report / errors / session）
+- `internal/store/iterate_session.go`：两表 CRUD + `FindActivePRTasksMulti`
+- `internal/queue/`：扩展 processor（fix_review 分支 + `IterateExecutor` 窄接口）+ enqueue（会话状态检查）
+- `internal/review/result.go`：`ReviewResult` 新增 `Labels` 字段
+- `internal/worker/`：扩展 PoolConfig + TaskTimeoutsConfig（默认 20 分钟）+ resolveImage（ImageFull）
+- `internal/model/task.go`：新增 `TaskTypeFixReview` + TaskPayload 迭代字段
+- `internal/config/`：新增 `iterate` 配置段，支持仓库级覆盖
+
+### 交付物
+- 迭代式 PR 评审修复闭环（`internal/iterate` 包，review→fix→review 自动循环）
+- 修复 Prompt 模板（含决策留档和备选方案要求）
+- 修复报告留档机制（仓库内 markdown + PR 评论 + 飞书通知）
+- 迭代会话状态管理（SQLite + Gitea 标签可视化）
+- 配置结构（`iterate` 配置段，支持仓库级覆盖）
+
+### 验证标准
+- PR 加 `auto-iterate` 标签 → 评审 request_changes → 自动入队 fix_review → 容器修复 + push → 重新评审 → 迭代直到通过或超限
+- 迭代过程中仓库内生成修复报告（含决策依据和备选方案），PR 评论发精简摘要
+- 通知策略可配置（progress / silent），迭代中间通知正确抑制
+- 用户手动 push 时正确区分 push 来源，Cancel-and-Replace 行为符合预期
+- 达到上限后通过 push / reopen / CLI 手动恢复，恢复轮次不计入限额
+- Gitea 标签状态正确流转（iterating → iterate-passed / iterate-exhausted）
+
+---
+
 ## 阶段依赖关系
 
 ```
 Phase 1 (基础设施)
-  ├── Phase 2 (PR 评审)
+  ├── Phase 2 (PR 评审) ─────────────────────┐
   ├── Phase 3 (Issue 修复) ──┬── Phase 4 (测试补全)
-  └──────────────────────────┴── Phase 5 (E2E 测试)
+  │                          ├── Phase 5 (E2E 测试)
+  └──────────────────────────┴───────────────┴─── Phase 6 (闭环增强)
 ```
 
 - Phase 2、3 在 Phase 1 完成后可并行启动（但建议按顺序，逐步交付价值）
 - Phase 4 依赖 Phase 3 M3.5（容器写权限 + PR 创建能力 + 执行镜像）
 - Phase 5 依赖 Phase 1 的基础设施、Phase 3 的 Issue 自动创建 + auto-fix 能力、Phase 4 的镜像策略
+- Phase 6 依赖 Phase 2 的评审能力 + Phase 3 M3.4/M3.5 的修复基础设施
 
 ---
 
@@ -994,7 +1084,8 @@ Phase 1 (基础设施)
 | Phase 4 第二轮 | 变更驱动测试——PR 合并后自动补测试 | Phase 4 第一轮之后 |
 | Phase 5 第一轮 | 手动触发 E2E 执行——执行引擎 + 失败分析 + 报告 | Phase 4 之后 |
 | Phase 5 M5.4 | E2E 回归自动化——PR 合并触发两阶段流水线（AI 分析 + 并行执行） | Phase 5 第一轮之后 |
-| Phase 5 M5.4.1 | E2E 趋势分析与每日报告——运营可观测性 | M5.4 之后 |
+| Phase 6 M6.1 | 迭代式 PR 评审修复闭环——review→fix→review 自动循环 | Phase 5 M5.4 之后 |
+| Phase 5 M5.4.1 | E2E 趋势分析与每日报告——运营可观测性 | M6.1 之后 |
 | Phase 5 M5.5 | 探索性测试——AI 自主探索（可选扩展） | M5.4.1 之后或并行 |
 
 ---
