@@ -13,6 +13,7 @@ const (
 	TaskTypeGenDailyReport TaskType = "gen_daily_report"
 	TaskTypeRunE2E         TaskType = "run_e2e"
 	TaskTypeTriageE2E      TaskType = "triage_e2e"
+	TaskTypeFixReview      TaskType = "fix_review"
 )
 
 // TaskPriority 任务优先级（asynq 使用整数，越小越高）
@@ -41,7 +42,7 @@ const (
 // IsValid 检查任务类型是否为已知值
 func (t TaskType) IsValid() bool {
 	switch t {
-	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport, TaskTypeRunE2E, TaskTypeTriageE2E:
+	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport, TaskTypeRunE2E, TaskTypeTriageE2E, TaskTypeFixReview:
 		return true
 	}
 	return false
@@ -114,6 +115,12 @@ type TaskPayload struct {
 	CreatedAt       time.Time `json:"created_at,omitempty"`        // 任务创建时间（staleness check 基准）
 	SupersededCount int       `json:"superseded_count,omitempty"`  // 替代的旧任务数量
 	PreviousHeadSHA string    `json:"previous_head_sha,omitempty"` // 上一次评审的 head SHA
+
+	// M6.1 迭代修复
+	SessionID     int64  `json:"session_id,omitempty"`
+	RoundNumber   int    `json:"round_number,omitempty"`
+	ReviewIssues  string `json:"review_issues,omitempty"`  // JSON: []review.ReviewIssue
+	PreviousFixes string `json:"previous_fixes,omitempty"` // JSON: []iterate.FixSummary
 }
 
 // TaskRecord 持久化到 SQLite 的任务记录
