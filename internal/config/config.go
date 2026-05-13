@@ -202,6 +202,7 @@ type IterateConfig struct {
 	NotificationMode     string `mapstructure:"notification_mode"`      // progress / silent，默认 progress
 	FixSeverityThreshold string `mapstructure:"fix_severity_threshold"` // 修复 ERROR 及以上，默认 "error"
 	ReportPath           string `mapstructure:"report_path"`            // 修复报告目录，默认 "docs/review_history"
+	BotLogin             string `mapstructure:"bot_login"`              // fix_review push 对应的 Gitea 账号登录名，留空时使用兼容模式
 }
 
 type NotifyConfig struct {
@@ -382,6 +383,7 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("iterate.notification_mode", "progress")
 		m.v.SetDefault("iterate.fix_severity_threshold", "error")
 		m.v.SetDefault("iterate.report_path", "docs/review_history")
+		m.v.SetDefault("iterate.bot_login", "")
 
 		return nil
 	}

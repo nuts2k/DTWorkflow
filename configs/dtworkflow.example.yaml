@@ -75,7 +75,7 @@ worker:
   network_name: "dtworkflow-net"
   # 按任务类型的硬超时（优先级高于 timeout 字段）
   # 同时作用于 asynq 任务级超时和 Worker 容器等待超时（两层使用相同默认值）。
-  # 零值或不填则使用内置默认值：review_pr=10m, fix_issue=30m, gen_tests=20m。
+  # 零值或不填则使用内置默认值：review_pr=10m, fix_issue=30m, gen_tests=20m, fix_review=20m。
   # 上限 24h，超过会被校验拦截。
   timeouts:
     review_pr: "15m"
@@ -83,6 +83,7 @@ worker:
     fix_issue: "45m"       # M3.4: 含分析 + 修复 + 测试
     gen_tests: "30m"
     run_e2e: "60m"
+    fix_review: "20m"    # M6.1: 迭代评审修复
     # triage_e2e: 10m  # E2E 回归分析超时（默认 10 分钟）
   # 流式心跳监控（stream-json 活跃度检测）
   # 启用后容器内 claude -p 改用 stream-json 输出格式，
@@ -146,6 +147,19 @@ review:
     - "docs/**"
   # tech_stack: ["java", "vue"]        # 技术栈（留空则自动检测）
   # code_standards_paths: []            # 自定义编码规范文件路径（留空则使用默认扫描列表）
+
+# 迭代式评审修复（M6.1）
+# 说明：
+# - PR 带有 label（默认 auto-iterate）且 review_pr 返回 request_changes 时，自动入队 fix_review。
+# - bot_login 建议配置为 Gitea 修复账号登录名，用于区分 fix_review 自身 push 与用户手动 push。
+iterate:
+  enabled: false
+  max_rounds: 3
+  label: "auto-iterate"
+  notification_mode: "progress"       # progress / silent
+  fix_severity_threshold: "error"     # critical / error / warning
+  report_path: "docs/review_history"
+  bot_login: ""                       # 例如 "dtworkflow-fix-bot"；留空时使用兼容模式
 
 # 测试生成配置（M4.1）
 # 说明：

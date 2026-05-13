@@ -117,10 +117,12 @@ type TaskPayload struct {
 	PreviousHeadSHA string    `json:"previous_head_sha,omitempty"` // 上一次评审的 head SHA
 
 	// M6.1 迭代修复
-	SessionID     int64  `json:"session_id,omitempty"`
-	RoundNumber   int    `json:"round_number,omitempty"`
-	ReviewIssues  string `json:"review_issues,omitempty"`  // JSON: []review.ReviewIssue
-	PreviousFixes string `json:"previous_fixes,omitempty"` // JSON: []iterate.FixSummary
+	SessionID          int64  `json:"session_id,omitempty"`
+	RoundNumber        int    `json:"round_number,omitempty"`
+	ReviewIssues       string `json:"review_issues,omitempty"`  // JSON: []review.ReviewIssue
+	PreviousFixes      string `json:"previous_fixes,omitempty"` // JSON: []iterate.FixSummary
+	FixReportPath      string `json:"fix_report_path,omitempty"`
+	IterationMaxRounds int    `json:"iteration_max_rounds,omitempty"`
 }
 
 // TaskRecord 持久化到 SQLite 的任务记录

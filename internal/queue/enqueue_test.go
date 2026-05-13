@@ -13,6 +13,7 @@ import (
 	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
@@ -36,6 +37,11 @@ type mockStore struct {
 	saveTestGenCalls         int      // SaveTestGenResult 调用计数
 	createCalls              int
 	createErrAt              int
+
+	iterationSession            *store.IterationSessionRecord
+	latestIterationRound        *store.IterationRoundRecord
+	updateIterationSessionCalls int
+	updateIterationRoundCalls   int
 }
 
 func newMockStore() *mockStore {
@@ -290,23 +296,42 @@ func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]st
 }
 
 // M6.1: 迭代会话 Store 方法 stub
-func (m *mockStore) FindActiveIterationSession(_ context.Context, _ string, _ int64) (*store.IterationSessionRecord, error) {
-	return nil, nil
+func (m *mockStore) FindActiveIterationSession(_ context.Context, repoFullName string, prNumber int64) (*store.IterationSessionRecord, error) {
+	if m.iterationSession == nil {
+		return nil, nil
+	}
+	if m.iterationSession.RepoFullName != "" && m.iterationSession.RepoFullName != repoFullName {
+		return nil, nil
+	}
+	if m.iterationSession.PRNumber != 0 && m.iterationSession.PRNumber != prNumber {
+		return nil, nil
+	}
+	if m.iterationSession.Status == "completed" || m.iterationSession.Status == "exhausted" {
+		return nil, nil
+	}
+	return m.iterationSession, nil
 }
 func (m *mockStore) FindOrCreateIterationSession(_ context.Context, _ string, _ int64, _ string, _ int) (*store.IterationSessionRecord, error) {
+	if m.iterationSession != nil {
+		return m.iterationSession, nil
+	}
 	return nil, nil
 }
-func (m *mockStore) UpdateIterationSession(_ context.Context, _ *store.IterationSessionRecord) error {
+func (m *mockStore) UpdateIterationSession(_ context.Context, session *store.IterationSessionRecord) error {
+	m.updateIterationSessionCalls++
+	m.iterationSession = session
 	return nil
 }
 func (m *mockStore) CreateIterationRound(_ context.Context, _ *store.IterationRoundRecord) error {
 	return nil
 }
-func (m *mockStore) UpdateIterationRound(_ context.Context, _ *store.IterationRoundRecord) error {
+func (m *mockStore) UpdateIterationRound(_ context.Context, round *store.IterationRoundRecord) error {
+	m.updateIterationRoundCalls++
+	m.latestIterationRound = round
 	return nil
 }
 func (m *mockStore) GetLatestRound(_ context.Context, _ int64) (*store.IterationRoundRecord, error) {
-	return nil, nil
+	return m.latestIterationRound, nil
 }
 func (m *mockStore) CountNonRecoveryRounds(_ context.Context, _ int64) (int, error) {
 	return 0, nil
@@ -314,8 +339,27 @@ func (m *mockStore) CountNonRecoveryRounds(_ context.Context, _ int64) (int, err
 func (m *mockStore) GetRecentRoundsIssuesFixed(_ context.Context, _ int64, _ int) ([]int, error) {
 	return nil, nil
 }
-func (m *mockStore) FindActivePRTasksMulti(_ context.Context, _ string, _ int64, _ []model.TaskType) ([]*model.TaskRecord, error) {
-	return nil, nil
+func (m *mockStore) FindActivePRTasksMulti(_ context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error) {
+	typeSet := make(map[model.TaskType]struct{}, len(taskTypes))
+	for _, taskType := range taskTypes {
+		typeSet[taskType] = struct{}{}
+	}
+	var tasks []*model.TaskRecord
+	for _, task := range m.tasks {
+		if task.RepoFullName != repoFullName || task.PRNumber != prNumber {
+			continue
+		}
+		if _, ok := typeSet[task.TaskType]; !ok {
+			continue
+		}
+		if task.Status != model.TaskStatusPending &&
+			task.Status != model.TaskStatusQueued &&
+			task.Status != model.TaskStatusRunning {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
 }
 
 // mockEnqueuer 实现 Enqueuer 接口的 mock
@@ -653,6 +697,15 @@ func (m *mockTaskCanceller) CancelProcessing(_ context.Context, taskID string) e
 	return m.cancelErr
 }
 
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 // TestCancelActivePRTasks_HasOldTasks 存在旧任务时，cancelActivePRTasks 应调用 cancelTask
 // 并返回正确的 SupersededInfo（Count=1, LastHeadSHA 为旧任务的 HeadSHA）
 func TestCancelActivePRTasks_HasOldTasks(t *testing.T) {
@@ -939,6 +992,237 @@ func TestHandlePullRequest_WithSuperseded(t *testing.T) {
 	// canceller.Delete 应被调用（旧任务为 queued 状态）
 	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-old-pr" {
 		t.Errorf("deleteCalls = %v, want [asynq-old-pr]", canceller.deleteCalls)
+	}
+}
+
+func TestHandlePullRequest_UserPushDuringIterationCancelsFixReview(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-new-user-review"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{BotLogin: "dtworkflow-bot"}}),
+	)
+
+	oldReview := &model.TaskRecord{
+		ID:           "old-review-task",
+		AsynqID:      "asynq-old-review",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Payload:      model.TaskPayload{HeadSHA: "old-review-sha"},
+	}
+	oldFixReview := &model.TaskRecord{
+		ID:           "old-fix-review-task",
+		AsynqID:      "asynq-old-fix-review",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+	}
+	seedRecord(s, oldReview)
+	seedRecord(s, oldFixReview)
+	s.activePRTasks = []*model.TaskRecord{oldReview}
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           7,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Status:       "fixing",
+	}
+
+	event := webhook.PullRequestEvent{
+		Action:     "synchronized",
+		DeliveryID: "delivery-user-push-during-iteration",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  42,
+			HeadSHA: "user-new-sha",
+		},
+		Sender: webhook.UserRef{Login: "alice"},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("HandlePullRequest error: %v", err)
+	}
+
+	if len(canceller.deleteCalls) != 2 {
+		t.Fatalf("deleteCalls = %v, want 2 calls", canceller.deleteCalls)
+	}
+	if !containsString(canceller.deleteCalls, "asynq-old-review") {
+		t.Fatalf("deleteCalls = %v, want contain asynq-old-review", canceller.deleteCalls)
+	}
+	if !containsString(canceller.deleteCalls, "asynq-old-fix-review") {
+		t.Fatalf("deleteCalls = %v, want contain asynq-old-fix-review", canceller.deleteCalls)
+	}
+	if oldFixReview.Status != model.TaskStatusCancelled {
+		t.Fatalf("old fix_review status = %q, want cancelled", oldFixReview.Status)
+	}
+	if s.updateIterationSessionCalls != 0 {
+		t.Fatalf("UpdateIterationSession 调用次数 = %d, want 0", s.updateIterationSessionCalls)
+	}
+}
+
+func TestHandlePullRequest_BotPushDuringIterationKeepsFixReview(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-new-bot-review"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{BotLogin: "dtworkflow-bot"}}),
+	)
+
+	oldReview := &model.TaskRecord{
+		ID:           "old-review-task-bot",
+		AsynqID:      "asynq-old-review-bot",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     43,
+		Payload:      model.TaskPayload{HeadSHA: "old-review-sha"},
+	}
+	oldFixReview := &model.TaskRecord{
+		ID:           "old-fix-review-task-bot",
+		AsynqID:      "asynq-old-fix-review-bot",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     43,
+	}
+	seedRecord(s, oldReview)
+	seedRecord(s, oldFixReview)
+	s.activePRTasks = []*model.TaskRecord{oldReview}
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           8,
+		RepoFullName: "org/repo",
+		PRNumber:     43,
+		Status:       "fixing",
+	}
+
+	event := webhook.PullRequestEvent{
+		Action:     "synchronized",
+		DeliveryID: "delivery-bot-push-during-iteration",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  43,
+			HeadSHA: "bot-new-sha",
+		},
+		Sender: webhook.UserRef{Login: "DTWorkflow-Bot"},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("HandlePullRequest error: %v", err)
+	}
+
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-old-review-bot" {
+		t.Fatalf("deleteCalls = %v, want [asynq-old-review-bot]", canceller.deleteCalls)
+	}
+	if oldFixReview.Status != model.TaskStatusQueued {
+		t.Fatalf("old fix_review status = %q, want queued", oldFixReview.Status)
+	}
+	if s.updateIterationSessionCalls != 1 {
+		t.Fatalf("UpdateIterationSession 调用次数 = %d, want 1", s.updateIterationSessionCalls)
+	}
+	if s.iterationSession.Status != "reviewing" {
+		t.Fatalf("session status = %q, want reviewing", s.iterationSession.Status)
+	}
+}
+
+func TestAfterReviewCompleted_EnqueuesFixReviewWithIterationConfig(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-fix-review"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
+			Enabled:              true,
+			MaxRounds:            5,
+			Label:                "auto-iterate",
+			NotificationMode:     "progress",
+			FixSeverityThreshold: "error",
+			ReportPath:           "custom/history",
+		}}),
+	)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           11,
+		RepoFullName: "org/repo",
+		PRNumber:     44,
+		Status:       "reviewing",
+		MaxRounds:    5,
+	}
+	reviewTask := &model.TaskRecord{ID: "review-task-44"}
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     44,
+		PRTitle:      "Fix config",
+		BaseRef:      "main",
+		HeadRef:      "feature/config",
+		HeadSHA:      "head-sha",
+	}
+	issues := []review.ReviewIssue{{
+		File:     "main.go",
+		Line:     10,
+		Severity: "ERROR",
+		Message:  "bug",
+	}}
+
+	if !h.AfterReviewCompleted(context.Background(), reviewTask, payload, []string{"auto-iterate"}, issues) {
+		t.Fatal("AfterReviewCompleted 应触发 fix_review")
+	}
+
+	if len(mc.payloads) != 1 {
+		t.Fatalf("入队 payload 数量 = %d, want 1", len(mc.payloads))
+	}
+	fixPayload := mc.payloads[0]
+	if fixPayload.TaskType != model.TaskTypeFixReview {
+		t.Fatalf("TaskType = %q, want fix_review", fixPayload.TaskType)
+	}
+	if fixPayload.IterationMaxRounds != 5 {
+		t.Fatalf("IterationMaxRounds = %d, want 5", fixPayload.IterationMaxRounds)
+	}
+	if !strings.HasPrefix(fixPayload.FixReportPath, "custom/history/44-") ||
+		!strings.HasSuffix(fixPayload.FixReportPath, "-round1.md") {
+		t.Fatalf("FixReportPath = %q, want custom/history 下 round1 报告", fixPayload.FixReportPath)
+	}
+	if s.iterationSession.Status != "fixing" {
+		t.Fatalf("session status = %q, want fixing", s.iterationSession.Status)
+	}
+	if s.iterationSession.TotalIssuesFound != 1 {
+		t.Fatalf("TotalIssuesFound = %d, want 1", s.iterationSession.TotalIssuesFound)
+	}
+	if s.updateIterationRoundCalls != 1 {
+		t.Fatalf("UpdateIterationRound 调用次数 = %d, want 1", s.updateIterationRoundCalls)
+	}
+	if s.latestIterationRound.FixReportPath != fixPayload.FixReportPath {
+		t.Fatalf("round FixReportPath = %q, want %q", s.latestIterationRound.FixReportPath, fixPayload.FixReportPath)
+	}
+	if s.latestIterationRound.FixTaskID == "" {
+		t.Fatal("round FixTaskID 应在 fix_review 入队后写回")
+	}
+	var fixRecord *model.TaskRecord
+	for _, task := range s.tasks {
+		if task.TaskType == model.TaskTypeFixReview {
+			fixRecord = task
+			break
+		}
+	}
+	if fixRecord == nil {
+		t.Fatal("未找到入队后的 fix_review task record")
+	}
+	if s.latestIterationRound.FixTaskID != fixRecord.ID {
+		t.Fatalf("round FixTaskID = %q, want %q", s.latestIterationRound.FixTaskID, fixRecord.ID)
 	}
 }
 
@@ -2334,6 +2618,14 @@ type mockConfigProvider struct {
 }
 
 func (m *mockConfigProvider) ResolveTestGenConfig(_ string) config.TestGenOverride {
+	return m.cfg
+}
+
+type mockIterateConfigProvider struct {
+	cfg config.IterateConfig
+}
+
+func (m *mockIterateConfigProvider) ResolveIterateConfig(_ string) config.IterateConfig {
 	return m.cfg
 }
 

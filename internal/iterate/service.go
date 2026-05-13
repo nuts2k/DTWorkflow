@@ -65,7 +65,14 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 	}
 
 	// 构造 prompt
-	reportPath := BuildReportPath("docs/review_history", payload.PRNumber, payload.RoundNumber)
+	reportPath := strings.TrimSpace(payload.FixReportPath)
+	if reportPath == "" {
+		reportPath = BuildReportPath("docs/review_history", payload.PRNumber, payload.RoundNumber)
+	}
+	maxRounds := payload.IterationMaxRounds
+	if maxRounds <= 0 {
+		maxRounds = 3
+	}
 	prompt := BuildFixPrompt(FixPromptContext{
 		Repo:          payload.RepoFullName,
 		PRNumber:      payload.PRNumber,
@@ -75,7 +82,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 		PreviousFixes: prevFixes,
 		ReportPath:    reportPath,
 		RoundNumber:   payload.RoundNumber,
-		MaxRounds:     3,
+		MaxRounds:     maxRounds,
 	})
 
 	// 容器执行
@@ -133,7 +140,7 @@ func extractResultFromCLIOutput(raw string) (*review.CLIResponse, string, error)
 		if err := json.Unmarshal([]byte(line), &resp); err != nil {
 			continue
 		}
-		if resp.Type == "result" {
+		if resp.Type == "result" || resp.Type == "success" {
 			return &resp, resp.Result, nil
 		}
 	}

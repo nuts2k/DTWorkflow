@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -12,12 +13,14 @@ import (
 )
 
 type mockPool struct {
-	output string
-	err    error
+	output    string
+	err       error
+	stdinData []byte
 }
 
 func (m *mockPool) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload,
-	_ []string, _ []byte) (*worker.ExecutionResult, error) {
+	_ []string, stdinData []byte) (*worker.ExecutionResult, error) {
+	m.stdinData = stdinData
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -63,6 +66,40 @@ func TestService_Execute_Success(t *testing.T) {
 	}
 	if len(result.Output.Fixes) != 1 {
 		t.Errorf("fixes count = %d, want 1", len(result.Output.Fixes))
+	}
+}
+
+func TestService_Execute_UsesPayloadPromptConfig(t *testing.T) {
+	fixOutput := FixReviewOutput{Summary: "ok"}
+	fixJSON, _ := json.Marshal(fixOutput)
+	cliResult := fmt.Sprintf(`{"type":"success","is_error":false,"result":"%s"}`,
+		jsonEscape(string(fixJSON)))
+	issues := []review.ReviewIssue{{File: "main.go", Line: 10, Severity: "ERROR", Message: "bug"}}
+	issuesJSON, _ := json.Marshal(issues)
+
+	pool := &mockPool{output: cliResult}
+	svc := NewService(pool, nil)
+	payload := model.TaskPayload{
+		TaskType:           model.TaskTypeFixReview,
+		RepoFullName:       "owner/repo",
+		PRNumber:           42,
+		HeadRef:            "feature",
+		BaseRef:            "main",
+		RoundNumber:        2,
+		ReviewIssues:       string(issuesJSON),
+		FixReportPath:      "custom/reports/42-round2.md",
+		IterationMaxRounds: 5,
+	}
+
+	if _, err := svc.Execute(context.Background(), payload); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	prompt := string(pool.stdinData)
+	if !strings.Contains(prompt, "iteration round 2 of 5") {
+		t.Fatalf("prompt 未使用 payload max_rounds: %s", prompt)
+	}
+	if !strings.Contains(prompt, "custom/reports/42-round2.md") {
+		t.Fatalf("prompt 未使用 payload report path: %s", prompt)
 	}
 }
 

@@ -14,9 +14,11 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/iterate"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	testgen "otws19.zicp.vip/kelin/dtworkflow/internal/test"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
@@ -136,6 +138,17 @@ func (m *mockE2EExecutor) Execute(_ context.Context, _ model.TaskPayload) (*e2e.
 	return m.result, m.err
 }
 
+type mockIterateExecutor struct {
+	result *iterate.FixReviewResult
+	err    error
+	calls  int
+}
+
+func (m *mockIterateExecutor) Execute(_ context.Context, _ model.TaskPayload) (*iterate.FixReviewResult, error) {
+	m.calls++
+	return m.result, m.err
+}
+
 type mockProcessorE2EScanner struct {
 	modules []string
 	err     error
@@ -242,6 +255,87 @@ func TestProcessTask_Success_SendReviewNotification(t *testing.T) {
 	}
 	if msg.Target.Owner != "org" || msg.Target.Repo != "repo" {
 		t.Errorf("target repo = %s/%s, want org/repo", msg.Target.Owner, msg.Target.Repo)
+	}
+}
+
+func TestProcessTask_FixReviewSuccessPersistsIterationState(t *testing.T) {
+	s := newMockStore()
+	payload := model.TaskPayload{
+		TaskType:      model.TaskTypeFixReview,
+		DeliveryID:    "iterate-7:fix_review:2",
+		RepoOwner:     "org",
+		RepoName:      "repo",
+		RepoFullName:  "org/repo",
+		PRNumber:      42,
+		SessionID:     7,
+		RoundNumber:   2,
+		FixReportPath: "docs/review_history/42-round2.md",
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "fix-review-task-2",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:               7,
+		RepoFullName:     "org/repo",
+		PRNumber:         42,
+		Status:           "fixing",
+		TotalIssuesFixed: 1,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          99,
+		SessionID:   7,
+		RoundNumber: 2,
+		FixTaskID:   record.ID,
+	}
+	iterExec := &mockIterateExecutor{
+		result: &iterate.FixReviewResult{
+			RawOutput: "raw-fix-review-output",
+			Output: &iterate.FixReviewOutput{
+				Fixes: []iterate.FixItem{
+					{Action: "modified"},
+					{Action: "skipped"},
+					{Action: "alternative_chosen"},
+				},
+				Summary: "fixed",
+			},
+		},
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, nil, slog.Default(), WithIterateService(iterExec))
+
+	if err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload)); err != nil {
+		t.Fatalf("ProcessTask error: %v", err)
+	}
+
+	if iterExec.calls != 1 {
+		t.Fatalf("iterate Execute 调用次数 = %d, want 1", iterExec.calls)
+	}
+	if s.updateIterationRoundCalls != 1 {
+		t.Fatalf("UpdateIterationRound 调用次数 = %d, want 1", s.updateIterationRoundCalls)
+	}
+	if s.latestIterationRound.IssuesFixed != 2 {
+		t.Fatalf("IssuesFixed = %d, want 2", s.latestIterationRound.IssuesFixed)
+	}
+	if s.latestIterationRound.CompletedAt == nil {
+		t.Fatal("CompletedAt 应被设置")
+	}
+	if s.latestIterationRound.FixReportPath != payload.FixReportPath {
+		t.Fatalf("FixReportPath = %q, want %q", s.latestIterationRound.FixReportPath, payload.FixReportPath)
+	}
+	if s.iterationSession.TotalIssuesFixed != 3 {
+		t.Fatalf("TotalIssuesFixed = %d, want 3", s.iterationSession.TotalIssuesFixed)
+	}
+	if s.iterationSession.Status != "reviewing" {
+		t.Fatalf("session status = %q, want reviewing", s.iterationSession.Status)
 	}
 }
 

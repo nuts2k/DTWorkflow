@@ -313,6 +313,94 @@ run_gen_tests_credentials_case() {
   fi
 }
 
+run_fix_review_case() {
+  local repo_dir="${TMPDIR}/repo-fix-review-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  local stdout_file="${TMPDIR}/fix-review.out"
+  local stderr_file="${TMPDIR}/fix-review.err"
+
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="fix_review" \
+  PR_NUMBER="42" \
+  HEAD_REF="feature/review-fix" \
+  BASE_REF="main" \
+  bash "${ENTRYPOINT}" bash -lc 'printf "%s\n" "$MAVEN_OPTS"; printf "%s\n" "$GRADLE_USER_HOME"' >"${stdout_file}" 2>"${stderr_file}" || true
+
+  local log
+  log="$(cat "${TMPDIR}/git.log")"
+
+  assert_contains "fix_review — fetch PR head 到 remote tracking" \
+    "${log}" "git fetch origin feature/review-fix:refs/remotes/origin/feature/review-fix"
+  assert_contains "fix_review — checkout 到 PR head 分支" \
+    "${log}" "git checkout -B feature/review-fix origin/feature/review-fix"
+  assert_contains "fix_review — 设置 upstream 以支持普通 git push" \
+    "${log}" "git branch --set-upstream-to=origin/feature/review-fix feature/review-fix"
+  assert_contains "fix_review — 获取 base 分支供 diff/上下文使用" \
+    "${log}" "git fetch origin main"
+  assert_contains "fix_review — origin URL 已脱敏" \
+    "${log}" "git remote set-url origin https://gitea.example.com/owner/repo.git"
+  assert_contains "fix_review — credential helper 已配置" \
+    "${log}" "git config --global credential.helper ${CRED_HELPER_SCRIPT}"
+  assert_contains "fix_review — git identity name 已设置" \
+    "${log}" "git config --global user.name DTWorkflow Bot"
+
+  if [ -x "${repo_dir}/.git/hooks/pre-push" ] &&
+     grep -q "DTWORKFLOW_FIX_REVIEW_HEAD_REF" "${repo_dir}/.git/hooks/pre-push"; then
+    echo "PASS: fix_review — pre-push hook 限制当前 PR head 分支"
+    (( PASS++ ))
+  else
+    echo "FAIL: fix_review — 预期 pre-push hook 限制当前 PR head 分支"
+    (( FAIL++ ))
+  fi
+
+  if grep -qx -- '-Dmaven.repo.local=/workspace/.m2/repository' "${stdout_file}" &&
+     grep -qx -- '/workspace/.gradle' "${stdout_file}"; then
+    echo "PASS: fix_review — build cache env exported"
+    (( PASS++ ))
+  else
+    echo "FAIL: fix_review — expected build cache env in stdout:"
+    cat "${stdout_file}"
+    (( FAIL++ ))
+  fi
+}
+
+run_fix_review_missing_head_case() {
+  local repo_dir="${TMPDIR}/repo-fix-review-missing-head-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  local stdout_file="${TMPDIR}/fix-review-missing.out"
+  local stderr_file="${TMPDIR}/fix-review-missing.err"
+
+  set +e
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="fix_review" \
+  PR_NUMBER="42" \
+  BASE_REF="main" \
+  bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}"
+  local code=$?
+  set -e
+
+  if [ "${code}" -eq 2 ]; then
+    echo "PASS: fix_review — HEAD_REF 缺失时确定性失败"
+    (( PASS++ ))
+  else
+    echo "FAIL: fix_review — HEAD_REF 缺失时应 exit 2，实际 ${code}"
+    cat "${stderr_file}"
+    (( FAIL++ ))
+  fi
+}
+
 # ==================== 运行 M4.1 既有用例 ====================
 
 echo "=== Entrypoint Behavior Tests ==="
@@ -326,6 +414,8 @@ run_build_cache_case "fix_issue should enable build cache redirect" "fix_issue"
 run_build_cache_case "gen_tests should enable build cache redirect" "gen_tests"
 run_gen_tests_credentials_case
 run_stdout_case "gen_tests should not leak git output to stdout" "gen_tests"
+run_fix_review_case
+run_fix_review_missing_head_case
 
 # ==================== M4.2 新增：gen_tests 断点续传用例 ====================
 

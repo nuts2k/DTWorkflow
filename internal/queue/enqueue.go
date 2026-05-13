@@ -68,11 +68,11 @@ type EnqueueHandler struct {
 	prFilesLister     PRFilesLister               // M4.3: PR 变更文件列表查询
 	e2eModuleScanner  e2esvc.E2EModuleScanner     // M5.3: 可选，nil 时全量模式退化为单任务
 	e2eConfigProvider E2ERegressionConfigProvider // M5.4: 可选，nil 时跳过 E2E 回归入队
-	iterateStore      IterateSessionStore          // M6.1: 迭代会话 Store
-	iterateCfg        IterateConfigProvider        // M6.1: 迭代配置
-	iterateLabels     IterateLabelManager          // M6.1: Gitea 标签管理
-	iterateCommenter  IteratePRCommenter           // M6.1: PR 评论
-	iterateNotifier   TaskNotifier                 // M6.1: 迭代通知发送
+	iterateStore      IterateSessionStore         // M6.1: 迭代会话 Store
+	iterateCfg        IterateConfigProvider       // M6.1: 迭代配置
+	iterateLabels     IterateLabelManager         // M6.1: Gitea 标签管理
+	iterateCommenter  IteratePRCommenter          // M6.1: PR 评论
+	iterateNotifier   TaskNotifier                // M6.1: 迭代通知发送
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -275,7 +275,7 @@ func (h *EnqueueHandler) handleReviewPullRequest(ctx context.Context, event webh
 			h.logger.WarnContext(ctx, "查询迭代会话失败，按用户 push 处理",
 				"error", findErr)
 			h.cancelTasks(ctx, activeTasks)
-		} else if session != nil && session.Status == "fixing" {
+		} else if session != nil && session.Status == "fixing" && h.isFixReviewPush(event) {
 			// fix_review 自身的 push：仅取消旧 review_pr，不取消 fix_review
 			h.cancelTasks(ctx, filterTasksByType(activeTasks, model.TaskTypeReviewPR))
 			// 更新会话状态：fixing → reviewing
@@ -314,6 +314,19 @@ func (h *EnqueueHandler) handleReviewPullRequest(ctx context.Context, event webh
 		)
 	}
 	return nil
+}
+
+func (h *EnqueueHandler) isFixReviewPush(event webhook.PullRequestEvent) bool {
+	if h.iterateCfg == nil {
+		return true
+	}
+	cfg := h.iterateCfg.ResolveIterateConfig(event.Repository.FullName)
+	botLogin := strings.TrimSpace(cfg.BotLogin)
+	if botLogin == "" {
+		// 兼容旧配置：未声明 bot_login 时沿用 M6.1 初版的 fixing 状态判断。
+		return true
+	}
+	return strings.EqualFold(event.Sender.Login, botLogin)
 }
 
 // handleMergedPullRequest 处理 PR 合并事件，调度变更驱动 gen_tests 和 E2E 回归。
@@ -1352,6 +1365,11 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	} else {
 		roundNumber = 1
 	}
+	reportDir := strings.TrimSpace(cfg.ReportPath)
+	if reportDir == "" {
+		reportDir = "docs/review_history"
+	}
+	fixReportPath := iterate.BuildReportPath(reportDir, payload.PRNumber, roundNumber)
 
 	// 更新会话状态：→ fixing
 	session.Status = "fixing"
@@ -1365,11 +1383,12 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 
 	// 创建轮次记录
 	round := &store.IterationRoundRecord{
-		SessionID:   session.ID,
-		RoundNumber: roundNumber,
-		ReviewTaskID: task.ID,
-		IssuesFound: len(filteredIssues),
-		IsRecovery:  isRecovery,
+		SessionID:     session.ID,
+		RoundNumber:   roundNumber,
+		ReviewTaskID:  task.ID,
+		IssuesFound:   len(filteredIssues),
+		FixReportPath: fixReportPath,
+		IsRecovery:    isRecovery,
 	}
 	if err := h.iterateStore.CreateIterationRound(ctx, round); err != nil {
 		h.logger.ErrorContext(ctx, "创建迭代轮次失败",
@@ -1387,20 +1406,22 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 
 	deliveryID := fmt.Sprintf("iterate-%d:fix_review:%d", session.ID, roundNumber)
 	fixPayload := model.TaskPayload{
-		TaskType:      model.TaskTypeFixReview,
-		DeliveryID:    deliveryID,
-		RepoOwner:     payload.RepoOwner,
-		RepoName:      payload.RepoName,
-		RepoFullName:  payload.RepoFullName,
-		CloneURL:      payload.CloneURL,
-		PRNumber:      payload.PRNumber,
-		PRTitle:       payload.PRTitle,
-		BaseRef:       payload.BaseRef,
-		HeadRef:       payload.HeadRef,
-		HeadSHA:       payload.HeadSHA,
-		SessionID:     session.ID,
-		RoundNumber:   roundNumber,
-		ReviewIssues:  string(issuesJSON),
+		TaskType:           model.TaskTypeFixReview,
+		DeliveryID:         deliveryID,
+		RepoOwner:          payload.RepoOwner,
+		RepoName:           payload.RepoName,
+		RepoFullName:       payload.RepoFullName,
+		CloneURL:           payload.CloneURL,
+		PRNumber:           payload.PRNumber,
+		PRTitle:            payload.PRTitle,
+		BaseRef:            payload.BaseRef,
+		HeadRef:            payload.HeadRef,
+		HeadSHA:            payload.HeadSHA,
+		SessionID:          session.ID,
+		RoundNumber:        roundNumber,
+		ReviewIssues:       string(issuesJSON),
+		FixReportPath:      fixReportPath,
+		IterationMaxRounds: session.MaxRounds,
 	}
 
 	fixRecord := &model.TaskRecord{
@@ -1419,7 +1440,13 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 
 	// 更新轮次的 fix_task_id
 	round.FixTaskID = fixRecord.ID
-	_ = h.iterateStore.UpdateIterationRound(ctx, round)
+	if err := h.iterateStore.UpdateIterationRound(ctx, round); err != nil {
+		h.logger.WarnContext(ctx, "更新迭代轮次 fix_task_id 失败",
+			"session_id", session.ID,
+			"round", roundNumber,
+			"fix_task_id", fixRecord.ID,
+			"error", err)
+	}
 
 	h.logger.InfoContext(ctx, "fix_review 已入队",
 		"task_id", fixRecord.ID, "session_id", session.ID,
