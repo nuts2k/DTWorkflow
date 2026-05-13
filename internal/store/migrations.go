@@ -409,6 +409,80 @@ var migrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_tasks_repo_pr ON tasks(repo_full_name, pr_number, task_type, status);
 		`,
 	},
+	// M6.1: 迭代式评审修复 — iteration_sessions + iteration_rounds 两表 + tasks CHECK 追加 fix_review。
+	{
+		Version:            24,
+		DisableForeignKeys: true,
+		SQL: `
+			CREATE TABLE IF NOT EXISTS iteration_sessions (
+				id              INTEGER PRIMARY KEY AUTOINCREMENT,
+				repo_full_name  TEXT NOT NULL,
+				pr_number       INTEGER NOT NULL,
+				head_branch     TEXT NOT NULL DEFAULT '',
+				status          TEXT NOT NULL DEFAULT 'idle'
+				                CHECK(status IN ('idle','reviewing','fixing','completed','exhausted')),
+				current_round   INTEGER NOT NULL DEFAULT 0,
+				max_rounds      INTEGER NOT NULL DEFAULT 3,
+				total_issues_found INTEGER NOT NULL DEFAULT 0,
+				total_issues_fixed INTEGER NOT NULL DEFAULT 0,
+				last_error      TEXT NOT NULL DEFAULT '',
+				created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
+				updated_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_iteration_sessions_active
+				ON iteration_sessions(repo_full_name, pr_number)
+				WHERE status NOT IN ('completed', 'exhausted');
+
+			CREATE TABLE IF NOT EXISTS iteration_rounds (
+				id              INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id      INTEGER NOT NULL REFERENCES iteration_sessions(id),
+				round_number    INTEGER NOT NULL,
+				review_task_id  TEXT NOT NULL DEFAULT '',
+				fix_task_id     TEXT NOT NULL DEFAULT '',
+				issues_found    INTEGER NOT NULL DEFAULT 0,
+				issues_fixed    INTEGER NOT NULL DEFAULT 0,
+				fix_report_path TEXT NOT NULL DEFAULT '',
+				is_recovery     INTEGER NOT NULL DEFAULT 0,
+				started_at      DATETIME NOT NULL DEFAULT (datetime('now')),
+				completed_at    DATETIME,
+				UNIQUE(session_id, round_number)
+			);
+			CREATE INDEX IF NOT EXISTS idx_iteration_rounds_session
+				ON iteration_rounds(session_id);
+
+			CREATE TABLE tasks_new (
+				id              TEXT PRIMARY KEY,
+				asynq_id        TEXT NOT NULL DEFAULT '',
+				task_type       TEXT NOT NULL CHECK(task_type IN ('review_pr', 'analyze_issue', 'fix_issue', 'gen_tests', 'gen_daily_report', 'run_e2e', 'triage_e2e', 'fix_review')),
+				status          TEXT NOT NULL DEFAULT 'pending'
+				                CHECK(status IN ('pending','queued','running','succeeded','failed','retrying','cancelled')),
+				priority        INTEGER NOT NULL DEFAULT 5,
+				payload         TEXT NOT NULL,
+				repo_full_name  TEXT NOT NULL DEFAULT '',
+				result          TEXT NOT NULL DEFAULT '',
+				error           TEXT NOT NULL DEFAULT '',
+				retry_count     INTEGER NOT NULL DEFAULT 0,
+				max_retry       INTEGER NOT NULL DEFAULT 3,
+				worker_id       TEXT NOT NULL DEFAULT '',
+				delivery_id     TEXT NOT NULL DEFAULT '',
+				created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				started_at      DATETIME,
+				completed_at    DATETIME,
+				pr_number       INTEGER,
+				triggered_by    TEXT NOT NULL DEFAULT 'webhook'
+			);
+			INSERT INTO tasks_new SELECT * FROM tasks;
+			DROP TABLE tasks;
+			ALTER TABLE tasks_new RENAME TO tasks;
+			CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+			CREATE INDEX IF NOT EXISTS idx_tasks_repo ON tasks(repo_full_name);
+			CREATE INDEX IF NOT EXISTS idx_tasks_type_status ON tasks(task_type, status);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_delivery_dedup ON tasks(delivery_id, task_type) WHERE delivery_id != '';
+			CREATE INDEX IF NOT EXISTS idx_tasks_pending_created ON tasks(status, created_at) WHERE status = 'pending';
+			CREATE INDEX IF NOT EXISTS idx_tasks_repo_pr ON tasks(repo_full_name, pr_number, task_type, status);
+		`,
+	},
 }
 
 // RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本
