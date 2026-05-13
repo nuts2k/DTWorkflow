@@ -123,6 +123,37 @@ type Store interface {
 	// Ping 检测数据库连接是否可用，用于健康检查
 	Ping(ctx context.Context) error
 
+	// --- M6.1 迭代式评审修复 ---
+
+	// FindActiveIterationSession 查找指定 PR 的活跃迭代会话（status 非 completed/exhausted）。
+	// 未找到返回 (nil, nil)。
+	FindActiveIterationSession(ctx context.Context, repoFullName string, prNumber int64) (*IterationSessionRecord, error)
+
+	// FindOrCreateIterationSession 查找活跃会话，不存在则创建（status=idle）。
+	FindOrCreateIterationSession(ctx context.Context, repoFullName string, prNumber int64, headBranch string, maxRounds int) (*IterationSessionRecord, error)
+
+	// UpdateIterationSession 更新会话记录。
+	UpdateIterationSession(ctx context.Context, session *IterationSessionRecord) error
+
+	// CreateIterationRound 创建新轮次记录，自动设置 started_at。
+	CreateIterationRound(ctx context.Context, round *IterationRoundRecord) error
+
+	// UpdateIterationRound 更新轮次记录。
+	UpdateIterationRound(ctx context.Context, round *IterationRoundRecord) error
+
+	// GetLatestRound 获取会话的最新轮次。未找到返回 (nil, nil)。
+	GetLatestRound(ctx context.Context, sessionID int64) (*IterationRoundRecord, error)
+
+	// CountNonRecoveryRounds 统计会话的非恢复轮次数。
+	CountNonRecoveryRounds(ctx context.Context, sessionID int64) (int, error)
+
+	// GetRecentRoundsIssuesFixed 获取最近 N 个非恢复轮次的 issues_fixed 列表（从新到旧）。
+	GetRecentRoundsIssuesFixed(ctx context.Context, sessionID int64, n int) ([]int, error)
+
+	// FindActivePRTasksMulti 查找同一 PR 的多种类型活跃任务（pending/queued/running）。
+	// 返回按 created_at 升序排列的任务列表。
+	FindActivePRTasksMulti(ctx context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error)
+
 	// Close 关闭底层连接
 	Close() error
 }
@@ -176,6 +207,37 @@ type E2EResultRecord struct {
 	CreatedIssues map[string]int64 // case_path → issue_number（JSON 序列化存储）
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+}
+
+// IterationSessionRecord 对应 iteration_sessions 表。
+type IterationSessionRecord struct {
+	ID               int64
+	RepoFullName     string
+	PRNumber         int64
+	HeadBranch       string
+	Status           string // idle/reviewing/fixing/completed/exhausted
+	CurrentRound     int
+	MaxRounds        int
+	TotalIssuesFound int
+	TotalIssuesFixed int
+	LastError        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// IterationRoundRecord 对应 iteration_rounds 表。
+type IterationRoundRecord struct {
+	ID            int64
+	SessionID     int64
+	RoundNumber   int
+	ReviewTaskID  string
+	FixTaskID     string
+	IssuesFound   int
+	IssuesFixed   int
+	FixReportPath string
+	IsRecovery    bool
+	StartedAt     time.Time
+	CompletedAt   *time.Time
 }
 
 // ListOptions 列表查询选项
