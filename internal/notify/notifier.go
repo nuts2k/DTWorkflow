@@ -34,6 +34,11 @@ const (
 	EventE2ETriageStarted EventType = "e2e.triage.started"
 	EventE2ETriageDone    EventType = "e2e.triage.done"
 	EventE2ETriageFailed  EventType = "e2e.triage.failed"
+	// M6.1：迭代式评审修复通知事件。
+	EventIterationProgress  EventType = "iteration.progress"
+	EventIterationPassed    EventType = "iteration.passed"
+	EventIterationExhausted EventType = "iteration.exhausted"
+	EventIterationError     EventType = "iteration.error"
 )
 
 // Metadata key 常量，用于 Message.Metadata 的键名，确保生产端和消费端类型安全。
@@ -76,6 +81,13 @@ const (
 	MetaKeyTriageModules        = "triage_modules"         // JSON: [{"name":"...","reason":"..."}]
 	MetaKeyTriageSkippedModules = "triage_skipped_modules" // JSON: [{"name":"...","reason":"..."}]
 	MetaKeyTriageAnalysis       = "triage_analysis"
+
+	// M6.1 迭代修复专用 metadata key。
+	MetaKeyIterationRound       = "iteration_round"
+	MetaKeyIterationMaxRounds   = "iteration_max_rounds"
+	MetaKeyIterationIssuesFound = "iteration_issues_found"
+	MetaKeyIterationIssuesFixed = "iteration_issues_fixed"
+	MetaKeyIterationSessionID   = "iteration_session_id"
 )
 
 // Severity 通知紧急程度
