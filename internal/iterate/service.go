@@ -1,0 +1,173 @@
+package iterate
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
+)
+
+// PoolRunner 容器执行接口（复用 queue 包的同名接口签名）。
+type PoolRunner interface {
+	RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload,
+		cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
+}
+
+// FixReviewResult 容器执行的完整结果。
+type FixReviewResult struct {
+	RawOutput string
+	CLIMeta   *model.CLIMeta
+	Output    *FixReviewOutput
+	ParseErr  error
+}
+
+// Service 迭代修复核心服务。
+type Service struct {
+	pool   PoolRunner
+	logger *slog.Logger
+}
+
+// NewService 创建迭代修复服务。
+func NewService(pool PoolRunner, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{pool: pool, logger: logger}
+}
+
+// Execute 在容器中执行修复任务。
+func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixReviewResult, error) {
+	result := &FixReviewResult{}
+
+	// 反序列化评审问题
+	var issues []review.ReviewIssue
+	if payload.ReviewIssues != "" {
+		if err := json.Unmarshal([]byte(payload.ReviewIssues), &issues); err != nil {
+			return result, fmt.Errorf("反序列化 ReviewIssues 失败: %w", err)
+		}
+	}
+	if len(issues) == 0 {
+		return result, fmt.Errorf("%w: 无评审问题", ErrNoChanges)
+	}
+
+	// 反序列化前几轮修复上下文
+	var prevFixes []FixSummary
+	if payload.PreviousFixes != "" {
+		if err := json.Unmarshal([]byte(payload.PreviousFixes), &prevFixes); err != nil {
+			s.logger.WarnContext(ctx, "反序列化 PreviousFixes 失败，忽略", "error", err)
+		}
+	}
+
+	// 构造 prompt
+	reportPath := BuildReportPath("docs/review_history", payload.PRNumber, payload.RoundNumber)
+	prompt := BuildFixPrompt(FixPromptContext{
+		Repo:          payload.RepoFullName,
+		PRNumber:      payload.PRNumber,
+		HeadRef:       payload.HeadRef,
+		BaseRef:       payload.BaseRef,
+		Issues:        issues,
+		PreviousFixes: prevFixes,
+		ReportPath:    reportPath,
+		RoundNumber:   payload.RoundNumber,
+		MaxRounds:     3,
+	})
+
+	// 容器执行
+	cmd := []string{"claude", "-p", "--output-format", "json", "-"}
+	execResult, err := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
+	if err != nil {
+		return result, err
+	}
+	if execResult != nil {
+		result.RawOutput = execResult.Output
+	}
+	if execResult != nil && execResult.ExitCode != 0 {
+		return result, fmt.Errorf("容器执行失败，退出码 %d", execResult.ExitCode)
+	}
+
+	// 解析 JSON 结果
+	output, parseErr := parseFixReviewOutput(result.RawOutput)
+	if parseErr != nil {
+		result.ParseErr = parseErr
+		return result, fmt.Errorf("%w: %v", ErrFixReviewParseFailure, parseErr)
+	}
+	result.Output = output
+
+	return result, nil
+}
+
+// parseFixReviewOutput 从容器输出中提取结构化 JSON。
+func parseFixReviewOutput(rawOutput string) (*FixReviewOutput, error) {
+	_, resultText, err := extractResultFromCLIOutput(rawOutput)
+	if err != nil {
+		return nil, err
+	}
+
+	jsonStr := extractJSON(resultText)
+	if jsonStr == "" {
+		return nil, fmt.Errorf("未找到 JSON 输出")
+	}
+
+	var output FixReviewOutput
+	if err := json.Unmarshal([]byte(jsonStr), &output); err != nil {
+		return nil, fmt.Errorf("JSON 解析失败: %w", err)
+	}
+	return &output, nil
+}
+
+// extractResultFromCLIOutput 从 Claude CLI JSON 输出中提取 result 字符串。
+func extractResultFromCLIOutput(raw string) (*review.CLIResponse, string, error) {
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var resp review.CLIResponse
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			continue
+		}
+		if resp.Type == "result" {
+			return &resp, resp.Result, nil
+		}
+	}
+	return nil, "", fmt.Errorf("未找到 type=result 的 CLI 输出行")
+}
+
+// extractJSON 从文本中提取 JSON 对象（找第一个 { 到最后一个 }）。
+func extractJSON(text string) string {
+	start := strings.Index(text, "{")
+	if start == -1 {
+		return ""
+	}
+	end := strings.LastIndex(text, "}")
+	if end == -1 || end <= start {
+		return ""
+	}
+	return text[start : end+1]
+}
+
+// CountFixedIssues 统计实际修复的问题数（action=modified 或 alternative_chosen）。
+func CountFixedIssues(output *FixReviewOutput) int {
+	if output == nil {
+		return 0
+	}
+	count := 0
+	for _, fix := range output.Fixes {
+		if fix.Action == "modified" || fix.Action == "alternative_chosen" {
+			count++
+		}
+	}
+	return count
+}
+
+// SanitizeFixReviewError 脱敏 fix_review 错误信息。
+func SanitizeFixReviewError(errMsg string) string {
+	return test.SanitizeErrorMessage(errMsg)
+}
