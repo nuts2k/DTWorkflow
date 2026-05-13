@@ -13,6 +13,7 @@ import (
 	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
@@ -1731,6 +1732,141 @@ func TestAfterReviewCompleted_RepairRecomputesTotalIssuesFixed(t *testing.T) {
 	}
 }
 
+func TestAfterIterationApproved_RepairsSucceededFixReviewRoundBeforeComplete(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "unused"}
+	notifier := &stubNotifier{}
+	labels := &mockIterateLabelManager{}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateNotifier(notifier),
+		WithIterateLabels(labels),
+	)
+	now := time.Now()
+	raw := `{"type":"result","result":"{\"fixes\":[{\"action\":\"modified\"},{\"action\":\"alternative_chosen\"}],\"summary\":\"approved after fixes\"}"}`
+	fixTask := &model.TaskRecord{
+		ID:           "fix-review-approved-unpersisted",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusSucceeded,
+		Result:       raw,
+		RepoFullName: "org/repo",
+		PRNumber:     51,
+		Payload: model.TaskPayload{
+			FixReportPath: "docs/review_history/51-round2.md",
+		},
+	}
+	seedRecord(s, fixTask)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:               45,
+		RepoFullName:     "org/repo",
+		PRNumber:         51,
+		Status:           "fixing",
+		CurrentRound:     2,
+		MaxRounds:        4,
+		TotalIssuesFixed: 0,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          61,
+		SessionID:   45,
+		RoundNumber: 2,
+		FixTaskID:   fixTask.ID,
+	}
+	s.completedIterationRounds = []*store.IterationRoundRecord{
+		{
+			ID:          60,
+			SessionID:   45,
+			RoundNumber: 1,
+			IssuesFixed: 1,
+			CompletedAt: &now,
+		},
+	}
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     51,
+	}
+
+	h.AfterIterationApproved(context.Background(), payload)
+
+	if s.iterationSession.Status != "completed" {
+		t.Fatalf("session status = %q, want completed", s.iterationSession.Status)
+	}
+	if s.iterationSession.TotalIssuesFixed != 3 {
+		t.Fatalf("TotalIssuesFixed = %d, want 3", s.iterationSession.TotalIssuesFixed)
+	}
+	if s.latestIterationRound.CompletedAt == nil {
+		t.Fatal("应在完成会话前自愈补齐最新轮次 completed_at")
+	}
+	if s.latestIterationRound.FixReportPath != fixTask.Payload.FixReportPath {
+		t.Fatalf("FixReportPath = %q, want %q", s.latestIterationRound.FixReportPath, fixTask.Payload.FixReportPath)
+	}
+	if len(notifier.messages) != 1 || notifier.messages[0].EventType != notify.EventIterationPassed {
+		t.Fatalf("terminal notifications = %+v, want iteration.passed", notifier.messages)
+	}
+	if labels.removeCalls != 1 || labels.addCalls != 1 {
+		t.Fatalf("label calls remove=%d add=%d, want 1/1", labels.removeCalls, labels.addCalls)
+	}
+}
+
+func TestAfterIterationApproved_DoesNotCompleteBeforeFixReviewPersisted(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "unused"}
+	notifier := &stubNotifier{}
+	labels := &mockIterateLabelManager{}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateNotifier(notifier),
+		WithIterateLabels(labels),
+	)
+	h.roundWaitTimeout = time.Millisecond
+	h.roundPollInterval = time.Millisecond
+
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:               46,
+		RepoFullName:     "org/repo",
+		PRNumber:         52,
+		Status:           "fixing",
+		CurrentRound:     1,
+		MaxRounds:        3,
+		TotalIssuesFixed: 0,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          62,
+		SessionID:   46,
+		RoundNumber: 1,
+		FixTaskID:   "fix-review-still-running",
+	}
+	seedRecord(s, &model.TaskRecord{
+		ID:           "fix-review-still-running",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusRunning,
+		RepoFullName: "org/repo",
+		PRNumber:     52,
+	})
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		PRNumber:     52,
+	}
+
+	h.AfterIterationApproved(context.Background(), payload)
+
+	if s.iterationSession.Status == "completed" {
+		t.Fatal("上一轮 fix_review 未完成落库时不应完成迭代会话")
+	}
+	if s.updateIterationSessionCalls != 0 {
+		t.Fatalf("UpdateIterationSession 调用次数 = %d, want 0", s.updateIterationSessionCalls)
+	}
+	if len(notifier.messages) != 0 {
+		t.Fatalf("不应发送终态通知，messages=%+v", notifier.messages)
+	}
+	if labels.removeCalls != 0 || labels.addCalls != 0 {
+		t.Fatalf("不应更新终态标签，remove=%d add=%d", labels.removeCalls, labels.addCalls)
+	}
+}
+
 func TestHandlePullRequest_InvalidPayload_DoesNotCancelOldTask(t *testing.T) {
 	s := newMockStore()
 	canceller := &mockTaskCanceller{}
@@ -3135,8 +3271,10 @@ func (m *mockIterateConfigProvider) ResolveIterateConfig(_ string) config.Iterat
 }
 
 type mockIterateLabelManager struct {
-	labels []string
-	err    error
+	labels      []string
+	err         error
+	addCalls    int
+	removeCalls int
 }
 
 func (m *mockIterateLabelManager) ListLabels(_ context.Context, _, _ string, _ int64) ([]string, error) {
@@ -3147,10 +3285,12 @@ func (m *mockIterateLabelManager) ListLabels(_ context.Context, _, _ string, _ i
 }
 
 func (m *mockIterateLabelManager) AddLabel(_ context.Context, _, _ string, _ int64, _ string) error {
+	m.addCalls++
 	return nil
 }
 
 func (m *mockIterateLabelManager) RemoveLabel(_ context.Context, _, _ string, _ int64, _ string) error {
+	m.removeCalls++
 	return nil
 }
 
