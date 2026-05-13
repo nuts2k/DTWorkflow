@@ -19,6 +19,7 @@ import (
 type PRClient interface {
 	GetPullRequest(ctx context.Context, owner, repo string, index int64) (*gitea.PullRequest, *gitea.Response, error)
 	ListPullRequestFiles(ctx context.Context, owner, repo string, index int64, opts gitea.ListOptions) ([]*gitea.ChangedFile, *gitea.Response, error)
+	GetIssueLabels(ctx context.Context, owner, repo string, index int64) ([]*gitea.Label, *gitea.Response, error)
 }
 
 // ReviewPoolRunner 评审专用的容器执行接口，与 queue.PoolRunner 独立。
@@ -103,6 +104,16 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 		return nil, fmt.Errorf("PR #%d 状态为 %s: %w", prNum, pr.State, ErrPRNotOpen)
 	}
 
+	// 提取 PR 标签（用于迭代链式入队判断）
+	var labels []string
+	if giteaLabels, _, labelsErr := s.gitea.GetIssueLabels(ctx, owner, repo, prNum); labelsErr == nil {
+		for _, l := range giteaLabels {
+			if l != nil {
+				labels = append(labels, l.Name)
+			}
+		}
+	}
+
 	// 2. 获取变更文件列表（有意保持单页，PaginateAll 统一治理时已评估排除）
 	// 此列表仅用于 prompt 摘要和大 PR 检测，非评审的完整输入。
 	// Claude CLI 在容器内通过 git diff 获取完整变更。
@@ -146,6 +157,9 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 	// 7. 解析结果
 	result := s.parseResult(execResult.Output)
 	result.RawOutput = execResult.Output
+
+	// 统一填充 Labels（无论解析成功与否，标签信息用于链式入队判断）
+	result.Labels = labels
 
 	// 7.5 解析失败：跳过回写，返回错误触发重试。
 	// 重试耗尽后由 processor 调用 WriteDegraded 发送降级评论。
