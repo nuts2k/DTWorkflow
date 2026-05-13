@@ -744,6 +744,8 @@ func (p *Processor) persistIterationFixFailure(ctx context.Context, payload mode
 	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	p.completeIterationRoundOnFailure(ctx, persistCtx, payload, errMsg)
+
 	session, err := p.store.FindActiveIterationSession(persistCtx, payload.RepoFullName, payload.PRNumber)
 	if err != nil {
 		p.logger.ErrorContext(ctx, "查询迭代会话失败",
@@ -758,6 +760,35 @@ func (p *Processor) persistIterationFixFailure(ctx context.Context, payload mode
 	if err := p.store.UpdateIterationSession(persistCtx, session); err != nil {
 		p.logger.ErrorContext(ctx, "更新迭代会话失败状态失败",
 			"session_id", session.ID, "error", err)
+	}
+}
+
+func (p *Processor) completeIterationRoundOnFailure(ctx context.Context, persistCtx context.Context, payload model.TaskPayload, summary string) {
+	if payload.SessionID == 0 || payload.RoundNumber == 0 {
+		return
+	}
+	round, err := p.store.GetIterationRound(persistCtx, payload.SessionID, payload.RoundNumber)
+	if err != nil {
+		p.logger.ErrorContext(ctx, "查询失败迭代轮次失败",
+			"session_id", payload.SessionID, "round", payload.RoundNumber, "error", err)
+		return
+	}
+	if round == nil || round.CompletedAt != nil {
+		return
+	}
+	now := time.Now()
+	round.IssuesFixed = 0
+	round.FixSummary = iterate.SanitizeFixReviewError(summary)
+	if strings.TrimSpace(round.FixReportPath) == "" {
+		round.FixReportPath = payload.FixReportPath
+	}
+	if strings.TrimSpace(round.FixReportPath) == "" {
+		round.FixReportPath = iterate.BuildReportPath("docs/review_history", payload.PRNumber, payload.RoundNumber)
+	}
+	round.CompletedAt = &now
+	if err := p.store.UpdateIterationRound(persistCtx, round); err != nil {
+		p.logger.ErrorContext(ctx, "标记失败迭代轮次完成失败",
+			"session_id", payload.SessionID, "round", payload.RoundNumber, "error", err)
 	}
 }
 
@@ -1876,6 +1907,9 @@ func (p *Processor) markTaskCancelled(ctx context.Context, record *model.TaskRec
 		p.logger.ErrorContext(ctx, "更新取消任务状态失败",
 			"task_id", record.ID, "error", err,
 		)
+	} else if record.Payload.TaskType == model.TaskTypeFixReview {
+		p.persistIterationFixFailure(ctx, record.Payload, reason)
+		p.sendIterationErrorNotification(ctx, record)
 	}
 
 	return fmt.Errorf("%s: %w", reason, asynq.SkipRetry)

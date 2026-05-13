@@ -1413,6 +1413,78 @@ func TestAfterReviewCompleted_WaitsForPreviousFixReviewPersisted(t *testing.T) {
 	}
 }
 
+func TestAfterReviewCompleted_RecoversTerminalFixReviewRound(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-recovery-fix-review"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
+			Enabled:              true,
+			MaxRounds:            3,
+			Label:                "auto-iterate",
+			NotificationMode:     "silent",
+			FixSeverityThreshold: "error",
+			ReportPath:           "docs/review_history",
+		}}),
+	)
+
+	failedFixTask := &model.TaskRecord{
+		ID:           "fix-review-round-1",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusFailed,
+		RepoFullName: "org/repo",
+		PRNumber:     46,
+	}
+	seedRecord(s, failedFixTask)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           31,
+		RepoFullName: "org/repo",
+		PRNumber:     46,
+		Status:       "idle",
+		MaxRounds:    3,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          20,
+		SessionID:   31,
+		RoundNumber: 1,
+		FixTaskID:   failedFixTask.ID,
+	}
+	reviewTask := &model.TaskRecord{ID: "review-task-46"}
+	payload := model.TaskPayload{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		RepoFullName: "org/repo",
+		CloneURL:     "https://gitea.example.com/org/repo.git",
+		PRNumber:     46,
+		PRTitle:      "Recover fix review",
+		BaseRef:      "main",
+		HeadRef:      "feature/recover",
+		HeadSHA:      "head-sha",
+	}
+	issues := []review.ReviewIssue{{
+		File:     "main.go",
+		Line:     10,
+		Severity: "ERROR",
+		Message:  "bug",
+	}}
+
+	if !h.AfterReviewCompleted(context.Background(), reviewTask, payload, []string{"auto-iterate"}, issues) {
+		t.Fatal("已终态但未完成的 fix_review 轮次应被自愈并触发恢复轮")
+	}
+	if s.updateIterationRoundCalls < 2 {
+		t.Fatalf("UpdateIterationRound 调用次数 = %d, want >= 2", s.updateIterationRoundCalls)
+	}
+	if s.latestIterationRound.RoundNumber != 2 {
+		t.Fatalf("new round = %d, want 2", s.latestIterationRound.RoundNumber)
+	}
+	if len(mc.payloads) != 1 || mc.payloads[0].RoundNumber != 2 {
+		t.Fatalf("payloads = %+v, want recovery round 2", mc.payloads)
+	}
+	if !s.latestIterationRound.IsRecovery {
+		t.Fatal("恢复轮次应标记 IsRecovery=true")
+	}
+}
+
 func TestHandlePullRequest_InvalidPayload_DoesNotCancelOldTask(t *testing.T) {
 	s := newMockStore()
 	canceller := &mockTaskCanceller{}

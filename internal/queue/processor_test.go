@@ -461,6 +461,12 @@ func TestProcessTask_FixReviewInfrastructureFailureNotifies(t *testing.T) {
 		Status:       "fixing",
 		MaxRounds:    3,
 	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          102,
+		SessionID:   9,
+		RoundNumber: 1,
+		FixTaskID:   record.ID,
+	}
 	iterExec := &mockIterateExecutor{err: errors.New("docker failed")}
 	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(), WithIterateService(iterExec))
 
@@ -480,6 +486,73 @@ func TestProcessTask_FixReviewInfrastructureFailureNotifies(t *testing.T) {
 	}
 	if s.iterationSession.Status != "idle" {
 		t.Fatalf("session status = %q, want idle", s.iterationSession.Status)
+	}
+	if s.latestIterationRound.CompletedAt == nil {
+		t.Fatal("基础设施失败应标记轮次完成，避免恢复链路卡死")
+	}
+	if s.latestIterationRound.IssuesFixed != 0 {
+		t.Fatalf("IssuesFixed = %d, want 0", s.latestIterationRound.IssuesFixed)
+	}
+}
+
+func TestProcessTask_FixReviewCancellationCompletesIterationRound(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:           model.TaskTypeFixReview,
+		DeliveryID:         "iterate-10:fix_review:1",
+		RepoOwner:          "org",
+		RepoName:           "repo",
+		RepoFullName:       "org/repo",
+		PRNumber:           42,
+		SessionID:          10,
+		RoundNumber:        1,
+		IterationMaxRounds: 3,
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "fix-review-cancelled",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           10,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Status:       "fixing",
+		MaxRounds:    3,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          103,
+		SessionID:   10,
+		RoundNumber: 1,
+		FixTaskID:   record.ID,
+	}
+	iterExec := &mockIterateExecutor{err: context.Canceled}
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(), WithIterateService(iterExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("error = %v, want SkipRetry", err)
+	}
+	if record.Status != model.TaskStatusCancelled {
+		t.Fatalf("record status = %q, want cancelled", record.Status)
+	}
+	if s.iterationSession.Status != "idle" {
+		t.Fatalf("session status = %q, want idle", s.iterationSession.Status)
+	}
+	if s.latestIterationRound.CompletedAt == nil {
+		t.Fatal("取消 fix_review 应标记轮次完成，避免恢复链路卡死")
+	}
+	if len(notifier.messages) != 1 || notifier.messages[0].EventType != notify.EventIterationError {
+		t.Fatalf("应发送 iteration.error 通知，messages=%v", notifier.messages)
 	}
 }
 

@@ -33,15 +33,21 @@ func TestBuildFixPrompt_Basic(t *testing.T) {
 	if !strings.Contains(prompt, "round1.md") {
 		t.Error("prompt should contain report path")
 	}
+	if strings.Contains(prompt, "dtworkflow-fix-review-push") {
+		t.Error("prompt should not instruct Claude to run push helper")
+	}
+	if !strings.Contains(prompt, "Do NOT push") {
+		t.Error("prompt should explicitly forbid pushing")
+	}
 }
 
 func TestBuildFixPrompt_WithPreviousFixes(t *testing.T) {
 	prompt := BuildFixPrompt(FixPromptContext{
-		Repo:    "owner/repo",
-		PRNumber: 42,
-		HeadRef: "feature",
-		BaseRef: "main",
-		Issues:  []review.ReviewIssue{{File: "a.go", Severity: "ERROR", Message: "bug"}},
+		Repo:        "owner/repo",
+		PRNumber:    42,
+		HeadRef:     "feature",
+		BaseRef:     "main",
+		Issues:      []review.ReviewIssue{{File: "a.go", Severity: "ERROR", Message: "bug"}},
 		ReportPath:  "docs/review_history/42-2026-05-13-round2.md",
 		RoundNumber: 2,
 		MaxRounds:   3,

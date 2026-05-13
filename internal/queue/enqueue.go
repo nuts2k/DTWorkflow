@@ -1334,6 +1334,25 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	latestRound, _ := h.iterateStore.GetLatestRound(ctx, session.ID)
 
 	if latestRound != nil && latestRound.FixTaskID != "" && latestRound.CompletedAt == nil {
+		if h.latestFixReviewTaskTerminal(ctx, latestRound) {
+			now := time.Now()
+			latestRound.CompletedAt = &now
+			latestRound.IssuesFixed = 0
+			if strings.TrimSpace(latestRound.FixSummary) == "" {
+				latestRound.FixSummary = "上一轮 fix_review 已终止，等待用户新提交恢复"
+			}
+			if err := h.iterateStore.UpdateIterationRound(ctx, latestRound); err != nil {
+				h.logger.WarnContext(ctx, "标记已终止 fix_review 轮次完成失败",
+					"session_id", session.ID,
+					"latest_round", latestRound.RoundNumber,
+					"fix_task_id", latestRound.FixTaskID,
+					"error", err)
+				return false
+			}
+		}
+	}
+
+	if latestRound != nil && latestRound.FixTaskID != "" && latestRound.CompletedAt == nil {
 		waitedRound, waitErr := h.waitForIterationRoundCompleted(ctx, session.ID, latestRound.RoundNumber)
 		if waitErr != nil {
 			h.logger.WarnContext(ctx, "上一轮 fix_review 尚未完成落库，跳过本次迭代链式入队",
@@ -1524,6 +1543,22 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	}
 
 	return true
+}
+
+func (h *EnqueueHandler) latestFixReviewTaskTerminal(ctx context.Context, latestRound *store.IterationRoundRecord) bool {
+	if latestRound == nil || latestRound.FixTaskID == "" {
+		return false
+	}
+	fixTask, err := h.store.GetTask(ctx, latestRound.FixTaskID)
+	if err != nil || fixTask == nil {
+		return false
+	}
+	switch fixTask.Status {
+	case model.TaskStatusFailed, model.TaskStatusCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *EnqueueHandler) waitForIterationRoundCompleted(ctx context.Context, sessionID int64, roundNumber int) (*store.IterationRoundRecord, error) {

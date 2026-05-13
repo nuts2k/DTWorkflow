@@ -235,7 +235,7 @@ run_build_cache_case() {
   TASK_TYPE="${task_type}" \
   ISSUE_REF="feature/auth" \
   BASE_REF="main" \
-  bash "${ENTRYPOINT}" bash -lc 'printf "%s\n" "$MAVEN_OPTS"; printf "%s\n" "$GRADLE_USER_HOME"' >"${stdout_file}" 2>"${stderr_file}" || true
+  bash "${ENTRYPOINT}" bash -lc 'printf "%s\n" "$MAVEN_OPTS"; printf "%s\n" "$GRADLE_USER_HOME"; test -z "${GITEA_TOKEN:-}"; test -z "${DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN:-}"' >"${stdout_file}" 2>"${stderr_file}" || true
 
   if grep -qx -- '-Dmaven.repo.local=/workspace/.m2/repository' "${stdout_file}" &&
      grep -qx -- '/workspace/.gradle' "${stdout_file}"; then
@@ -359,6 +359,9 @@ run_fix_review_case() {
     (( FAIL++ ))
   fi
 
+  assert_contains "fix_review — 任务命令成功后由入口脚本受控 push" \
+    "${log}" "push origin HEAD:refs/heads/feature/review-fix"
+
   if [ -x "${repo_dir}/../.dtworkflow-bin/git" ]; then
     echo "PASS: fix_review — git wrapper 已安装"
     (( PASS++ ))
@@ -388,6 +391,9 @@ run_fix_review_case() {
     cat "${stdout_file}"
     (( FAIL++ ))
   fi
+
+  assert_not_contains "fix_review — push stderr 不泄漏 token" \
+    "$(cat "${stderr_file}")" "token"
 }
 
 run_fix_review_missing_head_case() {
@@ -421,6 +427,38 @@ run_fix_review_missing_head_case() {
   fi
 }
 
+run_fix_review_invalid_head_case() {
+  local repo_dir="${TMPDIR}/repo-fix-review-invalid-head-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  local stdout_file="${TMPDIR}/fix-review-invalid.out"
+  local stderr_file="${TMPDIR}/fix-review-invalid.err"
+
+  set +e
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="fix_review" \
+  PR_NUMBER="42" \
+  HEAD_REF='feature/foo";id;"' \
+  BASE_REF="main" \
+  bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}"
+  local code=$?
+  set -e
+
+  if [ "${code}" -eq 2 ]; then
+    echo "PASS: fix_review — 非法 HEAD_REF 确定性失败"
+    (( PASS++ ))
+  else
+    echo "FAIL: fix_review — 非法 HEAD_REF 应 exit 2，实际 ${code}"
+    cat "${stderr_file}"
+    (( FAIL++ ))
+  fi
+}
+
 # ==================== 运行 M4.1 既有用例 ====================
 
 echo "=== Entrypoint Behavior Tests ==="
@@ -436,6 +474,7 @@ run_gen_tests_credentials_case
 run_stdout_case "gen_tests should not leak git output to stdout" "gen_tests"
 run_fix_review_case
 run_fix_review_missing_head_case
+run_fix_review_invalid_head_case
 
 # ==================== M4.2 新增：gen_tests 断点续传用例 ====================
 

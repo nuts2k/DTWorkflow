@@ -66,32 +66,21 @@ HELPER
 }
 
 enable_fix_review_git() {
-    # fix_review 只允许通过受控脚本推送当前 PR head 分支。
+    # fix_review 运行阶段不向 Claude 暴露 push 凭证；Claude 只负责修改并提交。
+    # 任务命令成功退出后，由入口脚本父进程执行受控 push 到当前 PR head 分支。
     git remote set-url origin "${REPO_CLONE_URL}"
     git config --global credential.helper ''
     git config --global user.name "DTWorkflow Bot"
     git config --global user.email "dtworkflow-bot@noreply.local"
 
-    CRED_HELPER_SCRIPT="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
-    cat > "${CRED_HELPER_SCRIPT}" <<HELPER
-#!/bin/sh
-echo "username=token"
-echo "password=${GITEA_TOKEN}"
-HELPER
-    chmod 700 "${CRED_HELPER_SCRIPT}"
-
     SAFE_BIN_DIR="$(dirname "${REPO_DIR}")/.dtworkflow-bin"
     mkdir -p "${SAFE_BIN_DIR}"
     REAL_GIT_BIN="$(command -v git)"
 
-    cat > "${SAFE_BIN_DIR}/dtworkflow-fix-review-push" <<PUSH
+    cat > "${SAFE_BIN_DIR}/dtworkflow-fix-review-push" <<'PUSH'
 #!/bin/sh
-set -eu
-if [ "\$#" -ne 0 ]; then
-    echo "ERROR: dtworkflow-fix-review-push does not accept arguments" >&2
-    exit 2
-fi
-exec "${REAL_GIT_BIN}" -c credential.helper="${CRED_HELPER_SCRIPT}" push origin "HEAD:refs/heads/${HEAD_REF}"
+echo "ERROR: fix_review push is performed by DTWorkflow after the task command exits successfully" >&2
+exit 2
 PUSH
     chmod 700 "${SAFE_BIN_DIR}/dtworkflow-fix-review-push"
 
@@ -107,6 +96,40 @@ WRAP
     export PATH="${SAFE_BIN_DIR}:${PATH}"
 }
 
+validate_fix_review_head_ref() {
+    local ref="$1"
+    # Git refname 本身允许分号、双引号等 shell 元字符；fix_review 只接受常规分支字符集。
+    if [[ -z "${ref}" || "${ref}" == -* || ! "${ref}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+        return 1
+    fi
+    git check-ref-format --branch "${ref}" >/dev/null 2>&1
+}
+
+push_fix_review_result() {
+    # 仅入口脚本父进程持有 GITEA_TOKEN；Claude 进程已在执行前 unset。
+    if [ -z "${DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN:-}" ]; then
+        log "ERROR: fix_review 缺少受控 push token"
+        return 2
+    fi
+    local helper_script
+    helper_script="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
+    cat > "${helper_script}" <<HELPER
+#!/bin/sh
+echo "username=token"
+echo "password=${DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN}"
+HELPER
+    chmod 700 "${helper_script}"
+
+    log "fix_review: 受控推送当前 PR head 分支 ${HEAD_REF}"
+    set +e
+    git -c credential.helper="${helper_script}" push origin "HEAD:refs/heads/${HEAD_REF}" 2>&1 \
+        | sed "s|${DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN}|***|g" >&2
+    local push_status=${PIPESTATUS[0]}
+    set -e
+    rm -f "${helper_script}"
+    return "${push_status}"
+}
+
 append_autofix_override() {
     local mode="$1"
     if [ -f CLAUDE.md ]; then
@@ -119,7 +142,7 @@ append_autofix_override() {
 「禁止 git commit」「禁止 git push」「禁止安装依赖」的限制在本次任务中**不适用**。
 你被明确授权且必须执行 git checkout -b、git add、git commit、git push 以及
 npm install 等操作以完成修复任务。
-如果当前模式是 fix_review，必须使用 dtworkflow-fix-review-push 推送当前 PR 分支，不要直接执行 git push。
+如果当前模式是 fix_review，不要执行 git push 或 dtworkflow-fix-review-push；DTWorkflow 会在任务成功后受控推送当前 PR 分支。
 OVERRIDE
         # 关键：标记 CLAUDE.md 为 assume-unchanged，防止 git add 时将覆盖段提交到 PR。
         git update-index --assume-unchanged CLAUDE.md
@@ -221,6 +244,10 @@ case "${TASK_TYPE:-}" in
         # M6.1: PR 评审问题迭代修复模式（写权限）。
         if [ -z "${HEAD_REF:-}" ]; then
             log "ERROR: fix_review 任务缺少 HEAD_REF，无法安全推回 PR 分支"
+            exit 2
+        fi
+        if ! validate_fix_review_head_ref "${HEAD_REF}"; then
+            log "ERROR: fix_review HEAD_REF 不是合法分支名: ${HEAD_REF}"
             exit 2
         fi
         log "fix_review: fetch + checkout HEAD_REF=${HEAD_REF}"
@@ -476,6 +503,9 @@ elif [ "${TASK_TYPE:-}" = "triage_e2e" ]; then
 fi
 
 # 清除敏感环境变量，防止 Claude Code 通过 Bash 读取
+if [ "${TASK_TYPE:-}" = "fix_review" ]; then
+    DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN="${GITEA_TOKEN:-}"
+fi
 unset GITEA_TOKEN
 unset AUTH_URL
 unset GITEA_URL
@@ -484,4 +514,14 @@ unset REPO_CLONE_URL
 log "开始执行任务命令..."
 
 # 执行传入的命令（通常是 claude -p "..."）
+if [ "${TASK_TYPE:-}" = "fix_review" ]; then
+    "$@"
+    cmd_status=$?
+    if [ "${cmd_status}" -ne 0 ]; then
+        exit "${cmd_status}"
+    fi
+    push_fix_review_result
+    exit $?
+fi
+
 exec "$@"

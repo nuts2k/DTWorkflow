@@ -112,6 +112,11 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Revi
 				labels = append(labels, l.Name)
 			}
 		}
+	} else {
+		s.logger.WarnContext(ctx, "获取 PR 标签失败，迭代修复触发将跳过",
+			"pr", prNum,
+			"repo", payload.RepoFullName,
+			"error", labelsErr)
 	}
 
 	// 2. 获取变更文件列表（有意保持单页，PaginateAll 统一治理时已评估排除）
