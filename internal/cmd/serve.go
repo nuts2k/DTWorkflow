@@ -20,6 +20,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/iterate"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/queue"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/report"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
@@ -289,6 +290,27 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		e2eSvc := e2esvc.NewService(deps.Pool, cfgAdapter, e2eOpts...)
 		processorOpts = append(processorOpts, queue.WithE2EService(e2eSvc))
 		processorOpts = append(processorOpts, queue.WithEnqueueHandler(deps.EnqueueHandler)) // M5.4: triage_e2e 成功后链式入队 run_e2e
+
+		// M6.1: 装配 iterate.Service
+		iterateSvc := iterate.NewService(deps.Pool, slog.Default())
+		processorOpts = append(processorOpts, queue.WithIterateService(iterateSvc))
+
+		// M6.1: 注入迭代 Store 和配置到 EnqueueHandler
+		iterateEnqueueOpts := []queue.EnqueueOption{
+			queue.WithIterateStore(deps.Store),
+			queue.WithIterateConfig(cfg.AppCfg),
+			queue.WithIterateNotifier(deps.Notifier),
+		}
+		if deps.GiteaClient != nil {
+			giteaAdapter := &giteaIterateAdapter{client: deps.GiteaClient, logger: slog.Default()}
+			iterateEnqueueOpts = append(iterateEnqueueOpts,
+				queue.WithIterateLabels(giteaAdapter),
+				queue.WithIterateCommenter(giteaAdapter),
+			)
+		}
+		for _, opt := range iterateEnqueueOpts {
+			opt(deps.EnqueueHandler)
+		}
 	}
 	processor := queue.NewProcessor(deps.Pool, deps.Store, deps.Notifier, slog.Default(), processorOpts...)
 	mux := asynq.NewServeMux()
@@ -298,6 +320,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	mux.Handle(queue.AsynqTypeGenTests, processor)
 	mux.Handle(queue.AsynqTypeRunE2E, processor)    // M5.1
 	mux.Handle(queue.AsynqTypeTriageE2E, processor) // M5.4
+	mux.Handle(queue.AsynqTypeFixReview, processor) // M6.1
 
 	// M2.7: 每日报告 Handler 装配
 	var dailyReportHandler *report.DailyReportHandler

@@ -15,6 +15,7 @@ type TaskTimeoutsConfig struct {
 	AnalyzeIssue time.Duration // M3.4: 只读分析超时（默认 15m）
 	RunE2E       time.Duration
 	TriageE2E    time.Duration
+	FixReview    time.Duration // M6.1: 迭代修复超时（默认 20m）
 }
 
 // TaskTimeout 从配置中获取超时值，零值时回退到硬编码默认值
@@ -33,6 +34,8 @@ func TaskTimeout(taskType model.TaskType, cfg TaskTimeoutsConfig) time.Duration 
 		configured = cfg.RunE2E
 	case model.TaskTypeTriageE2E:
 		configured = cfg.TriageE2E
+	case model.TaskTypeFixReview:
+		configured = cfg.FixReview
 	}
 	if configured > 0 {
 		return configured
@@ -57,6 +60,8 @@ func defaultTaskTimeout(taskType model.TaskType) time.Duration {
 		return 60 * time.Minute
 	case model.TaskTypeTriageE2E:
 		return 10 * time.Minute
+	case model.TaskTypeFixReview:
+		return 20 * time.Minute
 	default:
 		return 10 * time.Minute
 	}

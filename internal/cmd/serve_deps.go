@@ -364,3 +364,46 @@ func buildServeConfigFromManager(mgr *config.Manager) (serveConfig, error) {
 		AppCfg:             cfg,
 	}, nil
 }
+
+// giteaIterateAdapter 将 gitea.Client 适配为 IterateLabelManager + IteratePRCommenter 接口。
+// 标签操作通过名称查找 ID，评论通过 CreateIssueComment 实现。
+type giteaIterateAdapter struct {
+	client *gitea.Client
+	logger *slog.Logger
+}
+
+func (a *giteaIterateAdapter) AddLabel(ctx context.Context, owner, repo string, prNumber int64, label string) error {
+	allLabels, _, err := a.client.ListRepoLabels(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("列出仓库标签失败: %w", err)
+	}
+	for _, l := range allLabels {
+		if l.Name == label {
+			_, _, err := a.client.AddIssueLabels(ctx, owner, repo, prNumber, []int64{l.ID})
+			return err
+		}
+	}
+	a.logger.WarnContext(ctx, "迭代标签不存在，跳过添加",
+		"owner", owner, "repo", repo, "label", label)
+	return nil
+}
+
+func (a *giteaIterateAdapter) RemoveLabel(ctx context.Context, owner, repo string, prNumber int64, label string) error {
+	labels, _, err := a.client.GetIssueLabels(ctx, owner, repo, prNumber)
+	if err != nil {
+		return fmt.Errorf("获取 PR 标签失败: %w", err)
+	}
+	for _, l := range labels {
+		if l != nil && l.Name == label {
+			_, err := a.client.RemoveIssueLabel(ctx, owner, repo, prNumber, l.ID)
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *giteaIterateAdapter) CreateComment(ctx context.Context, owner, repo string, prNumber int64, body string) error {
+	_, _, err := a.client.CreateIssueComment(ctx, owner, repo, prNumber,
+		gitea.CreateIssueCommentOption{Body: body})
+	return err
+}
