@@ -633,6 +633,7 @@ func (p *Processor) persistIterationFixResult(ctx context.Context, payload model
 		now := time.Now()
 		round.FixTaskID = record.ID
 		round.IssuesFixed = issuesFixed
+		round.FixSummary = result.Output.Summary
 		if strings.TrimSpace(round.FixReportPath) == "" {
 			round.FixReportPath = payload.FixReportPath
 		}

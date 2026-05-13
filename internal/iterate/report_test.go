@@ -3,9 +3,11 @@ package iterate
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGenerateFixReport(t *testing.T) {
+	fixedTime := time.Date(2026, 5, 13, 10, 30, 0, 0, time.UTC)
 	output := FixReviewOutput{
 		Fixes: []FixItem{
 			{
@@ -34,6 +36,7 @@ func TestGenerateFixReport(t *testing.T) {
 		RoundNumber: 1,
 		Output:      output,
 		Repo:        "owner/repo",
+		Timestamp:   fixedTime,
 	})
 	if !strings.Contains(report, "# PR #42") {
 		t.Error("report should contain PR number header")
@@ -46,5 +49,8 @@ func TestGenerateFixReport(t *testing.T) {
 	}
 	if !strings.Contains(report, "skipped") {
 		t.Error("report should contain skipped action")
+	}
+	if !strings.Contains(report, "2026-05-13 10:30:00") {
+		t.Error("report should contain the provided timestamp")
 	}
 }

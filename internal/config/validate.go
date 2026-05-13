@@ -561,27 +561,40 @@ func validateIterateConfig(cfg *Config) []error {
 		return nil
 	}
 	it := cfg.Iterate
-	if !it.Enabled {
-		return nil
-	}
 	var errs []error
-	if it.MaxRounds < 1 || it.MaxRounds > 10 {
+
+	// 字段范围校验无论 enabled 与否都执行，提前暴露配置错误
+	if it.MaxRounds != 0 && (it.MaxRounds < 1 || it.MaxRounds > 10) {
 		errs = append(errs, fmt.Errorf("iterate.max_rounds 必须在 [1, 10] 范围内，当前值: %d", it.MaxRounds))
 	}
-	validModes := map[string]bool{"progress": true, "silent": true}
+	validModes := map[string]bool{"progress": true, "silent": true, "": true}
 	if !validModes[it.NotificationMode] {
 		errs = append(errs, fmt.Errorf("iterate.notification_mode 合法值为 progress/silent，当前值: %q", it.NotificationMode))
 	}
-	validSeverities := map[string]bool{"critical": true, "error": true, "warning": true}
+	validSeverities := map[string]bool{"critical": true, "error": true, "warning": true, "": true}
 	if !validSeverities[it.FixSeverityThreshold] {
 		errs = append(errs, fmt.Errorf("iterate.fix_severity_threshold 合法值为 critical/error/warning，当前值: %q", it.FixSeverityThreshold))
 	}
-	if strings.TrimSpace(it.Label) == "" {
-		errs = append(errs, fmt.Errorf("iterate.label 不能为空"))
+
+	// enabled=true 时追加必填校验
+	if it.Enabled {
+		if it.MaxRounds < 1 {
+			errs = append(errs, fmt.Errorf("iterate.max_rounds 启用时必须 >= 1，当前值: %d", it.MaxRounds))
+		}
+		if it.NotificationMode == "" {
+			errs = append(errs, fmt.Errorf("iterate.notification_mode 启用时不能为空"))
+		}
+		if it.FixSeverityThreshold == "" {
+			errs = append(errs, fmt.Errorf("iterate.fix_severity_threshold 启用时不能为空"))
+		}
+		if strings.TrimSpace(it.Label) == "" {
+			errs = append(errs, fmt.Errorf("iterate.label 不能为空"))
+		}
+		if strings.TrimSpace(it.ReportPath) == "" {
+			errs = append(errs, fmt.Errorf("iterate.report_path 不能为空"))
+		}
 	}
-	if strings.TrimSpace(it.ReportPath) == "" {
-		errs = append(errs, fmt.Errorf("iterate.report_path 不能为空"))
-	}
+
 	// 仓库级覆盖校验
 	for i, repo := range cfg.Repos {
 		if repo.Iterate == nil {

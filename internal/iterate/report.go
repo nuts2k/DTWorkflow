@@ -12,15 +12,20 @@ type FixReportContext struct {
 	RoundNumber int
 	Output      FixReviewOutput
 	Repo        string
+	Timestamp   time.Time
 }
 
 // GenerateFixReport 生成修复报告 markdown 内容。
 func GenerateFixReport(ctx FixReportContext) string {
 	var b strings.Builder
 
+	ts := ctx.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
 	fmt.Fprintf(&b, "# PR #%d Round %d Fix Report\n\n", ctx.PRNumber, ctx.RoundNumber)
 	fmt.Fprintf(&b, "- Repository: %s\n", ctx.Repo)
-	fmt.Fprintf(&b, "- Date: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(&b, "- Date: %s\n", ts.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(&b, "- Summary: %s\n\n", ctx.Output.Summary)
 
 	modified := 0
@@ -70,6 +75,11 @@ func GenerateFixReport(ctx FixReportContext) string {
 
 // BuildReportPath 构造修复报告在仓库中的路径。
 func BuildReportPath(reportDir string, prNumber int64, roundNumber int) string {
-	date := time.Now().Format("2006-01-02")
+	return BuildReportPathAt(reportDir, prNumber, roundNumber, time.Now())
+}
+
+// BuildReportPathAt 使用指定时间构造修复报告路径，便于确定性测试。
+func BuildReportPathAt(reportDir string, prNumber int64, roundNumber int, t time.Time) string {
+	date := t.Format("2006-01-02")
 	return fmt.Sprintf("%s/%d-%s-round%d.md", reportDir, prNumber, date, roundNumber)
 }

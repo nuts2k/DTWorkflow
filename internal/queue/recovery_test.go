@@ -148,6 +148,9 @@ func (m *mockStoreForRecovery) CountNonRecoveryRounds(_ context.Context, _ int64
 func (m *mockStoreForRecovery) GetRecentRoundsIssuesFixed(_ context.Context, _ int64, _ int) ([]int, error) {
 	return nil, nil
 }
+func (m *mockStoreForRecovery) GetCompletedRoundsForSession(_ context.Context, _ int64) ([]*store.IterationRoundRecord, error) {
+	return nil, nil
+}
 func (m *mockStoreForRecovery) FindActivePRTasksMulti(_ context.Context, _ string, _ int64, _ []model.TaskType) ([]*model.TaskRecord, error) {
 	return nil, nil
 }

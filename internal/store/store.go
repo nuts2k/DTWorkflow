@@ -150,6 +150,9 @@ type Store interface {
 	// GetRecentRoundsIssuesFixed 获取最近 N 个非恢复轮次的 issues_fixed 列表（从新到旧）。
 	GetRecentRoundsIssuesFixed(ctx context.Context, sessionID int64, n int) ([]int, error)
 
+	// GetCompletedRoundsForSession 获取会话的所有已完成轮次（按 round_number 升序）。
+	GetCompletedRoundsForSession(ctx context.Context, sessionID int64) ([]*IterationRoundRecord, error)
+
 	// FindActivePRTasksMulti 查找同一 PR 的多种类型活跃任务（pending/queued/running）。
 	// 返回按 created_at 升序排列的任务列表。
 	FindActivePRTasksMulti(ctx context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error)
@@ -235,6 +238,7 @@ type IterationRoundRecord struct {
 	IssuesFound   int
 	IssuesFixed   int
 	FixReportPath string
+	FixSummary    string
 	IsRecovery    bool
 	StartedAt     time.Time
 	CompletedAt   *time.Time

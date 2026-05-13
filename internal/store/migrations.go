@@ -483,6 +483,11 @@ var migrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_tasks_repo_pr ON tasks(repo_full_name, pr_number, task_type, status);
 		`,
 	},
+	// M6.1 补丁: iteration_rounds 追加 fix_summary 列，用于 PreviousFixes 上下文传递。
+	{
+		Version: 25,
+		SQL:     `ALTER TABLE iteration_rounds ADD COLUMN fix_summary TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本

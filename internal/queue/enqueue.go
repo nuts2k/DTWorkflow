@@ -36,6 +36,7 @@ type IterateSessionStore interface {
 	GetLatestRound(ctx context.Context, sessionID int64) (*store.IterationRoundRecord, error)
 	CountNonRecoveryRounds(ctx context.Context, sessionID int64) (int, error)
 	GetRecentRoundsIssuesFixed(ctx context.Context, sessionID int64, n int) ([]int, error)
+	GetCompletedRoundsForSession(ctx context.Context, sessionID int64) ([]*store.IterationRoundRecord, error)
 	FindActivePRTasksMulti(ctx context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error)
 }
 
@@ -323,7 +324,8 @@ func (h *EnqueueHandler) isFixReviewPush(event webhook.PullRequestEvent) bool {
 	cfg := h.iterateCfg.ResolveIterateConfig(event.Repository.FullName)
 	botLogin := strings.TrimSpace(cfg.BotLogin)
 	if botLogin == "" {
-		// 兼容旧配置：未声明 bot_login 时沿用 M6.1 初版的 fixing 状态判断。
+		h.logger.WarnContext(context.Background(), "iterate.bot_login 未配置，fixing 状态下所有 push 均视为 fix_review push；建议配置 bot_login 以精确区分",
+			"repo", event.Repository.FullName)
 		return true
 	}
 	return strings.EqualFold(event.Sender.Login, botLogin)
@@ -1404,6 +1406,28 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	// 序列化问题列表
 	issuesJSON, _ := json.Marshal(filteredIssues)
 
+	// 构建前几轮修复上下文
+	var previousFixesJSON string
+	if roundNumber > 1 {
+		completedRounds, crErr := h.iterateStore.GetCompletedRoundsForSession(ctx, session.ID)
+		if crErr != nil {
+			h.logger.WarnContext(ctx, "查询已完成轮次失败，PreviousFixes 为空",
+				"session_id", session.ID, "error", crErr)
+		} else if len(completedRounds) > 0 {
+			var fixes []iterate.FixSummary
+			for _, r := range completedRounds {
+				fixes = append(fixes, iterate.FixSummary{
+					Round:       r.RoundNumber,
+					IssuesFixed: r.IssuesFixed,
+					Summary:     r.FixSummary,
+				})
+			}
+			if data, err := json.Marshal(fixes); err == nil {
+				previousFixesJSON = string(data)
+			}
+		}
+	}
+
 	deliveryID := fmt.Sprintf("iterate-%d:fix_review:%d", session.ID, roundNumber)
 	fixPayload := model.TaskPayload{
 		TaskType:           model.TaskTypeFixReview,
@@ -1420,6 +1444,7 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 		SessionID:          session.ID,
 		RoundNumber:        roundNumber,
 		ReviewIssues:       string(issuesJSON),
+		PreviousFixes:      previousFixesJSON,
 		FixReportPath:      fixReportPath,
 		IterationMaxRounds: session.MaxRounds,
 	}
@@ -1451,6 +1476,14 @@ func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.T
 	h.logger.InfoContext(ctx, "fix_review 已入队",
 		"task_id", fixRecord.ID, "session_id", session.ID,
 		"round", roundNumber, "issues", len(filteredIssues))
+
+	// I-4: notification_mode=progress 时发送迭代进度通知
+	if h.iterateCfg != nil {
+		cfg2 := h.iterateCfg.ResolveIterateConfig(payload.RepoFullName)
+		if cfg2.NotificationMode == "progress" {
+			h.sendIterationProgressNotification(ctx, payload, session, roundNumber, len(filteredIssues))
+		}
+	}
 
 	return true
 }
@@ -1547,6 +1580,37 @@ func (h *EnqueueHandler) sendIterationTerminalNotification(ctx context.Context, 
 	if err := h.iterateNotifier.Send(ctx, msg); err != nil {
 		h.logger.WarnContext(ctx, "发送迭代终态通知失败",
 			"event", eventType, "error", err)
+	}
+}
+
+// sendIterationProgressNotification 在 fix_review 入队后发送迭代进度通知。
+func (h *EnqueueHandler) sendIterationProgressNotification(ctx context.Context, payload model.TaskPayload, session *store.IterationSessionRecord, roundNumber int, issueCount int) {
+	if h.iterateNotifier == nil {
+		return
+	}
+	title := fmt.Sprintf("PR #%d 迭代修复 Round %d 启动", payload.PRNumber, roundNumber)
+	body := fmt.Sprintf("发现 %d 个问题，已入队 fix_review 自动修复（%d/%d 轮）",
+		issueCount, roundNumber, session.MaxRounds)
+	msg := notify.Message{
+		EventType: notify.EventIterationProgress,
+		Severity:  notify.SeverityInfo,
+		Target: notify.Target{
+			Owner:  payload.RepoOwner,
+			Repo:   payload.RepoName,
+			Number: payload.PRNumber,
+			IsPR:   true,
+		},
+		Title: title,
+		Body:  body,
+		Metadata: map[string]string{
+			notify.MetaKeyIterationRound:     fmt.Sprintf("%d", roundNumber),
+			notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", session.MaxRounds),
+			notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", session.ID),
+		},
+	}
+	if err := h.iterateNotifier.Send(ctx, msg); err != nil {
+		h.logger.WarnContext(ctx, "发送迭代进度通知失败",
+			"round", roundNumber, "error", err)
 	}
 }
 

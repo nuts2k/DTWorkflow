@@ -147,17 +147,46 @@ func extractResultFromCLIOutput(raw string) (*review.CLIResponse, string, error)
 	return nil, "", fmt.Errorf("未找到 type=result 的 CLI 输出行")
 }
 
-// extractJSON 从文本中提取 JSON 对象（找第一个 { 到最后一个 }）。
+// extractJSON 从文本中提取最外层 JSON 对象，使用大括号深度匹配避免嵌套截断。
 func extractJSON(text string) string {
 	start := strings.Index(text, "{")
 	if start == -1 {
 		return ""
 	}
-	end := strings.LastIndex(text, "}")
-	if end == -1 || end <= start {
-		return ""
+	depth := 0
+	inString := false
+	escape := false
+	for i := start; i < len(text); i++ {
+		ch := text[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if ch == '\\' && inString {
+			escape = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				candidate := text[start : i+1]
+				if json.Valid([]byte(candidate)) {
+					return candidate
+				}
+			}
+		}
 	}
-	return text[start : end+1]
+	return ""
 }
 
 // CountFixedIssues 统计实际修复的问题数（action=modified 或 alternative_chosen）。

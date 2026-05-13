@@ -36,6 +36,16 @@ func (s *SQLiteStore) FindOrCreateIterationSession(ctx context.Context, repoFull
 		VALUES (?, ?, ?, 'idle', ?)`
 	result, err := s.db.ExecContext(ctx, insert, repoFullName, prNumber, headBranch, maxRounds)
 	if err != nil {
+		// 并发 INSERT 可能触发唯一索引冲突，回退到 SELECT
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			existing2, findErr := s.FindActiveIterationSession(ctx, repoFullName, prNumber)
+			if findErr != nil {
+				return nil, fmt.Errorf("创建迭代会话冲突后重查失败: %w", findErr)
+			}
+			if existing2 != nil {
+				return existing2, nil
+			}
+		}
 		return nil, fmt.Errorf("创建迭代会话: %w", err)
 	}
 	id, _ := result.LastInsertId()
@@ -83,7 +93,7 @@ func (s *SQLiteStore) UpdateIterationRound(ctx context.Context, round *Iteration
 	const query = `
 		UPDATE iteration_rounds
 		SET review_task_id = ?, fix_task_id = ?, issues_found = ?,
-		    issues_fixed = ?, fix_report_path = ?, completed_at = ?
+		    issues_fixed = ?, fix_report_path = ?, fix_summary = ?, completed_at = ?
 		WHERE id = ?`
 	var completedAt interface{}
 	if round.CompletedAt != nil {
@@ -91,14 +101,14 @@ func (s *SQLiteStore) UpdateIterationRound(ctx context.Context, round *Iteration
 	}
 	_, err := s.db.ExecContext(ctx, query,
 		round.ReviewTaskID, round.FixTaskID, round.IssuesFound,
-		round.IssuesFixed, round.FixReportPath, completedAt, round.ID)
+		round.IssuesFixed, round.FixReportPath, round.FixSummary, completedAt, round.ID)
 	return err
 }
 
 func (s *SQLiteStore) GetLatestRound(ctx context.Context, sessionID int64) (*IterationRoundRecord, error) {
 	const query = `
 		SELECT id, session_id, round_number, review_task_id, fix_task_id,
-		       issues_found, issues_fixed, fix_report_path, is_recovery,
+		       issues_found, issues_fixed, fix_report_path, fix_summary, is_recovery,
 		       started_at, completed_at
 		FROM iteration_rounds
 		WHERE session_id = ?
@@ -210,7 +220,7 @@ func (s *SQLiteStore) scanIterationRound(row *sql.Row) (*IterationRoundRecord, e
 	var startedAt string
 	var completedAt sql.NullString
 	err := row.Scan(&r.ID, &r.SessionID, &r.RoundNumber, &r.ReviewTaskID, &r.FixTaskID,
-		&r.IssuesFound, &r.IssuesFixed, &r.FixReportPath, &isRecovery,
+		&r.IssuesFound, &r.IssuesFixed, &r.FixReportPath, &r.FixSummary, &isRecovery,
 		&startedAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -225,4 +235,39 @@ func (s *SQLiteStore) scanIterationRound(row *sql.Row) (*IterationRoundRecord, e
 		r.CompletedAt = &t
 	}
 	return &r, nil
+}
+
+func (s *SQLiteStore) GetCompletedRoundsForSession(ctx context.Context, sessionID int64) ([]*IterationRoundRecord, error) {
+	const query = `
+		SELECT id, session_id, round_number, review_task_id, fix_task_id,
+		       issues_found, issues_fixed, fix_report_path, fix_summary, is_recovery,
+		       started_at, completed_at
+		FROM iteration_rounds
+		WHERE session_id = ? AND completed_at IS NOT NULL
+		ORDER BY round_number ASC`
+	rows, err := s.db.QueryContext(ctx, query, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*IterationRoundRecord
+	for rows.Next() {
+		var r IterationRoundRecord
+		var isRecovery int
+		var startedAt string
+		var completedAt sql.NullString
+		if err := rows.Scan(&r.ID, &r.SessionID, &r.RoundNumber, &r.ReviewTaskID, &r.FixTaskID,
+			&r.IssuesFound, &r.IssuesFixed, &r.FixReportPath, &r.FixSummary, &isRecovery,
+			&startedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		r.IsRecovery = isRecovery != 0
+		r.StartedAt, _ = time.Parse(time.DateTime, startedAt)
+		if completedAt.Valid {
+			t, _ := time.Parse(time.DateTime, completedAt.String)
+			r.CompletedAt = &t
+		}
+		result = append(result, &r)
+	}
+	return result, rows.Err()
 }

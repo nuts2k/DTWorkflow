@@ -339,6 +339,9 @@ func (m *mockStore) CountNonRecoveryRounds(_ context.Context, _ int64) (int, err
 func (m *mockStore) GetRecentRoundsIssuesFixed(_ context.Context, _ int64, _ int) ([]int, error) {
 	return nil, nil
 }
+func (m *mockStore) GetCompletedRoundsForSession(_ context.Context, _ int64) ([]*store.IterationRoundRecord, error) {
+	return nil, nil
+}
 func (m *mockStore) FindActivePRTasksMulti(_ context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error) {
 	typeSet := make(map[model.TaskType]struct{}, len(taskTypes))
 	for _, taskType := range taskTypes {
