@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,7 +14,10 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/iterate"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
@@ -21,6 +25,35 @@ import (
 
 // 编译时检查 *EnqueueHandler 实现 webhook.Handler 接口
 var _ webhook.Handler = (*EnqueueHandler)(nil)
+
+// IterateSessionStore 迭代会话的窄 Store 接口。
+type IterateSessionStore interface {
+	FindActiveIterationSession(ctx context.Context, repoFullName string, prNumber int64) (*store.IterationSessionRecord, error)
+	FindOrCreateIterationSession(ctx context.Context, repoFullName string, prNumber int64, headBranch string, maxRounds int) (*store.IterationSessionRecord, error)
+	UpdateIterationSession(ctx context.Context, session *store.IterationSessionRecord) error
+	CreateIterationRound(ctx context.Context, round *store.IterationRoundRecord) error
+	UpdateIterationRound(ctx context.Context, round *store.IterationRoundRecord) error
+	GetLatestRound(ctx context.Context, sessionID int64) (*store.IterationRoundRecord, error)
+	CountNonRecoveryRounds(ctx context.Context, sessionID int64) (int, error)
+	GetRecentRoundsIssuesFixed(ctx context.Context, sessionID int64, n int) ([]int, error)
+	FindActivePRTasksMulti(ctx context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error)
+}
+
+// IterateConfigProvider 迭代配置读取接口。
+type IterateConfigProvider interface {
+	ResolveIterateConfig(repoFullName string) config.IterateConfig
+}
+
+// IterateLabelManager Gitea 标签管理窄接口。
+type IterateLabelManager interface {
+	AddLabel(ctx context.Context, owner, repo string, prNumber int64, label string) error
+	RemoveLabel(ctx context.Context, owner, repo string, prNumber int64, label string) error
+}
+
+// IteratePRCommenter PR 评论窄接口。
+type IteratePRCommenter interface {
+	CreateComment(ctx context.Context, owner, repo string, prNumber int64, body string) error
+}
 
 // EnqueueHandler 实现 webhook.Handler 接口,将 webhook 事件转换为任务并入队
 type EnqueueHandler struct {
@@ -35,6 +68,11 @@ type EnqueueHandler struct {
 	prFilesLister     PRFilesLister               // M4.3: PR 变更文件列表查询
 	e2eModuleScanner  e2esvc.E2EModuleScanner     // M5.3: 可选，nil 时全量模式退化为单任务
 	e2eConfigProvider E2ERegressionConfigProvider // M5.4: 可选，nil 时跳过 E2E 回归入队
+	iterateStore      IterateSessionStore          // M6.1: 迭代会话 Store
+	iterateCfg        IterateConfigProvider        // M6.1: 迭代配置
+	iterateLabels     IterateLabelManager          // M6.1: Gitea 标签管理
+	iterateCommenter  IteratePRCommenter           // M6.1: PR 评论
+	iterateNotifier   TaskNotifier                 // M6.1: 迭代通知发送
 }
 
 // EnqueueOption EnqueueHandler 可选配置。
@@ -105,6 +143,31 @@ type E2ERegressionConfigProvider interface {
 // WithE2ERegressionConfigProvider 注入 E2E 回归配置读取能力。
 func WithE2ERegressionConfigProvider(p E2ERegressionConfigProvider) EnqueueOption {
 	return func(h *EnqueueHandler) { h.e2eConfigProvider = p }
+}
+
+// WithIterateStore 注入迭代会话 Store。
+func WithIterateStore(s IterateSessionStore) EnqueueOption {
+	return func(h *EnqueueHandler) { h.iterateStore = s }
+}
+
+// WithIterateConfig 注入迭代配置读取能力。
+func WithIterateConfig(c IterateConfigProvider) EnqueueOption {
+	return func(h *EnqueueHandler) { h.iterateCfg = c }
+}
+
+// WithIterateLabels 注入 Gitea 标签管理能力。
+func WithIterateLabels(l IterateLabelManager) EnqueueOption {
+	return func(h *EnqueueHandler) { h.iterateLabels = l }
+}
+
+// WithIterateCommenter 注入 PR 评论能力。
+func WithIterateCommenter(c IteratePRCommenter) EnqueueOption {
+	return func(h *EnqueueHandler) { h.iterateCommenter = c }
+}
+
+// WithIterateNotifier 注入迭代通知发送器。
+func WithIterateNotifier(n TaskNotifier) EnqueueOption {
+	return func(h *EnqueueHandler) { h.iterateNotifier = n }
 }
 
 // NewEnqueueHandler 创建 EnqueueHandler 实例。
@@ -205,7 +268,35 @@ func (h *EnqueueHandler) handleReviewPullRequest(ctx context.Context, event webh
 		return err
 	}
 
-	h.cancelTasks(ctx, activeTasks)
+	// M6.1: 区分 fix_review push 与用户 push，避免 Cancel-and-Replace 误杀 fix_review 任务
+	if h.iterateStore != nil {
+		session, findErr := h.iterateStore.FindActiveIterationSession(ctx, event.Repository.FullName, event.PullRequest.Number)
+		if findErr != nil {
+			h.logger.WarnContext(ctx, "查询迭代会话失败，按用户 push 处理",
+				"error", findErr)
+			h.cancelTasks(ctx, activeTasks)
+		} else if session != nil && session.Status == "fixing" {
+			// fix_review 自身的 push：仅取消旧 review_pr，不取消 fix_review
+			h.cancelTasks(ctx, filterTasksByType(activeTasks, model.TaskTypeReviewPR))
+			// 更新会话状态：fixing → reviewing
+			session.Status = "reviewing"
+			if updateErr := h.iterateStore.UpdateIterationSession(ctx, session); updateErr != nil {
+				h.logger.WarnContext(ctx, "更新迭代会话状态失败",
+					"session_id", session.ID, "error", updateErr)
+			}
+		} else if session != nil {
+			// 用户手动 push 且存在迭代会话：同时取消 review_pr 和 fix_review
+			fixTasks, _ := h.iterateStore.FindActivePRTasksMulti(ctx,
+				event.Repository.FullName, event.PullRequest.Number,
+				[]model.TaskType{model.TaskTypeFixReview})
+			h.cancelTasks(ctx, append(activeTasks, fixTasks...))
+		} else {
+			// 无迭代会话：正常取消旧 review_pr
+			h.cancelTasks(ctx, activeTasks)
+		}
+	} else {
+		h.cancelTasks(ctx, activeTasks)
+	}
 
 	if record.Status == model.TaskStatusQueued {
 		h.logger.InfoContext(ctx, "PR 评审任务已入队",
@@ -1167,6 +1258,281 @@ func (h *EnqueueHandler) listActiveGenTestsTasksByBranchKey(ctx context.Context,
 // generateManualDeliveryID 生成手动触发的合成 delivery ID
 func generateManualDeliveryID() string {
 	return fmt.Sprintf("manual-%d-%s", time.Now().UnixMilli(), uuid.New().String()[:8])
+}
+
+// filterTasksByType 从任务列表中过滤指定类型的任务。
+func filterTasksByType(tasks []*model.TaskRecord, taskType model.TaskType) []*model.TaskRecord {
+	var result []*model.TaskRecord
+	for _, t := range tasks {
+		if t.TaskType == taskType {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// AfterReviewCompleted 在 review_pr 成功且 verdict=request_changes 时调用。
+// 返回 true 表示已触发迭代（调用方应抑制 review 通知）。
+func (h *EnqueueHandler) AfterReviewCompleted(ctx context.Context, task *model.TaskRecord, payload model.TaskPayload, labels []string, issues []review.ReviewIssue) bool {
+	if h.iterateStore == nil || h.iterateCfg == nil {
+		return false
+	}
+
+	cfg := h.iterateCfg.ResolveIterateConfig(payload.RepoFullName)
+	if !cfg.Enabled {
+		return false
+	}
+	if !iterate.ContainsLabel(labels, cfg.Label) {
+		return false
+	}
+
+	// 按严重等级过滤需要修复的问题
+	filteredIssues := filterIssuesBySeverity(issues, cfg.FixSeverityThreshold)
+	if len(filteredIssues) == 0 {
+		return false
+	}
+
+	// 查找或创建迭代会话
+	session, err := h.iterateStore.FindOrCreateIterationSession(ctx,
+		payload.RepoFullName, payload.PRNumber, payload.HeadRef, cfg.MaxRounds)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "创建迭代会话失败",
+			"repo", payload.RepoFullName, "pr", payload.PRNumber, "error", err)
+		return false
+	}
+
+	// 获取最新轮次，检查是否为恢复场景
+	latestRound, _ := h.iterateStore.GetLatestRound(ctx, session.ID)
+
+	// 上一轮修复完成，发 PR 评论摘要
+	if latestRound != nil && latestRound.FixTaskID != "" && latestRound.IssuesFixed > 0 {
+		h.postFixRoundComment(ctx, payload, latestRound.RoundNumber, latestRound.IssuesFixed, latestRound.FixReportPath)
+	}
+
+	// 检查是否为恢复场景：上一轮的 fix_review 失败后用户 push 了新提交
+	isRecovery := false
+	if latestRound != nil && latestRound.FixTaskID != "" {
+		fixTask, _ := h.store.GetTask(ctx, latestRound.FixTaskID)
+		if fixTask != nil && fixTask.Status == model.TaskStatusFailed {
+			isRecovery = true
+		}
+	}
+
+	// 检查是否超限（仅统计非 recovery 轮次）
+	nonRecoveryRounds, err := h.iterateStore.CountNonRecoveryRounds(ctx, session.ID)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "统计迭代轮次失败", "session_id", session.ID, "error", err)
+		return false
+	}
+	if !isRecovery && nonRecoveryRounds >= session.MaxRounds {
+		session.Status = "exhausted"
+		_ = h.iterateStore.UpdateIterationSession(ctx, session)
+		h.sendIterationTerminalNotification(ctx, payload, session, notify.EventIterationExhausted)
+		h.updateIterationLabels(ctx, payload, "exhausted")
+		return false
+	}
+
+	// 连续两轮零修复检查
+	if !isRecovery && nonRecoveryRounds >= 2 {
+		recentFixed, rfErr := h.iterateStore.GetRecentRoundsIssuesFixed(ctx, session.ID, 2)
+		if rfErr == nil && len(recentFixed) >= 2 && recentFixed[0] == 0 && recentFixed[1] == 0 {
+			session.Status = "exhausted"
+			session.LastError = "连续两轮零修复"
+			_ = h.iterateStore.UpdateIterationSession(ctx, session)
+			h.sendIterationTerminalNotification(ctx, payload, session, notify.EventIterationExhausted)
+			h.updateIterationLabels(ctx, payload, "exhausted")
+			return false
+		}
+	}
+
+	// 计算轮次号
+	var roundNumber int
+	if latestRound != nil {
+		roundNumber = latestRound.RoundNumber + 1
+	} else {
+		roundNumber = 1
+	}
+
+	// 更新会话状态：→ fixing
+	session.Status = "fixing"
+	session.CurrentRound = roundNumber
+	session.TotalIssuesFound += len(filteredIssues)
+	if err := h.iterateStore.UpdateIterationSession(ctx, session); err != nil {
+		h.logger.ErrorContext(ctx, "更新迭代会话状态为 fixing 失败",
+			"session_id", session.ID, "error", err)
+		return false
+	}
+
+	// 创建轮次记录
+	round := &store.IterationRoundRecord{
+		SessionID:   session.ID,
+		RoundNumber: roundNumber,
+		ReviewTaskID: task.ID,
+		IssuesFound: len(filteredIssues),
+		IsRecovery:  isRecovery,
+	}
+	if err := h.iterateStore.CreateIterationRound(ctx, round); err != nil {
+		h.logger.ErrorContext(ctx, "创建迭代轮次失败",
+			"session_id", session.ID, "round", roundNumber, "error", err)
+		return false
+	}
+
+	// 首次迭代（round 1 且非 recovery）添加 iterating 标签
+	if roundNumber == 1 && !isRecovery {
+		h.updateIterationLabels(ctx, payload, "start")
+	}
+
+	// 序列化问题列表
+	issuesJSON, _ := json.Marshal(filteredIssues)
+
+	deliveryID := fmt.Sprintf("iterate-%d:fix_review:%d", session.ID, roundNumber)
+	fixPayload := model.TaskPayload{
+		TaskType:      model.TaskTypeFixReview,
+		DeliveryID:    deliveryID,
+		RepoOwner:     payload.RepoOwner,
+		RepoName:      payload.RepoName,
+		RepoFullName:  payload.RepoFullName,
+		CloneURL:      payload.CloneURL,
+		PRNumber:      payload.PRNumber,
+		PRTitle:       payload.PRTitle,
+		BaseRef:       payload.BaseRef,
+		HeadRef:       payload.HeadRef,
+		HeadSHA:       payload.HeadSHA,
+		SessionID:     session.ID,
+		RoundNumber:   roundNumber,
+		ReviewIssues:  string(issuesJSON),
+	}
+
+	fixRecord := &model.TaskRecord{
+		TaskType:     model.TaskTypeFixReview,
+		Priority:     model.PriorityHigh,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		DeliveryID:   deliveryID,
+	}
+
+	if err := h.enqueueTask(ctx, fixPayload, fixRecord); err != nil {
+		h.logger.ErrorContext(ctx, "入队 fix_review 失败",
+			"session_id", session.ID, "round", roundNumber, "error", err)
+		return false
+	}
+
+	// 更新轮次的 fix_task_id
+	round.FixTaskID = fixRecord.ID
+	_ = h.iterateStore.UpdateIterationRound(ctx, round)
+
+	h.logger.InfoContext(ctx, "fix_review 已入队",
+		"task_id", fixRecord.ID, "session_id", session.ID,
+		"round", roundNumber, "issues", len(filteredIssues))
+
+	return true
+}
+
+// AfterIterationApproved 在迭代中的 review_pr verdict=approve 时调用。
+// 将会话标记为 completed，更新标签，发送终态通知。
+func (h *EnqueueHandler) AfterIterationApproved(ctx context.Context, payload model.TaskPayload) {
+	if h.iterateStore == nil {
+		return
+	}
+	session, err := h.iterateStore.FindActiveIterationSession(ctx, payload.RepoFullName, payload.PRNumber)
+	if err != nil || session == nil {
+		return
+	}
+	session.Status = "completed"
+	_ = h.iterateStore.UpdateIterationSession(ctx, session)
+	h.sendIterationTerminalNotification(ctx, payload, session, notify.EventIterationPassed)
+	h.updateIterationLabels(ctx, payload, "passed")
+}
+
+// updateIterationLabels 根据迭代阶段更新 PR 标签。
+func (h *EnqueueHandler) updateIterationLabels(ctx context.Context, payload model.TaskPayload, phase string) {
+	if h.iterateLabels == nil {
+		return
+	}
+	owner, repo := payload.RepoOwner, payload.RepoName
+	pr := payload.PRNumber
+
+	switch phase {
+	case "start":
+		_ = h.iterateLabels.AddLabel(ctx, owner, repo, pr, "iterating")
+	case "passed":
+		_ = h.iterateLabels.RemoveLabel(ctx, owner, repo, pr, "iterating")
+		_ = h.iterateLabels.AddLabel(ctx, owner, repo, pr, "iterate-passed")
+	case "exhausted":
+		_ = h.iterateLabels.RemoveLabel(ctx, owner, repo, pr, "iterating")
+		_ = h.iterateLabels.AddLabel(ctx, owner, repo, pr, "iterate-exhausted")
+	}
+}
+
+// postFixRoundComment 在 fix_review 完成后发 PR 精简评论。
+func (h *EnqueueHandler) postFixRoundComment(ctx context.Context, payload model.TaskPayload, round int, issuesFixed int, reportPath string) {
+	if h.iterateCommenter == nil {
+		return
+	}
+	body := fmt.Sprintf(
+		"**迭代修复 Round %d 完成**\n\n"+
+			"- 修复问题数: %d\n"+
+			"- 详细报告: `%s`\n\n"+
+			"已推送新提交，等待重新评审。",
+		round, issuesFixed, reportPath)
+	if err := h.iterateCommenter.CreateComment(ctx, payload.RepoOwner, payload.RepoName, payload.PRNumber, body); err != nil {
+		h.logger.WarnContext(ctx, "发送迭代修复 PR 评论失败",
+			"pr", payload.PRNumber, "round", round, "error", err)
+	}
+}
+
+// sendIterationTerminalNotification 发送迭代终态通知。
+func (h *EnqueueHandler) sendIterationTerminalNotification(ctx context.Context, payload model.TaskPayload, session *store.IterationSessionRecord, eventType notify.EventType) {
+	if h.iterateNotifier == nil {
+		return
+	}
+	var title, body string
+	switch eventType {
+	case notify.EventIterationPassed:
+		title = fmt.Sprintf("PR #%d 迭代完成", payload.PRNumber)
+		body = fmt.Sprintf("评审通过，共 %d 轮修复 %d 个问题",
+			session.CurrentRound, session.TotalIssuesFixed)
+	case notify.EventIterationExhausted:
+		title = fmt.Sprintf("PR #%d 迭代修复达到上限", payload.PRNumber)
+		body = fmt.Sprintf("%d 轮后仍有问题，需人工介入", session.CurrentRound)
+	}
+	severity := notify.SeverityInfo
+	if eventType == notify.EventIterationExhausted {
+		severity = notify.SeverityWarning
+	}
+	msg := notify.Message{
+		EventType: eventType,
+		Severity:  severity,
+		Target: notify.Target{
+			Owner:  payload.RepoOwner,
+			Repo:   payload.RepoName,
+			Number: payload.PRNumber,
+			IsPR:   true,
+		},
+		Title: title,
+		Body:  body,
+		Metadata: map[string]string{
+			notify.MetaKeyIterationRound:     fmt.Sprintf("%d", session.CurrentRound),
+			notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", session.MaxRounds),
+			notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", session.ID),
+		},
+	}
+	if err := h.iterateNotifier.Send(ctx, msg); err != nil {
+		h.logger.WarnContext(ctx, "发送迭代终态通知失败",
+			"event", eventType, "error", err)
+	}
+}
+
+// filterIssuesBySeverity 直接过滤 []review.ReviewIssue。
+func filterIssuesBySeverity(issues []review.ReviewIssue, threshold string) []review.ReviewIssue {
+	minRank := iterate.SeverityRank(strings.ToUpper(threshold))
+	var result []review.ReviewIssue
+	for _, issue := range issues {
+		if iterate.SeverityRank(strings.ToUpper(issue.Severity)) >= minRank {
+			result = append(result, issue)
+		}
+	}
+	return result
 }
 
 // listActiveE2ETasks 查找同模块活跃 E2E 任务（fail-open）。

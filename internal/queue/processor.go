@@ -540,6 +540,25 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 	// M6.1: fix_review 的完成通知由迭代层独立发送，不走 Processor 通用通知路径
 	suppressNotification := payload.TaskType == model.TaskTypeFixReview
+
+	// M6.1: review_pr 成功后检查迭代闭环
+	if finalStatePersisted && !suppressNotification &&
+		payload.TaskType == model.TaskTypeReviewPR &&
+		record.Status == model.TaskStatusSucceeded &&
+		reviewResult != nil && reviewResult.Review != nil &&
+		p.enqueueHandler != nil {
+
+		switch reviewResult.Review.Verdict {
+		case review.VerdictRequestChanges:
+			if p.enqueueHandler.AfterReviewCompleted(ctx, record, payload,
+				reviewResult.Labels, reviewResult.Review.Issues) {
+				suppressNotification = true
+			}
+		case review.VerdictApprove:
+			p.enqueueHandler.AfterIterationApproved(ctx, payload)
+		}
+	}
+
 	if finalStatePersisted && !suppressNotification {
 		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, e2eResult, triageResult)
 	}
