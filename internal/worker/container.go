@@ -34,7 +34,7 @@ func sanitizeEnvValue(s string) string {
 // 专属 token 为空时回退到 GiteaToken，保持向后兼容。
 func selectGiteaToken(config PoolConfig, taskType model.TaskType) string {
 	switch taskType {
-	case model.TaskTypeFixIssue:
+	case model.TaskTypeFixIssue, model.TaskTypeFixReview:
 		if config.GiteaTokenFix != "" {
 			return string(config.GiteaTokenFix)
 		}
@@ -112,6 +112,13 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 		// 与 internal/test.ModuleKey 语义一致；由于 test → worker 已存在反向依赖，
 		// 不能在此 import test，改用本地等价实现 moduleKeyForContainer。
 		env = append(env, fmt.Sprintf("MODULE_SANITIZED=%s", moduleKeyForContainerWithFramework(payload.Module, payload.Framework)))
+	case model.TaskTypeFixReview:
+		env = append(env,
+			fmt.Sprintf("PR_NUMBER=%d", payload.PRNumber),
+			fmt.Sprintf("HEAD_REF=%s", sanitizeEnvValue(payload.HeadRef)),
+			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
+			fmt.Sprintf("HEAD_SHA=%s", sanitizeEnvValue(payload.HeadSHA)),
+		)
 	case model.TaskTypeRunE2E:
 		env = append(env,
 			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
@@ -302,6 +309,8 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 				sanitizePromptInput(payload.RepoFullName, 200),
 			),
 		}
+	case model.TaskTypeFixReview:
+		return []string{"claude", "-p", "--output-format", "json", "-"}
 	case model.TaskTypeRunE2E:
 		return []string{"claude", "-p", "--output-format", "json", "-"}
 	case model.TaskTypeTriageE2E:

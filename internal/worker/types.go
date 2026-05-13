@@ -44,6 +44,7 @@ type TaskTimeoutsConfig struct {
 	AnalyzeIssue time.Duration // M3.4: 只读分析超时（默认 15m）
 	RunE2E       time.Duration
 	TriageE2E    time.Duration // M5.4: E2E 回归分析超时（默认 10m）
+	FixReview    time.Duration // M6.1: 迭代修复超时（默认 20m）
 }
 
 // Lookup 根据任务类型返回对应超时值。零值时回退到与 queue 层一致的按类型默认值。
@@ -79,6 +80,11 @@ func (c TaskTimeoutsConfig) Lookup(taskType model.TaskType) time.Duration {
 			return c.TriageE2E
 		}
 		return 10 * time.Minute
+	case model.TaskTypeFixReview:
+		if c.FixReview > 0 {
+			return c.FixReview
+		}
+		return 20 * time.Minute
 	default:
 		return 10 * time.Minute
 	}

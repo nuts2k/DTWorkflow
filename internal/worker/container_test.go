@@ -1091,3 +1091,45 @@ func TestModuleKeyForContainerParity(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectGiteaToken_FixReview(t *testing.T) {
+	config := PoolConfig{
+		GiteaToken:    "tok-review",
+		GiteaTokenFix: "tok-fix",
+	}
+	got := selectGiteaToken(config, model.TaskTypeFixReview)
+	if got != "tok-fix" {
+		t.Errorf("selectGiteaToken(FixReview) = %q, want tok-fix", got)
+	}
+}
+
+func TestBuildContainerEnv_FixReview(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:      "https://gitea.example.com",
+		GiteaToken:    "tok-review",
+		GiteaTokenFix: "tok-fix",
+		ClaudeAPIKey:  "sk-test",
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixReview,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.example.com/owner/repo.git",
+		PRNumber:     42,
+		HeadRef:      "feature-branch",
+		BaseRef:      "main",
+		HeadSHA:      "abc123",
+	}
+	env := buildContainerEnv(config, payload)
+	envMap := envSliceToMap(env)
+	if envMap["GITEA_TOKEN"] != "tok-fix" {
+		t.Errorf("GITEA_TOKEN = %q, want tok-fix", envMap["GITEA_TOKEN"])
+	}
+	if envMap["PR_NUMBER"] != "42" {
+		t.Errorf("PR_NUMBER = %q, want 42", envMap["PR_NUMBER"])
+	}
+	if envMap["HEAD_REF"] != "feature-branch" {
+		t.Errorf("HEAD_REF = %q, want feature-branch", envMap["HEAD_REF"])
+	}
+}
