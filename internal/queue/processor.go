@@ -14,6 +14,7 @@ import (
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/iterate"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/review"
@@ -112,6 +113,18 @@ func WithEnqueueHandler(h *EnqueueHandler) ProcessorOption {
 	return func(p *Processor) { p.enqueueHandler = h }
 }
 
+// IterateExecutor 窄接口，解耦 iterate 包。
+type IterateExecutor interface {
+	Execute(ctx context.Context, payload model.TaskPayload) (*iterate.FixReviewResult, error)
+}
+
+// WithIterateService 注入迭代修复服务。
+func WithIterateService(svc IterateExecutor) ProcessorOption {
+	return func(p *Processor) {
+		p.iterateService = svc
+	}
+}
+
 // ReviewEnabledChecker 是 Processor 层的窄接口（ISP）
 // 仅暴露 Enabled 检查所需的最小能力
 type ReviewEnabledChecker interface {
@@ -152,6 +165,7 @@ type Processor struct {
 	testService          TestExecutor         // 可选；注入后 gen_tests 走 test.Service，否则回退 pool.Run()
 	e2eService           E2EExecutor          // 可选；注入后 run_e2e 走 e2e.Service，否则回退 pool.Run()
 	enqueueHandler       *EnqueueHandler      // 可选；triage_e2e 成功后链式入队 run_e2e
+	iterateService       IterateExecutor      // 可选；注入后 fix_review 走 iterate.Service
 	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 
@@ -277,6 +291,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	var e2eResult *e2e.E2EResult
 	var triageResult *e2e.TriageE2EOutput
 	var triageDispatchErr error
+	var iterateResult *iterate.FixReviewResult
 	var result *worker.ExecutionResult
 	var runErr error
 	// 路由：review_pr → reviewService，analyze_issue/fix_issue → fixService，
@@ -301,6 +316,13 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		e2eResult, runErr = p.e2eService.Execute(ctx, payload)
 		if e2eResult != nil {
 			result = adaptE2EResult(e2eResult)
+		}
+	case payload.TaskType == model.TaskTypeFixReview && p.iterateService != nil:
+		iterateResult, runErr = p.iterateService.Execute(ctx, payload)
+		if iterateResult != nil {
+			result = &worker.ExecutionResult{
+				Output: iterateResult.RawOutput,
+			}
 		}
 	case payload.TaskType == model.TaskTypeTriageE2E:
 		triagePrompt := e2e.BuildTriagePromptWithContext(e2e.TriagePromptContext{
@@ -394,6 +416,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if errors.Is(runErr, e2e.ErrNoCasesFound) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "未发现 E2E 用例，跳过任务")
 		}
+		if errors.Is(runErr, iterate.ErrNoChanges) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "fix_review 未产生实际变更，跳过重试")
+		}
 		// fix 解析失败且重试耗尽：发送降级评论，让用户至少能在 Issue 上看到原始输出
 		if errors.Is(runErr, fix.ErrFixParseFailure) && !shouldRetry(ctx) && fixResult != nil {
 			if wbErr := p.fixService.WriteDegraded(ctx, payload, fixResult); wbErr != nil {
@@ -428,7 +453,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		// gen_tests 任务的 runErr 可能由 test.ErrTestGenParseFailure 派生或
 		// 夹带仓库 / module 等 Claude 可间接控制的字段，统一走 SanitizeErrorMessage
 		// 兜底过滤控制字符 / URL，保证 record.Error 不成为 prompt injection 落点。
-		if payload.TaskType == model.TaskTypeGenTests || payload.TaskType == model.TaskTypeRunE2E || payload.TaskType == model.TaskTypeTriageE2E {
+		if payload.TaskType == model.TaskTypeGenTests || payload.TaskType == model.TaskTypeRunE2E || payload.TaskType == model.TaskTypeTriageE2E || payload.TaskType == model.TaskTypeFixReview {
 			record.Error = test.SanitizeErrorMessage(runErr.Error())
 		} else {
 			record.Error = runErr.Error()
@@ -513,7 +538,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		)
 	}
 
-	if finalStatePersisted {
+	// M6.1: fix_review 的完成通知由迭代层独立发送，不走 Processor 通用通知路径
+	suppressNotification := payload.TaskType == model.TaskTypeFixReview
+	if finalStatePersisted && !suppressNotification {
 		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, e2eResult, triageResult)
 	}
 
@@ -732,6 +759,9 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 			Body:      fmt.Sprintf("正在分析变更影响的 E2E 模块\n\n仓库：%s", payload.RepoFullName),
 			Metadata:  metadata,
 		}
+	case model.TaskTypeFixReview:
+		// 迭代修复的开始通知由迭代层管理，Processor 跳过
+		return notify.Message{}, false
 	default:
 		return notify.Message{}, false
 	}
@@ -1461,7 +1491,7 @@ func adaptTestResult(r *test.TestGenResult) *worker.ExecutionResult {
 // 标记任务 failed、尽可能保留结构化结果、持久化、发送通知，并返回 SkipRetry 错误。
 func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, logMsg string) error {
 	record.Status = model.TaskStatusFailed
-	if record.Payload.TaskType == model.TaskTypeGenTests || record.Payload.TaskType == model.TaskTypeRunE2E || record.Payload.TaskType == model.TaskTypeTriageE2E {
+	if record.Payload.TaskType == model.TaskTypeGenTests || record.Payload.TaskType == model.TaskTypeRunE2E || record.Payload.TaskType == model.TaskTypeTriageE2E || record.Payload.TaskType == model.TaskTypeFixReview {
 		record.Error = test.SanitizeErrorMessage(runErr.Error())
 	} else {
 		record.Error = runErr.Error()
@@ -1494,7 +1524,7 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 			"status", record.Status,
 			"error", err,
 		)
-	} else {
+	} else if record.Payload.TaskType != model.TaskTypeFixReview {
 		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, nil, nil)
 	}
 	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
