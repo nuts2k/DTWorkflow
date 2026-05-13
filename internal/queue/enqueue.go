@@ -319,14 +319,16 @@ func (h *EnqueueHandler) handleReviewPullRequest(ctx context.Context, event webh
 
 func (h *EnqueueHandler) isFixReviewPush(event webhook.PullRequestEvent) bool {
 	if h.iterateCfg == nil {
-		return true
+		h.logger.WarnContext(context.Background(), "iterate 配置未注入，无法可信识别 fix_review push；按用户 push 处理",
+			"repo", event.Repository.FullName)
+		return false
 	}
 	cfg := h.iterateCfg.ResolveIterateConfig(event.Repository.FullName)
 	botLogin := strings.TrimSpace(cfg.BotLogin)
 	if botLogin == "" {
-		h.logger.WarnContext(context.Background(), "iterate.bot_login 未配置，fixing 状态下所有 push 均视为 fix_review push；建议配置 bot_login 以精确区分",
+		h.logger.WarnContext(context.Background(), "iterate.bot_login 未配置，无法可信识别 fix_review push；按用户 push 处理",
 			"repo", event.Repository.FullName)
-		return true
+		return false
 	}
 	return strings.EqualFold(event.Sender.Login, botLogin)
 }

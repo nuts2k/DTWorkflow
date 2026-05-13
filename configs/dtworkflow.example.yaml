@@ -159,7 +159,7 @@ iterate:
   notification_mode: "progress"       # progress / silent
   fix_severity_threshold: "error"     # critical / error / warning
   report_path: "docs/review_history"
-  bot_login: ""                       # 例如 "dtworkflow-fix-bot"；留空时使用兼容模式
+  bot_login: ""                       # 启用 iterate 时必填，例如 "dtworkflow-fix-bot"
 
 # 测试生成配置（M4.1）
 # 说明：

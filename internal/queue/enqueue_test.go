@@ -357,7 +357,8 @@ func (m *mockStore) FindActivePRTasksMulti(_ context.Context, repoFullName strin
 		}
 		if task.Status != model.TaskStatusPending &&
 			task.Status != model.TaskStatusQueued &&
-			task.Status != model.TaskStatusRunning {
+			task.Status != model.TaskStatusRunning &&
+			task.Status != model.TaskStatusRetrying {
 			continue
 		}
 		tasks = append(tasks, task)
@@ -1138,6 +1139,72 @@ func TestHandlePullRequest_BotPushDuringIterationKeepsFixReview(t *testing.T) {
 	}
 	if s.iterationSession.Status != "reviewing" {
 		t.Fatalf("session status = %q, want reviewing", s.iterationSession.Status)
+	}
+}
+
+func TestHandlePullRequest_EmptyBotLoginTreatsPushAsUserPush(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-new-review-empty-bot"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default(),
+		WithIterateStore(s),
+		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{BotLogin: ""}}),
+	)
+
+	oldReview := &model.TaskRecord{
+		ID:           "old-review-empty-bot",
+		AsynqID:      "asynq-old-review-empty-bot",
+		TaskType:     model.TaskTypeReviewPR,
+		Status:       model.TaskStatusQueued,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     44,
+	}
+	oldFixReview := &model.TaskRecord{
+		ID:           "old-fix-review-empty-bot",
+		AsynqID:      "asynq-old-fix-review-empty-bot",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusRetrying,
+		Priority:     model.PriorityHigh,
+		RepoFullName: "org/repo",
+		PRNumber:     44,
+	}
+	seedRecord(s, oldReview)
+	seedRecord(s, oldFixReview)
+	s.activePRTasks = []*model.TaskRecord{oldReview}
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           9,
+		RepoFullName: "org/repo",
+		PRNumber:     44,
+		Status:       "fixing",
+	}
+
+	event := webhook.PullRequestEvent{
+		Action:     "synchronized",
+		DeliveryID: "delivery-empty-bot-login",
+		Repository: webhook.RepositoryRef{
+			Owner: "org", Name: "repo", FullName: "org/repo",
+			CloneURL: "https://gitea.example.com/org/repo.git",
+		},
+		PullRequest: webhook.PullRequestRef{
+			Number:  44,
+			HeadSHA: "new-sha",
+		},
+		Sender: webhook.UserRef{Login: "unknown"},
+	}
+
+	if err := h.HandlePullRequest(context.Background(), event); err != nil {
+		t.Fatalf("HandlePullRequest error: %v", err)
+	}
+
+	if !containsString(canceller.deleteCalls, "asynq-old-review-empty-bot") {
+		t.Fatalf("deleteCalls = %v, want contain old review", canceller.deleteCalls)
+	}
+	if oldFixReview.Status != model.TaskStatusCancelled {
+		t.Fatalf("old fix_review status = %q, want cancelled", oldFixReview.Status)
+	}
+	if s.updateIterationSessionCalls != 0 {
+		t.Fatalf("UpdateIterationSession 调用次数 = %d, want 0", s.updateIterationSessionCalls)
 	}
 }
 

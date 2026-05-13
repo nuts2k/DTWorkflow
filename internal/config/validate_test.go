@@ -160,6 +160,26 @@ func TestValidate_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidate_IterateEnabledRequiresBotLogin(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Iterate = IterateConfig{
+		Enabled:              true,
+		MaxRounds:            3,
+		Label:                "auto-iterate",
+		NotificationMode:     "progress",
+		FixSeverityThreshold: "error",
+		ReportPath:           "docs/review_history",
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("iterate.enabled=true 且 bot_login 为空应返回错误")
+	}
+	if !strings.Contains(err.Error(), "iterate.bot_login") {
+		t.Fatalf("error message = %q, want contains iterate.bot_login", err.Error())
+	}
+}
+
 func TestValidate_InvalidPort(t *testing.T) {
 	for _, port := range []int{0, -1, 65536, 100000} {
 		cfg := validBaseConfig()

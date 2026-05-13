@@ -25,6 +25,7 @@ type FixReviewResult struct {
 	CLIMeta   *model.CLIMeta
 	Output    *FixReviewOutput
 	ParseErr  error
+	ExitCode  int
 }
 
 // Service 迭代修复核心服务。
@@ -93,13 +94,26 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 	}
 	if execResult != nil {
 		result.RawOutput = execResult.Output
+		result.ExitCode = execResult.ExitCode
 	}
 	if execResult != nil && execResult.ExitCode != 0 {
+		if execResult.ExitCode == 2 {
+			return result, fmt.Errorf("%w: 容器执行失败，退出码 %d", ErrFixReviewDeterministicFailure, execResult.ExitCode)
+		}
 		return result, fmt.Errorf("容器执行失败，退出码 %d", execResult.ExitCode)
 	}
 
 	// 解析 JSON 结果
-	output, parseErr := parseFixReviewOutput(result.RawOutput)
+	output, cliResp, parseErr := parseFixReviewOutput(result.RawOutput)
+	if cliResp != nil {
+		result.CLIMeta = &model.CLIMeta{
+			CostUSD:    cliResp.EffectiveCostUSD(),
+			DurationMs: cliResp.DurationMs,
+			IsError:    cliResp.IsExecutionError(),
+			NumTurns:   cliResp.NumTurns,
+			SessionID:  cliResp.SessionID,
+		}
+	}
 	if parseErr != nil {
 		result.ParseErr = parseErr
 		return result, fmt.Errorf("%w: %v", ErrFixReviewParseFailure, parseErr)
@@ -110,22 +124,22 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 }
 
 // parseFixReviewOutput 从容器输出中提取结构化 JSON。
-func parseFixReviewOutput(rawOutput string) (*FixReviewOutput, error) {
-	_, resultText, err := extractResultFromCLIOutput(rawOutput)
+func parseFixReviewOutput(rawOutput string) (*FixReviewOutput, *review.CLIResponse, error) {
+	cliResp, resultText, err := extractResultFromCLIOutput(rawOutput)
 	if err != nil {
-		return nil, err
+		return nil, cliResp, err
 	}
 
 	jsonStr := extractJSON(resultText)
 	if jsonStr == "" {
-		return nil, fmt.Errorf("未找到 JSON 输出")
+		return nil, cliResp, fmt.Errorf("未找到 JSON 输出")
 	}
 
 	var output FixReviewOutput
 	if err := json.Unmarshal([]byte(jsonStr), &output); err != nil {
-		return nil, fmt.Errorf("JSON 解析失败: %w", err)
+		return nil, cliResp, fmt.Errorf("JSON 解析失败: %w", err)
 	}
-	return &output, nil
+	return &output, cliResp, nil
 }
 
 // extractResultFromCLIOutput 从 Claude CLI JSON 输出中提取 result 字符串。
@@ -140,11 +154,23 @@ func extractResultFromCLIOutput(raw string) (*review.CLIResponse, string, error)
 		if err := json.Unmarshal([]byte(line), &resp); err != nil {
 			continue
 		}
+		if isCLIErrorResponse(resp) {
+			return &resp, "", fmt.Errorf("Claude CLI 报告错误: type=%s, subtype=%s", resp.Type, resp.Subtype)
+		}
 		if resp.Type == "result" || resp.Type == "success" {
 			return &resp, resp.Result, nil
 		}
 	}
 	return nil, "", fmt.Errorf("未找到 type=result 的 CLI 输出行")
+}
+
+func isCLIErrorResponse(resp review.CLIResponse) bool {
+	if resp.IsError {
+		return true
+	}
+	respType := strings.ToLower(strings.TrimSpace(resp.Type))
+	subtype := strings.ToLower(strings.TrimSpace(resp.Subtype))
+	return subtype == "error" || strings.Contains(respType, "error")
 }
 
 // extractJSON 从文本中提取最外层 JSON 对象，使用大括号深度匹配避免嵌套截断。

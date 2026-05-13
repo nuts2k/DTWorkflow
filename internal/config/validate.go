@@ -593,6 +593,9 @@ func validateIterateConfig(cfg *Config) []error {
 		if strings.TrimSpace(it.ReportPath) == "" {
 			errs = append(errs, fmt.Errorf("iterate.report_path 不能为空"))
 		}
+		if strings.TrimSpace(it.BotLogin) == "" {
+			errs = append(errs, fmt.Errorf("iterate.bot_login 启用时不能为空"))
+		}
 	}
 
 	// 仓库级覆盖校验

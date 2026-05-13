@@ -12,6 +12,9 @@ var (
 	// ErrFixReviewParseFailure 修复结果 JSON 解析失败。
 	ErrFixReviewParseFailure = errors.New("iterate: 修复结果解析失败")
 
+	// ErrFixReviewDeterministicFailure 修复任务遇到确定性失败，不应重试。
+	ErrFixReviewDeterministicFailure = errors.New("iterate: 修复任务确定性失败")
+
 	// ErrNoChanges 修复未产生实际变更。
 	ErrNoChanges = errors.New("iterate: 修复未产生实际变更")
 

@@ -3,9 +3,20 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
+
+func newIteratePRTask(id string, taskType model.TaskType, status model.TaskStatus, prNumber int64, createdAt time.Time) *model.TaskRecord {
+	record := newTestRecord(id, id+"-delivery", taskType)
+	record.Status = status
+	record.PRNumber = prNumber
+	record.Payload.PRNumber = prNumber
+	record.CreatedAt = createdAt
+	record.UpdatedAt = createdAt
+	return record
+}
 
 func TestFindActiveIterationSession_NotFound(t *testing.T) {
 	s := newTestStore(t)
@@ -104,12 +115,33 @@ func TestFindActivePRTasksMulti(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
+	base := time.Now().UTC()
+	records := []*model.TaskRecord{
+		newIteratePRTask("review-pending", model.TaskTypeReviewPR, model.TaskStatusPending, 1, base),
+		newIteratePRTask("fix-retrying", model.TaskTypeFixReview, model.TaskStatusRetrying, 1, base.Add(time.Second)),
+		newIteratePRTask("fix-running", model.TaskTypeFixReview, model.TaskStatusRunning, 1, base.Add(2*time.Second)),
+		newIteratePRTask("fix-done", model.TaskTypeFixReview, model.TaskStatusSucceeded, 1, base.Add(3*time.Second)),
+		newIteratePRTask("issue-running", model.TaskTypeFixIssue, model.TaskStatusRunning, 1, base.Add(4*time.Second)),
+		newIteratePRTask("other-pr", model.TaskTypeFixReview, model.TaskStatusQueued, 2, base.Add(5*time.Second)),
+	}
+	for _, record := range records {
+		if err := s.CreateTask(ctx, record); err != nil {
+			t.Fatalf("create %s: %v", record.ID, err)
+		}
+	}
+
 	tasks, err := s.FindActivePRTasksMulti(ctx, "owner/repo", 1, []model.TaskType{"review_pr", "fix_review"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(tasks) != 0 {
-		t.Errorf("expected 0 tasks, got %d", len(tasks))
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(tasks))
+	}
+	wantIDs := []string{"review-pending", "fix-retrying", "fix-running"}
+	for i, want := range wantIDs {
+		if tasks[i].ID != want {
+			t.Errorf("tasks[%d].ID = %q, want %q", i, tasks[i].ID, want)
+		}
 	}
 }
 

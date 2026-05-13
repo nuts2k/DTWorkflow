@@ -339,6 +339,126 @@ func TestProcessTask_FixReviewSuccessPersistsIterationState(t *testing.T) {
 	}
 }
 
+func TestProcessTask_FixReviewParseFailureRecordsZeroFixAndNotifies(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:           model.TaskTypeFixReview,
+		DeliveryID:         "iterate-8:fix_review:1",
+		RepoOwner:          "org",
+		RepoName:           "repo",
+		RepoFullName:       "org/repo",
+		PRNumber:           42,
+		SessionID:          8,
+		RoundNumber:        1,
+		IterationMaxRounds: 3,
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "fix-review-parse-failure",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           8,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Status:       "fixing",
+		MaxRounds:    3,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          101,
+		SessionID:   8,
+		RoundNumber: 1,
+		FixTaskID:   record.ID,
+	}
+	iterExec := &mockIterateExecutor{
+		result: &iterate.FixReviewResult{RawOutput: "not-json"},
+		err:    fmt.Errorf("%w: bad json", iterate.ErrFixReviewParseFailure),
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(), WithIterateService(iterExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("error = %v, want SkipRetry", err)
+	}
+	if s.latestIterationRound.IssuesFixed != 0 {
+		t.Fatalf("IssuesFixed = %d, want 0", s.latestIterationRound.IssuesFixed)
+	}
+	if s.latestIterationRound.CompletedAt == nil {
+		t.Fatal("解析失败应记录轮次完成时间")
+	}
+	if s.iterationSession.Status != "reviewing" {
+		t.Fatalf("session status = %q, want reviewing", s.iterationSession.Status)
+	}
+	if len(notifier.messages) != 1 || notifier.messages[0].EventType != notify.EventIterationError {
+		t.Fatalf("应发送 iteration.error 通知，messages=%v", notifier.messages)
+	}
+}
+
+func TestProcessTask_FixReviewInfrastructureFailureNotifies(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:           model.TaskTypeFixReview,
+		DeliveryID:         "iterate-9:fix_review:1",
+		RepoOwner:          "org",
+		RepoName:           "repo",
+		RepoFullName:       "org/repo",
+		PRNumber:           42,
+		SessionID:          9,
+		RoundNumber:        1,
+		IterationMaxRounds: 3,
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "fix-review-infra-failure",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           9,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Status:       "fixing",
+		MaxRounds:    3,
+	}
+	iterExec := &mockIterateExecutor{err: errors.New("docker failed")}
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(), WithIterateService(iterExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("基础设施失败应返回 error")
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
+	}
+	msg := notifier.messages[0]
+	if msg.EventType != notify.EventIterationError {
+		t.Fatalf("event = %q, want %q", msg.EventType, notify.EventIterationError)
+	}
+	if msg.Metadata[notify.MetaKeyIterationSessionID] != "9" {
+		t.Fatalf("iteration_session_id = %q, want 9", msg.Metadata[notify.MetaKeyIterationSessionID])
+	}
+	if s.iterationSession.Status != "idle" {
+		t.Fatalf("session status = %q, want idle", s.iterationSession.Status)
+	}
+}
+
 func TestProcessTask_Success(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{

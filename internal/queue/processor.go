@@ -416,8 +416,14 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if errors.Is(runErr, e2e.ErrNoCasesFound) {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "未发现 E2E 用例，跳过任务")
 		}
+		if errors.Is(runErr, iterate.ErrFixReviewDeterministicFailure) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "fix_review 确定性失败，跳过重试")
+		}
+		if errors.Is(runErr, iterate.ErrFixReviewParseFailure) {
+			return p.handleIterationQualityFailure(ctx, record, runErr, iterateResult, "fix_review 修复结果解析失败，跳过重试")
+		}
 		if errors.Is(runErr, iterate.ErrNoChanges) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "fix_review 未产生实际变更，跳过重试")
+			return p.handleIterationQualityFailure(ctx, record, runErr, iterateResult, "fix_review 未产生实际变更，跳过重试")
 		}
 		// fix 解析失败且重试耗尽：发送降级评论，让用户至少能在 Issue 上看到原始输出
 		if errors.Is(runErr, fix.ErrFixParseFailure) && !shouldRetry(ctx) && fixResult != nil {
@@ -544,6 +550,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			p.persistIterationFixResult(ctx, payload, record, iterateResult)
 		case model.TaskStatusFailed:
 			p.persistIterationFixFailure(ctx, payload, record.Error)
+			p.sendIterationErrorNotification(ctx, record)
 		}
 	}
 
@@ -691,6 +698,106 @@ func (p *Processor) persistIterationFixFailure(ctx context.Context, payload mode
 	if err := p.store.UpdateIterationSession(persistCtx, session); err != nil {
 		p.logger.ErrorContext(ctx, "更新迭代会话失败状态失败",
 			"session_id", session.ID, "error", err)
+	}
+}
+
+func (p *Processor) persistIterationZeroFixResult(ctx context.Context, payload model.TaskPayload, record *model.TaskRecord, summary string) {
+	if payload.SessionID == 0 || payload.RoundNumber == 0 || record == nil {
+		return
+	}
+	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	round, err := p.store.GetLatestRound(persistCtx, payload.SessionID)
+	if err != nil {
+		p.logger.ErrorContext(ctx, "查询迭代轮次失败",
+			"session_id", payload.SessionID, "round", payload.RoundNumber, "error", err)
+		return
+	}
+	if round == nil || round.RoundNumber != payload.RoundNumber {
+		return
+	}
+	if round.FixTaskID != "" && round.FixTaskID != record.ID {
+		p.logger.WarnContext(ctx, "迭代轮次 fix_task_id 不匹配，跳过零修复结果落库",
+			"session_id", payload.SessionID,
+			"round", payload.RoundNumber,
+			"round_fix_task_id", round.FixTaskID,
+			"task_id", record.ID)
+		return
+	}
+
+	if round.CompletedAt == nil {
+		now := time.Now()
+		round.FixTaskID = record.ID
+		round.IssuesFixed = 0
+		round.FixSummary = iterate.SanitizeFixReviewError(summary)
+		if strings.TrimSpace(round.FixReportPath) == "" {
+			round.FixReportPath = payload.FixReportPath
+		}
+		if strings.TrimSpace(round.FixReportPath) == "" {
+			round.FixReportPath = iterate.BuildReportPath("docs/review_history", payload.PRNumber, payload.RoundNumber)
+		}
+		round.CompletedAt = &now
+		if err := p.store.UpdateIterationRound(persistCtx, round); err != nil {
+			p.logger.ErrorContext(ctx, "更新迭代轮次零修复结果失败",
+				"session_id", payload.SessionID, "round", payload.RoundNumber, "error", err)
+			return
+		}
+	}
+
+	session, err := p.store.FindActiveIterationSession(persistCtx, payload.RepoFullName, payload.PRNumber)
+	if err != nil {
+		p.logger.ErrorContext(ctx, "查询迭代会话失败",
+			"repo", payload.RepoFullName, "pr", payload.PRNumber, "error", err)
+		return
+	}
+	if session == nil || session.ID != payload.SessionID {
+		return
+	}
+	if session.Status == "fixing" {
+		session.Status = "reviewing"
+	}
+	session.LastError = iterate.SanitizeFixReviewError(summary)
+	if err := p.store.UpdateIterationSession(persistCtx, session); err != nil {
+		p.logger.ErrorContext(ctx, "更新迭代会话零修复状态失败",
+			"session_id", session.ID, "error", err)
+	}
+}
+
+func (p *Processor) sendIterationErrorNotification(ctx context.Context, record *model.TaskRecord) {
+	if p.notifier == nil || record == nil {
+		return
+	}
+	payload := record.Payload
+	if payload.RepoOwner == "" || payload.RepoName == "" || payload.PRNumber <= 0 {
+		return
+	}
+
+	body := fmt.Sprintf("PR #%d 迭代修复异常\n\n仓库：%s\n任务：%s\n状态：%s",
+		payload.PRNumber, payload.RepoFullName, record.ID, record.Status)
+	if record.Error != "" {
+		body += fmt.Sprintf("\n错误：%s", record.Error)
+	}
+	msg := notify.Message{
+		EventType: notify.EventIterationError,
+		Severity:  notify.SeverityWarning,
+		Target:    buildPRTarget(payload),
+		Title:     fmt.Sprintf("PR #%d 迭代修复异常", payload.PRNumber),
+		Body:      body,
+		Metadata: map[string]string{
+			notify.MetaKeyIterationRound:     fmt.Sprintf("%d", payload.RoundNumber),
+			notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", payload.IterationMaxRounds),
+			notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", payload.SessionID),
+			notify.MetaKeyTaskStatus:         string(record.Status),
+			notify.MetaKeyNotifyTime:         formatNotifyTime(),
+		},
+	}
+	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer notifyCancel()
+	if err := p.notifier.Send(notifyCtx, msg); err != nil {
+		p.logger.ErrorContext(ctx, "发送迭代异常通知失败",
+			"task_id", record.ID,
+			"error", err)
 	}
 }
 
@@ -1656,8 +1763,37 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 		)
 	} else if record.Payload.TaskType == model.TaskTypeFixReview {
 		p.persistIterationFixFailure(ctx, record.Payload, record.Error)
+		p.sendIterationErrorNotification(ctx, record)
 	} else {
 		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, nil, nil)
+	}
+	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
+}
+
+func (p *Processor) handleIterationQualityFailure(ctx context.Context, record *model.TaskRecord, runErr error, iterateResult *iterate.FixReviewResult, logMsg string) error {
+	record.Status = model.TaskStatusFailed
+	record.Error = test.SanitizeErrorMessage(runErr.Error())
+	if iterateResult != nil {
+		record.Result = iterateResult.RawOutput
+	}
+	completedAt := time.Now()
+	record.CompletedAt = &completedAt
+	p.logger.WarnContext(ctx, logMsg,
+		"task_id", record.ID,
+		"error", runErr,
+	)
+
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer persistCancel()
+	if err := p.store.UpdateTask(persistCtx, record); err != nil {
+		p.logger.ErrorContext(ctx, "更新任务最终状态失败",
+			"task_id", record.ID,
+			"status", record.Status,
+			"error", err,
+		)
+	} else {
+		p.persistIterationZeroFixResult(ctx, record.Payload, record, record.Error)
+		p.sendIterationErrorNotification(ctx, record)
 	}
 	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
 }

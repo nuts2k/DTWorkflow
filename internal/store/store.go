@@ -153,7 +153,7 @@ type Store interface {
 	// GetCompletedRoundsForSession 获取会话的所有已完成轮次（按 round_number 升序）。
 	GetCompletedRoundsForSession(ctx context.Context, sessionID int64) ([]*IterationRoundRecord, error)
 
-	// FindActivePRTasksMulti 查找同一 PR 的多种类型活跃任务（pending/queued/running）。
+	// FindActivePRTasksMulti 查找同一 PR 的多种类型活跃任务（pending/queued/running/retrying）。
 	// 返回按 created_at 升序排列的任务列表。
 	FindActivePRTasksMulti(ctx context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error)
 

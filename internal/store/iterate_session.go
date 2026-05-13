@@ -158,15 +158,11 @@ func (s *SQLiteStore) FindActivePRTasksMulti(ctx context.Context, repoFullName s
 		placeholders[i] = "?"
 		args = append(args, string(tt))
 	}
-	query := fmt.Sprintf(`
-		SELECT id, asynq_id, task_type, status, priority, payload,
-		       repo_full_name, result, error, retry_count, max_retry,
-		       worker_id, delivery_id, created_at, updated_at,
-		       started_at, completed_at, pr_number, triggered_by
-		FROM tasks
-		WHERE repo_full_name = ? AND pr_number = ?
-		  AND task_type IN (%s)
-		  AND status IN ('pending', 'queued', 'running')
+	query := fmt.Sprintf(`SELECT `+taskColumns+`
+			FROM tasks
+			WHERE repo_full_name = ? AND pr_number = ?
+			  AND task_type IN (%s)
+			  AND status IN ('pending', 'queued', 'running', 'retrying')
 		ORDER BY created_at ASC`,
 		strings.Join(placeholders, ","))
 	rows, err := s.db.QueryContext(ctx, query, args...)
