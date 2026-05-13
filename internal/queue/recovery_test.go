@@ -123,6 +123,35 @@ func (m *mockStoreForRecovery) ListActiveModules(_ context.Context, _ string, _ 
 	return nil, nil
 }
 
+// M6.1: 迭代会话 Store 方法 stub
+func (m *mockStoreForRecovery) FindActiveIterationSession(_ context.Context, _ string, _ int64) (*store.IterationSessionRecord, error) {
+	return nil, nil
+}
+func (m *mockStoreForRecovery) FindOrCreateIterationSession(_ context.Context, _ string, _ int64, _ string, _ int) (*store.IterationSessionRecord, error) {
+	return nil, nil
+}
+func (m *mockStoreForRecovery) UpdateIterationSession(_ context.Context, _ *store.IterationSessionRecord) error {
+	return nil
+}
+func (m *mockStoreForRecovery) CreateIterationRound(_ context.Context, _ *store.IterationRoundRecord) error {
+	return nil
+}
+func (m *mockStoreForRecovery) UpdateIterationRound(_ context.Context, _ *store.IterationRoundRecord) error {
+	return nil
+}
+func (m *mockStoreForRecovery) GetLatestRound(_ context.Context, _ int64) (*store.IterationRoundRecord, error) {
+	return nil, nil
+}
+func (m *mockStoreForRecovery) CountNonRecoveryRounds(_ context.Context, _ int64) (int, error) {
+	return 0, nil
+}
+func (m *mockStoreForRecovery) GetRecentRoundsIssuesFixed(_ context.Context, _ int64, _ int) ([]int, error) {
+	return nil, nil
+}
+func (m *mockStoreForRecovery) FindActivePRTasksMulti(_ context.Context, _ string, _ int64, _ []model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
 // mockEnqueuerForRecovery 实现 Enqueuer 接口，用于 recovery 测试
 type mockEnqueuerForRecovery struct {
 	enqueueErr error

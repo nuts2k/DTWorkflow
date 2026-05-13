@@ -136,6 +136,35 @@ func (m *mockTaskStore) ListActiveModules(_ context.Context, _ string, _ model.T
 	return nil, nil
 }
 
+// M6.1: 迭代会话 Store 方法 stub
+func (m *mockTaskStore) FindActiveIterationSession(_ context.Context, _ string, _ int64) (*store.IterationSessionRecord, error) {
+	return nil, nil
+}
+func (m *mockTaskStore) FindOrCreateIterationSession(_ context.Context, _ string, _ int64, _ string, _ int) (*store.IterationSessionRecord, error) {
+	return nil, nil
+}
+func (m *mockTaskStore) UpdateIterationSession(_ context.Context, _ *store.IterationSessionRecord) error {
+	return nil
+}
+func (m *mockTaskStore) CreateIterationRound(_ context.Context, _ *store.IterationRoundRecord) error {
+	return nil
+}
+func (m *mockTaskStore) UpdateIterationRound(_ context.Context, _ *store.IterationRoundRecord) error {
+	return nil
+}
+func (m *mockTaskStore) GetLatestRound(_ context.Context, _ int64) (*store.IterationRoundRecord, error) {
+	return nil, nil
+}
+func (m *mockTaskStore) CountNonRecoveryRounds(_ context.Context, _ int64) (int, error) {
+	return 0, nil
+}
+func (m *mockTaskStore) GetRecentRoundsIssuesFixed(_ context.Context, _ int64, _ int) ([]int, error) {
+	return nil, nil
+}
+func (m *mockTaskStore) FindActivePRTasksMulti(_ context.Context, _ string, _ int64, _ []model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
 type stubTaskEnqueuer struct {
 	asynqID     string
 	enqueueErr  error

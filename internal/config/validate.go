@@ -560,8 +560,11 @@ func validateIterateConfig(cfg *Config) []error {
 	if cfg == nil {
 		return nil
 	}
-	var errs []error
 	it := cfg.Iterate
+	if !it.Enabled {
+		return nil
+	}
+	var errs []error
 	if it.MaxRounds < 1 || it.MaxRounds > 10 {
 		errs = append(errs, fmt.Errorf("iterate.max_rounds 必须在 [1, 10] 范围内，当前值: %d", it.MaxRounds))
 	}

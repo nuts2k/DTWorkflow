@@ -289,6 +289,35 @@ func (m *mockStore) ListActiveGenTestsModules(_ context.Context, _ string) ([]st
 	return modules, nil
 }
 
+// M6.1: 迭代会话 Store 方法 stub
+func (m *mockStore) FindActiveIterationSession(_ context.Context, _ string, _ int64) (*store.IterationSessionRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) FindOrCreateIterationSession(_ context.Context, _ string, _ int64, _ string, _ int) (*store.IterationSessionRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateIterationSession(_ context.Context, _ *store.IterationSessionRecord) error {
+	return nil
+}
+func (m *mockStore) CreateIterationRound(_ context.Context, _ *store.IterationRoundRecord) error {
+	return nil
+}
+func (m *mockStore) UpdateIterationRound(_ context.Context, _ *store.IterationRoundRecord) error {
+	return nil
+}
+func (m *mockStore) GetLatestRound(_ context.Context, _ int64) (*store.IterationRoundRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) CountNonRecoveryRounds(_ context.Context, _ int64) (int, error) {
+	return 0, nil
+}
+func (m *mockStore) GetRecentRoundsIssuesFixed(_ context.Context, _ int64, _ int) ([]int, error) {
+	return nil, nil
+}
+func (m *mockStore) FindActivePRTasksMulti(_ context.Context, _ string, _ int64, _ []model.TaskType) ([]*model.TaskRecord, error) {
+	return nil, nil
+}
+
 // mockEnqueuer 实现 Enqueuer 接口的 mock
 type mockEnqueuer struct {
 	enqueueErr error

@@ -29,6 +29,10 @@ func (m *mockPRClient) ListPullRequestFiles(ctx context.Context, owner, repo str
 	return m.listFiles(ctx, owner, repo, index, opts)
 }
 
+func (m *mockPRClient) GetIssueLabels(_ context.Context, _, _ string, _ int64) ([]*gitea.Label, *gitea.Response, error) {
+	return nil, nil, nil
+}
+
 type mockReviewPool struct {
 	runWithCommandAndStdin func(ctx context.Context, payload model.TaskPayload, cmd []string, stdinData []byte) (*worker.ExecutionResult, error)
 }
