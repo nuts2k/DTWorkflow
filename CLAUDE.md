@@ -116,6 +116,20 @@ configs/        # 配置文件模板
 - 回归配置：`regression.enabled` 默认 false；启用时要求 `e2e.enabled` 非 false + `default_env` 非空
 - E2E token：`run_e2e` 复用 gen_tests 账号（只读克隆）；Issue 创建用 fix 账号
 
+## 迭代式评审修复（M6.1）
+
+详见 `docs/plans/2026-05-13-iterative-review-fix-design.md`。关键约束：
+
+- **触发条件**：`auto-iterate` 标签 + `review_pr` verdict=request_changes + 存在达到阈值的问题（默认 ERROR 及以上）三者同时满足才入队 `fix_review`
+- **push 来源区分**：`synchronized` 事件到达时，先查 `iterate.bot_login` 是否匹配 push 作者；匹配则为 fix_review 自身 push（仅取消旧 review_pr），否则为用户 push（取消 review_pr + fix_review）；`bot_login` 未配置时降级为纯状态机判断（`fixing` 状态）并 warn
+- **会话状态机**：`idle → reviewing → fixing → reviewing → ... → completed / exhausted`；`fixing` 状态是区分 push 来源的核心标志，必须在入队 fix_review 前写入
+- **fix_review 基础设施**：使用 fix 账号凭证（`selectGiteaToken`）+ `ImageFull` 镜像；entrypoint.sh 中按 `gen_tests` 模式配置 credential helper + git identity
+- **通知抑制**：fix_review 任务的 start/completion 通知统一由 `EnqueueHandler` 的迭代通知方法发出，Processor 通用路径通过 `suppressNotification` 标记跳过，避免双发
+- **标签操作**：`iterating` / `iterate-passed` / `iterate-exhausted` 由 `EnqueueHandler`（`IterateLabelManager` 接口）操作，使用 review 账号
+- **DeliveryID 格式**：`iterate-{sessionID}:fix_review:{roundNumber}`，保证重试幂等
+- **validate 行为**：`iterate.enabled=false` 时跳过 `iterate.bot_login` 必填校验；`max_rounds` 合法范围 [1, 10]；`notification_mode` 枚举 progress/silent；`fix_severity_threshold` 枚举 critical/error/warning
+- **AfterIterationApproved**：review_pr verdict=approve 且存在活跃迭代会话时，将会话标记 completed + 标签流转 + 发终态通知（竞态保护：approve 回调在 request_changes 入队之前执行，防止误判）
+
 ## 测试服务器
 
 - SSH Host 别名：`companytest`（对应 `~/.ssh/config` 中的 Host 条目）

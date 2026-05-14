@@ -975,46 +975,48 @@ Phase 1          Phase 2          Phase 3          Phase 4          Phase 5     
 
 #### M6.1 迭代式 PR 评审修复闭环
 
-> 详细设计见 `docs/superpowers/specs/2026-05-13-iterative-review-fix-design.md`。
+> 详细设计见 `docs/plans/2026-05-13-iterative-review-fix-design.md`。实施计划见 `docs/superpowers/plans/2026-05-13-m6.1-iterative-review-fix.md`。
+> **完成说明**（2026-05-14）：14 个 feat commit + 多轮 fix commit 实现完整迭代闭环。核心交付：`internal/iterate` 包（service/prompt/report/session/result/errors）、`iteration_sessions` + `iteration_rounds` 两表（v24 迁移）、`AfterReviewCompleted` 链式入队、`fixing` 状态区分 push 来源、`suppressNotification` 抑制中间通知、Gitea 标签流转、飞书进度/终态通知。PreviousFixes 上下文传递已实现。`dtworkflow iterate retry` CLI 命令暂缓（push 新提交 / reopen PR 两条自然恢复路径已可用）。
 
 自动化 PR 评审→修复→再评审的迭代闭环。当 `review_pr` 评审发现阻碍合并的问题时，自动入队 `fix_review` 任务在容器中修复并 push 新提交，触发 `synchronized` 事件重新评审，循环直到通过或达到迭代上限。
 
 **核心流程**：
-- [ ] 事件驱动链式闭环：`review_pr`（request_changes）→ 检查 `auto-iterate` 标签 + 迭代状态 → 入队 `fix_review` → 容器内修复 + push → `synchronized` → `review_pr` → 循环
-- [ ] 新增 `TaskTypeFixReview` 任务类型，复用容器基础设施（fix 账号凭证、`ImageFull` 镜像），独立 prompt 和分支策略
-- [ ] 迭代会话状态管理：`iteration_sessions` + `iteration_rounds` 两表，partial unique index 支持会话复用
-- [ ] 数据库迁移 v24（两表创建 + `tasks` CHECK 约束追加 `fix_review`）
+- [x] 事件驱动链式闭环：`review_pr`（request_changes）→ 检查 `auto-iterate` 标签 + 迭代状态 → 入队 `fix_review` → 容器内修复 + push → `synchronized` → `review_pr` → 循环
+- [x] 新增 `TaskTypeFixReview` 任务类型，复用容器基础设施（fix 账号凭证、`ImageFull` 镜像），独立 prompt 和分支策略
+- [x] 迭代会话状态管理：`iteration_sessions` + `iteration_rounds` 两表，partial unique index 支持会话复用
+- [x] 数据库迁移 v24（两表创建 + `tasks` CHECK 约束追加 `fix_review`）
 
 **触发与控制**：
-- [ ] `auto-iterate` 标签触发（用户/程序设置，可在 PR 创建时由程序自动设置实现全自动化）
-- [ ] 固定迭代上限（默认 3 轮，可配置），连续两轮零修复提前终止
-- [ ] 按严重等级过滤需修复的问题（默认 ERROR 及以上，可配置）
-- [ ] `review_pr` 结果处理尾部追加链式入队判断，`ReviewResult` 新增 `Labels` 字段传递标签数据
+- [x] `auto-iterate` 标签触发（用户/程序设置，可在 PR 创建时由程序自动设置实现全自动化）
+- [x] 固定迭代上限（默认 3 轮，可配置），连续两轮零修复提前终止
+- [x] 按严重等级过滤需修复的问题（默认 ERROR 及以上，可配置）
+- [x] `review_pr` 结果处理尾部追加链式入队判断，`ReviewResult` 新增 `Labels` 字段传递标签数据
 
 **区分 push 来源**：
-- [ ] 基于迭代会话 `fixing` 状态判断 `synchronized` 事件的 push 来源（fix_review 自身 push vs 用户手动 push）
-- [ ] fix_review push：仅取消旧 review_pr；用户 push：取消 review_pr + fix_review（`FindActivePRTasksMulti` 多 TaskType 查询）
+- [x] 基于迭代会话 `fixing` 状态 + `iterate.bot_login` 判断 `synchronized` 事件的 push 来源（fix_review 自身 push vs 用户手动 push）
+- [x] fix_review push：仅取消旧 review_pr；用户 push：取消 review_pr + fix_review（`FindActivePRTasksMulti` 多 TaskType 查询）
 
 **修复报告与留档**：
-- [ ] 仓库内修复报告（`docs/review_history/{pr_number}-{date}-round{N}.md`），修复代码和报告同一 commit + 单次 push
-- [ ] 每个修复项记录决策依据，多选一场景列出所有备选方案（描述、优劣势、未选原因）
-- [ ] PR 评论精简摘要 + 飞书通知
+- [x] 仓库内修复报告（`docs/review_history/{pr_number}-{date}-round{N}.md`），修复代码和报告同一 commit + 单次 push
+- [x] 每个修复项记录决策依据，多选一场景列出所有备选方案（描述、优劣势、未选原因）
+- [x] PR 评论精简摘要 + 飞书通知
 
 **通知策略**：
-- [ ] 可配置模式：`progress`（默认，每轮进度 + 终态汇总）/ `silent`（仅终态 + 异常告警）
-- [ ] 迭代进行中抑制 `review_pr` 和 `fix_review` 的独立通知（`suppressNotification` 标记）
+- [x] 可配置模式：`progress`（默认，每轮进度 + 终态汇总）/ `silent`（仅终态 + 异常告警）
+- [x] 迭代进行中抑制 `review_pr` 和 `fix_review` 的独立通知（`suppressNotification` 标记）
 
 **Gitea 标签管理**：
-- [ ] 系统管理标签：`iterating`（进行中）/ `iterate-passed`（通过）/ `iterate-exhausted`（超限）
-- [ ] 标签操作由 `iterate.Service` 通过 review 账号执行
+- [x] 系统管理标签：`iterating`（进行中）/ `iterate-passed`（通过）/ `iterate-exhausted`（超限）
+- [x] 标签操作由 `EnqueueHandler` 通过 review 账号执行（`IterateLabelManager` 接口）
 
 **边界情况与防护**：
-- [ ] Cancel-and-Replace：用户手动 push 时取消 review_pr + fix_review，轮次不重置
-- [ ] 标签移除中断：自然停止，无需特殊处理
-- [ ] 幂等保护：DeliveryID 格式 `iterate-{session_id}:fix_review:{round_number}`
-- [ ] 失败处理：超时/崩溃沿用 asynq 重试（3 次指数退避）；确定性失败 SkipRetry；修复质量失败继续下一轮
-- [ ] 手动恢复：push 新提交 / reopen PR / CLI `dtworkflow iterate retry`，恢复轮次标记 `is_recovery` 不计入限额
-- [ ] 错误脱敏：`FixReviewOutput` 自由文本字段经 `SanitizeErrorMessage` 处理
+- [x] Cancel-and-Replace：用户手动 push 时取消 review_pr + fix_review，轮次不重置
+- [x] 标签移除中断：自然停止，无需特殊处理
+- [x] 幂等保护：DeliveryID 格式 `iterate-{session_id}:fix_review:{round_number}`
+- [x] 失败处理：超时/崩溃沿用 asynq 重试（3 次指数退避）；确定性失败 SkipRetry；修复质量失败继续下一轮
+- [x] 手动恢复：push 新提交 / reopen PR 自然触发，恢复轮次标记 `is_recovery` 不计入限额
+- [ ] 手动恢复 CLI：`dtworkflow iterate retry` 命令（显式延迟，push/reopen 两条路径已覆盖主要场景）
+- [x] 错误脱敏：`FixReviewOutput` 自由文本字段经 `SanitizeErrorMessage` 处理
 
 **配置结构**：
 ```yaml
