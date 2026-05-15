@@ -115,31 +115,34 @@ validate_fix_review_head_ref() {
 }
 
 push_fix_review_result() {
-    # 仅入口脚本父进程持有 GITEA_TOKEN；Claude 进程已在执行前 unset。
+    # 退出码约定（与 internal/iterate/service.go 保持同步）：
+    #   10 = push 基础设施故障（缺 token/URL/git/SHA、HEAD 解析失败）
+    #   11 = Claude 未产生新提交（HEAD == base SHA）
+    #   其他 = git push 命令自身的退出码
     if [ -z "${DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN:-}" ]; then
         log "ERROR: fix_review 缺少受控 push token"
-        return 2
+        return 10
     fi
     if [ -z "${DTWORKFLOW_FIX_REVIEW_CLONE_URL:-}" ]; then
         log "ERROR: fix_review 缺少受控 push URL"
-        return 2
+        return 10
     fi
     if [ -z "${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN:-}" ] || [ ! -x "${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN}" ]; then
         log "ERROR: fix_review 真实 git 路径不可用"
-        return 2
+        return 10
     fi
     if [ -z "${DTWORKFLOW_FIX_REVIEW_BASE_SHA:-}" ]; then
         log "ERROR: fix_review 缺少基准提交 SHA"
-        return 2
+        return 10
     fi
     local head_sha
     if ! head_sha="$("${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN}" rev-parse HEAD 2>/dev/null)"; then
         log "ERROR: fix_review 无法解析当前 HEAD"
-        return 2
+        return 10
     fi
     if [ "${head_sha}" = "${DTWORKFLOW_FIX_REVIEW_BASE_SHA}" ]; then
         log "ERROR: fix_review 未产生新提交，跳过受控 push"
-        return 2
+        return 11
     fi
     local helper_script
     helper_script="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
@@ -278,11 +281,11 @@ case "${TASK_TYPE:-}" in
         # M6.1: PR 评审问题迭代修复模式（写权限）。
         if [ -z "${HEAD_REF:-}" ]; then
             log "ERROR: fix_review 任务缺少 HEAD_REF，无法安全推回 PR 分支"
-            exit 2
+            exit 10
         fi
         if ! validate_fix_review_head_ref "${HEAD_REF}"; then
             log "ERROR: fix_review HEAD_REF 不是合法分支名: ${HEAD_REF}"
-            exit 2
+            exit 10
         fi
         log "fix_review: fetch + checkout HEAD_REF=${HEAD_REF}"
         git fetch origin "${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" >&2 2>&1

@@ -13,6 +13,11 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
 )
 
+const (
+	exitCodePushInfraFailure = 10 // entrypoint push 基础设施故障（缺 token/URL/git/SHA）
+	exitCodeNoNewCommits     = 11 // Claude 未产生新提交（HEAD == base SHA）
+)
+
 // PoolRunner 容器执行接口（复用 queue 包的同名接口签名）。
 type PoolRunner interface {
 	RunWithCommandAndStdin(ctx context.Context, payload model.TaskPayload,
@@ -97,10 +102,14 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 		result.ExitCode = execResult.ExitCode
 	}
 	if execResult != nil && execResult.ExitCode != 0 {
-		if execResult.ExitCode == 2 {
+		switch execResult.ExitCode {
+		case exitCodePushInfraFailure:
+			return result, fmt.Errorf("%w: 容器推送基础设施故障（退出码 %d）", ErrFixReviewDeterministicFailure, execResult.ExitCode)
+		case exitCodeNoNewCommits:
+			return result, fmt.Errorf("%w: Claude 未产生新提交（退出码 %d）", ErrNoChanges, execResult.ExitCode)
+		default:
 			return result, fmt.Errorf("%w: 容器执行失败，退出码 %d", ErrFixReviewDeterministicFailure, execResult.ExitCode)
 		}
-		return result, fmt.Errorf("容器执行失败，退出码 %d", execResult.ExitCode)
 	}
 
 	// 解析 JSON 结果

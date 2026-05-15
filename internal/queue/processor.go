@@ -431,6 +431,9 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "未发现 E2E 用例，跳过任务")
 		}
 		if errors.Is(runErr, iterate.ErrFixReviewDeterministicFailure) {
+			if iterateResult != nil {
+				record.Result = iterateResult.RawOutput
+			}
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "fix_review 确定性失败，跳过重试")
 		}
 		if errors.Is(runErr, iterate.ErrFixReviewParseFailure) {

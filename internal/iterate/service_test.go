@@ -190,7 +190,7 @@ func TestService_Execute_CLIIsErrorFails(t *testing.T) {
 func TestService_Execute_ExitCode2IsDeterministicFailure(t *testing.T) {
 	issues := []review.ReviewIssue{{File: "main.go", Line: 10, Severity: "ERROR", Message: "bug"}}
 	issuesJSON, _ := json.Marshal(issues)
-	pool := &mockPool{exitCode: 2, output: "missing HEAD_REF"}
+	pool := &mockPool{exitCode: 2, output: "claude cli error"}
 	svc := NewService(pool, nil)
 	payload := model.TaskPayload{
 		TaskType:     model.TaskTypeFixReview,
@@ -208,6 +208,57 @@ func TestService_Execute_ExitCode2IsDeterministicFailure(t *testing.T) {
 	}
 	if result == nil || result.ExitCode != 2 {
 		t.Fatalf("ExitCode = %v, want 2", result)
+	}
+}
+
+func TestService_Execute_ExitCode10IsPushInfraFailure(t *testing.T) {
+	issues := []review.ReviewIssue{{File: "main.go", Line: 10, Severity: "ERROR", Message: "bug"}}
+	issuesJSON, _ := json.Marshal(issues)
+	pool := &mockPool{exitCode: 10, output: "[entrypoint] ERROR: fix_review 缺少受控 push token"}
+	svc := NewService(pool, nil)
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixReview,
+		RepoFullName: "owner/repo",
+		PRNumber:     42,
+		HeadRef:      "feature",
+		BaseRef:      "main",
+		RoundNumber:  1,
+		ReviewIssues: string(issuesJSON),
+	}
+
+	result, err := svc.Execute(context.Background(), payload)
+	if !errors.Is(err, ErrFixReviewDeterministicFailure) {
+		t.Fatalf("error = %v, want ErrFixReviewDeterministicFailure", err)
+	}
+	if result == nil || result.ExitCode != 10 {
+		t.Fatalf("ExitCode = %v, want 10", result)
+	}
+	if !strings.Contains(err.Error(), "推送基础设施故障") {
+		t.Fatalf("error message should mention push infra failure: %v", err)
+	}
+}
+
+func TestService_Execute_ExitCode11IsNoNewCommits(t *testing.T) {
+	issues := []review.ReviewIssue{{File: "main.go", Line: 10, Severity: "ERROR", Message: "bug"}}
+	issuesJSON, _ := json.Marshal(issues)
+	pool := &mockPool{exitCode: 11, output: "[entrypoint] ERROR: fix_review 未产生新提交"}
+	svc := NewService(pool, nil)
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixReview,
+		RepoFullName: "owner/repo",
+		PRNumber:     42,
+		HeadRef:      "feature",
+		BaseRef:      "main",
+		RoundNumber:  1,
+		ReviewIssues: string(issuesJSON),
+	}
+
+	result, err := svc.Execute(context.Background(), payload)
+	if !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("error = %v, want ErrNoChanges", err)
+	}
+	if result == nil || result.ExitCode != 11 {
+		t.Fatalf("ExitCode = %v, want 11", result)
 	}
 }
 

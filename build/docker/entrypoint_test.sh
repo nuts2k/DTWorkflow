@@ -423,11 +423,11 @@ run_fix_review_noop_case() {
   local code=$?
   set -e
 
-  if [ "${code}" -eq 2 ]; then
-    echo "PASS: fix_review — 未产生新提交时确定性失败"
+  if [ "${code}" -eq 11 ]; then
+    echo "PASS: fix_review — 未产生新提交时退出码 11"
     (( PASS++ ))
   else
-    echo "FAIL: fix_review — 未产生新提交时应 exit 2，实际 ${code}"
+    echo "FAIL: fix_review — 未产生新提交时应 exit 11，实际 ${code}"
     cat "${stderr_file}"
     (( FAIL++ ))
   fi
@@ -458,11 +458,11 @@ run_fix_review_missing_head_case() {
   local code=$?
   set -e
 
-  if [ "${code}" -eq 2 ]; then
-    echo "PASS: fix_review — HEAD_REF 缺失时确定性失败"
+  if [ "${code}" -eq 10 ]; then
+    echo "PASS: fix_review — HEAD_REF 缺失时退出码 10（push 基础设施故障）"
     (( PASS++ ))
   else
-    echo "FAIL: fix_review — HEAD_REF 缺失时应 exit 2，实际 ${code}"
+    echo "FAIL: fix_review — HEAD_REF 缺失时应 exit 10，实际 ${code}"
     cat "${stderr_file}"
     (( FAIL++ ))
   fi
@@ -490,11 +490,11 @@ run_fix_review_invalid_head_case() {
   local code=$?
   set -e
 
-  if [ "${code}" -eq 2 ]; then
-    echo "PASS: fix_review — 非法 HEAD_REF 确定性失败"
+  if [ "${code}" -eq 10 ]; then
+    echo "PASS: fix_review — 非法 HEAD_REF 退出码 10（push 基础设施故障）"
     (( PASS++ ))
   else
-    echo "FAIL: fix_review — 非法 HEAD_REF 应 exit 2，实际 ${code}"
+    echo "FAIL: fix_review — 非法 HEAD_REF 应 exit 10，实际 ${code}"
     cat "${stderr_file}"
     (( FAIL++ ))
   fi
