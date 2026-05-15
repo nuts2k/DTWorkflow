@@ -18,6 +18,9 @@ var (
 	// ErrNoChanges 修复未产生实际变更。
 	ErrNoChanges = errors.New("iterate: 修复未产生实际变更")
 
+	// ErrNoNewCommits Claude 未产生新提交，无法触发后续 review webhook。
+	ErrNoNewCommits = errors.New("iterate: 未产生新提交")
+
 	// ErrConsecutiveZeroFixes 连续两轮零修复，提前终止。
 	ErrConsecutiveZeroFixes = errors.New("iterate: 连续两轮零修复")
 )

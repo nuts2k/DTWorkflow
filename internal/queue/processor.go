@@ -335,7 +335,8 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		iterateResult, runErr = p.iterateService.Execute(ctx, payload)
 		if iterateResult != nil {
 			result = &worker.ExecutionResult{
-				Output: iterateResult.RawOutput,
+				Output:   iterateResult.RawOutput,
+				ExitCode: iterateResult.ExitCode,
 			}
 		}
 	case payload.TaskType == model.TaskTypeTriageE2E:
@@ -435,6 +436,12 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 				record.Result = iterateResult.RawOutput
 			}
 			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "fix_review 确定性失败，跳过重试")
+		}
+		if errors.Is(runErr, iterate.ErrNoNewCommits) {
+			if iterateResult != nil {
+				record.Result = iterateResult.RawOutput
+			}
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "fix_review 未产生新提交，跳过重试")
 		}
 		if errors.Is(runErr, iterate.ErrFixReviewParseFailure) {
 			return p.handleIterationQualityFailure(ctx, record, runErr, iterateResult, "fix_review 修复结果解析失败，跳过重试")

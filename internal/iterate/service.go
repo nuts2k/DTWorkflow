@@ -94,9 +94,6 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 	// 容器执行
 	cmd := []string{"claude", "-p", "--output-format", "json", "--dangerously-skip-permissions", "-"}
 	execResult, err := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
-	if err != nil {
-		return result, err
-	}
 	if execResult != nil {
 		result.RawOutput = execResult.Output
 		result.ExitCode = execResult.ExitCode
@@ -106,10 +103,16 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*FixR
 		case exitCodePushInfraFailure:
 			return result, fmt.Errorf("%w: 容器推送基础设施故障（退出码 %d）", ErrFixReviewDeterministicFailure, execResult.ExitCode)
 		case exitCodeNoNewCommits:
-			return result, fmt.Errorf("%w: Claude 未产生新提交（退出码 %d）", ErrNoChanges, execResult.ExitCode)
+			return result, fmt.Errorf("%w: Claude 未产生新提交（退出码 %d）", ErrNoNewCommits, execResult.ExitCode)
 		default:
-			return result, fmt.Errorf("%w: 容器执行失败，退出码 %d", ErrFixReviewDeterministicFailure, execResult.ExitCode)
+			if err != nil {
+				return result, fmt.Errorf("容器执行失败，退出码 %d: %w", execResult.ExitCode, err)
+			}
+			return result, fmt.Errorf("容器执行失败，退出码 %d", execResult.ExitCode)
 		}
+	}
+	if err != nil {
+		return result, err
 	}
 
 	// 解析 JSON 结果

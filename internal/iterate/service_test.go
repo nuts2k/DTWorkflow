@@ -23,13 +23,14 @@ type mockPool struct {
 func (m *mockPool) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload,
 	_ []string, stdinData []byte) (*worker.ExecutionResult, error) {
 	m.stdinData = stdinData
-	if m.err != nil {
-		return nil, m.err
-	}
-	return &worker.ExecutionResult{
+	result := &worker.ExecutionResult{
 		ExitCode: m.exitCode,
 		Output:   m.output,
-	}, nil
+	}
+	if m.err != nil {
+		return result, m.err
+	}
+	return result, nil
 }
 
 func TestService_Execute_Success(t *testing.T) {
@@ -187,7 +188,7 @@ func TestService_Execute_CLIIsErrorFails(t *testing.T) {
 	}
 }
 
-func TestService_Execute_ExitCode2IsDeterministicFailure(t *testing.T) {
+func TestService_Execute_ExitCode2IsRetryableFailure(t *testing.T) {
 	issues := []review.ReviewIssue{{File: "main.go", Line: 10, Severity: "ERROR", Message: "bug"}}
 	issuesJSON, _ := json.Marshal(issues)
 	pool := &mockPool{exitCode: 2, output: "claude cli error"}
@@ -203,8 +204,14 @@ func TestService_Execute_ExitCode2IsDeterministicFailure(t *testing.T) {
 	}
 
 	result, err := svc.Execute(context.Background(), payload)
-	if !errors.Is(err, ErrFixReviewDeterministicFailure) {
-		t.Fatalf("error = %v, want ErrFixReviewDeterministicFailure", err)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if errors.Is(err, ErrFixReviewDeterministicFailure) {
+		t.Fatalf("exit code 2 不应再归类为确定性失败: %v", err)
+	}
+	if !strings.Contains(err.Error(), "退出码 2") {
+		t.Fatalf("error should mention exit code 2: %v", err)
 	}
 	if result == nil || result.ExitCode != 2 {
 		t.Fatalf("ExitCode = %v, want 2", result)
@@ -254,11 +261,45 @@ func TestService_Execute_ExitCode11IsNoNewCommits(t *testing.T) {
 	}
 
 	result, err := svc.Execute(context.Background(), payload)
-	if !errors.Is(err, ErrNoChanges) {
-		t.Fatalf("error = %v, want ErrNoChanges", err)
+	if !errors.Is(err, ErrNoNewCommits) {
+		t.Fatalf("error = %v, want ErrNoNewCommits", err)
+	}
+	if errors.Is(err, ErrNoChanges) {
+		t.Fatalf("exit code 11 不应复用 ErrNoChanges: %v", err)
 	}
 	if result == nil || result.ExitCode != 11 {
 		t.Fatalf("ExitCode = %v, want 11", result)
+	}
+}
+
+func TestService_Execute_ExecResultWithErrorPreservesRawOutput(t *testing.T) {
+	issues := []review.ReviewIssue{{File: "main.go", Line: 10, Severity: "ERROR", Message: "bug"}}
+	issuesJSON, _ := json.Marshal(issues)
+	pool := &mockPool{
+		exitCode: 10,
+		output:   "[entrypoint] ERROR: fix_review 缺少受控 push token",
+		err:      errors.New("container wait failed"),
+	}
+	svc := NewService(pool, nil)
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeFixReview,
+		RepoFullName: "owner/repo",
+		PRNumber:     42,
+		HeadRef:      "feature",
+		BaseRef:      "main",
+		RoundNumber:  1,
+		ReviewIssues: string(issuesJSON),
+	}
+
+	result, err := svc.Execute(context.Background(), payload)
+	if !errors.Is(err, ErrFixReviewDeterministicFailure) {
+		t.Fatalf("error = %v, want ErrFixReviewDeterministicFailure", err)
+	}
+	if result == nil || result.ExitCode != 10 {
+		t.Fatalf("ExitCode = %v, want 10", result)
+	}
+	if result.RawOutput != pool.output {
+		t.Fatalf("RawOutput = %q, want %q", result.RawOutput, pool.output)
 	}
 }
 

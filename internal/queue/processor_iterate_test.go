@@ -492,3 +492,133 @@ func TestProcessTask_FixReviewCancellationCompletesIterationRound(t *testing.T) 
 	}
 }
 
+func TestProcessTask_FixReviewNoNewCommitsStopsIterationAndPreservesRawOutput(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:           model.TaskTypeFixReview,
+		DeliveryID:         "iterate-11:fix_review:1",
+		RepoOwner:          "org",
+		RepoName:           "repo",
+		RepoFullName:       "org/repo",
+		PRNumber:           42,
+		SessionID:          11,
+		RoundNumber:        1,
+		IterationMaxRounds: 3,
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "fix-review-no-new-commits",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           11,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Status:       "fixing",
+		MaxRounds:    3,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          104,
+		SessionID:   11,
+		RoundNumber: 1,
+		FixTaskID:   record.ID,
+	}
+	rawOutput := "[entrypoint] ERROR: fix_review 未产生新提交，跳过受控 push"
+	iterExec := &mockIterateExecutor{
+		result: &iterate.FixReviewResult{RawOutput: rawOutput, ExitCode: 11},
+		err:    fmt.Errorf("%w: Claude 未产生新提交", iterate.ErrNoNewCommits),
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(), WithIterateService(iterExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("error = %v, want SkipRetry", err)
+	}
+	if record.Status != model.TaskStatusFailed {
+		t.Fatalf("record status = %q, want failed", record.Status)
+	}
+	if record.Result != rawOutput {
+		t.Fatalf("record.Result = %q, want raw output", record.Result)
+	}
+	if s.iterationSession.Status != "idle" {
+		t.Fatalf("session status = %q, want idle", s.iterationSession.Status)
+	}
+	if s.latestIterationRound.CompletedAt == nil {
+		t.Fatal("未产生新提交应标记轮次完成，避免等待不存在的 review webhook")
+	}
+	if s.latestIterationRound.IssuesFixed != 0 {
+		t.Fatalf("IssuesFixed = %d, want 0", s.latestIterationRound.IssuesFixed)
+	}
+	if len(notifier.messages) != 1 || notifier.messages[0].EventType != notify.EventIterationError {
+		t.Fatalf("应发送 iteration.error 通知，messages=%v", notifier.messages)
+	}
+}
+
+func TestProcessTask_FixReviewRetryableExitCodeDoesNotSkipRetry(t *testing.T) {
+	s := newMockStore()
+	notifier := &stubNotifier{}
+	payload := model.TaskPayload{
+		TaskType:           model.TaskTypeFixReview,
+		DeliveryID:         "iterate-12:fix_review:1",
+		RepoOwner:          "org",
+		RepoName:           "repo",
+		RepoFullName:       "org/repo",
+		PRNumber:           42,
+		SessionID:          12,
+		RoundNumber:        1,
+		IterationMaxRounds: 3,
+	}
+	now := time.Now()
+	record := &model.TaskRecord{
+		ID:           "fix-review-retryable-exit",
+		TaskType:     model.TaskTypeFixReview,
+		Status:       model.TaskStatusQueued,
+		Payload:      payload,
+		DeliveryID:   payload.DeliveryID,
+		RepoFullName: payload.RepoFullName,
+		PRNumber:     payload.PRNumber,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	seedRecord(s, record)
+	s.iterationSession = &store.IterationSessionRecord{
+		ID:           12,
+		RepoFullName: "org/repo",
+		PRNumber:     42,
+		Status:       "fixing",
+		MaxRounds:    3,
+	}
+	s.latestIterationRound = &store.IterationRoundRecord{
+		ID:          105,
+		SessionID:   12,
+		RoundNumber: 1,
+		FixTaskID:   record.ID,
+	}
+	rawOutput := "claude cli temporary failure"
+	iterExec := &mockIterateExecutor{
+		result: &iterate.FixReviewResult{RawOutput: rawOutput, ExitCode: 2},
+		err:    fmt.Errorf("容器执行失败，退出码 2"),
+	}
+	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default(), WithIterateService(iterExec))
+
+	err := p.ProcessTask(context.Background(), buildAsynqTask(t, payload))
+	if err == nil {
+		t.Fatal("retryable exit code should return error")
+	}
+	if errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("普通非零退出码不应包含 SkipRetry: %v", err)
+	}
+	if record.Result != rawOutput {
+		t.Fatalf("record.Result = %q, want raw output", record.Result)
+	}
+}
+
