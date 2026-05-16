@@ -168,6 +168,9 @@ func validateOutput(o *CodeFromDocOutput) error {
 		if o.FailureCategory != FailureCategoryNone {
 			return fmt.Errorf("%w: success=true 但 failure_category 非 none", ErrCodeFromDocParseFailure)
 		}
+		if !o.TestResults.AllPassed || o.TestResults.Failed > 0 {
+			return fmt.Errorf("%w: success=true 但测试结果未全部通过", ErrCodeFromDocParseFailure)
+		}
 		return nil
 	}
 	if o.FailureCategory == FailureCategoryTestFailure && (o.BranchName == "" || o.CommitSHA == "") {

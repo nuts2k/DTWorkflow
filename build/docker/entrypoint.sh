@@ -273,20 +273,28 @@ redact_anthropic_stream() {
     fi
     local escaped
     escaped="$(printf '%s' "${secret}" | sed -e 's/[\/&#\\]/\\&/g')"
-    sed "s#${escaped}#***#g"
+    sed -u "s#${escaped}#***#g"
 }
 
 run_code_from_doc_command() {
-    local stdout_file stderr_file
-    stdout_file="$(mktemp "${TMPDIR:-/tmp}/dtworkflow-code-from-doc-stdout.XXXXXX")"
-    stderr_file="$(mktemp "${TMPDIR:-/tmp}/dtworkflow-code-from-doc-stderr.XXXXXX")"
+    local pipe_dir stdout_fifo stderr_fifo stdout_pid stderr_pid
+    pipe_dir="$(mktemp -d "${TMPDIR:-/tmp}/dtworkflow-code-from-doc-stream.XXXXXX")"
+    stdout_fifo="${pipe_dir}/stdout"
+    stderr_fifo="${pipe_dir}/stderr"
+    mkfifo "${stdout_fifo}" "${stderr_fifo}"
+
+    redact_anthropic_stream <"${stdout_fifo}" &
+    stdout_pid=$!
+    redact_anthropic_stream <"${stderr_fifo}" >&2 &
+    stderr_pid=$!
+
     set +e
-    "$@" >"${stdout_file}" 2>"${stderr_file}"
+    "$@" >"${stdout_fifo}" 2>"${stderr_fifo}"
     local cmd_status=$?
     set -e
-    redact_anthropic_stream <"${stdout_file}"
-    redact_anthropic_stream <"${stderr_file}" >&2
-    rm -f "${stdout_file}" "${stderr_file}"
+    wait "${stdout_pid}" || true
+    wait "${stderr_pid}" || true
+    rm -rf "${pipe_dir}"
     return "${cmd_status}"
 }
 

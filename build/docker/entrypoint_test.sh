@@ -665,6 +665,57 @@ run_code_from_doc_redacts_anthropic_key_case() {
     "$(cat "${stderr_file}")" "***"
 }
 
+run_code_from_doc_streams_redacted_output_case() {
+  local repo_dir="${TMPDIR}/repo-code-from-doc-stream-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  rm -f "${TMPDIR}/git.log.head-count"
+  local stdout_file="${TMPDIR}/code-from-doc-stream.out"
+  local stderr_file="${TMPDIR}/code-from-doc-stream.err"
+
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="code_from_doc" \
+  BASE_REF="main" \
+  DOC_SLUG="payment-spec-a1b2c3d4" \
+  ANTHROPIC_API_KEY="sk-ant-test-secret" \
+  MOCK_HEAD_SHA_SEQUENCE="basesha,codehead" \
+  bash "${ENTRYPOINT}" bash -c 'printf "first:%s\n" "$ANTHROPIC_API_KEY"; sleep 3; printf "second\n"' >"${stdout_file}" 2>"${stderr_file}" &
+  local pid=$!
+
+  local streamed=0
+  for _ in {1..20}; do
+    if grep -qF "first:***" "${stdout_file}" && kill -0 "${pid}" 2>/dev/null; then
+      streamed=1
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ "${streamed}" -eq 1 ]; then
+    echo "PASS: code_from_doc — stdout 脱敏后实时流出（命令仍在运行）"
+    (( PASS++ ))
+  else
+    echo "FAIL: code_from_doc — stdout 应在命令结束前实时流出"
+    echo "---- stdout ----"
+    cat "${stdout_file}" 2>/dev/null || true
+    echo "---- stderr ----"
+    cat "${stderr_file}" 2>/dev/null || true
+    echo "--------------"
+    (( FAIL++ ))
+  fi
+
+  wait "${pid}" || true
+  assert_not_contains "code_from_doc — 实时流输出仍不泄漏 Claude API Key" \
+    "$(cat "${stdout_file}")" "sk-ant-test-secret"
+  assert_contains "code_from_doc — 实时流保留后续输出" \
+    "$(cat "${stdout_file}")" "second"
+}
+
 run_code_from_doc_secret_leak_blocks_push_case() {
   local repo_dir="${TMPDIR}/repo-code-from-doc-secret-leak-$$-${RANDOM}"
   rm -rf "${repo_dir}"
@@ -764,6 +815,7 @@ run_fix_review_invalid_head_case
 run_code_from_doc_case
 run_code_from_doc_resume_existing_branch_case
 run_code_from_doc_redacts_anthropic_key_case
+run_code_from_doc_streams_redacted_output_case
 run_code_from_doc_secret_leak_blocks_push_case
 run_code_from_doc_secret_history_blocks_push_case
 

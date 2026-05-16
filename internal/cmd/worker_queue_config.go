@@ -18,6 +18,7 @@ func buildQueueTimeoutConfigFromAppConfig(cfg *config.Config) queue.TaskTimeouts
 		RunE2E:       cfg.Worker.Timeouts.RunE2E,    // M5.1
 		TriageE2E:    cfg.Worker.Timeouts.TriageE2E, // M5.4
 		FixReview:    cfg.Worker.Timeouts.FixReview, // M6.1
+		CodeFromDoc:  cfg.Worker.Timeouts.CodeFromDoc,
 	}
 }
 
@@ -33,6 +34,7 @@ func buildWorkerTimeoutConfigFromAppConfig(cfg *config.Config) worker.TaskTimeou
 		RunE2E:       cfg.Worker.Timeouts.RunE2E,    // M5.1
 		TriageE2E:    cfg.Worker.Timeouts.TriageE2E, // M5.4
 		FixReview:    cfg.Worker.Timeouts.FixReview, // M6.1
+		CodeFromDoc:  cfg.Worker.Timeouts.CodeFromDoc,
 	}
 }
 

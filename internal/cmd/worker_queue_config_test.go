@@ -11,9 +11,10 @@ func TestBuildQueueTimeoutConfigFromAppConfig(t *testing.T) {
 	cfg := &config.Config{
 		Worker: config.WorkerConfig{
 			Timeouts: config.TaskTimeouts{
-				ReviewPR: 15 * time.Minute,
-				FixIssue: 45 * time.Minute,
-				GenTests: 30 * time.Minute,
+				ReviewPR:    15 * time.Minute,
+				FixIssue:    45 * time.Minute,
+				GenTests:    30 * time.Minute,
+				CodeFromDoc: 90 * time.Minute,
 			},
 		},
 	}
@@ -27,6 +28,14 @@ func TestBuildQueueTimeoutConfigFromAppConfig(t *testing.T) {
 	}
 	if got.GenTests != 30*time.Minute {
 		t.Fatalf("GenTests = %s, want %s", got.GenTests, 30*time.Minute)
+	}
+	if got.CodeFromDoc != 90*time.Minute {
+		t.Fatalf("CodeFromDoc = %s, want %s", got.CodeFromDoc, 90*time.Minute)
+	}
+
+	workerGot := buildWorkerTimeoutConfigFromAppConfig(cfg)
+	if workerGot.CodeFromDoc != 90*time.Minute {
+		t.Fatalf("worker CodeFromDoc = %s, want %s", workerGot.CodeFromDoc, 90*time.Minute)
 	}
 }
 
@@ -61,6 +70,9 @@ func TestBuildQueueTimeoutConfigFromAppConfig_NilConfig(t *testing.T) {
 	if got.GenTests != 0 {
 		t.Fatalf("GenTests = %s, want 0", got.GenTests)
 	}
+	if got.CodeFromDoc != 0 {
+		t.Fatalf("CodeFromDoc = %s, want 0", got.CodeFromDoc)
+	}
 }
 
 // TestBuildWorkerTimeoutConfigFromAppConfig_NilConfig 覆盖 cfg == nil 时返回零值
@@ -74,5 +86,8 @@ func TestBuildWorkerTimeoutConfigFromAppConfig_NilConfig(t *testing.T) {
 	}
 	if got.GenTests != 0 {
 		t.Fatalf("GenTests = %s, want 0", got.GenTests)
+	}
+	if got.CodeFromDoc != 0 {
+		t.Fatalf("CodeFromDoc = %s, want 0", got.CodeFromDoc)
 	}
 }

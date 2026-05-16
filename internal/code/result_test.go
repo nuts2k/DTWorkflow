@@ -37,6 +37,14 @@ func TestParseCodeFromDocOutput_SuccessButMissingBranch(t *testing.T) {
 	}
 }
 
+func TestParseCodeFromDocOutput_SuccessButTestsFailed(t *testing.T) {
+	raw := `{"success":true,"info_sufficient":true,"branch_name":"auto-code/test","commit_sha":"abc123","modified_files":[],"test_results":{"passed":3,"failed":1,"skipped":0,"all_passed":false},"analysis":"","implementation":"","failure_category":"none"}`
+	_, err := ParseCodeFromDocOutput(raw)
+	if !errors.Is(err, ErrCodeFromDocParseFailure) {
+		t.Fatalf("expected ErrCodeFromDocParseFailure for inconsistent test result, got %v", err)
+	}
+}
+
 func TestParseCodeFromDocOutput_InfoInsufficient(t *testing.T) {
 	raw := `{"success":false,"info_sufficient":false,"missing_info":["缺少数据库 schema"],"branch_name":"","commit_sha":"","modified_files":[],"test_results":{},"analysis":"","implementation":"","failure_category":"info_insufficient","failure_reason":"设计文档未包含必要信息"}`
 	output, err := ParseCodeFromDocOutput(raw)
