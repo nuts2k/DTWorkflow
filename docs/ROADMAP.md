@@ -1055,6 +1055,109 @@ iterate:
 
 ---
 
+#### M6.2 文档驱动自动编码（code_from_doc）
+
+> 详细设计见 `docs/plans/2026-05-16-m6.2-code-from-doc-design.md`。实施计划见 `docs/plans/2026-05-16-m6.2-code-from-doc-impl.md`。
+
+从设计文档到 PR 的全自动编码管线：CLI/API 触发 → 容器内 Claude 读文档编码 → 创建 PR → 自动接入评审（M2）+ 迭代修复（M6.1）闭环，形成 **文档 → 编码 → 评审 → 修复 → 可合并** 的完整闭环。
+
+**核心架构**：
+- [ ] 新增 `internal/code` 包（Service/Execute 模式），承载 code_from_doc 核心编排
+- [ ] 新增 `TaskTypeCodeFromDoc` 任务类型 + asynq 路由
+- [ ] 数据库迁移 v26（删除 tasks 表 `task_type` CHECK 约束 + 创建 `code_from_doc_results` 表）
+
+**双路径统一模型**：
+- [ ] 路径 A（`--branch` 省略）：从默认分支派生 `auto-code/{doc-slug}` 分支 → 编码 → 创建新 PR
+- [ ] 路径 B（`--branch` 指定功能分支）：checkout 该分支 → 编码 → push → 创建或复用 PR
+
+**容器执行**：
+- [ ] 单容器全托管（读文档 → 编码 → 测试 → commit → push），复用 fix 账号凭证 + `ImageFull` 镜像
+- [ ] 四段式 prompt（上下文 → 编码指令 → 约束 → 输出 JSON schema），通过 stdin 传入
+- [ ] 独立超时配置（默认 60 分钟）
+
+**API Key 路由**：
+- [ ] `claude.api_keys` 字典按 TaskType 路由 API Key（code_from_doc 大规模编码独立配额）
+- [ ] 未配置时回退 `claude.api_key`
+
+**auto-iterate 标签自动添加**：
+- [ ] `code_from_doc.auto_iterate` 配置控制：PR 创建时自动添加 `auto-iterate` 标签
+- [ ] 仅 `Success=true` 时添加（test_failure 场景不添加，避免浪费迭代轮次）
+
+**结果处理**：
+- [ ] `CodeFromDocOutput` 双层 JSON 解析 + 成功不变量校验 + 脱敏
+- [ ] 失败分类：`none` / `info_insufficient`（SkipRetry）/ `test_failure`（仍创建 PR 保留成果）/ `infrastructure`（允许重试）
+- [ ] 两阶段持久化：`code_from_doc_results` 表 UPSERT → `review_enqueued` partial UPDATE
+
+**触发入口**：
+- [ ] REST API：`POST /api/v1/repos/{owner}/{repo}/code-from-doc`
+- [ ] 服务端 CLI：`dtworkflow code-from-doc --owner --repo --doc [--branch] [--ref]`
+- [ ] 瘦客户端：`dtw code-from-doc --repo --doc [--branch] [--no-wait] [--timeout]`
+
+**入队与并发控制**：
+- [ ] `EnqueueCodeFromDoc` 幂等入队（DeliveryID: `manual:code_from_doc:{repo}:{branch}:{doc_path_hash}`）
+- [ ] Cancel-and-Replace 按 `(repo, branch)` 聚合（同分支串行语义）
+- [ ] Bot PR 过滤：`auto-code/` 前缀加入 `handleMergedPullRequest` 过滤列表
+
+**通知**：
+- [ ] 三事件飞书卡片：`code_from_doc.started`（蓝）/ `code_from_doc.done`（绿）/ `code_from_doc.failed`（红/橙）
+- [ ] `failure_category` 区分卡片颜色（infrastructure=橙 / info_insufficient=蓝 / test_failure=橙）
+
+**配置结构**：
+```yaml
+code_from_doc:
+  enabled: true
+  auto_iterate: true              # PR 创建时自动添加 auto-iterate 标签（仅 Success=true）
+  max_retry_rounds: 3             # 容器内测试失败自动修正轮次 [1, 10]
+  review_on_failure: false        # test_failure 时是否入队 review
+
+claude:
+  api_keys:
+    code_from_doc: "sk-coding-xxx"  # 独立配额（可选）
+
+worker:
+  timeouts:
+    code_from_doc: 60m
+```
+
+**模块划分**：
+- `internal/code/`：新增包（service / prompt / result / errors）
+- `internal/store/code_result.go`：`code_from_doc_results` 表 CRUD
+- `internal/validation/code_from_doc.go`：doc_path 公共校验
+- `internal/api/code_from_doc.go`：REST handler
+- `internal/cmd/code_from_doc.go`：服务端 CLI
+- `internal/dtw/cmd/code_from_doc.go`：瘦客户端 CLI
+- 扩展：model / config / worker / queue / notify / store / entrypoint / serve 装配
+
+### 交付物
+- 迭代式 PR 评审修复闭环（M6.1）
+- 文档驱动自动编码管线（M6.2，`internal/code` 包）
+- 文档 → 编码 → 评审 → 修复 → 可合并 完整闭环
+- API Key 按任务类型路由（可扩展到其他任务类型）
+- `auto-iterate` 标签自动添加（code_from_doc 首发，fix_issue 后续扩展）
+- CLI/API/dtw 三入口触发
+
+### 验证标准
+
+**M6.1**：
+- PR 加 `auto-iterate` 标签 → 评审 request_changes → 自动入队 fix_review → 容器修复 + push → 重新评审 → 迭代直到通过或超限
+- 迭代过程中仓库内生成修复报告（含决策依据和备选方案），PR 评论发精简摘要
+- 通知策略可配置（progress / silent），迭代中间通知正确抑制
+- 用户手动 push 时正确区分 push 来源，Cancel-and-Replace 行为符合预期
+- 达到上限后通过 push / reopen / CLI 手动恢复，恢复轮次不计入限额
+- Gitea 标签状态正确流转（iterating → iterate-passed / iterate-exhausted）
+
+**M6.2**：
+- 路径 A：主分支上已有设计文档 → `dtw code-from-doc --repo X --doc docs/plans/xxx.md` → 创建 `auto-code/{slug}` 分支 → 容器编码 → 创建 PR → 飞书通知
+- 路径 B：功能分支上有设计文档 → `dtw code-from-doc --repo X --doc docs/plans/xxx.md --branch feat/xxx` → checkout 该分支 → 编码 → push → 创建 PR（如不存在）
+- PR 带 `auto-iterate` 标签 → 评审 request_changes → M6.1 自动修复 → 迭代直到通过或超限
+- 设计文档信息不足 → Claude 返回 `info_sufficient=false` → 通知用户补充 → SkipRetry
+- 编码完成但测试失败 → 仍创建 PR 保留成果 → 不添加 auto-iterate 标签
+- 独立 API Key 生效 → 容器内 `ANTHROPIC_API_KEY` 使用 code_from_doc 专用 Key
+- 同分支重复触发 → Cancel-and-Replace 取消旧任务
+- doc_path 含 `..` 或绝对路径 → 校验拒绝
+
+---
+
 ## 阶段依赖关系
 
 ```
@@ -1087,7 +1190,8 @@ Phase 1 (基础设施)
 | Phase 5 第一轮 | 手动触发 E2E 执行——执行引擎 + 失败分析 + 报告 | Phase 4 之后 |
 | Phase 5 M5.4 | E2E 回归自动化——PR 合并触发两阶段流水线（AI 分析 + 并行执行） | Phase 5 第一轮之后 |
 | Phase 6 M6.1 | 迭代式 PR 评审修复闭环——review→fix→review 自动循环 | Phase 5 M5.4 之后 |
-| Phase 5 M5.4.1 | E2E 趋势分析与每日报告——运营可观测性 | M6.1 之后 |
+| Phase 6 M6.2 | 文档驱动自动编码——设计文档→编码→PR→评审→修复完整闭环 | M6.1 之后 |
+| Phase 5 M5.4.1 | E2E 趋势分析与每日报告——运营可观测性 | M6.2 之后 |
 | Phase 5 M5.5 | 探索性测试——AI 自主探索（可选扩展） | M5.4.1 之后或并行 |
 
 ---
