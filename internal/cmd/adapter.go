@@ -285,20 +285,34 @@ func (a *giteaCodePRAdapter) CreatePullRequest(ctx context.Context, owner, repo 
 }
 
 func (a *giteaCodePRAdapter) ListRepoPullRequests(ctx context.Context, owner, repo string, opts code.ListPullRequestsOptions) ([]*code.PullRequest, error) {
-	giteaOpts := gitea.ListPullRequestsOptions{State: opts.State}
-	prs, resp, err := a.client.ListRepoPullRequests(ctx, owner, repo, giteaOpts)
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	if err != nil {
-		return nil, err
-	}
+	const pageSize = 50
 	var result []*code.PullRequest
-	for _, pr := range prs {
-		if opts.Head != "" && pr.Head != nil && pr.Head.Ref != opts.Head {
-			continue
+	for page := 1; ; page++ {
+		giteaOpts := gitea.ListPullRequestsOptions{
+			ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize},
+			State:       opts.State,
 		}
-		result = append(result, &code.PullRequest{Number: pr.Number, HTMLURL: pr.HTMLURL})
+		prs, resp, err := a.client.ListRepoPullRequests(ctx, owner, repo, giteaOpts)
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, pr := range prs {
+			if opts.Head != "" {
+				if pr.Head == nil || pr.Head.Ref != opts.Head {
+					continue
+				}
+				if pr.Head.Repo == nil || pr.Head.Repo.FullName != owner+"/"+repo {
+					continue
+				}
+			}
+			result = append(result, &code.PullRequest{Number: pr.Number, HTMLURL: pr.HTMLURL})
+		}
+		if len(prs) < pageSize {
+			break
+		}
 	}
 	return result, nil
 }

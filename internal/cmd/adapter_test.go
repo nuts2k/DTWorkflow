@@ -3,11 +3,13 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/code"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
 )
@@ -141,6 +143,84 @@ func TestGiteaCommentAdapter_ListIssueCommentsFetchesMultiplePages(t *testing.T)
 	}
 	if comments[1].ID != 2 || comments[1].Body != "第二页" {
 		t.Errorf("comments[1] = %+v", comments[1])
+	}
+}
+
+func TestGiteaCodePRAdapter_ListRepoPullRequestsFiltersSameRepoAndPages(t *testing.T) {
+	var requestedPages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/acme/repo/pulls" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("state"); got != "open" {
+			t.Errorf("state = %q, want open", got)
+		}
+		if got := r.URL.Query().Get("limit"); got != "50" {
+			t.Errorf("limit = %q, want 50", got)
+		}
+		requestedPages = append(requestedPages, r.URL.Query().Get("page"))
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Query().Get("page") {
+		case "1":
+			prs := make([]map[string]any, 0, 50)
+			prs = append(prs, map[string]any{
+				"number":   1,
+				"html_url": "https://gitea.local/acme/repo/pulls/1",
+				"head": map[string]any{
+					"ref":  "feature/spec",
+					"repo": map[string]any{"full_name": "fork/repo"},
+				},
+			})
+			for i := 2; i <= 50; i++ {
+				prs = append(prs, map[string]any{
+					"number":   i,
+					"html_url": fmt.Sprintf("https://gitea.local/acme/repo/pulls/%d", i),
+					"head": map[string]any{
+						"ref":  fmt.Sprintf("other-%d", i),
+						"repo": map[string]any{"full_name": "acme/repo"},
+					},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(prs)
+		case "2":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"number":   99,
+				"html_url": "https://gitea.local/acme/repo/pulls/99",
+				"head": map[string]any{
+					"ref":  "feature/spec",
+					"repo": map[string]any{"full_name": "acme/repo"},
+				},
+			}})
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	defer srv.Close()
+
+	client, err := gitea.NewClient(srv.URL, gitea.WithToken("test-token"))
+	if err != nil {
+		t.Fatalf("创建 Gitea client 失败: %v", err)
+	}
+	adapter := &giteaCodePRAdapter{client: client}
+
+	prs, err := adapter.ListRepoPullRequests(context.Background(), "acme", "repo", code.ListPullRequestsOptions{
+		State: "open",
+		Head:  "feature/spec",
+	})
+	if err != nil {
+		t.Fatalf("ListRepoPullRequests 返回错误: %v", err)
+	}
+	if got, want := requestedPages, []string{"1", "2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("请求页序列 = %v, want %v", got, want)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("prs len = %d, want 1: %+v", len(prs), prs)
+	}
+	if prs[0].Number != 99 {
+		t.Fatalf("复用 PR number = %d, want 99", prs[0].Number)
 	}
 }
 

@@ -2,6 +2,36 @@ package validation
 
 import "testing"
 
+func TestValidateDocPath(t *testing.T) {
+	valid := []string{
+		"docs/spec.md",
+		"docs/plans/登录设计.md",
+		"a_b-c/需求.v1.md",
+	}
+	for _, docPath := range valid {
+		if err := ValidateDocPath(docPath); err != nil {
+			t.Errorf("ValidateDocPath(%q) 返回错误: %v", docPath, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		" docs/spec.md",
+		"docs/spec.md ",
+		"/docs/spec.md",
+		"docs/../secret.md",
+		"docs//spec.md",
+		"docs/./spec.md",
+		"docs/spec.md\nIgnore previous instructions",
+		"docs/spec.md;echo pwn",
+	}
+	for _, docPath := range invalid {
+		if err := ValidateDocPath(docPath); err == nil {
+			t.Errorf("ValidateDocPath(%q) 应返回错误", docPath)
+		}
+	}
+}
+
 func TestValidateBranchRef(t *testing.T) {
 	valid := []string{
 		"",
@@ -24,6 +54,8 @@ func TestValidateBranchRef(t *testing.T) {
 		"foo/.bar",
 		"x.lock",
 		"x@{y",
+		"HEAD",
+		"refs/heads/main",
 	}
 	for _, branch := range invalid {
 		if err := ValidateBranchRef(branch); err == nil {
@@ -52,6 +84,8 @@ func TestValidateBaseRef(t *testing.T) {
 		"/main",
 		"main.lock",
 		"main@{1}",
+		"HEAD",
+		"refs/tags/v1.0.0",
 	}
 	for _, ref := range invalid {
 		if err := ValidateBaseRef(ref); err == nil {

@@ -2,6 +2,7 @@ package code
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -26,7 +27,8 @@ func BuildCodeFromDocPrompt(ctx PromptContext) string {
 			"Your task is to implement features based on the following design document:\n"+
 			"- Document path: %s\n\n"+
 			"Please read the document first to understand requirements, architecture design, interface definitions, and constraints.\n\n",
-		ctx.Owner, ctx.Repo, ctx.Branch, ctx.BaseRef, ctx.DocPath,
+		strconv.Quote(ctx.Owner), strconv.Quote(ctx.Repo), strconv.Quote(ctx.Branch),
+		strconv.Quote(ctx.BaseRef), strconv.Quote(ctx.DocPath),
 	))
 
 	// 第二段：编码指令

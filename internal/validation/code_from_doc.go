@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var safeBranchRefPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
@@ -17,6 +18,12 @@ func ValidateDocPath(docPath string) error {
 
 	// 归一化反斜杠
 	normalized := strings.ReplaceAll(docPath, "\\", "/")
+	if strings.TrimSpace(normalized) != normalized {
+		return fmt.Errorf("doc_path 不能包含首尾空白: %s", docPath)
+	}
+	if strings.Contains(normalized, "//") {
+		return fmt.Errorf("doc_path 不能包含连续斜杠: %s", docPath)
+	}
 
 	// 禁止绝对路径
 	if strings.HasPrefix(normalized, "/") {
@@ -25,8 +32,19 @@ func ValidateDocPath(docPath string) error {
 
 	// 禁止路径遍历
 	for _, part := range strings.Split(normalized, "/") {
-		if part == ".." {
-			return fmt.Errorf("doc_path 不能包含路径遍历 (..): %s", docPath)
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("doc_path 包含非法路径段: %s", docPath)
+		}
+		for _, r := range part {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				continue
+			}
+			switch r {
+			case '.', '_', '-':
+				continue
+			default:
+				return fmt.Errorf("doc_path 只能包含字母、数字、'.'、'_'、'-'、'/': %s", docPath)
+			}
 		}
 	}
 
@@ -62,6 +80,9 @@ func ValidateBaseRef(ref string) error {
 func validateSafeGitRef(field, ref string) error {
 	if strings.HasPrefix(ref, "-") {
 		return fmt.Errorf("%s 不能以 '-' 开头: %s", field, ref)
+	}
+	if ref == "HEAD" || strings.HasPrefix(ref, "refs/") {
+		return fmt.Errorf("%s 不能使用保留引用名: %s", field, ref)
 	}
 	if strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") {
 		return fmt.Errorf("%s 不能以 '/' 开头或结尾: %s", field, ref)
