@@ -500,6 +500,60 @@ run_fix_review_invalid_head_case() {
   fi
 }
 
+run_code_from_doc_case() {
+  local repo_dir="${TMPDIR}/repo-code-from-doc-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  local stdout_file="${TMPDIR}/code-from-doc.out"
+  local stderr_file="${TMPDIR}/code-from-doc.err"
+
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="code_from_doc" \
+  BASE_REF="main" \
+  DOC_SLUG="payment-spec-a1b2c3d4" \
+  bash "${ENTRYPOINT}" bash -c 'git push origin should-not-run || true; printf "%s\n" "$MAVEN_OPTS"' >"${stdout_file}" 2>"${stderr_file}" || true
+
+  local log
+  log="$(cat "${TMPDIR}/git.log")"
+
+  assert_contains "code_from_doc — 从 base 派生目标分支" \
+    "${log}" "git checkout -B auto-code/payment-spec-a1b2c3d4 origin/main"
+  assert_contains "code_from_doc — 全局 credential helper 已禁用" \
+    "${log}" "git config --global credential.helper "
+  assert_contains "code_from_doc — git identity name 已设置" \
+    "${log}" "git config --global user.name DTWorkflow Bot"
+  assert_contains "code_from_doc — 任务内 git push 被 wrapper 拦截" \
+    "$(cat "${stderr_file}")" "code_from_doc must not run git push"
+  assert_contains "code_from_doc — 任务成功后由入口脚本受控 push" \
+    "${log}" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/auto-code/payment-spec-a1b2c3d4"
+  assert_contains "code_from_doc — 受控 push 禁用 hooks" \
+    "${log}" "-c core.hooksPath=/dev/null push https://gitea.example.com/owner/repo.git HEAD:refs/heads/auto-code/payment-spec-a1b2c3d4"
+  assert_not_contains "code_from_doc — push stderr 不泄漏 token" \
+    "$(cat "${stderr_file}")" "token"
+
+  if [ -x "${repo_dir}/../.dtworkflow-bin/dtworkflow-code-from-doc-push" ]; then
+    echo "PASS: code_from_doc — safe push helper 已安装"
+    (( PASS++ ))
+  else
+    echo "FAIL: code_from_doc — 未检测到 safe push helper"
+    (( FAIL++ ))
+  fi
+
+  if grep -qx -- '-Dmaven.repo.local=/workspace/.m2/repository' "${stdout_file}"; then
+    echo "PASS: code_from_doc — build cache env exported"
+    (( PASS++ ))
+  else
+    echo "FAIL: code_from_doc — expected build cache env in stdout:"
+    cat "${stdout_file}"
+    (( FAIL++ ))
+  fi
+}
+
 # ==================== 运行 M4.1 既有用例 ====================
 
 echo "=== Entrypoint Behavior Tests ==="
@@ -517,6 +571,7 @@ run_fix_review_case
 run_fix_review_noop_case
 run_fix_review_missing_head_case
 run_fix_review_invalid_head_case
+run_code_from_doc_case
 
 # ==================== M4.2 新增：gen_tests 断点续传用例 ====================
 

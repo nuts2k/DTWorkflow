@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -219,7 +220,11 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 			return result, fmt.Errorf("%w: branch_name %q 与目标分支 %q 不一致",
 				ErrCodeFromDocParseFailure, output.BranchName, branch)
 		}
-		prNumber, prURL = s.createOrReusePR(ctx, payload, output, output.BranchName)
+		var prErr error
+		prNumber, prURL, prErr = s.createOrReusePR(ctx, payload, output, output.BranchName)
+		if prErr != nil {
+			return result, prErr
+		}
 		result.PRNumber = prNumber
 		result.PRURL = prURL
 	}
@@ -276,9 +281,9 @@ func (s *Service) WriteDegraded(ctx context.Context, payload model.TaskPayload, 
 	return nil
 }
 
-func (s *Service) createOrReusePR(ctx context.Context, payload model.TaskPayload, output *CodeFromDocOutput, branch string) (int64, string) {
+func (s *Service) createOrReusePR(ctx context.Context, payload model.TaskPayload, output *CodeFromDocOutput, branch string) (int64, string, error) {
 	if s.prClient == nil {
-		return 0, ""
+		return 0, "", nil
 	}
 
 	// 检查目标分支是否已有 open PR。自动派生分支和显式分支都必须复用。
@@ -288,7 +293,7 @@ func (s *Service) createOrReusePR(ctx context.Context, payload model.TaskPayload
 		if err == nil && len(existing) > 0 {
 			s.logger.InfoContext(ctx, "分支已有 open PR，跳过创建",
 				"repo", payload.RepoFullName, "branch", branch, "pr", existing[0].Number)
-			return existing[0].Number, existing[0].HTMLURL
+			return existing[0].Number, existing[0].HTMLURL, nil
 		}
 	}
 
@@ -311,9 +316,9 @@ func (s *Service) createOrReusePR(ctx context.Context, payload model.TaskPayload
 	if err != nil {
 		s.logger.ErrorContext(ctx, "创建 PR 失败",
 			"repo", payload.RepoFullName, "branch", branch, "error", err)
-		return 0, ""
+		return 0, "", fmt.Errorf("创建 code_from_doc PR 失败: %w", err)
 	}
-	return pr.Number, pr.HTMLURL
+	return pr.Number, pr.HTMLURL, nil
 }
 
 func buildPRBody(output *CodeFromDocOutput) string {
@@ -402,8 +407,9 @@ func countFileActions(files []ModifiedFile) (created, modified int) {
 
 // DocSlug 从 doc_path 派生分支名后缀。
 func DocSlug(docPath string) string {
+	normalized := strings.ReplaceAll(docPath, "\\", "/")
 	// 取 basename
-	parts := strings.Split(strings.ReplaceAll(docPath, "\\", "/"), "/")
+	parts := strings.Split(normalized, "/")
 	name := parts[len(parts)-1]
 	// 去扩展名
 	if idx := strings.LastIndex(name, "."); idx > 0 {
@@ -417,12 +423,14 @@ func DocSlug(docPath string) string {
 		name = strings.ReplaceAll(name, "--", "-")
 	}
 	name = strings.Trim(name, "-")
-	// 长度截断
-	if len(name) > 50 {
-		name = name[:50]
-	}
 	if name == "" {
-		name = "unnamed"
+		name = "doc"
 	}
-	return name
+	sum := sha256.Sum256([]byte(normalized))
+	suffix := fmt.Sprintf("%x", sum[:4])
+	// 分支后缀总长控制在 50：basename + "-" + 8 位路径 hash。
+	if len(name) > 41 {
+		name = name[:41]
+	}
+	return name + "-" + suffix
 }

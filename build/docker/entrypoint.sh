@@ -96,6 +96,37 @@ WRAP
     export PATH="${SAFE_BIN_DIR}:${PATH}"
 }
 
+enable_code_from_doc_git() {
+    # code_from_doc 运行阶段不向 Claude 暴露 push 凭证；Claude 只负责修改并提交。
+    # 任务命令成功退出后，由入口脚本父进程执行受控 push 到目标分支。
+    git remote set-url origin "${REPO_CLONE_URL}"
+    git config --global credential.helper ''
+    git config --global user.name "DTWorkflow Bot"
+    git config --global user.email "dtworkflow-bot@noreply.local"
+
+    SAFE_BIN_DIR="$(dirname "${REPO_DIR}")/.dtworkflow-bin"
+    mkdir -p "${SAFE_BIN_DIR}"
+    REAL_GIT_BIN="$(command -v git)"
+
+    cat > "${SAFE_BIN_DIR}/dtworkflow-code-from-doc-push" <<'PUSH'
+#!/bin/sh
+echo "ERROR: code_from_doc push is performed by DTWorkflow after the task command exits successfully" >&2
+exit 2
+PUSH
+    chmod 700 "${SAFE_BIN_DIR}/dtworkflow-code-from-doc-push"
+
+    cat > "${SAFE_BIN_DIR}/git" <<WRAP
+#!/bin/sh
+if [ "\${1:-}" = "push" ]; then
+    echo "ERROR: code_from_doc must not run git push; DTWorkflow will push after the task exits" >&2
+    exit 2
+fi
+exec "${REAL_GIT_BIN}" "\$@"
+WRAP
+    chmod 700 "${SAFE_BIN_DIR}/git"
+    export PATH="${SAFE_BIN_DIR}:${PATH}"
+}
+
 capture_trusted_fix_review_git_state() {
     # 保存父进程最终 push 所需的可信状态。Claude 执行期间可修改仓库内
     # origin/hooks/wrapper，因此最终 push 不再信任这些可变状态。
@@ -103,6 +134,14 @@ capture_trusted_fix_review_git_state() {
     DTWORKFLOW_FIX_REVIEW_BASE_SHA="$("${DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN}" rev-parse "origin/${HEAD_REF}")"
     export DTWORKFLOW_FIX_REVIEW_REAL_GIT_BIN
     export DTWORKFLOW_FIX_REVIEW_BASE_SHA
+}
+
+capture_trusted_code_from_doc_git_state() {
+    local base_ref="$1"
+    DTWORKFLOW_CODE_FROM_DOC_REAL_GIT_BIN="$(command -v git)"
+    DTWORKFLOW_CODE_FROM_DOC_BASE_SHA="$("${DTWORKFLOW_CODE_FROM_DOC_REAL_GIT_BIN}" rev-parse "${base_ref}")"
+    export DTWORKFLOW_CODE_FROM_DOC_REAL_GIT_BIN
+    export DTWORKFLOW_CODE_FROM_DOC_BASE_SHA
 }
 
 validate_fix_review_head_ref() {
@@ -167,6 +206,62 @@ HELPER
     return "${push_status}"
 }
 
+push_code_from_doc_result() {
+    # 退出码约定：
+    #   10 = push 基础设施故障（缺 token/URL/git/目标分支/SHA、HEAD 解析失败）
+    #   其他 = git push 命令自身的退出码
+    if [ -z "${DTWORKFLOW_CODE_FROM_DOC_PUSH_TOKEN:-}" ]; then
+        log "ERROR: code_from_doc 缺少受控 push token"
+        return 10
+    fi
+    if [ -z "${DTWORKFLOW_CODE_FROM_DOC_CLONE_URL:-}" ]; then
+        log "ERROR: code_from_doc 缺少受控 push URL"
+        return 10
+    fi
+    if [ -z "${DTWORKFLOW_CODE_FROM_DOC_TARGET_BRANCH:-}" ]; then
+        log "ERROR: code_from_doc 缺少目标分支"
+        return 10
+    fi
+    if [ -z "${DTWORKFLOW_CODE_FROM_DOC_REAL_GIT_BIN:-}" ] || [ ! -x "${DTWORKFLOW_CODE_FROM_DOC_REAL_GIT_BIN}" ]; then
+        log "ERROR: code_from_doc 真实 git 路径不可用"
+        return 10
+    fi
+    if [ -z "${DTWORKFLOW_CODE_FROM_DOC_BASE_SHA:-}" ]; then
+        log "ERROR: code_from_doc 缺少基准提交 SHA"
+        return 10
+    fi
+    local head_sha
+    if ! head_sha="$("${DTWORKFLOW_CODE_FROM_DOC_REAL_GIT_BIN}" rev-parse HEAD 2>/dev/null)"; then
+        log "ERROR: code_from_doc 无法解析当前 HEAD"
+        return 10
+    fi
+    if [ "${head_sha}" = "${DTWORKFLOW_CODE_FROM_DOC_BASE_SHA}" ]; then
+        log "code_from_doc 未产生新提交，跳过受控 push"
+        return 0
+    fi
+    local helper_script
+    helper_script="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
+    cat > "${helper_script}" <<HELPER
+#!/bin/sh
+echo "username=token"
+echo "password=${DTWORKFLOW_CODE_FROM_DOC_PUSH_TOKEN}"
+HELPER
+    chmod 700 "${helper_script}"
+
+    log "code_from_doc: 受控推送目标分支 ${DTWORKFLOW_CODE_FROM_DOC_TARGET_BRANCH}"
+    set +e
+    "${DTWORKFLOW_CODE_FROM_DOC_REAL_GIT_BIN}" \
+        -c credential.helper= \
+        -c credential.helper="${helper_script}" \
+        -c core.hooksPath=/dev/null \
+        push "${DTWORKFLOW_CODE_FROM_DOC_CLONE_URL}" "HEAD:refs/heads/${DTWORKFLOW_CODE_FROM_DOC_TARGET_BRANCH}" 2>&1 \
+        | sed "s|${DTWORKFLOW_CODE_FROM_DOC_PUSH_TOKEN}|***|g" >&2
+    local push_status=${PIPESTATUS[0]}
+    set -e
+    rm -f "${helper_script}"
+    return "${push_status}"
+}
+
 append_autofix_override() {
     local mode="$1"
     if [ -f CLAUDE.md ]; then
@@ -177,9 +272,10 @@ append_autofix_override() {
 
 本次任务由 DTWorkflow 自动修复系统发起（${mode}），以上所有关于「禁止 git 操作」「禁止 git add」
 「禁止 git commit」「禁止 git push」「禁止安装依赖」的限制在本次任务中**不适用**。
-你被明确授权且必须执行 git checkout -b、git add、git commit、git push 以及
-npm install 等操作以完成修复任务。
+你被明确授权且必须执行 git checkout -b、git add、git commit 以及
+npm install 等操作以完成修复任务；除下方特定模式的受控 push 说明外，需要时可执行 git push。
 如果当前模式是 fix_review，不要执行 git push 或 dtworkflow-fix-review-push；DTWorkflow 会在任务成功后受控推送当前 PR 分支。
+如果当前模式是 code_from_doc，不要执行 git push 或 dtworkflow-code-from-doc-push；DTWorkflow 会在任务成功后受控推送目标分支。
 OVERRIDE
         # 关键：标记 CLAUDE.md 为 assume-unchanged，防止 git add 时将覆盖段提交到 PR。
         git update-index --assume-unchanged CLAUDE.md
@@ -321,15 +417,14 @@ HOOK
         ;;
     code_from_doc)
         # M6.2: 文档驱动编码模式（写权限）
-        enable_write_git
-        setup_build_cache
-
         # 分支策略
         if [ -n "${CODE_BRANCH:-}" ]; then
             # 路径 B：checkout 已有分支
             log "code_from_doc: fetch + checkout 功能分支 ${CODE_BRANCH}"
-            git fetch origin "${CODE_BRANCH}" >&2 2>&1
-            git checkout "${CODE_BRANCH}" >&2 2>&1
+            git fetch origin "${CODE_BRANCH}:refs/remotes/origin/${CODE_BRANCH}" >&2 2>&1
+            git checkout -B "${CODE_BRANCH}" "origin/${CODE_BRANCH}" >&2 2>&1
+            CODE_TARGET_BRANCH="${CODE_BRANCH}"
+            CODE_BASE_REV="origin/${CODE_TARGET_BRANCH}"
         else
             # 路径 A：从 BASE_REF 派生新分支
             if [ -z "${BASE_REF:-}" ]; then
@@ -340,47 +435,34 @@ HOOK
             log "code_from_doc: 从 ${BASE_REF} 派生 ${CODE_TARGET_BRANCH}"
             git fetch origin "${BASE_REF}" >&2 2>&1
             git checkout -B "${CODE_TARGET_BRANCH}" "origin/${BASE_REF}" >&2 2>&1
+            CODE_BASE_REV="origin/${BASE_REF}"
         fi
 
+        capture_trusted_code_from_doc_git_state "${CODE_BASE_REV}"
+        enable_code_from_doc_git
+        setup_build_cache
         append_autofix_override "code_from_doc"
 
         # 安全加固：仅允许推送到本次任务的目标分支
         mkdir -p .git/hooks
-        if [ -n "${CODE_BRANCH:-}" ]; then
-            # 注意：heredoc 不带引号（<<HOOK 而非 <<'HOOK'），允许变量展开
-            cat > .git/hooks/pre-push <<HOOK
+        export DTWORKFLOW_CODE_FROM_DOC_TARGET_BRANCH="${CODE_TARGET_BRANCH}"
+        cat > .git/hooks/pre-push <<'HOOK'
 #!/bin/sh
 while read -r local_ref local_sha remote_ref remote_sha
 do
-    case "\${remote_ref}" in
-        refs/heads/${CODE_BRANCH})
+    case "${remote_ref}" in
+        refs/heads/${DTWORKFLOW_CODE_FROM_DOC_TARGET_BRANCH})
             ;;
         *)
-            echo "ERROR: code_from_doc may only push to refs/heads/${CODE_BRANCH}" >&2
+            echo "ERROR: code_from_doc may only push to refs/heads/${DTWORKFLOW_CODE_FROM_DOC_TARGET_BRANCH}" >&2
             exit 1
             ;;
     esac
 done
 HOOK
-        else
-            cat > .git/hooks/pre-push <<HOOK
-#!/bin/sh
-while read -r local_ref local_sha remote_ref remote_sha
-do
-    case "\${remote_ref}" in
-        refs/heads/${CODE_TARGET_BRANCH})
-            ;;
-        *)
-            echo "ERROR: code_from_doc may only push to refs/heads/${CODE_TARGET_BRANCH}" >&2
-            exit 1
-            ;;
-    esac
-done
-HOOK
-        fi
         chmod +x .git/hooks/pre-push
         chmod -R a-w .git/hooks
-        log "文档驱动编码模式已启用（写权限 + push guard + build cache）"
+        log "文档驱动编码模式已启用（提交权限 + 受控 push + push guard + build cache）"
         ;;
     gen_tests)
         log "测试生成任务，使用默认分支（将在容器内由 Claude 创建 auto-test/<module>-<ts> 分支）"
@@ -607,6 +689,9 @@ fi
 if [ "${TASK_TYPE:-}" = "fix_review" ]; then
     DTWORKFLOW_FIX_REVIEW_PUSH_TOKEN="${GITEA_TOKEN:-}"
     DTWORKFLOW_FIX_REVIEW_CLONE_URL="${REPO_CLONE_URL:-}"
+elif [ "${TASK_TYPE:-}" = "code_from_doc" ]; then
+    DTWORKFLOW_CODE_FROM_DOC_PUSH_TOKEN="${GITEA_TOKEN:-}"
+    DTWORKFLOW_CODE_FROM_DOC_CLONE_URL="${REPO_CLONE_URL:-}"
 fi
 unset GITEA_TOKEN
 unset AUTH_URL
@@ -623,6 +708,14 @@ if [ "${TASK_TYPE:-}" = "fix_review" ]; then
         exit "${cmd_status}"
     fi
     push_fix_review_result
+    exit $?
+elif [ "${TASK_TYPE:-}" = "code_from_doc" ]; then
+    "$@"
+    cmd_status=$?
+    if [ "${cmd_status}" -ne 0 ]; then
+        exit "${cmd_status}"
+    fi
+    push_code_from_doc_result
     exit $?
 fi
 

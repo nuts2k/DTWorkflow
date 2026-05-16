@@ -45,7 +45,7 @@ func BuildCodeFromDocPrompt(ctx PromptContext) string {
 			"   - Integration tests if required by the document\n"+
 			"5. Run tests to verify (mvn test / npm test / go test ./...). If tests fail, fix automatically, up to %d rounds\n"+
 			"6. Commit after each logical unit is complete (commit message format: feat: {brief description})\n"+
-			"7. After everything is done, run git push\n\n",
+			"7. Do NOT run git push. DTWorkflow will push the final HEAD to the target branch after you exit successfully.\n\n",
 		maxRetry,
 	))
 
@@ -67,8 +67,8 @@ func BuildCodeFromDocPrompt(ctx PromptContext) string {
 			"  \"success\": true/false,\n" +
 			"  \"info_sufficient\": true/false,\n" +
 			"  \"missing_info\": [\"...\"],\n" +
-			"  \"branch_name\": \"the branch name you pushed to\",\n" +
-			"  \"commit_sha\": \"final commit SHA after push\",\n" +
+			"  \"branch_name\": \"the target branch name\",\n" +
+			"  \"commit_sha\": \"final local HEAD commit SHA\",\n" +
 			"  \"modified_files\": [{\"path\": \"...\", \"action\": \"created/modified/deleted\", \"description\": \"...\"}],\n" +
 			"  \"test_results\": {\"passed\": 0, \"failed\": 0, \"skipped\": 0, \"all_passed\": true/false},\n" +
 			"  \"analysis\": \"brief analysis of the design document\",\n" +

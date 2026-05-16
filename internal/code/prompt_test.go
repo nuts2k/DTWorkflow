@@ -21,6 +21,7 @@ func TestBuildCodeFromDocPrompt(t *testing.T) {
 		"auto-code/user-auth",
 		"docs/plans/user-auth-design.md",
 		"up to 5 rounds",
+		"Do NOT run git push",
 		"success",
 		"failure_category",
 	}
