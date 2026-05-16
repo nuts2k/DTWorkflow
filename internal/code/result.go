@@ -52,6 +52,8 @@ type CodeFromDocResult struct {
 	Output    *CodeFromDocOutput
 	RawOutput string
 	ExitCode  int
+	PRNumber  int64
+	PRURL     string
 }
 
 // ParseCodeFromDocOutput 从容器输出中解析 CodeFromDocOutput。

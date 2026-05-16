@@ -153,6 +153,12 @@ func buildWorkerPoolConfigFromServeConfig(cfg serveConfig) worker.PoolConfig {
 	}
 	if cfg.AppCfg != nil {
 		pcfg.GiteaInsecureSkipVerify = cfg.AppCfg.Gitea.InsecureSkipVerify
+		if len(cfg.AppCfg.Claude.APIKeys) > 0 {
+			pcfg.ClaudeAPIKeys = make(map[string]worker.SecretString, len(cfg.AppCfg.Claude.APIKeys))
+			for taskType, key := range cfg.AppCfg.Claude.APIKeys {
+				pcfg.ClaudeAPIKeys[taskType] = worker.SecretString(key)
+			}
+		}
 		pcfg.ImageFull = cfg.AppCfg.Worker.ImageFull               // M3.4
 		pcfg.MavenCacheVolume = cfg.AppCfg.Worker.MavenCacheVolume // M3.5
 		pcfg.NpmCacheVolume = cfg.AppCfg.Worker.NpmCacheVolume

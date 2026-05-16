@@ -46,6 +46,15 @@ func selectGiteaToken(config PoolConfig, taskType model.TaskType) string {
 	return string(config.GiteaToken)
 }
 
+func selectClaudeAPIKey(config PoolConfig, taskType model.TaskType) string {
+	if config.ClaudeAPIKeys != nil {
+		if key := config.ClaudeAPIKeys[string(taskType)]; key != "" {
+			return string(key)
+		}
+	}
+	return string(config.ClaudeAPIKey)
+}
+
 // sanitizePromptInput 清理用于 CLI prompt 的用户输入。
 // 基于 sanitizeInput 去除换行和 NUL 字符后，按 []rune 截断到 maxLen，
 // 避免截断 UTF-8 多字节字符。用于构建传给 Claude CLI 的 prompt 参数。
@@ -64,7 +73,7 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 	env := []string{
 		fmt.Sprintf("GITEA_URL=%s", sanitizeEnvValue(config.GiteaURL)),
 		fmt.Sprintf("GITEA_TOKEN=%s", sanitizeEnvValue(selectGiteaToken(config, payload.TaskType))),
-		fmt.Sprintf("ANTHROPIC_API_KEY=%s", sanitizeEnvValue(string(config.ClaudeAPIKey))),
+		fmt.Sprintf("ANTHROPIC_API_KEY=%s", sanitizeEnvValue(selectClaudeAPIKey(config, payload.TaskType))),
 	}
 	if config.ClaudeBaseURL != "" {
 		env = append(env, fmt.Sprintf("ANTHROPIC_BASE_URL=%s", sanitizeEnvValue(config.ClaudeBaseURL)))

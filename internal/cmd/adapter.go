@@ -352,6 +352,34 @@ func (a *codeResultStoreAdapter) SaveCodeFromDocResult(ctx context.Context, reco
 	})
 }
 
+func (a *codeResultStoreAdapter) GetCodeFromDocResultByTaskID(ctx context.Context, taskID string) (*code.CodeFromDocResultRecord, error) {
+	record, err := a.inner.GetCodeFromDocResultByTaskID(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, nil
+	}
+	return &code.CodeFromDocResultRecord{
+		ID:              fmt.Sprintf("%d", record.ID),
+		TaskID:          record.TaskID,
+		Repo:            record.Repo,
+		Branch:          record.Branch,
+		DocPath:         record.DocPath,
+		Success:         record.Success,
+		PRNumber:        record.PRNumber,
+		PRURL:           record.PRURL,
+		FailureCategory: record.FailureCategory,
+		FailureReason:   record.FailureReason,
+		FilesCreated:    record.FilesCreated,
+		FilesModified:   record.FilesModified,
+		TestPassed:      record.TestPassed,
+		TestFailed:      record.TestFailed,
+		Implementation:  record.Implementation,
+		ReviewEnqueued:  record.ReviewEnqueued,
+	}, nil
+}
+
 func (a *codeResultStoreAdapter) UpdateCodeFromDocReviewEnqueued(ctx context.Context, taskID string) error {
 	return a.inner.UpdateCodeFromDocReviewEnqueued(ctx, taskID)
 }

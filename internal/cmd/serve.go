@@ -303,6 +303,7 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 				&giteaCodeLabelAdapter{client: deps.GiteaClient, logger: slog.Default()}))
 		}
 		codeOpts = append(codeOpts, codesvc.WithResultStore(&codeResultStoreAdapter{inner: deps.Store}))
+		codeOpts = append(codeOpts, codesvc.WithReviewEnqueuer(deps.EnqueueHandler))
 		var codePRClient codesvc.PRClient
 		if deps.GiteaFixClient != nil {
 			codePRClient = &giteaCodePRAdapter{client: deps.GiteaFixClient}
@@ -333,9 +334,9 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	mux.Handle(queue.AsynqTypeAnalyzeIssue, processor) // M3.4
 	mux.Handle(queue.AsynqTypeFixIssue, processor)
 	mux.Handle(queue.AsynqTypeGenTests, processor)
-	mux.Handle(queue.AsynqTypeRunE2E, processor)    // M5.1
-	mux.Handle(queue.AsynqTypeTriageE2E, processor) // M5.4
-	mux.Handle(queue.AsynqTypeFixReview, processor)    // M6.1
+	mux.Handle(queue.AsynqTypeRunE2E, processor)      // M5.1
+	mux.Handle(queue.AsynqTypeTriageE2E, processor)   // M5.4
+	mux.Handle(queue.AsynqTypeFixReview, processor)   // M6.1
 	mux.Handle(queue.AsynqTypeCodeFromDoc, processor) // M6.2
 
 	// M2.7: 每日报告 Handler 装配

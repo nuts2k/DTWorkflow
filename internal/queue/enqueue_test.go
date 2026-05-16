@@ -1058,7 +1058,6 @@ func TestHandlePullRequest_WithSuperseded(t *testing.T) {
 	}
 }
 
-
 func TestHandlePullRequest_InvalidPayload_DoesNotCancelOldTask(t *testing.T) {
 	s := newMockStore()
 	canceller := &mockTaskCanceller{}
@@ -3717,6 +3716,110 @@ func TestBuildE2ERegressionDeliveryID(t *testing.T) {
 	empty := buildE2ERegressionDeliveryID("")
 	if empty != "" {
 		t.Errorf("buildE2ERegressionDeliveryID('') = %q, want empty", empty)
+	}
+}
+
+func TestBuildCodeFromDocDeliveryID_IncludesDocPath(t *testing.T) {
+	id1 := buildCodeFromDocDeliveryID("owner/repo", "feature/doc", "docs/a.md")
+	id2 := buildCodeFromDocDeliveryID("owner/repo", "feature/doc", "docs/b.md")
+	if id1 == id2 {
+		t.Fatalf("不同 doc_path 应生成不同 delivery_id: %q", id1)
+	}
+	if !strings.HasPrefix(id1, "manual:code_from_doc:owner/repo:feature/doc:") {
+		t.Errorf("delivery_id = %q, 前缀不符合预期", id1)
+	}
+}
+
+func TestEnqueueCodeFromDoc_SameDocReturnsExisting(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-code"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.example.com/owner/repo.git",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+		HeadRef:      "feature/spec",
+	}
+	deliveryID := buildCodeFromDocDeliveryID(payload.RepoFullName, payload.HeadRef, payload.DocPath)
+	existing := &model.TaskRecord{
+		ID:         "existing-code-task",
+		TaskType:   model.TaskTypeCodeFromDoc,
+		Status:     model.TaskStatusQueued,
+		DeliveryID: deliveryID,
+	}
+	s.byDeliveryID[deliveryID+":"+string(model.TaskTypeCodeFromDoc)] = existing
+
+	got, err := h.EnqueueCodeFromDoc(context.Background(), payload, "manual:test")
+	if err != nil {
+		t.Fatalf("EnqueueCodeFromDoc 返回错误: %v", err)
+	}
+	if got != existing.ID {
+		t.Errorf("task_id = %q, want %q", got, existing.ID)
+	}
+	if s.createCalls != 0 {
+		t.Errorf("同 doc 幂等命中不应创建新任务，createCalls=%d", s.createCalls)
+	}
+	if len(mc.payloads) != 0 {
+		t.Errorf("同 doc 幂等命中不应入队，payloads=%d", len(mc.payloads))
+	}
+}
+
+func TestEnqueueCodeFromDoc_DifferentDocSameBranchCancelsOld(t *testing.T) {
+	s := newMockStore()
+	canceller := &mockTaskCanceller{}
+	mc := &mockEnqueuer{enqueuedID: "asynq-code"}
+	h := NewEnqueueHandler(mc, canceller, s, slog.Default())
+
+	branch := "feature/spec"
+	oldTask := &model.TaskRecord{
+		ID:           "old-code-task",
+		AsynqID:      "asynq-old-code",
+		TaskType:     model.TaskTypeCodeFromDoc,
+		Status:       model.TaskStatusQueued,
+		RepoFullName: "owner/repo",
+		Payload: model.TaskPayload{
+			TaskType: model.TaskTypeCodeFromDoc,
+			Module:   branch,
+			DocPath:  "docs/old.md",
+		},
+	}
+	s.tasks[oldTask.ID] = oldTask
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.example.com/owner/repo.git",
+		DocPath:      "docs/new.md",
+		DocSlug:      "new",
+		HeadRef:      branch,
+	}
+	got, err := h.EnqueueCodeFromDoc(context.Background(), payload, "manual:test")
+	if err != nil {
+		t.Fatalf("EnqueueCodeFromDoc 返回错误: %v", err)
+	}
+	if got == "" {
+		t.Fatal("应返回新任务 ID")
+	}
+	if s.createCalls != 1 {
+		t.Fatalf("应创建 1 个新任务，createCalls=%d", s.createCalls)
+	}
+	if len(canceller.deleteCalls) != 1 || canceller.deleteCalls[0] != "asynq-old-code" {
+		t.Fatalf("旧 queued 任务应被 Delete，deleteCalls=%v", canceller.deleteCalls)
+	}
+	if oldTask.Status != model.TaskStatusCancelled {
+		t.Errorf("oldTask.Status = %q, want %q", oldTask.Status, model.TaskStatusCancelled)
+	}
+	if len(mc.payloads) != 1 {
+		t.Fatalf("应入队 1 个新任务，payloads=%d", len(mc.payloads))
+	}
+	if mc.payloads[0].Module != branch {
+		t.Errorf("新 payload.Module = %q, want %q", mc.payloads[0].Module, branch)
+	}
+	if mc.payloads[0].DeliveryID != buildCodeFromDocDeliveryID(payload.RepoFullName, branch, payload.DocPath) {
+		t.Errorf("新 payload.DeliveryID = %q", mc.payloads[0].DeliveryID)
 	}
 }
 

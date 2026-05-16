@@ -59,6 +59,11 @@ func (h *handlers) triggerCodeFromDoc(c *gin.Context) {
 		Error(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		return
 	}
+	branch := strings.TrimSpace(req.Branch)
+	if err := validation.ValidateBranchRef(branch); err != nil {
+		Error(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
 
 	if h.deps.GiteaClient == nil {
 		Error(c, http.StatusBadGateway, ErrCodeBadGateway, "Gitea 客户端未配置")
@@ -103,7 +108,7 @@ func (h *handlers) triggerCodeFromDoc(c *gin.Context) {
 		DocPath:      docPath,
 		DocSlug:      docSlug,
 		BaseRef:      baseRef,
-		HeadRef:      req.Branch,
+		HeadRef:      branch,
 	}
 
 	taskID, err := h.deps.EnqueueHandler.EnqueueCodeFromDoc(ctx, payload, triggeredBy)

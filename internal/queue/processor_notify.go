@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/code"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -214,6 +215,30 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 	case model.TaskTypeFixReview:
 		// 迭代修复的开始通知由迭代层管理，Processor 跳过
 		return notify.Message{}, false
+	case model.TaskTypeCodeFromDoc:
+		if payload.RepoFullName == "" || payload.DocPath == "" {
+			return notify.Message{}, false
+		}
+		branch := payload.HeadRef
+		if branch == "" {
+			branch = "auto-code/" + payload.DocSlug
+		}
+		metadata := map[string]string{
+			notify.MetaKeyDocPath:    payload.DocPath,
+			notify.MetaKeyBranchName: branch,
+		}
+		msg = notify.Message{
+			EventType: notify.EventCodeFromDocStarted,
+			Severity:  notify.SeverityInfo,
+			Target: notify.Target{
+				Owner: payload.RepoOwner,
+				Repo:  payload.RepoName,
+				IsPR:  false,
+			},
+			Title:    "文档驱动编码开始",
+			Body:     fmt.Sprintf("正在根据文档实现代码\n\n仓库：%s\n文档：%s", payload.RepoFullName, payload.DocPath),
+			Metadata: metadata,
+		}
 	default:
 		return notify.Message{}, false
 	}
@@ -229,11 +254,11 @@ func (p *Processor) buildStartMessage(payload model.TaskPayload) (notify.Message
 // sendCompletionNotification 在任务达到最终状态且状态已持久化后发送完成通知。
 // 内部创建独立后台 context，与 asynq 任务 ctx 的生命周期解耦，
 // 确保即使 asynq ctx 已过期（如任务超时）仍能发出通知。
-func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult, triageResult *e2e.TriageE2EOutput) {
+func (p *Processor) sendCompletionNotification(ctx context.Context, record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult, triageResult *e2e.TriageE2EOutput, codeResult *code.CodeFromDocResult) {
 	if p.notifier == nil || record == nil {
 		return
 	}
-	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult, testResult, e2eResult, triageResult)
+	msg, ok := p.buildNotificationMessage(record, reviewResult, fixResult, testResult, e2eResult, triageResult, codeResult)
 	if !ok {
 		// 主消息未构建成功（例如 gen_tests 缺 RepoFullName）仍尝试 Warnings 追加——
 		// 但无主消息时 Warnings 也无处附着，直接返回。
@@ -260,7 +285,7 @@ func (p *Processor) sendCompletionNotification(ctx context.Context, record *mode
 // M5.1：新增 e2eResult 形参，用于 run_e2e 任务（EventE2EDone / EventE2EFailed）。
 // M5.4：新增 triageResult 形参，用于 triage_e2e 任务（EventE2ETriageDone / EventE2ETriageFailed）。
 // 其它类型调用时传 nil。
-func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult, triageResult *e2e.TriageE2EOutput) (notify.Message, bool) {
+func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, e2eResult *e2e.E2EResult, triageResult *e2e.TriageE2EOutput, codeResult *code.CodeFromDocResult) (notify.Message, bool) {
 	if record == nil {
 		return notify.Message{}, false
 	}
@@ -612,6 +637,51 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 				Metadata:  metadata,
 			}
 		}
+	case model.TaskTypeCodeFromDoc:
+		if payload.RepoFullName == "" || payload.DocPath == "" {
+			return notify.Message{}, false
+		}
+		target := notify.Target{
+			Owner: payload.RepoOwner,
+			Repo:  payload.RepoName,
+			IsPR:  false,
+		}
+		metadata := buildCodeFromDocMetadata(payload, codeResult)
+		if record.Status == model.TaskStatusRetrying {
+			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
+			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
+			metadata[notify.MetaKeyTaskStatus] = string(record.Status)
+		}
+		switch record.Status {
+		case model.TaskStatusSucceeded:
+			msg = notify.Message{
+				EventType: notify.EventCodeFromDocDone,
+				Severity:  notify.SeverityInfo,
+				Target:    target,
+				Title:     "文档驱动编码完成",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		case model.TaskStatusRetrying:
+			msg = notify.Message{
+				EventType: notify.EventCodeFromDocFailed,
+				Severity:  notify.SeverityWarning,
+				Target:    target,
+				Title:     "文档驱动编码重试中",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		default:
+			severity, title := codeFromDocFailedSeverity(codeResult)
+			msg = notify.Message{
+				EventType: notify.EventCodeFromDocFailed,
+				Severity:  severity,
+				Target:    target,
+				Title:     title,
+				Body:      body,
+				Metadata:  metadata,
+			}
+		}
 	default:
 		return notify.Message{}, false
 	}
@@ -672,6 +742,73 @@ func (p *Processor) buildGenTestsMetadata(payload model.TaskPayload, testResult 
 		metadata[notify.MetaKeyFailureCategory] = string(out.FailureCategory)
 	}
 	return metadata
+}
+
+func buildCodeFromDocMetadata(payload model.TaskPayload, codeResult *code.CodeFromDocResult) map[string]string {
+	branch := payload.HeadRef
+	if codeResult != nil && codeResult.Output != nil && codeResult.Output.BranchName != "" {
+		branch = codeResult.Output.BranchName
+	}
+	if branch == "" {
+		branch = "auto-code/" + payload.DocSlug
+	}
+	metadata := map[string]string{
+		notify.MetaKeyDocPath:    payload.DocPath,
+		notify.MetaKeyBranchName: branch,
+	}
+	if codeResult == nil {
+		return metadata
+	}
+	if codeResult.PRURL != "" {
+		metadata[notify.MetaKeyPRURL] = codeResult.PRURL
+	}
+	if codeResult.PRNumber > 0 {
+		metadata[notify.MetaKeyPRNumber] = fmt.Sprintf("%d", codeResult.PRNumber)
+	}
+	out := codeResult.Output
+	if out == nil {
+		return metadata
+	}
+	created, modified := countCodeFromDocFileActions(out.ModifiedFiles)
+	metadata[notify.MetaKeyFilesCreated] = fmt.Sprintf("%d", created)
+	metadata[notify.MetaKeyFilesModified] = fmt.Sprintf("%d", modified)
+	metadata[notify.MetaKeyTestPassed] = fmt.Sprintf("%d", out.TestResults.Passed)
+	metadata[notify.MetaKeyTestFailed] = fmt.Sprintf("%d", out.TestResults.Failed)
+	if out.Implementation != "" {
+		metadata[notify.MetaKeyImplementation] = out.Implementation
+	}
+	if out.FailureCategory != "" && out.FailureCategory != code.FailureCategoryNone {
+		metadata[notify.MetaKeyFailureCategory] = string(out.FailureCategory)
+	}
+	return metadata
+}
+
+func countCodeFromDocFileActions(files []code.ModifiedFile) (created, modified int) {
+	for _, f := range files {
+		switch f.Action {
+		case "created":
+			created++
+		case "modified":
+			modified++
+		}
+	}
+	return created, modified
+}
+
+func codeFromDocFailedSeverity(codeResult *code.CodeFromDocResult) (notify.Severity, string) {
+	if codeResult == nil || codeResult.Output == nil {
+		return notify.SeverityWarning, "文档驱动编码失败"
+	}
+	switch codeResult.Output.FailureCategory {
+	case code.FailureCategoryInfoInsufficient:
+		return notify.SeverityInfo, "文档驱动编码信息不足"
+	case code.FailureCategoryTestFailure:
+		return notify.SeverityWarning, "文档驱动编码测试失败"
+	case code.FailureCategoryInfrastructure:
+		return notify.SeverityWarning, "文档驱动编码基础设施故障"
+	default:
+		return notify.SeverityWarning, "文档驱动编码失败"
+	}
 }
 
 // genTestsFailedSeverity 按 FailureCategory 映射失败通知的 severity 与标题。

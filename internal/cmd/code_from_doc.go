@@ -63,6 +63,10 @@ func runCodeFromDoc(cmd *cobra.Command, _ []string) error {
 	if err := validation.ValidateDocPath(docPath); err != nil {
 		return &ExitCodeError{Code: 1, Err: fmt.Errorf("--doc %w", err)}
 	}
+	branch := strings.TrimSpace(codeFromDocBranch)
+	if err := validation.ValidateBranchRef(branch); err != nil {
+		return &ExitCodeError{Code: 1, Err: fmt.Errorf("--branch %w", err)}
+	}
 
 	docPath = validation.NormalizeDocPath(docPath)
 	docSlug := code.DocSlug(docPath)
@@ -157,7 +161,7 @@ func runCodeFromDoc(cmd *cobra.Command, _ []string) error {
 		DocPath:      docPath,
 		DocSlug:      docSlug,
 		BaseRef:      baseRef,
-		HeadRef:      strings.TrimSpace(codeFromDocBranch),
+		HeadRef:      branch,
 	}
 
 	taskID, err := handler.EnqueueCodeFromDoc(ctx, payload, triggeredBy)
@@ -178,7 +182,7 @@ func runCodeFromDoc(cmd *cobra.Command, _ []string) error {
 		Repo:    repoInfo.FullName,
 		DocPath: docPath,
 		Ref:     baseRef,
-		Branch:  strings.TrimSpace(codeFromDocBranch),
+		Branch:  branch,
 		Status:  "queued",
 	}
 

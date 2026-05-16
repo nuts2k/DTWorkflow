@@ -402,70 +402,70 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 
 		// ErrPRNotOpen / ErrIssueNotOpen 是确定性失败，直接标记 failed 并跳过重试
 		if errors.Is(runErr, review.ErrPRNotOpen) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, nil, nil, "PR 不处于 open 状态，跳过评审")
+			return p.handleSkipRetryFailure(ctx, record, runErr, reviewResult, nil, nil, nil, "PR 不处于 open 状态，跳过评审")
 		}
 		if errors.Is(runErr, fix.ErrIssueNotOpen) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Issue 不处于 open 状态，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, nil, "Issue 不处于 open 状态，跳过分析")
 		}
 		if errors.Is(runErr, fix.ErrMissingIssueRef) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Issue 未设置关联分支，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, nil, "Issue 未设置关联分支，跳过分析")
 		}
 		if errors.Is(runErr, fix.ErrInvalidIssueRef) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Issue 关联的 ref 不存在，跳过分析")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, nil, "Issue 关联的 ref 不存在，跳过分析")
 		}
 		if errors.Is(runErr, fix.ErrInfoInsufficient) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "前序分析信息不足，跳过修复")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, nil, "前序分析信息不足，跳过修复")
 		}
 		if errors.Is(runErr, fix.ErrFixFailed) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, "Claude 返回 success=false，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, fixResult, nil, nil, "Claude 返回 success=false，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrTestGenDisabled) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "仓库已禁用 gen_tests，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "仓库已禁用 gen_tests，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrInvalidModule) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "module 路径非法，跳过测试生成")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "module 路径非法，跳过测试生成")
 		}
 		if errors.Is(runErr, test.ErrModuleOutOfScope) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "module 超出允许范围，跳过测试生成")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "module 超出允许范围，跳过测试生成")
 		}
 		if errors.Is(runErr, test.ErrModuleNotFound) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "module 子路径不存在于仓库，跳过测试生成")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "module 子路径不存在于仓库，跳过测试生成")
 		}
 		if errors.Is(runErr, test.ErrInvalidRef) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "gen_tests 指定 ref 不存在，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "gen_tests 指定 ref 不存在，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrAmbiguousFramework) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "无法确定测试框架，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "无法确定测试框架，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrNoFrameworkDetected) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "未检测到测试框架，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "未检测到测试框架，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrInfoInsufficient) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "测试生成信息不足，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "测试生成信息不足，跳过重试")
 		}
 		if errors.Is(runErr, test.ErrTestGenFailed) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, "Claude 返回 success=false，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, testResult, nil, "Claude 返回 success=false，跳过重试")
 		}
 		if errors.Is(runErr, e2e.ErrE2EDisabled) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "E2E 已禁用，跳过任务")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, nil, "E2E 已禁用，跳过任务")
 		}
 		if errors.Is(runErr, e2e.ErrEnvironmentNotFound) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "E2E 环境未找到，跳过任务")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, nil, "E2E 环境未找到，跳过任务")
 		}
 		if errors.Is(runErr, e2e.ErrNoCasesFound) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "未发现 E2E 用例，跳过任务")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, nil, "未发现 E2E 用例，跳过任务")
 		}
 		if errors.Is(runErr, iterate.ErrFixReviewDeterministicFailure) {
 			if iterateResult != nil {
 				record.Result = iterateResult.RawOutput
 			}
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "fix_review 确定性失败，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, nil, "fix_review 确定性失败，跳过重试")
 		}
 		if errors.Is(runErr, iterate.ErrNoNewCommits) {
 			if iterateResult != nil {
 				record.Result = iterateResult.RawOutput
 			}
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "fix_review 未产生新提交，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, nil, "fix_review 未产生新提交，跳过重试")
 		}
 		if errors.Is(runErr, iterate.ErrFixReviewParseFailure) {
 			return p.handleIterationQualityFailure(ctx, record, runErr, iterateResult, "fix_review 修复结果解析失败，跳过重试")
@@ -474,10 +474,10 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			return p.handleIterationQualityFailure(ctx, record, runErr, iterateResult, "fix_review 未产生实际变更，跳过重试")
 		}
 		if errors.Is(runErr, code.ErrInfoInsufficient) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "设计文档信息不足，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, codeResult, "设计文档信息不足，跳过重试")
 		}
 		if errors.Is(runErr, code.ErrCodeFromDocDisabled) {
-			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "仓库已禁用 code_from_doc，跳过重试")
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, codeResult, "仓库已禁用 code_from_doc，跳过重试")
 		}
 		if errors.Is(runErr, code.ErrTestFailure) {
 			// test_failure：仍标记 succeeded（有 PR 成果），不走 SkipRetry
@@ -493,7 +493,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 				p.logger.ErrorContext(ctx, "更新 code_from_doc test_failure 状态失败",
 					"task_id", record.ID, "error", err)
 			}
-			p.sendCompletionNotification(ctx, record, nil, nil, nil, nil, nil)
+			p.sendCompletionNotification(ctx, record, nil, nil, nil, nil, nil, codeResult)
 			return nil
 		}
 		if errors.Is(runErr, code.ErrCodeFromDocParseFailure) && !shouldRetry(ctx) && codeResult != nil {
@@ -664,7 +664,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if finalStatePersisted && !suppressNotification {
-		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, e2eResult, triageResult)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, e2eResult, triageResult, codeResult)
 	}
 
 	if triageDispatchErr != nil {

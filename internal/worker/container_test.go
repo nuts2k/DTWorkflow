@@ -1133,3 +1133,44 @@ func TestBuildContainerEnv_FixReview(t *testing.T) {
 		t.Errorf("HEAD_REF = %q, want feature-branch", envMap["HEAD_REF"])
 	}
 }
+
+func TestSelectClaudeAPIKey_TaskSpecific(t *testing.T) {
+	config := PoolConfig{
+		ClaudeAPIKey: "sk-global",
+		ClaudeAPIKeys: map[string]SecretString{
+			string(model.TaskTypeCodeFromDoc): "sk-code",
+		},
+	}
+
+	if got := selectClaudeAPIKey(config, model.TaskTypeCodeFromDoc); got != "sk-code" {
+		t.Errorf("selectClaudeAPIKey(code_from_doc) = %q, want sk-code", got)
+	}
+	if got := selectClaudeAPIKey(config, model.TaskTypeReviewPR); got != "sk-global" {
+		t.Errorf("selectClaudeAPIKey(review_pr) = %q, want sk-global", got)
+	}
+}
+
+func TestBuildContainerEnv_CodeFromDocClaudeAPIKeyOverride(t *testing.T) {
+	config := PoolConfig{
+		GiteaURL:     "https://gitea.example.com",
+		GiteaToken:   "tok",
+		ClaudeAPIKey: "sk-global",
+		ClaudeAPIKeys: map[string]SecretString{
+			string(model.TaskTypeCodeFromDoc): "sk-code",
+		},
+	}
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.example.com/owner/repo.git",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+	}
+
+	envMap := envSliceToMap(buildContainerEnv(config, payload))
+	if got := envMap["ANTHROPIC_API_KEY"]; got != "sk-code" {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want sk-code", got)
+	}
+}

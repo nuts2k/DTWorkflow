@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/test"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/validation"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
 )
 
@@ -1290,6 +1292,11 @@ func generateManualDeliveryID() string {
 	return fmt.Sprintf("manual-%d-%s", time.Now().UnixMilli(), uuid.New().String()[:8])
 }
 
+func buildCodeFromDocDeliveryID(repoFullName, branch, docPath string) string {
+	sum := sha256.Sum256([]byte(docPath))
+	return fmt.Sprintf("manual:code_from_doc:%s:%s:%x", repoFullName, branch, sum[:8])
+}
+
 // EnqueueCodeFromDoc 手动触发文档驱动编码任务入队。
 // Cancel-and-Replace 按 (repo, branch) 聚合——同一分支同时只能有一个 code_from_doc 任务。
 func (h *EnqueueHandler) EnqueueCodeFromDoc(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
@@ -1300,11 +1307,31 @@ func (h *EnqueueHandler) EnqueueCodeFromDoc(ctx context.Context, payload model.T
 	payload.TaskType = model.TaskTypeCodeFromDoc
 
 	// 构造幂等 DeliveryID
-	branch := payload.HeadRef
+	branch := strings.TrimSpace(payload.HeadRef)
+	if err := validation.ValidateBranchRef(branch); err != nil {
+		return "", fmt.Errorf("code_from_doc branch 非法: %w", err)
+	}
+	payload.HeadRef = branch
 	if branch == "" {
 		branch = "auto-code/" + payload.DocSlug
 	}
-	payload.DeliveryID = fmt.Sprintf("manual:code_from_doc:%s:%s", payload.RepoFullName, branch)
+	payload.Module = branch
+	payload.DeliveryID = buildCodeFromDocDeliveryID(payload.RepoFullName, branch, payload.DocPath)
+
+	existing, err := h.store.FindByDeliveryID(ctx, payload.DeliveryID, model.TaskTypeCodeFromDoc)
+	if err != nil {
+		return "", fmt.Errorf("code_from_doc 幂等检查失败: %w", err)
+	}
+	if existing != nil {
+		h.logger.InfoContext(ctx, "code_from_doc 任务已存在,跳过",
+			"delivery_id", payload.DeliveryID,
+			"task_id", existing.ID,
+			"status", existing.Status,
+			"repo", payload.RepoFullName,
+			"branch", branch,
+			"doc_path", payload.DocPath)
+		return existing.ID, nil
+	}
 
 	// Cancel-and-Replace：按 (repo, branch) 聚合
 	activeTasks, _ := h.store.FindActiveTasksByModule(ctx, payload.RepoFullName, branch, model.TaskTypeCodeFromDoc)

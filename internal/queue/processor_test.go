@@ -265,7 +265,6 @@ func TestProcessTask_Success_SendReviewNotification(t *testing.T) {
 	}
 }
 
-
 func TestProcessTask_Success(t *testing.T) {
 	s := newMockStore()
 	payload := model.TaskPayload{
@@ -1120,7 +1119,7 @@ func TestProcessTask_Retrying_SendsNotification(t *testing.T) {
 		},
 	}
 	p := NewProcessor(&mockPoolRunner{}, s, notifier, slog.Default())
-	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil, nil, nil)
 	if len(notifier.messages) != 1 {
 		t.Fatalf("notification count = %d, want 1", len(notifier.messages))
 	}
@@ -1654,7 +1653,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 			PRNumber:     1,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("RepoOwner 为空时不应生成通知消息")
 	}
@@ -1662,7 +1661,7 @@ func TestBuildNotificationMessage_EmptyRepoOwner(t *testing.T) {
 
 func TestBuildNotificationMessage_NilRecord(t *testing.T) {
 	p := NewProcessor(&mockPoolRunner{}, newMockStore(), nil, slog.Default())
-	_, ok := p.buildNotificationMessage(nil, nil, nil, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(nil, nil, nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("nil record 不应生成通知消息")
 	}
@@ -1682,7 +1681,7 @@ func TestBuildNotificationMessage_FixIssue_InvalidNumber(t *testing.T) {
 			IssueNumber: 0,
 		},
 	}
-	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
+	_, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("IssueNumber=0 不应生成通知消息")
 	}
@@ -2939,4 +2938,3 @@ func assertNotifyTimeInShanghai(t *testing.T, got, before, after string) {
 		t.Errorf("notify_time = %q, want Asia/Shanghai time between %q and %q", got, before, after)
 	}
 }
-

@@ -66,7 +66,13 @@ type CodeFromDocConfig struct {
 // ResultStore 结果持久化窄接口。
 type ResultStore interface {
 	SaveCodeFromDocResult(ctx context.Context, record *CodeFromDocResultRecord) error
+	GetCodeFromDocResultByTaskID(ctx context.Context, taskID string) (*CodeFromDocResultRecord, error)
 	UpdateCodeFromDocReviewEnqueued(ctx context.Context, taskID string) error
+}
+
+// ReviewEnqueuer code_from_doc 完成后触发 PR review 入队的窄接口。
+type ReviewEnqueuer interface {
+	EnqueueManualReview(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error)
 }
 
 // CodeFromDocResultRecord 对应 code_from_doc_results 表的单行。
@@ -102,14 +108,20 @@ func WithResultStore(st ResultStore) ServiceOption {
 	return func(s *Service) { s.resultStore = st }
 }
 
+// WithReviewEnqueuer 注入 review 入队器。
+func WithReviewEnqueuer(e ReviewEnqueuer) ServiceOption {
+	return func(s *Service) { s.reviewEnqueuer = e }
+}
+
 // Service 文档驱动编码核心服务。
 type Service struct {
-	pool        CodeFromDocPoolRunner
-	prClient    PRClient
-	labelClient LabelClient
-	cfgProv     ConfigProvider
-	resultStore ResultStore
-	logger      *slog.Logger
+	pool           CodeFromDocPoolRunner
+	prClient       PRClient
+	labelClient    LabelClient
+	reviewEnqueuer ReviewEnqueuer
+	cfgProv        ConfigProvider
+	resultStore    ResultStore
+	logger         *slog.Logger
 }
 
 // NewService 创建 Service 实例。
@@ -204,6 +216,8 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 	var prURL string
 	if output.BranchName != "" && s.prClient != nil {
 		prNumber, prURL = s.createOrReusePR(ctx, payload, output, branch)
+		result.PRNumber = prNumber
+		result.PRURL = prURL
 	}
 
 	// 9. auto-iterate 标签（仅 Success=true 时）
@@ -216,6 +230,31 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 
 	// 10. 持久化结果
 	s.persistResult(ctx, payload, output, prNumber, prURL)
+
+	// 10b. 主动入队 review：成功默认入队；test_failure 受 review_on_failure 控制。
+	if prNumber > 0 && s.reviewEnqueuer != nil && (output.Success || (output.FailureCategory == FailureCategoryTestFailure && cfg.ReviewOnFailure)) {
+		if s.shouldEnqueueReview(ctx, payload.TaskID, prNumber) {
+			reviewPayload := model.TaskPayload{
+				TaskType:     model.TaskTypeReviewPR,
+				RepoOwner:    payload.RepoOwner,
+				RepoName:     payload.RepoName,
+				RepoFullName: payload.RepoFullName,
+				CloneURL:     payload.CloneURL,
+				PRNumber:     prNumber,
+				PRTitle:      fmt.Sprintf("feat: 自动实现 %s", payload.DocPath),
+				BaseRef:      payload.BaseRef,
+				HeadRef:      branch,
+				HeadSHA:      output.CommitSHA,
+			}
+			if _, enqErr := s.reviewEnqueuer.EnqueueManualReview(ctx, reviewPayload, "code_from_doc:"+payload.TaskID); enqErr != nil {
+				s.logger.WarnContext(ctx, "code_from_doc 完成后入队 review 失败",
+					"task_id", payload.TaskID, "repo", payload.RepoFullName,
+					"pr_number", prNumber, "error", enqErr)
+			} else {
+				s.markReviewEnqueued(ctx, payload)
+			}
+		}
+	}
 
 	// 11. test_failure 场景：仍返回 sentinel error
 	if output.FailureCategory == FailureCategoryTestFailure {
@@ -316,6 +355,32 @@ func (s *Service) persistResult(ctx context.Context, payload model.TaskPayload, 
 	if err := s.resultStore.SaveCodeFromDocResult(ctx, record); err != nil {
 		s.logger.ErrorContext(ctx, "持久化 code_from_doc 结果失败",
 			"task_id", payload.TaskID, "error", err)
+	}
+}
+
+func (s *Service) shouldEnqueueReview(ctx context.Context, taskID string, prNumber int64) bool {
+	if s.resultStore == nil || taskID == "" {
+		return true
+	}
+	record, err := s.resultStore.GetCodeFromDocResultByTaskID(ctx, taskID)
+	if err != nil {
+		s.logger.WarnContext(ctx, "查询 code_from_doc review 入队状态失败，按未入队处理",
+			"task_id", taskID, "error", err)
+		return true
+	}
+	if record == nil {
+		return true
+	}
+	return !(record.ReviewEnqueued && record.PRNumber == prNumber)
+}
+
+func (s *Service) markReviewEnqueued(ctx context.Context, payload model.TaskPayload) {
+	if s.resultStore == nil || payload.TaskID == "" {
+		return
+	}
+	if err := s.resultStore.UpdateCodeFromDocReviewEnqueued(ctx, payload.TaskID); err != nil {
+		s.logger.WarnContext(ctx, "刷新 code_from_doc review_enqueued 失败，忽略",
+			"task_id", payload.TaskID, "repo", payload.RepoFullName, "error", err)
 	}
 }
 

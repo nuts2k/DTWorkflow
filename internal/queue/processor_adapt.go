@@ -10,6 +10,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/code"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
@@ -178,9 +179,9 @@ func adaptTestResult(r *test.TestGenResult) *worker.ExecutionResult {
 
 // handleSkipRetryFailure 处理确定性失败（如 PR/Issue 不处于 open 状态），
 // 标记任务 failed、尽可能保留结构化结果、持久化、发送通知，并返回 SkipRetry 错误。
-func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, logMsg string) error {
+func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.TaskRecord, runErr error, reviewResult *review.ReviewResult, fixResult *fix.FixResult, testResult *test.TestGenResult, codeResult *code.CodeFromDocResult, logMsg string) error {
 	record.Status = model.TaskStatusFailed
-	if record.Payload.TaskType == model.TaskTypeGenTests || record.Payload.TaskType == model.TaskTypeRunE2E || record.Payload.TaskType == model.TaskTypeTriageE2E || record.Payload.TaskType == model.TaskTypeFixReview {
+	if record.Payload.TaskType == model.TaskTypeGenTests || record.Payload.TaskType == model.TaskTypeRunE2E || record.Payload.TaskType == model.TaskTypeTriageE2E || record.Payload.TaskType == model.TaskTypeFixReview || record.Payload.TaskType == model.TaskTypeCodeFromDoc {
 		record.Error = test.SanitizeErrorMessage(runErr.Error())
 	} else {
 		record.Error = runErr.Error()
@@ -198,6 +199,8 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 		if result := adaptTestResult(testResult); result != nil {
 			record.Result = result.Output
 		}
+	case codeResult != nil:
+		record.Result = codeResult.RawOutput
 	}
 	completedAt := time.Now()
 	record.CompletedAt = &completedAt
@@ -217,7 +220,7 @@ func (p *Processor) handleSkipRetryFailure(ctx context.Context, record *model.Ta
 		p.persistIterationFixFailure(ctx, record.Payload, record.Error)
 		p.sendIterationErrorNotification(ctx, record)
 	} else {
-		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, nil, nil)
+		p.sendCompletionNotification(ctx, record, reviewResult, fixResult, testResult, nil, nil, codeResult)
 	}
 	return fmt.Errorf("%s: %w", logMsg, asynq.SkipRetry)
 }

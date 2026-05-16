@@ -515,17 +515,26 @@ CREATE TABLE tasks_new (
     started_at      DATETIME,
     completed_at    DATETIME
 );
-INSERT INTO tasks_new SELECT * FROM tasks;
+INSERT INTO tasks_new (
+    id, asynq_id, task_type, status, priority, payload, repo_full_name,
+    pr_number, result, error, retry_count, max_retry, worker_id,
+    delivery_id, triggered_by, created_at, updated_at, started_at, completed_at
+)
+SELECT
+    id, asynq_id, task_type, status, priority, payload, repo_full_name,
+    pr_number, result, error, retry_count, max_retry, worker_id,
+    delivery_id, triggered_by, created_at, updated_at, started_at, completed_at
+FROM tasks;
 DROP TABLE tasks;
 ALTER TABLE tasks_new RENAME TO tasks;
-CREATE INDEX idx_tasks_status ON tasks(status);
-CREATE INDEX idx_tasks_repo ON tasks(repo_full_name);
-CREATE INDEX idx_tasks_delivery ON tasks(delivery_id);
-CREATE INDEX idx_tasks_type_status ON tasks(task_type, status);
-CREATE INDEX idx_tasks_repo_pr ON tasks(repo_full_name, pr_number);
-CREATE INDEX idx_tasks_created_at ON tasks(created_at);
-CREATE UNIQUE INDEX idx_tasks_delivery_dedup ON tasks(delivery_id, task_type) WHERE delivery_id != '';
-CREATE INDEX idx_tasks_pending_created ON tasks(status, created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_repo ON tasks(repo_full_name);
+CREATE INDEX IF NOT EXISTS idx_tasks_delivery ON tasks(delivery_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_type_status ON tasks(task_type, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_repo_pr ON tasks(repo_full_name, pr_number);
+CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_delivery_dedup ON tasks(delivery_id, task_type) WHERE delivery_id != '';
+CREATE INDEX IF NOT EXISTS idx_tasks_pending_created ON tasks(status, created_at) WHERE status = 'pending';
 
 -- 9b. code_from_doc_results 表
 CREATE TABLE code_from_doc_results (
@@ -548,8 +557,8 @@ CREATE TABLE code_from_doc_results (
     created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX idx_code_results_repo ON code_from_doc_results(repo);
-CREATE INDEX idx_code_results_branch ON code_from_doc_results(branch);`,
+CREATE INDEX IF NOT EXISTS idx_code_results_repo ON code_from_doc_results(repo);
+CREATE INDEX IF NOT EXISTS idx_code_results_branch ON code_from_doc_results(branch);`,
 	},
 }
 

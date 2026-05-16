@@ -2561,3 +2561,78 @@ func TestMigration_V23_PreservesTaskForeignKeys(t *testing.T) {
 		t.Fatalf("v23 后创建 triage_e2e 任务失败: %v", err)
 	}
 }
+
+func TestMigration_V26_PreservesTaskColumnValues(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("打开内存 SQLite 失败: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			t.Fatalf("设置 PRAGMA 失败 (%s): %v", pragma, err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		t.Fatalf("创建 schema_migrations 失败: %v", err)
+	}
+
+	for _, m := range migrations {
+		if m.Version >= 26 {
+			break
+		}
+		if err := executeMigration(db, m); err != nil {
+			t.Fatalf("执行迁移 v%d 失败: %v", m.Version, err)
+		}
+	}
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tasks (
+			id, asynq_id, task_type, status, priority, payload, repo_full_name,
+			result, error, retry_count, max_retry, worker_id, delivery_id,
+			created_at, updated_at, started_at, completed_at, pr_number, triggered_by
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"task-v26", "asynq-v26", string(model.TaskTypeReviewPR), string(model.TaskStatusSucceeded),
+		7, `{"task_type":"review_pr"}`, "owner/repo",
+		"result-text", "error-text", 2, 5, "worker-1", "delivery-v26",
+		"2026-01-02 03:04:05", "2026-01-02 03:05:05", "2026-01-02 03:04:10", "2026-01-02 03:05:00",
+		42, "manual:test"); err != nil {
+		t.Fatalf("插入 v25 tasks 测试数据失败: %v", err)
+	}
+
+	var v26 migration
+	for _, m := range migrations {
+		if m.Version == 26 {
+			v26 = m
+			break
+		}
+	}
+	if v26.Version != 26 {
+		t.Fatal("未找到 v26 迁移")
+	}
+	if err := executeMigration(db, v26); err != nil {
+		t.Fatalf("执行迁移 v26 失败: %v", err)
+	}
+
+	var result, errText, deliveryID, triggeredBy string
+	var prNumber int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT result, error, delivery_id, triggered_by, pr_number
+		FROM tasks WHERE id = ?`, "task-v26").Scan(&result, &errText, &deliveryID, &triggeredBy, &prNumber); err != nil {
+		t.Fatalf("查询 v26 后 tasks 失败: %v", err)
+	}
+	if result != "result-text" || errText != "error-text" || deliveryID != "delivery-v26" || triggeredBy != "manual:test" || prNumber != 42 {
+		t.Fatalf("v26 迁移后列值错位: result=%q error=%q delivery_id=%q triggered_by=%q pr_number=%d",
+			result, errText, deliveryID, triggeredBy, prNumber)
+	}
+}

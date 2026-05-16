@@ -38,12 +38,16 @@ var codeFromDocCmd = &cobra.Command{
 
 		docPath := validation.NormalizeDocPath(codeFromDocDocPath)
 		_ = code.DocSlug(docPath) // 校验 slug 可生成
+		branch := strings.TrimSpace(codeFromDocBranch)
+		if err := validation.ValidateBranchRef(branch); err != nil {
+			return fmt.Errorf("--branch %w", err)
+		}
 
 		body := map[string]string{
 			"doc_path": docPath,
 		}
-		if codeFromDocBranch != "" {
-			body["branch"] = codeFromDocBranch
+		if branch != "" {
+			body["branch"] = branch
 		}
 		if codeFromDocRef != "" {
 			body["ref"] = codeFromDocRef

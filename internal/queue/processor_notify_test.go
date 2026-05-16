@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-
+	"otws19.zicp.vip/kelin/dtworkflow/internal/code"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
@@ -71,7 +71,7 @@ func TestBuildNotificationMessage_FixIssue_SuccessInjectsPRMetadata(t *testing.T
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -114,7 +114,7 @@ func TestBuildNotificationMessage_FixIssue_FailureOmitsPRMetadata(t *testing.T) 
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, fixResult, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -199,7 +199,7 @@ func TestBuildNotificationMessage_Succeeded_HasNotifyTimeAndDuration(t *testing.
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -242,7 +242,7 @@ func TestBuildNotificationMessage_Failed_HasNotifyTimeNoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -280,7 +280,7 @@ func TestBuildNotificationMessage_Retrying_HasNotifyTimeNoDuration(t *testing.T)
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -318,7 +318,7 @@ func TestBuildNotificationMessage_FixIssue_Succeeded_HasDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -356,7 +356,7 @@ func TestBuildNotificationMessage_FixIssue_Failed_NoDuration(t *testing.T) {
 	}
 
 	before := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, nil)
 	after := time.Now().In(shanghaiZone).Format(notifyTimeLayout)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
@@ -447,7 +447,7 @@ func TestBuildNotificationMessage_GenTests_SucceededMetadata(t *testing.T) {
 		},
 	}
 
-	msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -518,7 +518,7 @@ func TestBuildNotificationMessage_GenTests_FailureCategorySeverity(t *testing.T)
 				output.InfoSufficient = true
 			}
 			tr := &testgen.TestGenResult{Output: output}
-			msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil, nil)
+			msg, ok := p.buildNotificationMessage(record, nil, nil, tr, nil, nil, nil)
 			if !ok {
 				t.Fatal("buildNotificationMessage 应返回 true")
 			}
@@ -556,7 +556,7 @@ func TestBuildNotificationMessage_GenTests_Retrying(t *testing.T) {
 			Module:       "svc/user",
 		},
 	}
-	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil)
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("buildNotificationMessage 应返回 true")
 	}
@@ -600,7 +600,7 @@ func TestSendCompletionNotification_GenTests_WarningsAppended(t *testing.T) {
 			Warnings:       []string{"AUTO_TEST_BRANCH_RESET_REMOTE_FAILED"},
 		},
 	}
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil, nil)
 	if len(notifier.messages) != 2 {
 		t.Fatalf("应发出 2 条通知（Done + Warnings），实际 %d", len(notifier.messages))
 	}
@@ -659,7 +659,7 @@ func TestSendCompletionNotification_GenTests_SyncsPRComment(t *testing.T) {
 		},
 	}
 
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil, nil)
 
 	if len(notifier.commentCalls) != 1 {
 		t.Fatalf("应同步 1 条 PR 评论，实际 %d 条", len(notifier.commentCalls))
@@ -711,7 +711,7 @@ func TestSendCompletionNotification_GenTests_RetryingDoesNotSyncPRComment(t *tes
 		},
 	}
 
-	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, tr, nil, nil, nil)
 
 	if len(notifier.commentCalls) != 0 {
 		t.Fatalf("retrying 阶段不应同步 PR 评论，实际 %d 条", len(notifier.commentCalls))
@@ -740,7 +740,7 @@ func TestSendCompletionNotification_ReviewStillWorksWithNilTestResult(t *testing
 			PRNumber:     1,
 		},
 	}
-	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil, nil)
+	p.sendCompletionNotification(context.Background(), record, nil, nil, nil, nil, nil, nil)
 	if len(notifier.messages) != 1 {
 		t.Fatalf("review 路径应发送 1 条通知，实际 %d", len(notifier.messages))
 	}
@@ -749,6 +749,120 @@ func TestSendCompletionNotification_ReviewStillWorksWithNilTestResult(t *testing
 	}
 }
 
-// TestProcessor_TriageE2E_SuccessWithModules 验证 triage_e2e 成功且输出包含模块时：
-// 1. 任务标记为 succeeded
-// 2. 链式入队 run_e2e 任务（每个模块一个）
+func TestBuildStartMessage_CodeFromDoc(t *testing.T) {
+	p := &Processor{}
+	msg, ok := p.buildStartMessage(model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+	})
+	if !ok {
+		t.Fatal("buildStartMessage 应返回 true")
+	}
+	if msg.EventType != notify.EventCodeFromDocStarted {
+		t.Errorf("EventType = %q, want %q", msg.EventType, notify.EventCodeFromDocStarted)
+	}
+	if msg.Target.IsPR {
+		t.Fatal("code_from_doc started 应为仓库级通知")
+	}
+	if msg.Metadata[notify.MetaKeyDocPath] != "docs/spec.md" {
+		t.Errorf("doc_path = %q", msg.Metadata[notify.MetaKeyDocPath])
+	}
+	if msg.Metadata[notify.MetaKeyBranchName] != "auto-code/spec" {
+		t.Errorf("branch_name = %q", msg.Metadata[notify.MetaKeyBranchName])
+	}
+}
+
+func TestBuildNotificationMessage_CodeFromDocDone(t *testing.T) {
+	p := &Processor{}
+	startedAt := time.Now()
+	completedAt := startedAt.Add(2 * time.Minute)
+	record := &model.TaskRecord{
+		ID:          "task-code-1",
+		TaskType:    model.TaskTypeCodeFromDoc,
+		Status:      model.TaskStatusSucceeded,
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeCodeFromDoc,
+			RepoOwner:    "owner",
+			RepoName:     "repo",
+			RepoFullName: "owner/repo",
+			DocPath:      "docs/spec.md",
+			DocSlug:      "spec",
+			HeadRef:      "feature/spec",
+		},
+	}
+	result := &code.CodeFromDocResult{
+		PRNumber: 12,
+		PRURL:    "https://gitea.example.com/owner/repo/pulls/12",
+		Output: &code.CodeFromDocOutput{
+			Success:         true,
+			BranchName:      "feature/spec",
+			FailureCategory: code.FailureCategoryNone,
+			ModifiedFiles: []code.ModifiedFile{
+				{Path: "a.go", Action: "created"},
+				{Path: "b.go", Action: "modified"},
+			},
+			TestResults:    code.TestRunResults{Passed: 5, Failed: 0},
+			Implementation: "实现了文档要求",
+		},
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, result)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+	if msg.EventType != notify.EventCodeFromDocDone {
+		t.Errorf("EventType = %q, want %q", msg.EventType, notify.EventCodeFromDocDone)
+	}
+	if msg.Metadata[notify.MetaKeyPRNumber] != "12" {
+		t.Errorf("pr_number = %q", msg.Metadata[notify.MetaKeyPRNumber])
+	}
+	if msg.Metadata[notify.MetaKeyFilesCreated] != "1" || msg.Metadata[notify.MetaKeyFilesModified] != "1" {
+		t.Errorf("文件计数 = created:%q modified:%q", msg.Metadata[notify.MetaKeyFilesCreated], msg.Metadata[notify.MetaKeyFilesModified])
+	}
+	if msg.Metadata[notify.MetaKeyTestPassed] != "5" || msg.Metadata[notify.MetaKeyTestFailed] != "0" {
+		t.Errorf("测试计数 = passed:%q failed:%q", msg.Metadata[notify.MetaKeyTestPassed], msg.Metadata[notify.MetaKeyTestFailed])
+	}
+}
+
+func TestBuildNotificationMessage_CodeFromDocFailedSeverity(t *testing.T) {
+	p := &Processor{}
+	record := &model.TaskRecord{
+		ID:       "task-code-2",
+		TaskType: model.TaskTypeCodeFromDoc,
+		Status:   model.TaskStatusFailed,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeCodeFromDoc,
+			RepoOwner:    "owner",
+			RepoName:     "repo",
+			RepoFullName: "owner/repo",
+			DocPath:      "docs/spec.md",
+			DocSlug:      "spec",
+		},
+	}
+	result := &code.CodeFromDocResult{
+		Output: &code.CodeFromDocOutput{
+			Success:         false,
+			FailureCategory: code.FailureCategoryInfoInsufficient,
+		},
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, result)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+	if msg.EventType != notify.EventCodeFromDocFailed {
+		t.Errorf("EventType = %q, want %q", msg.EventType, notify.EventCodeFromDocFailed)
+	}
+	if msg.Severity != notify.SeverityInfo {
+		t.Errorf("Severity = %q, want %q", msg.Severity, notify.SeverityInfo)
+	}
+	if msg.Metadata[notify.MetaKeyFailureCategory] != string(code.FailureCategoryInfoInsufficient) {
+		t.Errorf("failure_category = %q", msg.Metadata[notify.MetaKeyFailureCategory])
+	}
+}
