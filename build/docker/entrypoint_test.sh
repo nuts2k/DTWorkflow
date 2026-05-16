@@ -14,6 +14,7 @@ mkdir -p "${TMPDIR}/fakebin" "${TMPDIR}/home"
 # ------------------------------------------------------------
 # 可参数化的 git mock：通过环境变量控制各子命令行为
 #   MOCK_AUTO_TEST_FETCH_RESULT  : auto-test/* 分支 fetch 结果，success|fail，默认 fail（分支不存在）
+#   MOCK_AUTO_CODE_FETCH_RESULT  : auto-code/* 分支 fetch 结果，success|fail，默认 fail（分支不存在）
 #   MOCK_MERGE_BASE_RESULT       : merge-base --is-ancestor 结果，ancestor|not-ancestor，默认 ancestor
 #   MOCK_LOG_AUTHORS             : log base..branch --pretty=%ae 输出（换行分隔作者），默认空（仅 bot）
 #   MOCK_GIT_PUSH_RESULT         : push 结果，success|fail，默认 success
@@ -37,6 +38,12 @@ case "${1:-}" in
           exit 1
         fi
         ;;
+      auto-code/*:refs/remotes/origin/auto-code/*)
+        if [ "${MOCK_AUTO_CODE_FETCH_RESULT:-fail}" = "fail" ]; then
+          echo "fatal: couldn't find remote ref ${ref}" >&2
+          exit 1
+        fi
+        ;;
     esac
     echo "stdout:fetch"
     echo "stderr:fetch" >&2
@@ -55,6 +62,7 @@ case "${1:-}" in
 	        fi
 	        echo "branchsha"
 	        ;;
+	      origin/auto-code/*) echo "branchsha" ;;
 	      origin/*) echo "basesha" ;;
 	      HEAD)     echo "${MOCK_FIX_REVIEW_HEAD_SHA:-fixedsha}" ;;
 	      *)        echo "abc123" ;;
@@ -554,6 +562,38 @@ run_code_from_doc_case() {
   fi
 }
 
+run_code_from_doc_resume_existing_branch_case() {
+  local repo_dir="${TMPDIR}/repo-code-from-doc-resume-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  local stdout_file="${TMPDIR}/code-from-doc-resume.out"
+  local stderr_file="${TMPDIR}/code-from-doc-resume.err"
+
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  MOCK_AUTO_CODE_FETCH_RESULT="success" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="code_from_doc" \
+  BASE_REF="main" \
+  DOC_SLUG="payment-spec-a1b2c3d4" \
+  bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}" || true
+
+  local log
+  log="$(cat "${TMPDIR}/git.log")"
+
+  assert_contains "code_from_doc — 已存在 auto-code 分支时先 fetch 目标分支" \
+    "${log}" "git fetch origin auto-code/payment-spec-a1b2c3d4:refs/remotes/origin/auto-code/payment-spec-a1b2c3d4"
+  assert_contains "code_from_doc — 已存在 auto-code 分支时复用远端分支" \
+    "${log}" "git checkout -B auto-code/payment-spec-a1b2c3d4 origin/auto-code/payment-spec-a1b2c3d4"
+  assert_not_contains "code_from_doc — 复用目标分支时不从 base 重建本地分支" \
+    "${log}" "git checkout -B auto-code/payment-spec-a1b2c3d4 origin/main"
+  assert_contains "code_from_doc — 复用分支后仍受控 push 到目标分支" \
+    "${log}" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/auto-code/payment-spec-a1b2c3d4"
+}
+
 # ==================== 运行 M4.1 既有用例 ====================
 
 echo "=== Entrypoint Behavior Tests ==="
@@ -572,6 +612,7 @@ run_fix_review_noop_case
 run_fix_review_missing_head_case
 run_fix_review_invalid_head_case
 run_code_from_doc_case
+run_code_from_doc_resume_existing_branch_case
 
 # ==================== M4.2 新增：gen_tests 断点续传用例 ====================
 

@@ -21,6 +21,8 @@ var (
 	codeFromDocTimeout time.Duration
 )
 
+const defaultCodeFromDocWaitTimeout = 60 * time.Minute
+
 var codeFromDocCmd = &cobra.Command{
 	Use:   "code-from-doc",
 	Short: "触发文档驱动自动编码任务",
@@ -49,8 +51,12 @@ var codeFromDocCmd = &cobra.Command{
 		if branch != "" {
 			body["branch"] = branch
 		}
-		if codeFromDocRef != "" {
-			body["ref"] = codeFromDocRef
+		ref := strings.TrimSpace(codeFromDocRef)
+		if err := validation.ValidateBaseRef(ref); err != nil {
+			return fmt.Errorf("--ref %w", err)
+		}
+		if ref != "" {
+			body["ref"] = ref
 		}
 
 		var result struct {
@@ -73,6 +79,7 @@ var codeFromDocCmd = &cobra.Command{
 		}
 
 		opts := dtw.DefaultWaitOptions()
+		opts.Timeout = defaultCodeFromDocWaitTimeout
 		if codeFromDocTimeout > 0 {
 			opts.Timeout = codeFromDocTimeout
 		}
@@ -107,7 +114,7 @@ func init() {
 	codeFromDocCmd.Flags().StringVar(&codeFromDocBranch, "branch", "", "目标分支（省略则从 base ref 派生 auto-code/{slug}）")
 	codeFromDocCmd.Flags().StringVar(&codeFromDocRef, "ref", "", "基础 ref（可选，留空用仓库默认分支）")
 	codeFromDocCmd.Flags().BoolVar(&codeFromDocNoWait, "no-wait", false, "提交后不等待结果")
-	codeFromDocCmd.Flags().DurationVar(&codeFromDocTimeout, "timeout", 0, "等待超时时间（默认使用 dtw.DefaultWaitOptions，30m）")
+	codeFromDocCmd.Flags().DurationVar(&codeFromDocTimeout, "timeout", 0, "等待超时时间（默认 60m）")
 
 	_ = codeFromDocCmd.MarkFlagRequired("repo")
 	_ = codeFromDocCmd.MarkFlagRequired("doc")

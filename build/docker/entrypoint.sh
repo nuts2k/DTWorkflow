@@ -432,10 +432,17 @@ HOOK
                 exit 2
             fi
             CODE_TARGET_BRANCH="auto-code/${DOC_SLUG:-unnamed}"
-            log "code_from_doc: 从 ${BASE_REF} 派生 ${CODE_TARGET_BRANCH}"
-            git fetch origin "${BASE_REF}" >&2 2>&1
-            git checkout -B "${CODE_TARGET_BRANCH}" "origin/${BASE_REF}" >&2 2>&1
-            CODE_BASE_REV="origin/${BASE_REF}"
+            log "code_from_doc: 准备目标分支 ${CODE_TARGET_BRANCH}（base=${BASE_REF}）"
+            if git fetch origin "${CODE_TARGET_BRANCH}:refs/remotes/origin/${CODE_TARGET_BRANCH}" >&2 2>&1; then
+                log "code_from_doc: 复用已存在目标分支 ${CODE_TARGET_BRANCH}"
+                git checkout -B "${CODE_TARGET_BRANCH}" "origin/${CODE_TARGET_BRANCH}" >&2 2>&1
+                CODE_BASE_REV="origin/${CODE_TARGET_BRANCH}"
+            else
+                log "code_from_doc: 未发现目标分支，从 ${BASE_REF} 派生 ${CODE_TARGET_BRANCH}"
+                git fetch origin "${BASE_REF}" >&2 2>&1
+                git checkout -B "${CODE_TARGET_BRANCH}" "origin/${BASE_REF}" >&2 2>&1
+                CODE_BASE_REV="origin/${BASE_REF}"
+            fi
         fi
 
         capture_trusted_code_from_doc_git_state "${CODE_BASE_REV}"
