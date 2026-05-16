@@ -67,14 +67,11 @@ func ParseCodeFromDocOutput(raw string) (*CodeFromDocOutput, error) {
 	// 尝试直接解析：只有包含 CodeFromDocOutput 核心字段（success 为 true，或
 	// failure_category 非空）时才认为是有效的直接解析结果；否则继续尝试双层解析。
 	var output CodeFromDocOutput
-	if err := json.Unmarshal([]byte(raw), &output); err == nil {
-		if output.Success || output.FailureCategory != "" || output.InfoSufficient {
-			normalizeFailureCategory(&output)
-			if err := validateOutput(&output); err != nil {
-				return &output, err
-			}
-			return &output, nil
+	if ok, err := parseOutputCandidate(raw, &output); ok || err != nil {
+		if err != nil {
+			return &output, err
 		}
+		return &output, nil
 	}
 
 	// 双层 JSON：尝试解析外层 {"result": "..."} 或 {"content": "..."}
@@ -91,24 +88,63 @@ func ParseCodeFromDocOutput(raw string) (*CodeFromDocOutput, error) {
 		// inner 可能是字符串（转义 JSON）或直接对象
 		var innerStr string
 		if err := json.Unmarshal(inner, &innerStr); err == nil {
-			if err2 := json.Unmarshal([]byte(innerStr), &output); err2 == nil {
-				normalizeFailureCategory(&output)
-				if err3 := validateOutput(&output); err3 != nil {
-					return &output, err3
+			if ok, err2 := parseOutputCandidate(innerStr, &output); ok || err2 != nil {
+				if err2 != nil {
+					return &output, err2
 				}
 				return &output, nil
 			}
 		}
-		if err := json.Unmarshal(inner, &output); err == nil {
-			normalizeFailureCategory(&output)
-			if err2 := validateOutput(&output); err2 != nil {
-				return &output, err2
+		if ok, err := parseOutputCandidate(string(inner), &output); ok || err != nil {
+			if err != nil {
+				return &output, err
 			}
 			return &output, nil
 		}
 	}
 
 	return nil, fmt.Errorf("%w: 无法从输出中提取有效 JSON", ErrCodeFromDocParseFailure)
+}
+
+func parseOutputCandidate(raw string, output *CodeFromDocOutput) (bool, error) {
+	candidate := stripJSONFence(strings.TrimSpace(raw))
+	if err := json.Unmarshal([]byte(candidate), output); err != nil {
+		return false, nil
+	}
+	if !looksLikeCodeFromDocOutput(output) {
+		return false, nil
+	}
+	normalizeFailureCategory(output)
+	if err := validateOutput(output); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func stripJSONFence(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "```") {
+		return raw
+	}
+	lines := strings.Split(raw, "\n")
+	if len(lines) < 2 {
+		return raw
+	}
+	first := strings.TrimSpace(lines[0])
+	if first != "```" && !strings.EqualFold(first, "```json") {
+		return raw
+	}
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last != "```" {
+		return raw
+	}
+	return strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+}
+
+func looksLikeCodeFromDocOutput(o *CodeFromDocOutput) bool {
+	return o.Success || o.InfoSufficient || o.FailureCategory != "" ||
+		o.BranchName != "" || o.CommitSHA != "" || len(o.ModifiedFiles) > 0 ||
+		o.Analysis != "" || o.Implementation != "" || o.FailureReason != ""
 }
 
 // normalizeFailureCategory 将空 failure_category 归一化为 "none"，
@@ -120,6 +156,11 @@ func normalizeFailureCategory(o *CodeFromDocOutput) {
 }
 
 func validateOutput(o *CodeFromDocOutput) error {
+	switch o.FailureCategory {
+	case FailureCategoryNone, FailureCategoryInfoInsufficient, FailureCategoryTestFailure, FailureCategoryInfrastructure:
+	default:
+		return fmt.Errorf("%w: failure_category 非法: %s", ErrCodeFromDocParseFailure, o.FailureCategory)
+	}
 	if o.Success {
 		if o.BranchName == "" || o.CommitSHA == "" {
 			return fmt.Errorf("%w: success=true 但 branch_name 或 commit_sha 为空", ErrCodeFromDocParseFailure)
@@ -127,6 +168,10 @@ func validateOutput(o *CodeFromDocOutput) error {
 		if o.FailureCategory != FailureCategoryNone {
 			return fmt.Errorf("%w: success=true 但 failure_category 非 none", ErrCodeFromDocParseFailure)
 		}
+		return nil
+	}
+	if o.FailureCategory == FailureCategoryNone {
+		return fmt.Errorf("%w: success=false 但 failure_category 为 none", ErrCodeFromDocParseFailure)
 	}
 	return nil
 }

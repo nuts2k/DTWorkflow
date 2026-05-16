@@ -3767,6 +3767,42 @@ func TestEnqueueCodeFromDoc_SameDocReturnsExisting(t *testing.T) {
 	}
 }
 
+func TestEnqueueCodeFromDoc_TerminalSameDocCreatesRerun(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-code"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.example.com/owner/repo.git",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+		HeadRef:      "feature/spec",
+	}
+	baseDeliveryID := buildCodeFromDocDeliveryID(payload.RepoFullName, payload.HeadRef, payload.DocPath)
+	s.byDeliveryID[baseDeliveryID+":"+string(model.TaskTypeCodeFromDoc)] = &model.TaskRecord{
+		ID:         "old-failed-code-task",
+		TaskType:   model.TaskTypeCodeFromDoc,
+		Status:     model.TaskStatusFailed,
+		DeliveryID: baseDeliveryID,
+	}
+
+	got, err := h.EnqueueCodeFromDoc(context.Background(), payload, "manual:test")
+	if err != nil {
+		t.Fatalf("EnqueueCodeFromDoc 返回错误: %v", err)
+	}
+	if got == "" || got == "old-failed-code-task" {
+		t.Fatalf("终态历史不应复用旧任务，got=%q", got)
+	}
+	if s.createCalls != 1 || len(mc.payloads) != 1 {
+		t.Fatalf("应创建并入队 1 个新任务，createCalls=%d payloads=%d", s.createCalls, len(mc.payloads))
+	}
+	if !strings.HasPrefix(mc.payloads[0].DeliveryID, baseDeliveryID+":rerun:") {
+		t.Fatalf("新 delivery_id = %q, want prefix %q", mc.payloads[0].DeliveryID, baseDeliveryID+":rerun:")
+	}
+}
+
 func TestEnqueueCodeFromDoc_DifferentDocSameBranchCancelsOld(t *testing.T) {
 	s := newMockStore()
 	canceller := &mockTaskCanceller{}

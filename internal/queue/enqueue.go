@@ -1297,6 +1297,19 @@ func buildCodeFromDocDeliveryID(repoFullName, branch, docPath string) string {
 	return fmt.Sprintf("manual:code_from_doc:%s:%s:%x", repoFullName, branch, sum[:8])
 }
 
+func buildCodeFromDocRerunDeliveryID(base string) string {
+	return fmt.Sprintf("%s:rerun:%d:%s", base, time.Now().UnixMilli(), uuid.New().String()[:8])
+}
+
+func isActiveTaskStatus(status model.TaskStatus) bool {
+	switch status {
+	case model.TaskStatusPending, model.TaskStatusQueued, model.TaskStatusRunning, model.TaskStatusRetrying:
+		return true
+	default:
+		return false
+	}
+}
+
 // EnqueueCodeFromDoc 手动触发文档驱动编码任务入队。
 // Cancel-and-Replace 按 (repo, branch) 聚合——同一分支同时只能有一个 code_from_doc 任务。
 func (h *EnqueueHandler) EnqueueCodeFromDoc(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
@@ -1320,21 +1333,26 @@ func (h *EnqueueHandler) EnqueueCodeFromDoc(ctx context.Context, payload model.T
 		branch = "auto-code/" + payload.DocSlug
 	}
 	payload.Module = branch
-	payload.DeliveryID = buildCodeFromDocDeliveryID(payload.RepoFullName, branch, payload.DocPath)
+	baseDeliveryID := buildCodeFromDocDeliveryID(payload.RepoFullName, branch, payload.DocPath)
+	payload.DeliveryID = baseDeliveryID
 
 	existing, err := h.store.FindByDeliveryID(ctx, payload.DeliveryID, model.TaskTypeCodeFromDoc)
 	if err != nil {
 		return "", fmt.Errorf("code_from_doc 幂等检查失败: %w", err)
 	}
 	if existing != nil {
-		h.logger.InfoContext(ctx, "code_from_doc 任务已存在,跳过",
-			"delivery_id", payload.DeliveryID,
-			"task_id", existing.ID,
-			"status", existing.Status,
-			"repo", payload.RepoFullName,
-			"branch", branch,
-			"doc_path", payload.DocPath)
-		return existing.ID, nil
+		if !isActiveTaskStatus(existing.Status) {
+			payload.DeliveryID = buildCodeFromDocRerunDeliveryID(baseDeliveryID)
+		} else {
+			h.logger.InfoContext(ctx, "code_from_doc 任务已存在,跳过",
+				"delivery_id", payload.DeliveryID,
+				"task_id", existing.ID,
+				"status", existing.Status,
+				"repo", payload.RepoFullName,
+				"branch", branch,
+				"doc_path", payload.DocPath)
+			return existing.ID, nil
+		}
 	}
 
 	// Cancel-and-Replace：按 (repo, branch) 聚合

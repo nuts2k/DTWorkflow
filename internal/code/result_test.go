@@ -62,6 +62,25 @@ func TestParseCodeFromDocOutput_DoubleJSON(t *testing.T) {
 	}
 }
 
+func TestParseCodeFromDocOutput_DoubleJSONWithFence(t *testing.T) {
+	raw := "{\"result\":\"```json\\n{\\\"success\\\":true,\\\"info_sufficient\\\":true,\\\"branch_name\\\":\\\"auto-code/x\\\",\\\"commit_sha\\\":\\\"def456\\\",\\\"modified_files\\\":[],\\\"test_results\\\":{\\\"passed\\\":1,\\\"failed\\\":0,\\\"skipped\\\":0,\\\"all_passed\\\":true},\\\"analysis\\\":\\\"\\\",\\\"implementation\\\":\\\"\\\",\\\"failure_category\\\":\\\"none\\\"}\\n```\"}"
+	output, err := ParseCodeFromDocOutput(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.BranchName != "auto-code/x" {
+		t.Errorf("expected branch auto-code/x, got %s", output.BranchName)
+	}
+}
+
+func TestParseCodeFromDocOutput_FalseWithoutFailureCategory(t *testing.T) {
+	raw := `{"success":false,"info_sufficient":true,"branch_name":"","commit_sha":"","modified_files":[],"test_results":{"passed":0,"failed":0,"skipped":0,"all_passed":false},"analysis":"","implementation":"","failure_category":""}`
+	_, err := ParseCodeFromDocOutput(raw)
+	if !errors.Is(err, ErrCodeFromDocParseFailure) {
+		t.Fatalf("expected ErrCodeFromDocParseFailure, got %v", err)
+	}
+}
+
 func TestSanitizeCodeFromDocOutput(t *testing.T) {
 	o := &CodeFromDocOutput{
 		Analysis:       string(make([]rune, 600)),

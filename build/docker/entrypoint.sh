@@ -323,7 +323,6 @@ HOOK
         # M6.2: 文档驱动编码模式（写权限）
         enable_write_git
         setup_build_cache
-        append_autofix_override "code_from_doc"
 
         # 分支策略
         if [ -n "${CODE_BRANCH:-}" ]; then
@@ -342,6 +341,8 @@ HOOK
             git fetch origin "${BASE_REF}" >&2 2>&1
             git checkout -B "${CODE_TARGET_BRANCH}" "origin/${BASE_REF}" >&2 2>&1
         fi
+
+        append_autofix_override "code_from_doc"
 
         # 安全加固：仅允许推送到本次任务的目标分支
         mkdir -p .git/hooks
