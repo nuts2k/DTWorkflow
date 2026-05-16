@@ -610,6 +610,15 @@ func (h *EnqueueHandler) sendIterationTerminalNotification(ctx context.Context, 
 	if eventType == notify.EventIterationExhausted {
 		severity = notify.SeverityWarning
 	}
+	metadata := map[string]string{
+		notify.MetaKeyIterationRound:     fmt.Sprintf("%d", session.CurrentRound),
+		notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", session.MaxRounds),
+		notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", session.ID),
+		notify.MetaKeyNotifyTime:         formatNotifyTime(),
+	}
+	if payload.PRTitle != "" {
+		metadata[notify.MetaKeyPRTitle] = payload.PRTitle
+	}
 	msg := notify.Message{
 		EventType: eventType,
 		Severity:  severity,
@@ -619,13 +628,9 @@ func (h *EnqueueHandler) sendIterationTerminalNotification(ctx context.Context, 
 			Number: payload.PRNumber,
 			IsPR:   true,
 		},
-		Title: title,
-		Body:  body,
-		Metadata: map[string]string{
-			notify.MetaKeyIterationRound:     fmt.Sprintf("%d", session.CurrentRound),
-			notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", session.MaxRounds),
-			notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", session.ID),
-		},
+		Title:    title,
+		Body:     body,
+		Metadata: metadata,
 	}
 	if err := h.iterateNotifier.Send(ctx, msg); err != nil {
 		h.logger.WarnContext(ctx, "发送迭代终态通知失败",
@@ -641,6 +646,15 @@ func (h *EnqueueHandler) sendIterationProgressNotification(ctx context.Context, 
 	title := fmt.Sprintf("PR #%d 迭代修复 Round %d 启动", payload.PRNumber, roundNumber)
 	body := fmt.Sprintf("发现 %d 个问题，已入队 fix_review 自动修复（%d/%d 轮）",
 		issueCount, roundNumber, session.MaxRounds)
+	metadata := map[string]string{
+		notify.MetaKeyIterationRound:     fmt.Sprintf("%d", roundNumber),
+		notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", session.MaxRounds),
+		notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", session.ID),
+		notify.MetaKeyNotifyTime:         formatNotifyTime(),
+	}
+	if payload.PRTitle != "" {
+		metadata[notify.MetaKeyPRTitle] = payload.PRTitle
+	}
 	msg := notify.Message{
 		EventType: notify.EventIterationProgress,
 		Severity:  notify.SeverityInfo,
@@ -650,13 +664,9 @@ func (h *EnqueueHandler) sendIterationProgressNotification(ctx context.Context, 
 			Number: payload.PRNumber,
 			IsPR:   true,
 		},
-		Title: title,
-		Body:  body,
-		Metadata: map[string]string{
-			notify.MetaKeyIterationRound:     fmt.Sprintf("%d", roundNumber),
-			notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", session.MaxRounds),
-			notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", session.ID),
-		},
+		Title:    title,
+		Body:     body,
+		Metadata: metadata,
 	}
 	if err := h.iterateNotifier.Send(ctx, msg); err != nil {
 		h.logger.WarnContext(ctx, "发送迭代进度通知失败",

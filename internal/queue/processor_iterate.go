@@ -280,19 +280,23 @@ func (p *Processor) sendIterationErrorNotification(ctx context.Context, record *
 	if record.Error != "" {
 		body += fmt.Sprintf("\n错误：%s", record.Error)
 	}
+	metadata := map[string]string{
+		notify.MetaKeyIterationRound:     fmt.Sprintf("%d", payload.RoundNumber),
+		notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", payload.IterationMaxRounds),
+		notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", payload.SessionID),
+		notify.MetaKeyTaskStatus:         string(record.Status),
+		notify.MetaKeyNotifyTime:         formatNotifyTime(),
+	}
+	if payload.PRTitle != "" {
+		metadata[notify.MetaKeyPRTitle] = payload.PRTitle
+	}
 	msg := notify.Message{
 		EventType: notify.EventIterationError,
 		Severity:  notify.SeverityWarning,
 		Target:    buildPRTarget(payload),
 		Title:     fmt.Sprintf("PR #%d 迭代修复异常", payload.PRNumber),
 		Body:      body,
-		Metadata: map[string]string{
-			notify.MetaKeyIterationRound:     fmt.Sprintf("%d", payload.RoundNumber),
-			notify.MetaKeyIterationMaxRounds: fmt.Sprintf("%d", payload.IterationMaxRounds),
-			notify.MetaKeyIterationSessionID: fmt.Sprintf("%d", payload.SessionID),
-			notify.MetaKeyTaskStatus:         string(record.Status),
-			notify.MetaKeyNotifyTime:         formatNotifyTime(),
-		},
+		Metadata:  metadata,
 	}
 	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer notifyCancel()
