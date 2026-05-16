@@ -373,6 +373,7 @@ func TestProcessTask_FixReviewInfrastructureFailureNotifies(t *testing.T) {
 		RepoName:           "repo",
 		RepoFullName:       "org/repo",
 		PRNumber:           42,
+		PRTitle:            "Fix infra failure",
 		SessionID:          9,
 		RoundNumber:        1,
 		IterationMaxRounds: 3,
@@ -420,6 +421,7 @@ func TestProcessTask_FixReviewInfrastructureFailureNotifies(t *testing.T) {
 	if msg.Metadata[notify.MetaKeyIterationSessionID] != "9" {
 		t.Fatalf("iteration_session_id = %q, want 9", msg.Metadata[notify.MetaKeyIterationSessionID])
 	}
+	assertIterationNotificationMetadata(t, msg, "Fix infra failure")
 	if s.iterationSession.Status != "idle" {
 		t.Fatalf("session status = %q, want idle", s.iterationSession.Status)
 	}
@@ -621,4 +623,3 @@ func TestProcessTask_FixReviewRetryableExitCodeDoesNotSkipRetry(t *testing.T) {
 		t.Fatalf("record.Result = %q, want raw output", record.Result)
 	}
 }
-

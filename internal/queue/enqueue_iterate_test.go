@@ -16,6 +16,23 @@ import (
 	"otws19.zicp.vip/kelin/dtworkflow/internal/webhook"
 )
 
+func assertIterationNotificationMetadata(t *testing.T, msg notify.Message, wantPRTitle string) {
+	t.Helper()
+	if msg.Metadata == nil {
+		t.Fatal("notification metadata 不能为空")
+	}
+	if msg.Metadata[notify.MetaKeyPRTitle] != wantPRTitle {
+		t.Fatalf("pr_title = %q, want %q", msg.Metadata[notify.MetaKeyPRTitle], wantPRTitle)
+	}
+	notifyTime := msg.Metadata[notify.MetaKeyNotifyTime]
+	if notifyTime == "" {
+		t.Fatal("notify_time 不能为空")
+	}
+	if _, err := time.ParseInLocation("2006-01-02 15:04:05", notifyTime, shanghaiZone); err != nil {
+		t.Fatalf("notify_time = %q, want Asia/Shanghai 时间格式: %v", notifyTime, err)
+	}
+}
+
 func TestHandlePullRequest_UserPushDuringIterationCancelsFixReview(t *testing.T) {
 	s := newMockStore()
 	canceller := &mockTaskCanceller{}
@@ -228,6 +245,7 @@ func TestHandlePullRequest_EmptyBotLoginTreatsPushAsUserPush(t *testing.T) {
 func TestAfterReviewCompleted_EnqueuesFixReviewWithIterationConfig(t *testing.T) {
 	s := newMockStore()
 	mc := &mockEnqueuer{enqueuedID: "asynq-fix-review"}
+	notifier := &stubNotifier{}
 	h := NewEnqueueHandler(mc, nil, s, slog.Default(),
 		WithIterateStore(s),
 		WithIterateConfig(&mockIterateConfigProvider{cfg: config.IterateConfig{
@@ -238,6 +256,7 @@ func TestAfterReviewCompleted_EnqueuesFixReviewWithIterationConfig(t *testing.T)
 			FixSeverityThreshold: "error",
 			ReportPath:           "custom/history",
 		}}),
+		WithIterateNotifier(notifier),
 	)
 	s.iterationSession = &store.IterationSessionRecord{
 		ID:           11,
@@ -311,6 +330,10 @@ func TestAfterReviewCompleted_EnqueuesFixReviewWithIterationConfig(t *testing.T)
 	if s.latestIterationRound.FixTaskID != fixRecord.ID {
 		t.Fatalf("round FixTaskID = %q, want %q", s.latestIterationRound.FixTaskID, fixRecord.ID)
 	}
+	if len(notifier.messages) != 1 || notifier.messages[0].EventType != notify.EventIterationProgress {
+		t.Fatalf("progress notifications = %+v, want iteration.progress", notifier.messages)
+	}
+	assertIterationNotificationMetadata(t, notifier.messages[0], "Fix config")
 }
 
 func TestAfterReviewCompleted_WaitsForPreviousFixReviewPersisted(t *testing.T) {
@@ -754,6 +777,7 @@ func TestAfterIterationApproved_RepairsSucceededFixReviewRoundBeforeComplete(t *
 		RepoName:     "repo",
 		RepoFullName: "org/repo",
 		PRNumber:     51,
+		PRTitle:      "Fix approval",
 	}
 
 	h.AfterIterationApproved(context.Background(), payload)
@@ -773,6 +797,7 @@ func TestAfterIterationApproved_RepairsSucceededFixReviewRoundBeforeComplete(t *
 	if len(notifier.messages) != 1 || notifier.messages[0].EventType != notify.EventIterationPassed {
 		t.Fatalf("terminal notifications = %+v, want iteration.passed", notifier.messages)
 	}
+	assertIterationNotificationMetadata(t, notifier.messages[0], "Fix approval")
 	if labels.removeCalls != 1 || labels.addCalls != 1 {
 		t.Fatalf("label calls remove=%d add=%d, want 1/1", labels.removeCalls, labels.addCalls)
 	}
@@ -835,4 +860,3 @@ func TestAfterIterationApproved_DoesNotCompleteBeforeFixReviewPersisted(t *testi
 		t.Fatalf("不应更新终态标签，remove=%d add=%d", labels.removeCalls, labels.addCalls)
 	}
 }
-
