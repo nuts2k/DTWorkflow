@@ -830,6 +830,47 @@ func TestBuildNotificationMessage_CodeFromDocDone(t *testing.T) {
 	}
 }
 
+func TestBuildNotificationMessage_CodeFromDocTestFailureUsesFailedEvent(t *testing.T) {
+	p := &Processor{}
+	record := &model.TaskRecord{
+		ID:       "task-code-test-failure",
+		TaskType: model.TaskTypeCodeFromDoc,
+		Status:   model.TaskStatusSucceeded,
+		Payload: model.TaskPayload{
+			TaskType:     model.TaskTypeCodeFromDoc,
+			RepoOwner:    "owner",
+			RepoName:     "repo",
+			RepoFullName: "owner/repo",
+			DocPath:      "docs/spec.md",
+			DocSlug:      "spec",
+		},
+	}
+	result := &code.CodeFromDocResult{
+		PRNumber: 12,
+		PRURL:    "https://gitea.example.com/owner/repo/pulls/12",
+		Output: &code.CodeFromDocOutput{
+			Success:         false,
+			BranchName:      "auto-code/spec",
+			FailureCategory: code.FailureCategoryTestFailure,
+			TestResults:     code.TestRunResults{Passed: 3, Failed: 1},
+		},
+	}
+
+	msg, ok := p.buildNotificationMessage(record, nil, nil, nil, nil, nil, result)
+	if !ok {
+		t.Fatal("buildNotificationMessage 应返回 true")
+	}
+	if msg.EventType != notify.EventCodeFromDocFailed {
+		t.Fatalf("EventType = %q, want %q", msg.EventType, notify.EventCodeFromDocFailed)
+	}
+	if msg.Severity != notify.SeverityWarning {
+		t.Fatalf("Severity = %q, want %q", msg.Severity, notify.SeverityWarning)
+	}
+	if msg.Metadata[notify.MetaKeyFailureCategory] != string(code.FailureCategoryTestFailure) {
+		t.Fatalf("failure_category = %q", msg.Metadata[notify.MetaKeyFailureCategory])
+	}
+}
+
 func TestBuildNotificationMessage_CodeFromDocFailedSeverity(t *testing.T) {
 	p := &Processor{}
 	record := &model.TaskRecord{

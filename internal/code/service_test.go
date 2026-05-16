@@ -22,6 +22,7 @@ func (m *mockCodePool) RunWithCommandAndStdin(_ context.Context, _ model.TaskPay
 
 type mockCodePRClient struct {
 	existing    []*PullRequest
+	listErr     error
 	createErr   error
 	listCalls   int
 	createCalls int
@@ -40,6 +41,9 @@ func (m *mockCodePRClient) CreatePullRequest(_ context.Context, _, _ string, opt
 func (m *mockCodePRClient) ListRepoPullRequests(_ context.Context, _, _ string, opts ListPullRequestsOptions) ([]*PullRequest, error) {
 	m.listCalls++
 	m.lastHead = opts.Head
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	return m.existing, nil
 }
 
@@ -132,6 +136,41 @@ func TestExecute_ReturnsErrorWhenCreatePRFails(t *testing.T) {
 	}
 	if pr.createCalls != 1 {
 		t.Fatalf("CreatePullRequest 调用次数 = %d, want 1", pr.createCalls)
+	}
+}
+
+func TestExecute_ReturnsErrorWhenListExistingPRFails(t *testing.T) {
+	pool := &mockCodePool{result: &worker.ExecutionResult{
+		ExitCode: 0,
+		Output:   `{"success":true,"info_sufficient":true,"branch_name":"auto-code/spec","commit_sha":"abc123","modified_files":[],"test_results":{"passed":1,"failed":0,"skipped":0,"all_passed":true},"failure_category":"none"}`,
+	}}
+	pr := &mockCodePRClient{listErr: errors.New("gitea list unavailable")}
+	svc := NewService(pool, pr, nil, slog.Default())
+
+	_, err := svc.Execute(context.Background(), model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+		BaseRef:      "main",
+	})
+	if err == nil {
+		t.Fatal("查询既有 PR 失败时应返回错误")
+	}
+	if pr.createCalls != 0 {
+		t.Fatalf("查询既有 PR 失败时不应继续创建 PR，createCalls=%d", pr.createCalls)
+	}
+}
+
+func TestBuildPRTitle_TruncatesLongDocPath(t *testing.T) {
+	title := buildPRTitle("docs/" + strings.Repeat("很长", 200) + ".md")
+	if len([]rune(title)) > 240 {
+		t.Fatalf("title 长度 = %d，期望 <= 240", len([]rune(title)))
+	}
+	if !strings.HasSuffix(title, "...") {
+		t.Fatalf("超长 title 应以省略号结尾，实际 %q", title)
 	}
 }
 

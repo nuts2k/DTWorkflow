@@ -92,6 +92,14 @@ func (h *handlers) triggerCodeFromDoc(c *gin.Context) {
 		Error(c, http.StatusBadGateway, ErrCodeBadGateway, "查询 Gitea 仓库信息失败")
 		return
 	}
+	if repoInfo == nil {
+		Error(c, http.StatusBadGateway, ErrCodeBadGateway, "Gitea 返回仓库信息为空")
+		return
+	}
+	if strings.TrimSpace(repoInfo.CloneURL) == "" {
+		Error(c, http.StatusBadGateway, ErrCodeBadGateway, "Gitea 返回 CloneURL 为空")
+		return
+	}
 
 	docPath := validation.NormalizeDocPath(req.DocPath)
 	docSlug := code.DocSlug(docPath)

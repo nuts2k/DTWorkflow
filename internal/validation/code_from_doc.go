@@ -9,6 +9,8 @@ import (
 
 var safeBranchRefPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
+const MaxDocPathRunes = 512
+
 // ValidateDocPath 校验 doc_path 参数的合法性。
 // 被 API handler / 服务端 CLI / dtw CLI 三处共用。
 func ValidateDocPath(docPath string) error {
@@ -20,6 +22,9 @@ func ValidateDocPath(docPath string) error {
 	normalized := strings.ReplaceAll(docPath, "\\", "/")
 	if strings.TrimSpace(normalized) != normalized {
 		return fmt.Errorf("doc_path 不能包含首尾空白: %s", docPath)
+	}
+	if len([]rune(normalized)) > MaxDocPathRunes {
+		return fmt.Errorf("doc_path 长度不能超过 %d 个字符", MaxDocPathRunes)
 	}
 	if strings.Contains(normalized, "//") {
 		return fmt.Errorf("doc_path 不能包含连续斜杠: %s", docPath)

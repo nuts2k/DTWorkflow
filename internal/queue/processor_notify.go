@@ -652,8 +652,20 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 			metadata[notify.MetaKeyMaxRetry] = fmt.Sprintf("%d", record.MaxRetry)
 			metadata[notify.MetaKeyTaskStatus] = string(record.Status)
 		}
-		switch record.Status {
-		case model.TaskStatusSucceeded:
+		isCodeFromDocTestFailure := codeResult != nil &&
+			codeResult.Output != nil &&
+			codeResult.Output.FailureCategory == code.FailureCategoryTestFailure
+		switch {
+		case record.Status == model.TaskStatusSucceeded && isCodeFromDocTestFailure:
+			msg = notify.Message{
+				EventType: notify.EventCodeFromDocFailed,
+				Severity:  notify.SeverityWarning,
+				Target:    target,
+				Title:     "文档驱动编码测试失败",
+				Body:      body,
+				Metadata:  metadata,
+			}
+		case record.Status == model.TaskStatusSucceeded:
 			msg = notify.Message{
 				EventType: notify.EventCodeFromDocDone,
 				Severity:  notify.SeverityInfo,
@@ -662,7 +674,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 				Body:      body,
 				Metadata:  metadata,
 			}
-		case model.TaskStatusRetrying:
+		case record.Status == model.TaskStatusRetrying:
 			msg = notify.Message{
 				EventType: notify.EventCodeFromDocFailed,
 				Severity:  notify.SeverityWarning,

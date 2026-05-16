@@ -290,7 +290,10 @@ func (s *Service) createOrReusePR(ctx context.Context, payload model.TaskPayload
 	if branch != "" {
 		existing, err := s.prClient.ListRepoPullRequests(ctx, payload.RepoOwner, payload.RepoName,
 			ListPullRequestsOptions{State: "open", Head: branch})
-		if err == nil && len(existing) > 0 {
+		if err != nil {
+			return 0, "", fmt.Errorf("查询 code_from_doc 既有 PR 失败: %w", err)
+		}
+		if len(existing) > 0 {
 			s.logger.InfoContext(ctx, "分支已有 open PR，跳过创建",
 				"repo", payload.RepoFullName, "branch", branch, "pr", existing[0].Number)
 			return existing[0].Number, existing[0].HTMLURL, nil
@@ -303,7 +306,7 @@ func (s *Service) createOrReusePR(ctx context.Context, payload model.TaskPayload
 		base = "main"
 	}
 
-	title := fmt.Sprintf("feat: 自动实现 %s", payload.DocPath)
+	title := buildPRTitle(payload.DocPath)
 	body := buildPRBody(output)
 
 	pr, err := s.prClient.CreatePullRequest(ctx, payload.RepoOwner, payload.RepoName,
@@ -319,6 +322,16 @@ func (s *Service) createOrReusePR(ctx context.Context, payload model.TaskPayload
 		return 0, "", fmt.Errorf("创建 code_from_doc PR 失败: %w", err)
 	}
 	return pr.Number, pr.HTMLURL, nil
+}
+
+func buildPRTitle(docPath string) string {
+	const maxTitleRunes = 240
+	title := fmt.Sprintf("feat: 自动实现 %s", docPath)
+	runes := []rune(title)
+	if len(runes) <= maxTitleRunes {
+		return title
+	}
+	return string(runes[:maxTitleRunes-3]) + "..."
 }
 
 func buildPRBody(output *CodeFromDocOutput) string {
