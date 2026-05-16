@@ -898,6 +898,44 @@ func TestPool_RunWithStreamMonitor_Success(t *testing.T) {
 	}
 }
 
+func TestPool_RunWithStreamMonitor_NonZeroExitUsesContainerLogs(t *testing.T) {
+	mock := &mockDockerClient{
+		createContainerFunc: func(ctx context.Context, config *ContainerConfig) (string, error) {
+			return "container-stream-push-failed", nil
+		},
+		waitContainerFunc: func(ctx context.Context, containerID string) (int64, error) {
+			time.Sleep(200 * time.Millisecond)
+			return 1, nil
+		},
+		followLogsFunc: func(ctx context.Context, containerID string) (io.ReadCloser, error) {
+			var buf bytes.Buffer
+			buf.Write(stdcopyFrame(1, `{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":1000,"is_error":false,"num_turns":3,"result":"{\"summary\":\"done\"}","session_id":"sess-1"}`+"\n"))
+			return io.NopCloser(&buf), nil
+		},
+		getContainerLogsFunc: func(ctx context.Context, containerID string) (ContainerLogs, error) {
+			return ContainerLogs{Stdout: `{"summary":"done"}`, Stderr: "remote: push rejected"}, nil
+		},
+	}
+
+	config := defaultPoolConfig()
+	config.StreamMonitor = StreamMonitorConfig{
+		Enabled:         true,
+		ActivityTimeout: 5 * time.Second,
+	}
+	pool := mustNewPool(t, config, mock)
+
+	result, err := pool.RunWithCommand(context.Background(), defaultPayload(), []string{"claude", "-p", "review"})
+	if err != nil {
+		t.Fatalf("WaitContainer 未返回错误时不应由 Pool 返回错误: %v", err)
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("ExitCode = %d, want 1", result.ExitCode)
+	}
+	if !strings.Contains(result.Output, "push rejected") {
+		t.Fatalf("非零退出时 Output 应包含容器 stderr，实际: %s", result.Output)
+	}
+}
+
 // TestPool_RunWithStreamMonitor_WaitsForLateResult 模拟容器先退出、result 事件稍后到达，
 // 验证不会过早 fallback 到原始日志。
 func TestPool_RunWithStreamMonitor_WaitsForLateResult(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/worker"
@@ -189,7 +190,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 	}
 
 	if execResult.ExitCode != 0 {
-		return result, fmt.Errorf("容器退出码 %d: %s", execResult.ExitCode, execResult.Error)
+		return result, fmt.Errorf("容器退出码 %d: %s", execResult.ExitCode, containerFailureMessage(execResult))
 	}
 
 	// 5. 解析输出
@@ -259,6 +260,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 				s.logger.WarnContext(ctx, "code_from_doc 完成后入队 review 失败",
 					"task_id", payload.TaskID, "repo", payload.RepoFullName,
 					"pr_number", prNumber, "error", enqErr)
+				return result, fmt.Errorf("code_from_doc 完成后入队 review 失败: %w", enqErr)
 			} else {
 				s.markReviewEnqueued(ctx, payload)
 			}
@@ -271,6 +273,22 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 	}
 
 	return result, nil
+}
+
+func containerFailureMessage(execResult *worker.ExecutionResult) string {
+	const maxRunes = 2000
+	msg := strings.TrimSpace(execResult.Error)
+	if msg == "" {
+		msg = strings.TrimSpace(execResult.Output)
+	}
+	if msg == "" {
+		return "无错误输出"
+	}
+	if utf8.RuneCountInString(msg) <= maxRunes {
+		return msg
+	}
+	runes := []rune(msg)
+	return string(runes[:maxRunes]) + "...(truncated)"
 }
 
 // WriteDegraded 在解析失败且重试耗尽时的降级处理（当前为 no-op 占位）。

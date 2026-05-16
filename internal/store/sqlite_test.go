@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 )
@@ -73,6 +75,49 @@ func TestCreateAndGetTask(t *testing.T) {
 	}
 	if got.Payload.RepoFullName != record.Payload.RepoFullName {
 		t.Errorf("Payload.RepoFullName 不匹配: got %s, want %s", got.Payload.RepoFullName, record.Payload.RepoFullName)
+	}
+}
+
+func TestSaveCodeFromDocResult_FreeTextTruncationUTF8Safe(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	task := newTestRecord("code-result-utf8", "delivery-code-result-utf8", model.TaskTypeCodeFromDoc)
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask 失败: %v", err)
+	}
+
+	longText := strings.Repeat("界", 900)
+	err := s.SaveCodeFromDocResult(ctx, &CodeFromDocResultRecord{
+		TaskID:         task.ID,
+		Repo:           task.RepoFullName,
+		Branch:         "auto-code/spec",
+		DocPath:        "docs/spec.md",
+		Implementation: longText,
+		FailureReason:  longText,
+	})
+	if err != nil {
+		t.Fatalf("SaveCodeFromDocResult 失败: %v", err)
+	}
+
+	got, err := s.GetCodeFromDocResultByTaskID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetCodeFromDocResultByTaskID 失败: %v", err)
+	}
+	if got == nil {
+		t.Fatal("应能查询到 code_from_doc 结果")
+	}
+	if !utf8.ValidString(got.Implementation) {
+		t.Fatalf("Implementation 截断后不是合法 UTF-8: %q", got.Implementation)
+	}
+	if !utf8.ValidString(got.FailureReason) {
+		t.Fatalf("FailureReason 截断后不是合法 UTF-8: %q", got.FailureReason)
+	}
+	if !strings.HasSuffix(got.Implementation, testGenTruncationSuffix) {
+		t.Fatalf("Implementation 应包含截断标记，实际: %q", got.Implementation)
+	}
+	if !strings.HasSuffix(got.FailureReason, testGenTruncationSuffix) {
+		t.Fatalf("FailureReason 应包含截断标记，实际: %q", got.FailureReason)
 	}
 }
 

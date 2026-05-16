@@ -47,6 +47,19 @@ func (m *mockCodePRClient) ListRepoPullRequests(_ context.Context, _, _ string, 
 	return m.existing, nil
 }
 
+type mockCodeReviewEnqueuer struct {
+	err   error
+	calls int
+}
+
+func (m *mockCodeReviewEnqueuer) EnqueueManualReview(_ context.Context, _ model.TaskPayload, _ string) (string, error) {
+	m.calls++
+	if m.err != nil {
+		return "", m.err
+	}
+	return "review-task-1", nil
+}
+
 func TestExecute_ReusesExistingPRAutoBranch(t *testing.T) {
 	pool := &mockCodePool{result: &worker.ExecutionResult{
 		ExitCode: 0,
@@ -80,6 +93,63 @@ func TestExecute_ReusesExistingPRAutoBranch(t *testing.T) {
 	}
 	if pr.createCalls != 0 {
 		t.Fatalf("命中既有 PR 后不应创建新 PR，createCalls=%d", pr.createCalls)
+	}
+}
+
+func TestExecute_ReturnsErrorWhenReviewEnqueueFails(t *testing.T) {
+	pool := &mockCodePool{result: &worker.ExecutionResult{
+		ExitCode: 0,
+		Output:   `{"success":true,"info_sufficient":true,"branch_name":"auto-code/spec","commit_sha":"abc123","modified_files":[],"test_results":{"passed":1,"failed":0,"skipped":0,"all_passed":true},"failure_category":"none"}`,
+	}}
+	pr := &mockCodePRClient{}
+	enqueuer := &mockCodeReviewEnqueuer{err: errors.New("redis unavailable")}
+	svc := NewService(pool, pr, nil, slog.Default(), WithReviewEnqueuer(enqueuer))
+
+	result, err := svc.Execute(context.Background(), model.TaskPayload{
+		TaskID:       "code-task-1",
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoOwner:    "owner",
+		RepoName:     "repo",
+		RepoFullName: "owner/repo",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+		BaseRef:      "main",
+	})
+	if err == nil {
+		t.Fatal("review 入队失败时 Execute 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "入队 review 失败") {
+		t.Fatalf("错误应包含入队失败上下文，实际: %v", err)
+	}
+	if result == nil || result.PRNumber != 101 {
+		t.Fatalf("入队失败时应保留已创建 PR 信息，result=%+v", result)
+	}
+	if enqueuer.calls != 1 {
+		t.Fatalf("EnqueueManualReview 调用次数 = %d, want 1", enqueuer.calls)
+	}
+}
+
+func TestExecute_ContainerFailureUsesOutputFallback(t *testing.T) {
+	pool := &mockCodePool{result: &worker.ExecutionResult{
+		ExitCode: 1,
+		Output:   "remote: push rejected\n",
+	}}
+	svc := NewService(pool, nil, nil, slog.Default())
+
+	result, err := svc.Execute(context.Background(), model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoFullName: "owner/repo",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+	})
+	if err == nil {
+		t.Fatal("容器非零退出时应返回错误")
+	}
+	if result == nil || result.ExitCode != 1 {
+		t.Fatalf("应保留非零退出结果，result=%+v", result)
+	}
+	if !strings.Contains(err.Error(), "push rejected") {
+		t.Fatalf("错误应回退包含 Output 诊断信息，实际: %v", err)
 	}
 }
 

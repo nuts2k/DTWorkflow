@@ -277,7 +277,9 @@ func (p *Pool) runContainer(ctx context.Context, payload model.TaskPayload, cmd 
 		}
 
 		// 尝试从流中获取 result
-		if hasStreamResult {
+		if waitErr != nil || exitCode != 0 {
+			output = p.fetchContainerLogs(ctx, containerID, waitErr, exitCode)
+		} else if hasStreamResult {
 			output = streamResult
 		} else {
 			output = p.fetchContainerLogs(ctx, containerID, waitErr, exitCode)

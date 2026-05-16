@@ -14,16 +14,8 @@ func (s *SQLiteStore) SaveCodeFromDocResult(ctx context.Context, record *CodeFro
 	}
 
 	now := time.Now().UTC()
-	const maxTextLen = 2048
-
-	implementation := record.Implementation
-	if len(implementation) > maxTextLen {
-		implementation = implementation[:maxTextLen] + "...(truncated)"
-	}
-	failureReason := record.FailureReason
-	if len(failureReason) > maxTextLen {
-		failureReason = failureReason[:maxTextLen] + "...(truncated)"
-	}
+	implementation := truncateFreeText(record.Implementation)
+	failureReason := truncateFreeText(record.FailureReason)
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO code_from_doc_results (
