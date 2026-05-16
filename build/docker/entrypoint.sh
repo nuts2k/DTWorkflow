@@ -345,16 +345,16 @@ HOOK
         # 安全加固：仅允许推送到 auto-code/* 或指定功能分支
         mkdir -p .git/hooks
         if [ -n "${CODE_BRANCH:-}" ]; then
-            export DTWORKFLOW_CODE_BRANCH="${CODE_BRANCH}"
-            cat > .git/hooks/pre-push <<'HOOK'
+            # 注意：heredoc 不带引号（<<HOOK 而非 <<'HOOK'），允许变量展开
+            cat > .git/hooks/pre-push <<HOOK
 #!/bin/sh
 while read -r local_ref local_sha remote_ref remote_sha
 do
-    case "${remote_ref}" in
-        refs/heads/${DTWORKFLOW_CODE_BRANCH})
+    case "\${remote_ref}" in
+        refs/heads/${CODE_BRANCH})
             ;;
         *)
-            echo "ERROR: code_from_doc may only push to refs/heads/${DTWORKFLOW_CODE_BRANCH}" >&2
+            echo "ERROR: code_from_doc may only push to refs/heads/${CODE_BRANCH}" >&2
             exit 1
             ;;
     esac

@@ -69,6 +69,7 @@ func ParseCodeFromDocOutput(raw string) (*CodeFromDocOutput, error) {
 	var output CodeFromDocOutput
 	if err := json.Unmarshal([]byte(raw), &output); err == nil {
 		if output.Success || output.FailureCategory != "" || output.InfoSufficient {
+			normalizeFailureCategory(&output)
 			if err := validateOutput(&output); err != nil {
 				return &output, err
 			}
@@ -91,6 +92,7 @@ func ParseCodeFromDocOutput(raw string) (*CodeFromDocOutput, error) {
 		var innerStr string
 		if err := json.Unmarshal(inner, &innerStr); err == nil {
 			if err2 := json.Unmarshal([]byte(innerStr), &output); err2 == nil {
+				normalizeFailureCategory(&output)
 				if err3 := validateOutput(&output); err3 != nil {
 					return &output, err3
 				}
@@ -98,6 +100,7 @@ func ParseCodeFromDocOutput(raw string) (*CodeFromDocOutput, error) {
 			}
 		}
 		if err := json.Unmarshal(inner, &output); err == nil {
+			normalizeFailureCategory(&output)
 			if err2 := validateOutput(&output); err2 != nil {
 				return &output, err2
 			}
@@ -106,6 +109,14 @@ func ParseCodeFromDocOutput(raw string) (*CodeFromDocOutput, error) {
 	}
 
 	return nil, fmt.Errorf("%w: 无法从输出中提取有效 JSON", ErrCodeFromDocParseFailure)
+}
+
+// normalizeFailureCategory 将空 failure_category 归一化为 "none"，
+// 避免 Claude 返回空串时与 FailureCategoryNone 语义不一致。
+func normalizeFailureCategory(o *CodeFromDocOutput) {
+	if o != nil && o.FailureCategory == "" {
+		o.FailureCategory = FailureCategoryNone
+	}
 }
 
 func validateOutput(o *CodeFromDocOutput) error {

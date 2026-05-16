@@ -119,6 +119,7 @@ func Validate(cfg *Config) error {
 		{"worker.timeouts.run_e2e", cfg.Worker.Timeouts.RunE2E},
 		{"worker.timeouts.triage_e2e", cfg.Worker.Timeouts.TriageE2E},
 		{"worker.timeouts.fix_review", cfg.Worker.Timeouts.FixReview},
+		{"worker.timeouts.code_from_doc", cfg.Worker.Timeouts.CodeFromDoc},
 	} {
 		if tc.val < 0 {
 			errs = append(errs, fmt.Errorf("%s 不能为负数，当前值: %s", tc.name, tc.val))

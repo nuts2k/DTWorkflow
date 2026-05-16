@@ -32,6 +32,7 @@ func (s *SQLiteStore) SaveCodeFromDocResult(ctx context.Context, record *CodeFro
 			files_created, files_modified, test_passed, test_failed,
 			implementation, review_enqueued, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		-- 两阶段持久化：review_enqueued 由阶段 2（UpdateCodeFromDocReviewEnqueued）单独翻转，此处故意不更新
 		ON CONFLICT(task_id) DO UPDATE SET
 			repo             = excluded.repo,
 			branch           = excluded.branch,

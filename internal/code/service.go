@@ -176,7 +176,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 	})
 
 	// 4. 容器执行
-	cmd := []string{"claude", "-p", "--output-format", "json", "-"}
+	cmd := []string{"claude", "-p", "--output-format", "json", "--dangerously-skip-permissions", "-"}
 	execResult, err := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
 	if err != nil {
 		return &CodeFromDocResult{ExitCode: -1}, err

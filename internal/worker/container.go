@@ -330,7 +330,7 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 	case model.TaskTypeFixReview:
 		return []string{"claude", "-p", "--output-format", "json", "-"}
 	case model.TaskTypeCodeFromDoc:
-		return []string{"claude", "-p", "--output-format", "json", "-"}
+		return []string{"claude", "-p", "--output-format", "json", "--dangerously-skip-permissions", "-"}
 	case model.TaskTypeRunE2E:
 		return []string{"claude", "-p", "--output-format", "json", "-"}
 	case model.TaskTypeTriageE2E:
