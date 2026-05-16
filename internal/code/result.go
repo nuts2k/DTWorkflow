@@ -170,6 +170,9 @@ func validateOutput(o *CodeFromDocOutput) error {
 		}
 		return nil
 	}
+	if o.FailureCategory == FailureCategoryTestFailure && (o.BranchName == "" || o.CommitSHA == "") {
+		return fmt.Errorf("%w: test_failure 但 branch_name 或 commit_sha 为空", ErrCodeFromDocParseFailure)
+	}
 	if o.FailureCategory == FailureCategoryNone {
 		return fmt.Errorf("%w: success=false 但 failure_category 为 none", ErrCodeFromDocParseFailure)
 	}

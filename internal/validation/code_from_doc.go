@@ -103,6 +103,9 @@ func validateSafeGitRef(field, ref string) error {
 		if strings.HasPrefix(part, ".") {
 			return fmt.Errorf("%s 路径段不能以 '.' 开头: %s", field, ref)
 		}
+		if strings.HasSuffix(part, ".lock") {
+			return fmt.Errorf("%s 路径段不能以 '.lock' 结尾: %s", field, ref)
+		}
 	}
 	return nil
 }

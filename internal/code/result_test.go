@@ -51,6 +51,25 @@ func TestParseCodeFromDocOutput_InfoInsufficient(t *testing.T) {
 	}
 }
 
+func TestParseCodeFromDocOutput_TestFailureRequiresPRFields(t *testing.T) {
+	raw := `{"success":false,"info_sufficient":true,"branch_name":"","commit_sha":"","modified_files":[],"test_results":{"passed":1,"failed":1,"skipped":0,"all_passed":false},"analysis":"","implementation":"","failure_category":"test_failure","failure_reason":"测试失败"}`
+	_, err := ParseCodeFromDocOutput(raw)
+	if !errors.Is(err, ErrCodeFromDocParseFailure) {
+		t.Fatalf("expected ErrCodeFromDocParseFailure, got %v", err)
+	}
+}
+
+func TestParseCodeFromDocOutput_TestFailureWithPRFields(t *testing.T) {
+	raw := `{"success":false,"info_sufficient":true,"branch_name":"auto-code/spec","commit_sha":"abc123","modified_files":[{"path":"main.go","action":"modified","description":"impl"}],"test_results":{"passed":1,"failed":1,"skipped":0,"all_passed":false},"analysis":"","implementation":"已实现但测试失败","failure_category":"test_failure","failure_reason":"测试失败"}`
+	output, err := ParseCodeFromDocOutput(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.FailureCategory != FailureCategoryTestFailure {
+		t.Fatalf("FailureCategory = %q, want %q", output.FailureCategory, FailureCategoryTestFailure)
+	}
+}
+
 func TestParseCodeFromDocOutput_DoubleJSON(t *testing.T) {
 	raw := `{"result":"{\"success\":true,\"info_sufficient\":true,\"branch_name\":\"auto-code/x\",\"commit_sha\":\"def456\",\"modified_files\":[],\"test_results\":{\"passed\":1,\"failed\":0,\"skipped\":0,\"all_passed\":true},\"analysis\":\"\",\"implementation\":\"\",\"failure_category\":\"none\"}"}`
 	output, err := ParseCodeFromDocOutput(raw)
