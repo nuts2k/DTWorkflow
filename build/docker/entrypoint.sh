@@ -309,7 +309,7 @@ scan_code_from_doc_secret_leak() {
         log "ERROR: code_from_doc 检测到 Claude API Key 出现在仓库内容中，拒绝受控 push"
         return 1
     fi
-    local commits_file commit
+    local commits_file commit commit_message
     commits_file="$(mktemp "${TMPDIR:-/tmp}/dtworkflow-code-from-doc-commits.XXXXXX")"
     if ! "${git_bin}" rev-list "${DTWORKFLOW_CODE_FROM_DOC_BASE_SHA}..HEAD" >"${commits_file}" 2>/dev/null; then
         rm -f "${commits_file}"
@@ -323,6 +323,16 @@ scan_code_from_doc_secret_leak() {
         if "${git_bin}" grep -I -F -q -e "${secret}" "${commit}" -- . 2>/dev/null; then
             rm -f "${commits_file}"
             log "ERROR: code_from_doc 检测到 Claude API Key 出现在待推送提交历史中，拒绝受控 push"
+            return 1
+        fi
+        if ! commit_message="$("${git_bin}" log -1 --format=%B "${commit}" 2>/dev/null)"; then
+            rm -f "${commits_file}"
+            log "ERROR: code_from_doc 无法读取待推送提交消息，拒绝受控 push"
+            return 1
+        fi
+        if printf '%s' "${commit_message}" | grep -F -q -e "${secret}"; then
+            rm -f "${commits_file}"
+            log "ERROR: code_from_doc 检测到 Claude API Key 出现在待推送提交消息中，拒绝受控 push"
             return 1
         fi
     done <"${commits_file}"

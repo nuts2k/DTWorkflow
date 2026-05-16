@@ -19,6 +19,7 @@ mkdir -p "${TMPDIR}/fakebin" "${TMPDIR}/home"
 #   MOCK_LOG_AUTHORS             : log base..branch --pretty=%ae 输出（换行分隔作者），默认空（仅 bot）
 #   MOCK_GIT_PUSH_RESULT         : push 结果，success|fail，默认 success
 #   MOCK_FIX_REVIEW_HEAD_SHA     : fix_review 完成后的 HEAD sha，默认 fixedsha
+#   MOCK_GIT_LOG_SECRET_COMMIT   : 指定 commit 的提交消息包含 Claude API Key
 # rev-parse 返回：origin/auto-test/* -> branchsha；origin/* -> basesha；其它 -> abc123
 # ------------------------------------------------------------
 cat > "${TMPDIR}/fakebin/git" <<'EOF'
@@ -119,6 +120,17 @@ case "${1:-}" in
         if [ -n "${MOCK_LOG_AUTHORS:-}" ]; then
           printf '%s\n' "${MOCK_LOG_AUTHORS}"
         fi
+        ;;
+      *--format=%B*)
+        if [ -n "${MOCK_GIT_LOG_SECRET_COMMIT:-}" ]; then
+          for arg in "$@"; do
+            if [ "${arg}" = "${MOCK_GIT_LOG_SECRET_COMMIT}" ]; then
+              printf 'feat: leaked %s\n' "${ANTHROPIC_API_KEY:-}"
+              exit 0
+            fi
+          done
+        fi
+        echo "safe commit message"
         ;;
       *)
         echo "abc123 test"
@@ -795,6 +807,46 @@ run_code_from_doc_secret_history_blocks_push_case() {
     "$(cat "${TMPDIR}/git.log")" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/auto-code/payment-spec-a1b2c3d4"
 }
 
+run_code_from_doc_secret_commit_message_blocks_push_case() {
+  local repo_dir="${TMPDIR}/repo-code-from-doc-secret-message-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  rm -f "${TMPDIR}/git.log.head-count"
+  local stdout_file="${TMPDIR}/code-from-doc-secret-message.out"
+  local stderr_file="${TMPDIR}/code-from-doc-secret-message.err"
+
+  set +e
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="code_from_doc" \
+  BASE_REF="main" \
+  DOC_SLUG="payment-spec-a1b2c3d4" \
+  ANTHROPIC_API_KEY="sk-ant-test-secret" \
+  MOCK_HEAD_SHA_SEQUENCE="basesha,codehead" \
+  MOCK_GIT_REV_LIST_COMMITS="cleanhead msgsecret" \
+  MOCK_GIT_LOG_SECRET_COMMIT="msgsecret" \
+  bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}"
+  local code=$?
+  set -e
+
+  if [ "${code}" -eq 12 ]; then
+    echo "PASS: code_from_doc — 检测到 API Key 出现在待推送提交消息时退出码 12"
+    (( PASS++ ))
+  else
+    echo "FAIL: code_from_doc — API Key 出现在提交消息应 exit 12，实际 ${code}"
+    cat "${stderr_file}"
+    (( FAIL++ ))
+  fi
+  assert_contains "code_from_doc — API Key 提交消息泄露时拒绝受控 push" \
+    "$(cat "${stderr_file}")" "待推送提交消息"
+  assert_not_contains "code_from_doc — API Key 提交消息泄露时不执行 push" \
+    "$(cat "${TMPDIR}/git.log")" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/auto-code/payment-spec-a1b2c3d4"
+}
+
 # ==================== 运行 M4.1 既有用例 ====================
 
 echo "=== Entrypoint Behavior Tests ==="
@@ -818,6 +870,7 @@ run_code_from_doc_redacts_anthropic_key_case
 run_code_from_doc_streams_redacted_output_case
 run_code_from_doc_secret_leak_blocks_push_case
 run_code_from_doc_secret_history_blocks_push_case
+run_code_from_doc_secret_commit_message_blocks_push_case
 
 # ==================== M4.2 新增：gen_tests 断点续传用例 ====================
 

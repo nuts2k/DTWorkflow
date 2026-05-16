@@ -159,3 +159,52 @@ func TestCodeFromDocCmd_TestFailureReturnsPartialSuccessExitCode(t *testing.T) {
 		})
 	}
 }
+
+func TestCodeFromDocCmd_TerminalFailureReturnsErrorInJSONMode(t *testing.T) {
+	for _, tt := range []struct {
+		status string
+		want   string
+	}{
+		{status: "failed", want: "任务失败"},
+		{status: "cancelled", want: "任务已取消"},
+	} {
+		t.Run(tt.status, func(t *testing.T) {
+			resetCodeFromDocFlags(t)
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/alice/widgets/code-from-doc":
+					writeDataEnvelope(t, w, http.StatusAccepted, map[string]string{"task_id": "code-123"})
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/tasks/code-123":
+					writeDataEnvelope(t, w, http.StatusOK, map[string]any{
+						"id":            "code-123",
+						"type":          "code_from_doc",
+						"status":        tt.status,
+						"repo":          "alice/widgets",
+						"error_message": "boom",
+					})
+				default:
+					t.Fatalf("未预期请求: %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			restore := setupTestClient(t, srv.URL)
+			defer restore()
+			flagJSON = true
+
+			codeFromDocRepo = "alice/widgets"
+			codeFromDocDocPath = "docs/spec.md"
+			codeFromDocTimeout = time.Second
+
+			codeFromDocCmd.SetContext(context.Background())
+			err := codeFromDocCmd.RunE(codeFromDocCmd, nil)
+			if err == nil {
+				t.Fatal("终态失败应返回错误")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("错误 = %v，期望包含 %q", err, tt.want)
+			}
+		})
+	}
+}

@@ -196,14 +196,12 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 	// 5. 解析输出
 	output, parseErr := ParseCodeFromDocOutput(execResult.Output)
 	result.Output = output
+	SanitizeCodeFromDocOutput(output)
 	if parseErr != nil {
 		return result, parseErr
 	}
 
-	// 6. 脱敏
-	SanitizeCodeFromDocOutput(output)
-
-	// 7. 按 FailureCategory 路由
+	// 6. 按 FailureCategory 路由
 	switch output.FailureCategory {
 	case FailureCategoryInfoInsufficient:
 		s.persistResult(ctx, payload, output, 0, "")

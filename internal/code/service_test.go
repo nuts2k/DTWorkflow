@@ -191,6 +191,41 @@ func TestExecute_RejectsMismatchedBranchName(t *testing.T) {
 	}
 }
 
+func TestExecute_SanitizesOutputWhenValidationFails(t *testing.T) {
+	longText := strings.Repeat("敏", 1200) + "\\u0000"
+	pool := &mockCodePool{result: &worker.ExecutionResult{
+		ExitCode: 0,
+		Output:   `{"success":true,"info_sufficient":true,"branch_name":"auto-code/spec","commit_sha":"abc123","modified_files":[{"path":"x.go","action":"modified","description":"` + longText + `"}],"test_results":{"passed":1,"failed":1,"skipped":0,"all_passed":false},"analysis":"` + longText + `","implementation":"` + longText + `","failure_category":"none","failure_reason":"` + longText + `","missing_info":["` + longText + `"]}`,
+	}}
+	svc := NewService(pool, nil, nil, slog.Default())
+
+	result, err := svc.Execute(context.Background(), model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoFullName: "owner/repo",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+		BaseRef:      "main",
+	})
+	if !errors.Is(err, ErrCodeFromDocParseFailure) {
+		t.Fatalf("err = %v, want ErrCodeFromDocParseFailure", err)
+	}
+	if result == nil || result.Output == nil {
+		t.Fatalf("解析失败时应保留已脱敏的结构化输出，result=%+v", result)
+	}
+	if strings.Contains(result.Output.Implementation, "\x00") ||
+		strings.Contains(result.Output.FailureReason, "\x00") ||
+		strings.Contains(result.Output.MissingInfo[0], "\x00") ||
+		strings.Contains(result.Output.ModifiedFiles[0].Description, "\x00") {
+		t.Fatal("解析失败返回的输出仍包含 NUL 控制字符")
+	}
+	if len([]rune(result.Output.Implementation)) > 1003 ||
+		len([]rune(result.Output.FailureReason)) > 503 ||
+		len([]rune(result.Output.MissingInfo[0])) > 203 ||
+		len([]rune(result.Output.ModifiedFiles[0].Description)) > 203 {
+		t.Fatalf("解析失败返回的输出未按通知上限截断: %+v", result.Output)
+	}
+}
+
 func TestExecute_ReturnsErrorWhenCreatePRFails(t *testing.T) {
 	pool := &mockCodePool{result: &worker.ExecutionResult{
 		ExitCode: 0,

@@ -93,9 +93,13 @@ var codeFromDocCmd = &cobra.Command{
 		}
 
 		isTestFailure := isCodeFromDocTestFailureResult(status.Result)
+		statusErr := codeFromDocTerminalError(status.Status)
 		if flagJSON {
 			if err := printer.PrintJSON(status); err != nil {
 				return err
+			}
+			if statusErr != nil {
+				return statusErr
 			}
 			if isTestFailure {
 				return &ExitCodeError{Code: 2, Err: fmt.Errorf("code_from_doc 测试未通过，已保留 PR 成果")}
@@ -107,16 +111,26 @@ var codeFromDocCmd = &cobra.Command{
 		if status.Error != "" {
 			printer.PrintHuman("错误: %s", status.Error)
 		}
+		if statusErr != nil {
+			return statusErr
+		}
 		if isTestFailure {
 			printer.PrintHuman("结果: 已创建 PR，但测试未通过")
 			return &ExitCodeError{Code: 2, Err: fmt.Errorf("code_from_doc 测试未通过，已保留 PR 成果")}
 		}
-
-		if status.Status == "failed" {
-			return fmt.Errorf("code_from_doc 任务失败")
-		}
 		return nil
 	},
+}
+
+func codeFromDocTerminalError(status string) error {
+	switch status {
+	case "failed":
+		return fmt.Errorf("code_from_doc 任务失败")
+	case "cancelled":
+		return fmt.Errorf("code_from_doc 任务已取消")
+	default:
+		return nil
+	}
 }
 
 func init() {
