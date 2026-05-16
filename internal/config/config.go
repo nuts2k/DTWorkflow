@@ -29,6 +29,7 @@ type Config struct {
 	E2E         E2EConfig         `mapstructure:"e2e"`
 	DailyReport DailyReportConfig `mapstructure:"daily_report"`
 	Iterate     IterateConfig     `mapstructure:"iterate"`
+	CodeFromDoc CodeFromDocConfig `mapstructure:"code_from_doc"` // M6.2
 	API         APIConfig         `mapstructure:"api" yaml:"api"`
 	Repos       []RepoConfig      `mapstructure:"repos"`
 }
@@ -43,10 +44,11 @@ type TokenConfig struct {
 }
 
 type ClaudeConfig struct {
-	APIKey  string `mapstructure:"api_key"`
-	BaseURL string `mapstructure:"base_url"` // 代理或自定义 API 端点，留空则使用官方地址
-	Model   string `mapstructure:"model"`    // 使用的模型，默认 claude-sonnet-4-6
-	Effort  string `mapstructure:"effort"`   // 推理强度：low / medium / high，默认 high
+	APIKey  string            `mapstructure:"api_key"`
+	BaseURL string            `mapstructure:"base_url"` // 代理或自定义 API 端点，留空则使用官方地址
+	Model   string            `mapstructure:"model"`    // 使用的模型，默认 claude-sonnet-4-6
+	Effort  string            `mapstructure:"effort"`   // 推理强度：low / medium / high，默认 high
+	APIKeys map[string]string `mapstructure:"api_keys"` // M6.2: 按用途分配的 API keys
 }
 
 type ServerConfig struct {
@@ -138,9 +140,10 @@ type TaskTimeouts struct {
 	AnalyzeIssue time.Duration `mapstructure:"analyze_issue"` // M3.4: 默认 15m
 	FixIssue     time.Duration `mapstructure:"fix_issue"`
 	GenTests     time.Duration `mapstructure:"gen_tests"`
-	RunE2E       time.Duration `mapstructure:"run_e2e"`    // M5.1: 默认 60m
-	TriageE2E    time.Duration `mapstructure:"triage_e2e"` // M5.4: 默认 10m
-	FixReview    time.Duration `mapstructure:"fix_review"` // M6.1: 默认 20m
+	RunE2E       time.Duration `mapstructure:"run_e2e"`      // M5.1: 默认 60m
+	TriageE2E    time.Duration `mapstructure:"triage_e2e"`   // M5.4: 默认 10m
+	FixReview    time.Duration `mapstructure:"fix_review"`   // M6.1: 默认 20m
+	CodeFromDoc  time.Duration `mapstructure:"code_from_doc"` // M6.2: 默认 60m
 }
 
 // E2EAccountConfig 测试账号配置。
@@ -192,6 +195,14 @@ type DailyReportConfig struct {
 	SkipEmpty     bool   `mapstructure:"skip_empty"`
 	FeishuWebhook string `mapstructure:"feishu_webhook"`
 	FeishuSecret  string `mapstructure:"feishu_secret"`
+}
+
+// CodeFromDocConfig 文档驱动编码全局配置。
+type CodeFromDocConfig struct {
+	Enabled         *bool  `mapstructure:"enabled"`
+	AutoIterate     *bool  `mapstructure:"auto_iterate"`
+	MaxRetryRounds  int    `mapstructure:"max_retry_rounds"`
+	ReviewOnFailure *bool  `mapstructure:"review_on_failure"`
 }
 
 // IterateConfig 迭代式评审修复全局配置。
@@ -385,6 +396,9 @@ func WithDefaults() ManagerOption {
 		m.v.SetDefault("iterate.report_path", "docs/review_history")
 		m.v.SetDefault("iterate.bot_login", "")
 
+		// M6.2: code_from_doc 默认值
+		m.v.SetDefault("code_from_doc.max_retry_rounds", 3)
+
 		return nil
 	}
 }
@@ -531,6 +545,28 @@ func (c *Config) Clone() *Config {
 		clone.E2E.Regression = &regCopy
 	}
 
+	// 深拷贝 CodeFromDoc
+	if c.CodeFromDoc.Enabled != nil {
+		v := *c.CodeFromDoc.Enabled
+		clone.CodeFromDoc.Enabled = &v
+	}
+	if c.CodeFromDoc.AutoIterate != nil {
+		v := *c.CodeFromDoc.AutoIterate
+		clone.CodeFromDoc.AutoIterate = &v
+	}
+	if c.CodeFromDoc.ReviewOnFailure != nil {
+		v := *c.CodeFromDoc.ReviewOnFailure
+		clone.CodeFromDoc.ReviewOnFailure = &v
+	}
+
+	// 深拷贝 Claude.APIKeys
+	if c.Claude.APIKeys != nil {
+		clone.Claude.APIKeys = make(map[string]string, len(c.Claude.APIKeys))
+		for k, v := range c.Claude.APIKeys {
+			clone.Claude.APIKeys[k] = v
+		}
+	}
+
 	// 深拷贝 API.Tokens
 	if c.API.Tokens != nil {
 		clone.API.Tokens = make([]TokenConfig, len(c.API.Tokens))
@@ -607,6 +643,23 @@ func (c *Config) Clone() *Config {
 			if repo.Iterate != nil {
 				iterateCopy := *repo.Iterate
 				clone.Repos[i].Iterate = &iterateCopy
+			}
+			// 深拷贝 repo.CodeFromDoc
+			if repo.CodeFromDoc != nil {
+				cfdCopy := *repo.CodeFromDoc
+				if repo.CodeFromDoc.Enabled != nil {
+					v := *repo.CodeFromDoc.Enabled
+					cfdCopy.Enabled = &v
+				}
+				if repo.CodeFromDoc.AutoIterate != nil {
+					v := *repo.CodeFromDoc.AutoIterate
+					cfdCopy.AutoIterate = &v
+				}
+				if repo.CodeFromDoc.ReviewOnFailure != nil {
+					v := *repo.CodeFromDoc.ReviewOnFailure
+					cfdCopy.ReviewOnFailure = &v
+				}
+				clone.Repos[i].CodeFromDoc = &cfdCopy
 			}
 			// 深拷贝 repo.E2E
 			if repo.E2E != nil {

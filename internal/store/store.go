@@ -9,11 +9,12 @@ import (
 )
 
 var (
-	ErrTaskNotFound          = errors.New("任务不存在")
-	ErrInvalidID             = errors.New("任务 ID 不能为空")
-	ErrNilRecord             = errors.New("record 不能为 nil")
-	ErrTestGenResultNotFound = errors.New("测试生成结果不存在")
-	ErrE2EResultNotFound     = errors.New("E2E 结果不存在")
+	ErrTaskNotFound              = errors.New("任务不存在")
+	ErrInvalidID                 = errors.New("任务 ID 不能为空")
+	ErrNilRecord                 = errors.New("record 不能为 nil")
+	ErrTestGenResultNotFound     = errors.New("测试生成结果不存在")
+	ErrE2EResultNotFound         = errors.New("E2E 结果不存在")
+	ErrCodeFromDocResultNotFound = errors.New("code_from_doc 结果不存在")
 )
 
 // Store 任务持久化接口
@@ -160,6 +161,19 @@ type Store interface {
 	// 返回按 created_at 升序排列的任务列表。
 	FindActivePRTasksMulti(ctx context.Context, repoFullName string, prNumber int64, taskTypes []model.TaskType) ([]*model.TaskRecord, error)
 
+	// --- M6.2 文档驱动编码 ---
+
+	// SaveCodeFromDocResult 以 UPSERT 方式持久化 code_from_doc 任务产出记录。
+	// 以 task_id 为冲突键保证同一 task 最多一行。
+	SaveCodeFromDocResult(ctx context.Context, record *CodeFromDocResultRecord) error
+
+	// GetCodeFromDocResultByTaskID 按 task_id 查询结果。未找到返回 (nil, nil)。
+	GetCodeFromDocResultByTaskID(ctx context.Context, taskID string) (*CodeFromDocResultRecord, error)
+
+	// UpdateCodeFromDocReviewEnqueued 把 review_enqueued 单字段刷成 true。
+	// 若对应 task_id 记录不存在返回 ErrCodeFromDocResultNotFound。
+	UpdateCodeFromDocReviewEnqueued(ctx context.Context, taskID string) error
+
 	// Close 关闭底层连接
 	Close() error
 }
@@ -245,6 +259,28 @@ type IterationRoundRecord struct {
 	IsRecovery    bool
 	StartedAt     time.Time
 	CompletedAt   *time.Time
+}
+
+// CodeFromDocResultRecord 对应 code_from_doc_results 表的单行。
+type CodeFromDocResultRecord struct {
+	ID              int64
+	TaskID          string
+	Repo            string
+	Branch          string
+	DocPath         string
+	Success         bool
+	PRNumber        int64
+	PRURL           string
+	FailureCategory string
+	FailureReason   string
+	FilesCreated    int
+	FilesModified   int
+	TestPassed      int
+	TestFailed      int
+	Implementation  string
+	ReviewEnqueued  bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // ListOptions 列表查询选项

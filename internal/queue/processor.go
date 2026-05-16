@@ -11,6 +11,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/code"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/iterate"
@@ -125,6 +126,19 @@ func WithIterateService(svc IterateExecutor) ProcessorOption {
 	}
 }
 
+// CodeExecutor 窄接口，解耦 code 包。
+type CodeExecutor interface {
+	Execute(ctx context.Context, payload model.TaskPayload) (*code.CodeFromDocResult, error)
+	WriteDegraded(ctx context.Context, payload model.TaskPayload, result *code.CodeFromDocResult) error
+}
+
+// WithCodeService 注入文档驱动编码服务。
+func WithCodeService(svc CodeExecutor) ProcessorOption {
+	return func(p *Processor) {
+		p.codeService = svc
+	}
+}
+
 // ReviewEnabledChecker 是 Processor 层的窄接口（ISP）
 // 仅暴露 Enabled 检查所需的最小能力
 type ReviewEnabledChecker interface {
@@ -166,6 +180,7 @@ type Processor struct {
 	e2eService           E2EExecutor          // 可选；注入后 run_e2e 走 e2e.Service，否则回退 pool.Run()
 	enqueueHandler       *EnqueueHandler      // 可选；triage_e2e 成功后链式入队 run_e2e
 	iterateService       IterateExecutor      // 可选；注入后 fix_review 走 iterate.Service
+	codeService          CodeExecutor         // 可选；注入后 code_from_doc 走 code.Service
 	giteaBaseURL         string               // Gitea 实例 URL，用于构造 PR 跳转链接
 }
 
@@ -295,6 +310,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 	var triageResult *e2e.TriageE2EOutput
 	var triageDispatchErr error
 	var iterateResult *iterate.FixReviewResult
+	var codeResult *code.CodeFromDocResult
 	var result *worker.ExecutionResult
 	var runErr error
 
@@ -337,6 +353,14 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 			result = &worker.ExecutionResult{
 				Output:   iterateResult.RawOutput,
 				ExitCode: iterateResult.ExitCode,
+			}
+		}
+	case payload.TaskType == model.TaskTypeCodeFromDoc && p.codeService != nil:
+		codeResult, runErr = p.codeService.Execute(ctx, payload)
+		if codeResult != nil {
+			result = &worker.ExecutionResult{
+				Output:   codeResult.RawOutput,
+				ExitCode: codeResult.ExitCode,
 			}
 		}
 	case payload.TaskType == model.TaskTypeTriageE2E:
@@ -449,6 +473,35 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		if errors.Is(runErr, iterate.ErrNoChanges) {
 			return p.handleIterationQualityFailure(ctx, record, runErr, iterateResult, "fix_review 未产生实际变更，跳过重试")
 		}
+		if errors.Is(runErr, code.ErrInfoInsufficient) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "设计文档信息不足，跳过重试")
+		}
+		if errors.Is(runErr, code.ErrCodeFromDocDisabled) {
+			return p.handleSkipRetryFailure(ctx, record, runErr, nil, nil, nil, "仓库已禁用 code_from_doc，跳过重试")
+		}
+		if errors.Is(runErr, code.ErrTestFailure) {
+			// test_failure：仍标记 succeeded（有 PR 成果），不走 SkipRetry
+			record.Status = model.TaskStatusSucceeded
+			if codeResult != nil {
+				record.Result = codeResult.RawOutput
+			}
+			completedAt := time.Now()
+			record.CompletedAt = &completedAt
+			persistCtx2, persistCancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+			defer persistCancel2()
+			if err := p.store.UpdateTask(persistCtx2, record); err != nil {
+				p.logger.ErrorContext(ctx, "更新 code_from_doc test_failure 状态失败",
+					"task_id", record.ID, "error", err)
+			}
+			p.sendCompletionNotification(ctx, record, nil, nil, nil, nil, nil)
+			return nil
+		}
+		if errors.Is(runErr, code.ErrCodeFromDocParseFailure) && !shouldRetry(ctx) && codeResult != nil {
+			if wbErr := p.codeService.WriteDegraded(ctx, payload, codeResult); wbErr != nil {
+				p.logger.ErrorContext(ctx, "code_from_doc 解析失败降级回写失败",
+					"task_id", record.ID, "error", wbErr)
+			}
+		}
 		// fix 解析失败且重试耗尽：发送降级评论，让用户至少能在 Issue 上看到原始输出
 		if errors.Is(runErr, fix.ErrFixParseFailure) && !shouldRetry(ctx) && fixResult != nil {
 			if wbErr := p.fixService.WriteDegraded(ctx, payload, fixResult); wbErr != nil {
@@ -483,7 +536,7 @@ func (p *Processor) ProcessTask(ctx context.Context, task *asynq.Task) error {
 		// gen_tests 任务的 runErr 可能由 test.ErrTestGenParseFailure 派生或
 		// 夹带仓库 / module 等 Claude 可间接控制的字段，统一走 SanitizeErrorMessage
 		// 兜底过滤控制字符 / URL，保证 record.Error 不成为 prompt injection 落点。
-		if payload.TaskType == model.TaskTypeGenTests || payload.TaskType == model.TaskTypeRunE2E || payload.TaskType == model.TaskTypeTriageE2E || payload.TaskType == model.TaskTypeFixReview {
+		if payload.TaskType == model.TaskTypeGenTests || payload.TaskType == model.TaskTypeRunE2E || payload.TaskType == model.TaskTypeTriageE2E || payload.TaskType == model.TaskTypeFixReview || payload.TaskType == model.TaskTypeCodeFromDoc {
 			record.Error = test.SanitizeErrorMessage(runErr.Error())
 		} else {
 			record.Error = runErr.Error()

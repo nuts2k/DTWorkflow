@@ -44,6 +44,10 @@ claude:
   base_url: ""  # 代理或自定义端点，留空使用官方地址（如 https://api.anthropic.com）
   model: "claude-sonnet-4-6"  # 使用的模型，默认 claude-sonnet-4-6
   effort: "high"              # 推理强度：low / medium / high，默认 high
+  # M6.2: 按任务类型使用独立 API Key（可选）。未配置时回退 api_key。
+  # 变更需重启生效（PoolConfig 启动时构建）。
+  # api_keys:
+  #   code_from_doc: "sk-coding-xxx"   # 大规模编码用独立配额
 
 # Redis 配置
 redis:
@@ -84,6 +88,7 @@ worker:
     gen_tests: "30m"
     run_e2e: "60m"
     fix_review: "20m"    # M6.1: 迭代评审修复
+    code_from_doc: "60m" # M6.2: 文档驱动编码（默认 60 分钟）
     # triage_e2e: 10m  # E2E 回归分析超时（默认 10 分钟）
   # 流式心跳监控（stream-json 活跃度检测）
   # 启用后容器内 claude -p 改用 stream-json 输出格式，
@@ -147,6 +152,18 @@ review:
     - "docs/**"
   # tech_stack: ["java", "vue"]        # 技术栈（留空则自动检测）
   # code_standards_paths: []            # 自定义编码规范文件路径（留空则使用默认扫描列表）
+
+# 文档驱动自动编码（M6.2）
+# 说明：
+# - 用户编写设计文档并 push 到仓库后，通过 CLI/API 触发自动编码任务。
+# - 系统在容器中读取文档、实现功能、运行测试、创建 PR。
+# - auto_iterate 开启后，Success=true 的 PR 自动添加 auto-iterate 标签，接入 M6.1 迭代修复闭环。
+# - max_retry_rounds 是容器内 Claude 测试失败自动修正的最大轮次，默认 3，合法范围 [1, 10]。
+code_from_doc:
+  # enabled: true
+  # auto_iterate: true            # 创建 PR 时自动添加 auto-iterate 标签（仅 Success=true）
+  max_retry_rounds: 3              # 容器内测试失败自动修正轮次
+  # review_on_failure: false       # test_failure 时是否入队 review
 
 # 迭代式评审修复（M6.1）
 # 说明：

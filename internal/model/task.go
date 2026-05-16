@@ -14,6 +14,7 @@ const (
 	TaskTypeRunE2E         TaskType = "run_e2e"
 	TaskTypeTriageE2E      TaskType = "triage_e2e"
 	TaskTypeFixReview      TaskType = "fix_review"
+	TaskTypeCodeFromDoc    TaskType = "code_from_doc" // M6.2
 )
 
 // TaskPriority 任务优先级（asynq 使用整数，越小越高）
@@ -42,7 +43,7 @@ const (
 // IsValid 检查任务类型是否为已知值
 func (t TaskType) IsValid() bool {
 	switch t {
-	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport, TaskTypeRunE2E, TaskTypeTriageE2E, TaskTypeFixReview:
+	case TaskTypeReviewPR, TaskTypeAnalyzeIssue, TaskTypeFixIssue, TaskTypeGenTests, TaskTypeGenDailyReport, TaskTypeRunE2E, TaskTypeTriageE2E, TaskTypeFixReview, TaskTypeCodeFromDoc:
 		return true
 	}
 	return false
@@ -123,6 +124,10 @@ type TaskPayload struct {
 	PreviousFixes      string `json:"previous_fixes,omitempty"` // JSON: []iterate.FixSummary
 	FixReportPath      string `json:"fix_report_path,omitempty"`
 	IterationMaxRounds int    `json:"iteration_max_rounds,omitempty"`
+
+	// M6.2 文档驱动编码
+	DocPath string `json:"doc_path,omitempty"` // 设计文档相对路径
+	DocSlug string `json:"doc_slug,omitempty"` // 从 DocPath 派生的分支名后缀
 }
 
 // TaskRecord 持久化到 SQLite 的任务记录

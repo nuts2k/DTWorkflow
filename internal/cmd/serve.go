@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"otws19.zicp.vip/kelin/dtworkflow/internal/api"
+	codesvc "otws19.zicp.vip/kelin/dtworkflow/internal/code"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	e2esvc "otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
@@ -295,6 +296,20 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 		iterateSvc := iterate.NewService(deps.Pool, slog.Default())
 		processorOpts = append(processorOpts, queue.WithIterateService(iterateSvc))
 
+		// M6.2: 装配 code.Service
+		var codeOpts []codesvc.ServiceOption
+		if deps.GiteaClient != nil {
+			codeOpts = append(codeOpts, codesvc.WithLabelClient(
+				&giteaCodeLabelAdapter{client: deps.GiteaClient, logger: slog.Default()}))
+		}
+		codeOpts = append(codeOpts, codesvc.WithResultStore(&codeResultStoreAdapter{inner: deps.Store}))
+		var codePRClient codesvc.PRClient
+		if deps.GiteaFixClient != nil {
+			codePRClient = &giteaCodePRAdapter{client: deps.GiteaFixClient}
+		}
+		codeSvc := codesvc.NewService(deps.Pool, codePRClient, cfgAdapter, slog.Default(), codeOpts...)
+		processorOpts = append(processorOpts, queue.WithCodeService(codeSvc))
+
 		// M6.1: 注入迭代 Store 和配置到 EnqueueHandler
 		iterateEnqueueOpts := []queue.EnqueueOption{
 			queue.WithIterateStore(deps.Store),
@@ -320,7 +335,8 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 	mux.Handle(queue.AsynqTypeGenTests, processor)
 	mux.Handle(queue.AsynqTypeRunE2E, processor)    // M5.1
 	mux.Handle(queue.AsynqTypeTriageE2E, processor) // M5.4
-	mux.Handle(queue.AsynqTypeFixReview, processor) // M6.1
+	mux.Handle(queue.AsynqTypeFixReview, processor)    // M6.1
+	mux.Handle(queue.AsynqTypeCodeFromDoc, processor) // M6.2
 
 	// M2.7: 每日报告 Handler 装配
 	var dailyReportHandler *report.DailyReportHandler

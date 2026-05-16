@@ -352,7 +352,7 @@ func (h *EnqueueHandler) handleMergedPullRequest(ctx context.Context, event webh
 	pr := event.PullRequest
 
 	// Bot PR 过滤：防自触发循环
-	if strings.HasPrefix(pr.HeadRef, "auto-test/") || strings.HasPrefix(pr.HeadRef, "auto-fix/") {
+	if strings.HasPrefix(pr.HeadRef, "auto-test/") || strings.HasPrefix(pr.HeadRef, "auto-fix/") || strings.HasPrefix(pr.HeadRef, "auto-code/") {
 		h.logger.DebugContext(ctx, "merged: skipping bot PR",
 			"repo", event.Repository.FullName, "head_ref", pr.HeadRef)
 		return nil
@@ -1288,6 +1288,45 @@ func (h *EnqueueHandler) listActiveGenTestsTasksByBranchKey(ctx context.Context,
 // generateManualDeliveryID 生成手动触发的合成 delivery ID
 func generateManualDeliveryID() string {
 	return fmt.Sprintf("manual-%d-%s", time.Now().UnixMilli(), uuid.New().String()[:8])
+}
+
+// EnqueueCodeFromDoc 手动触发文档驱动编码任务入队。
+// Cancel-and-Replace 按 (repo, branch) 聚合——同一分支同时只能有一个 code_from_doc 任务。
+func (h *EnqueueHandler) EnqueueCodeFromDoc(ctx context.Context, payload model.TaskPayload, triggeredBy string) (string, error) {
+	if payload.RepoFullName == "" || payload.CloneURL == "" {
+		return "", fmt.Errorf("payload 数据不完整: RepoFullName 或 CloneURL 为空")
+	}
+
+	payload.TaskType = model.TaskTypeCodeFromDoc
+
+	// 构造幂等 DeliveryID
+	branch := payload.HeadRef
+	if branch == "" {
+		branch = "auto-code/" + payload.DocSlug
+	}
+	payload.DeliveryID = fmt.Sprintf("manual:code_from_doc:%s:%s", payload.RepoFullName, branch)
+
+	// Cancel-and-Replace：按 (repo, branch) 聚合
+	activeTasks, _ := h.store.FindActiveTasksByModule(ctx, payload.RepoFullName, branch, model.TaskTypeCodeFromDoc)
+
+	record := &model.TaskRecord{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		Priority:     model.PriorityNormal,
+		RepoFullName: payload.RepoFullName,
+		DeliveryID:   payload.DeliveryID,
+		TriggeredBy:  triggeredBy,
+	}
+
+	if err := h.enqueueTask(ctx, payload, record); err != nil {
+		return "", err
+	}
+	h.cancelTasks(ctx, activeTasks)
+
+	h.logger.InfoContext(ctx, "code_from_doc 任务已入队",
+		"task_id", record.ID, "repo", payload.RepoFullName,
+		"doc_path", payload.DocPath, "branch", branch,
+		"triggered_by", triggeredBy)
+	return record.ID, nil
 }
 
 // filterTasksByType 从任务列表中过滤指定类型的任务。

@@ -51,6 +51,8 @@ func FormatFeishuCard(msg Message) (map[string]any, error) {
 		mdParts = append(mdParts, renderE2EFields(msg)...)
 	case EventE2ETriageStarted, EventE2ETriageDone, EventE2ETriageFailed:
 		mdParts = append(mdParts, renderE2ETriageFields(msg)...)
+	case EventCodeFromDocStarted, EventCodeFromDocDone, EventCodeFromDocFailed:
+		mdParts = append(mdParts, renderCodeFromDocFields(msg)...)
 	}
 
 	if msg.Body != "" {
@@ -147,6 +149,12 @@ func resolveHeaderStyle(msg Message) (title, color string) {
 		return "E2E 回归分析完成", "green"
 	case EventE2ETriageFailed:
 		return "E2E 回归分析失败", "red"
+	case EventCodeFromDocStarted:
+		return "文档驱动编码开始", "blue"
+	case EventCodeFromDocDone:
+		return "文档驱动编码完成", "green"
+	case EventCodeFromDocFailed:
+		return codeFromDocFailedHeader(msg)
 	default:
 		return msg.Title, "blue"
 	}
@@ -282,6 +290,12 @@ func resolveButtonStyle(msg Message) (text, btnType string) {
 	case EventE2ETriageDone:
 		return "查看详情", "primary"
 	case EventE2ETriageFailed:
+		return "查看详情", "default"
+	case EventCodeFromDocStarted:
+		return "查看详情", "default"
+	case EventCodeFromDocDone:
+		return "查看 PR", "primary"
+	case EventCodeFromDocFailed:
 		return "查看详情", "default"
 	default:
 		return "查看详情", "default"
@@ -443,6 +457,64 @@ func renderE2ETriageFields(msg Message) []string {
 		parts = append(parts, "**提示**: 回归分析失败，可手动触发 E2E 测试")
 	}
 
+	return parts
+}
+
+const (
+	codeFromDocCategoryInfrastructure   = "infrastructure"
+	codeFromDocCategoryTestFailure      = "test_failure"
+	codeFromDocCategoryInfoInsufficient = "info_insufficient"
+)
+
+func codeFromDocFailedHeader(msg Message) (title, color string) {
+	category := ""
+	if msg.Metadata != nil {
+		category = msg.Metadata[MetaKeyFailureCategory]
+	}
+	switch category {
+	case codeFromDocCategoryInfrastructure:
+		return "文档驱动编码失败（基础设施故障）", "orange"
+	case codeFromDocCategoryTestFailure:
+		return "文档驱动编码测试未通过", "orange"
+	case codeFromDocCategoryInfoInsufficient:
+		return "文档驱动编码信息不足", "blue"
+	default:
+		return "文档驱动编码失败", "red"
+	}
+}
+
+func renderCodeFromDocFields(msg Message) []string {
+	if msg.Metadata == nil {
+		return nil
+	}
+	var parts []string
+	if v := msg.Metadata[MetaKeyDocPath]; v != "" {
+		parts = append(parts, fmt.Sprintf("**文档**: %s", v))
+	}
+	if v := msg.Metadata[MetaKeyBranchName]; v != "" {
+		parts = append(parts, fmt.Sprintf("**分支**: %s", v))
+	}
+	if msg.EventType == EventCodeFromDocStarted {
+		return parts
+	}
+	if v := msg.Metadata[MetaKeyFilesCreated]; v != "" {
+		parts = append(parts, fmt.Sprintf("**新建文件**: %s", v))
+	}
+	if v := msg.Metadata[MetaKeyFilesModified]; v != "" {
+		parts = append(parts, fmt.Sprintf("**修改文件**: %s", v))
+	}
+	if v := msg.Metadata[MetaKeyTestPassed]; v != "" {
+		failed := msg.Metadata[MetaKeyTestFailed]
+		if failed == "" {
+			failed = "0"
+		}
+		parts = append(parts, fmt.Sprintf("**测试**: 通过 %s / 失败 %s", v, failed))
+	}
+	if msg.EventType == EventCodeFromDocFailed {
+		if v := msg.Metadata[MetaKeyFailureCategory]; v != "" {
+			parts = append(parts, fmt.Sprintf("**失败分类**: %s", v))
+		}
+	}
 	return parts
 }
 

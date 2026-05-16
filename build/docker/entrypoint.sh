@@ -319,6 +319,67 @@ HOOK
         chmod -R a-w .git/hooks
         log "迭代评审修复模式已启用（已 checkout PR head + 写权限 + push guard）"
         ;;
+    code_from_doc)
+        # M6.2: 文档驱动编码模式（写权限）
+        enable_write_git
+        setup_build_cache
+        append_autofix_override "code_from_doc"
+
+        # 分支策略
+        if [ -n "${CODE_BRANCH:-}" ]; then
+            # 路径 B：checkout 已有分支
+            log "code_from_doc: fetch + checkout 功能分支 ${CODE_BRANCH}"
+            git fetch origin "${CODE_BRANCH}" >&2 2>&1
+            git checkout "${CODE_BRANCH}" >&2 2>&1
+        else
+            # 路径 A：从 BASE_REF 派生新分支
+            if [ -z "${BASE_REF:-}" ]; then
+                log "ERROR: code_from_doc 路径 A 缺少 BASE_REF"
+                exit 2
+            fi
+            log "code_from_doc: 从 ${BASE_REF} 派生 auto-code/${DOC_SLUG:-unnamed}"
+            git fetch origin "${BASE_REF}" >&2 2>&1
+            git checkout -B "auto-code/${DOC_SLUG:-unnamed}" "origin/${BASE_REF}" >&2 2>&1
+        fi
+
+        # 安全加固：仅允许推送到 auto-code/* 或指定功能分支
+        mkdir -p .git/hooks
+        if [ -n "${CODE_BRANCH:-}" ]; then
+            # shellcheck disable=SC2154
+            cat > .git/hooks/pre-push <<HOOK
+#!/bin/sh
+while read -r local_ref local_sha remote_ref remote_sha
+do
+    case "\${remote_ref}" in
+        refs/heads/${CODE_BRANCH})
+            ;;
+        *)
+            echo "ERROR: code_from_doc may only push to refs/heads/${CODE_BRANCH}" >&2
+            exit 1
+            ;;
+    esac
+done
+HOOK
+        else
+            cat > .git/hooks/pre-push <<'HOOK'
+#!/bin/sh
+while read -r local_ref local_sha remote_ref remote_sha
+do
+    case "${remote_ref}" in
+        refs/heads/auto-code/*)
+            ;;
+        *)
+            echo "ERROR: code_from_doc may only push to refs/heads/auto-code/*" >&2
+            exit 1
+            ;;
+    esac
+done
+HOOK
+        fi
+        chmod +x .git/hooks/pre-push
+        chmod -R a-w .git/hooks
+        log "文档驱动编码模式已启用（写权限 + push guard + build cache）"
+        ;;
     gen_tests)
         log "测试生成任务，使用默认分支（将在容器内由 Claude 创建 auto-test/<module>-<ts> 分支）"
         # 安全加固：origin URL 脱敏（避免 token 持久化到 .git/config）

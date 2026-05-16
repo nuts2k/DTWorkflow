@@ -34,7 +34,7 @@ func sanitizeEnvValue(s string) string {
 // 专属 token 为空时回退到 GiteaToken，保持向后兼容。
 func selectGiteaToken(config PoolConfig, taskType model.TaskType) string {
 	switch taskType {
-	case model.TaskTypeFixIssue, model.TaskTypeFixReview:
+	case model.TaskTypeFixIssue, model.TaskTypeFixReview, model.TaskTypeCodeFromDoc:
 		if config.GiteaTokenFix != "" {
 			return string(config.GiteaTokenFix)
 		}
@@ -119,6 +119,15 @@ func buildContainerEnv(config PoolConfig, payload model.TaskPayload) []string {
 			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
 			fmt.Sprintf("HEAD_SHA=%s", sanitizeEnvValue(payload.HeadSHA)),
 		)
+	case model.TaskTypeCodeFromDoc:
+		env = append(env,
+			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
+			fmt.Sprintf("DOC_PATH=%s", sanitizeEnvValue(payload.DocPath)),
+			fmt.Sprintf("DOC_SLUG=%s", sanitizeEnvValue(payload.DocSlug)),
+		)
+		if payload.HeadRef != "" {
+			env = append(env, fmt.Sprintf("CODE_BRANCH=%s", sanitizeEnvValue(payload.HeadRef)))
+		}
 	case model.TaskTypeRunE2E:
 		env = append(env,
 			fmt.Sprintf("BASE_REF=%s", sanitizeEnvValue(payload.BaseRef)),
@@ -310,6 +319,8 @@ func buildContainerCmd(payload model.TaskPayload) []string {
 			),
 		}
 	case model.TaskTypeFixReview:
+		return []string{"claude", "-p", "--output-format", "json", "-"}
+	case model.TaskTypeCodeFromDoc:
 		return []string{"claude", "-p", "--output-format", "json", "-"}
 	case model.TaskTypeRunE2E:
 		return []string{"claude", "-p", "--output-format", "json", "-"}

@@ -297,6 +297,17 @@ func (m *mockStore) FindActivePRTasksMulti(_ context.Context, _ string, _ int64,
 	return nil, nil
 }
 
+// M6.2: code_from_doc 结果存储 stub
+func (m *mockStore) SaveCodeFromDocResult(_ context.Context, _ *store.CodeFromDocResultRecord) error {
+	return nil
+}
+func (m *mockStore) GetCodeFromDocResultByTaskID(_ context.Context, _ string) (*store.CodeFromDocResultRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateCodeFromDocReviewEnqueued(_ context.Context, _ string) error {
+	return nil
+}
+
 // mockEnqueuer 实现 queue.Enqueuer 接口
 type mockEnqueuer struct{}
 

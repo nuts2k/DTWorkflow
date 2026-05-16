@@ -589,7 +589,7 @@ func (p *Pool) Stats() PoolStats {
 // run_e2e 任务若配置了 DataDir，为每个任务创建独立 artifact 目录并挂载到容器内 /workspace/artifacts。
 func (p *Pool) buildBinds(payload model.TaskPayload) []string {
 	switch payload.TaskType {
-	case model.TaskTypeFixIssue, model.TaskTypeGenTests, model.TaskTypeFixReview:
+	case model.TaskTypeFixIssue, model.TaskTypeGenTests, model.TaskTypeFixReview, model.TaskTypeCodeFromDoc:
 		if p.config.ImageFull == "" {
 			return nil
 		}
@@ -623,7 +623,7 @@ func (p *Pool) buildBinds(payload model.TaskPayload) []string {
 // fix_issue 和 gen_tests 使用 ImageFull（如已配置），其余任务使用轻量 Image。
 func (p *Pool) resolveImage(taskType model.TaskType) string {
 	switch taskType {
-	case model.TaskTypeFixIssue, model.TaskTypeGenTests, model.TaskTypeFixReview:
+	case model.TaskTypeFixIssue, model.TaskTypeGenTests, model.TaskTypeFixReview, model.TaskTypeCodeFromDoc:
 		if p.config.ImageFull != "" {
 			return p.config.ImageFull
 		}

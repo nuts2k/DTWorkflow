@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"path"
 
+	"otws19.zicp.vip/kelin/dtworkflow/internal/code"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/config"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/e2e"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/fix"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/gitea"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/model"
 	"otws19.zicp.vip/kelin/dtworkflow/internal/notify"
+	"otws19.zicp.vip/kelin/dtworkflow/internal/store"
 	testgen "otws19.zicp.vip/kelin/dtworkflow/internal/test"
 )
 
@@ -102,6 +105,7 @@ var _ testgen.TestConfigProvider = (*configAdapter)(nil)
 var _ testgen.RepoFileChecker = (*giteaRepoFileChecker)(nil)
 var _ e2e.E2EConfigProvider = (*configAdapter)(nil)
 var _ e2e.E2EModuleScanner = (*giteaRepoFileChecker)(nil)
+var _ code.ConfigProvider = (*configAdapter)(nil)
 
 // configAdapter 将 config.Manager 适配为 review.ConfigProvider 接口
 type configAdapter struct {
@@ -218,4 +222,136 @@ func (c *giteaRepoFileChecker) ListDir(ctx context.Context, owner, repo, ref, di
 		}
 	}
 	return dirs, nil
+}
+
+// ResolveCodeFromDocEnabled 实现 code.ConfigProvider 接口。
+func (a *configAdapter) ResolveCodeFromDocEnabled(repoFullName string) bool {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return true
+	}
+	resolved := cfg.ResolveCodeFromDocConfig(repoFullName)
+	return resolved.Enabled == nil || *resolved.Enabled
+}
+
+// ResolveCodeFromDocConfig 实现 code.ConfigProvider 接口。
+func (a *configAdapter) ResolveCodeFromDocConfig(repoFullName string) code.CodeFromDocConfig {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return code.CodeFromDocConfig{}
+	}
+	resolved := cfg.ResolveCodeFromDocConfig(repoFullName)
+	return code.CodeFromDocConfig{
+		Enabled:         resolved.Enabled == nil || *resolved.Enabled,
+		AutoIterate:     resolved.AutoIterate != nil && *resolved.AutoIterate,
+		MaxRetryRounds:  resolved.MaxRetryRounds,
+		ReviewOnFailure: resolved.ReviewOnFailure != nil && *resolved.ReviewOnFailure,
+	}
+}
+
+// ResolveAPIKey 实现 code.ConfigProvider 接口。
+func (a *configAdapter) ResolveAPIKey(taskType model.TaskType) string {
+	cfg := a.mgr.Get()
+	if cfg == nil {
+		return ""
+	}
+	if cfg.Claude.APIKeys != nil {
+		if key, ok := cfg.Claude.APIKeys[string(taskType)]; ok && key != "" {
+			return key
+		}
+	}
+	return cfg.Claude.APIKey
+}
+
+// giteaCodePRAdapter 将 gitea.Client 适配为 code.PRClient 窄接口。
+type giteaCodePRAdapter struct {
+	client *gitea.Client
+}
+
+func (a *giteaCodePRAdapter) CreatePullRequest(ctx context.Context, owner, repo string, opt code.CreatePullRequestOption) (*code.PullRequest, error) {
+	pr, resp, err := a.client.CreatePullRequest(ctx, owner, repo, gitea.CreatePullRequestOption{
+		Title: opt.Title,
+		Head:  opt.Head,
+		Base:  opt.Base,
+		Body:  opt.Body,
+	})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &code.PullRequest{Number: pr.Number, HTMLURL: pr.HTMLURL}, nil
+}
+
+func (a *giteaCodePRAdapter) ListRepoPullRequests(ctx context.Context, owner, repo string, opts code.ListPullRequestsOptions) ([]*code.PullRequest, error) {
+	giteaOpts := gitea.ListPullRequestsOptions{State: opts.State}
+	prs, resp, err := a.client.ListRepoPullRequests(ctx, owner, repo, giteaOpts)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		return nil, err
+	}
+	var result []*code.PullRequest
+	for _, pr := range prs {
+		if opts.Head != "" && pr.Head != nil && pr.Head.Ref != opts.Head {
+			continue
+		}
+		result = append(result, &code.PullRequest{Number: pr.Number, HTMLURL: pr.HTMLURL})
+	}
+	return result, nil
+}
+
+// giteaCodeLabelAdapter 将 gitea.Client 适配为 code.LabelClient 窄接口。
+// 复用 giteaIterateAdapter.AddLabel 的"按名称查 ID 再添加"模式。
+type giteaCodeLabelAdapter struct {
+	client *gitea.Client
+	logger *slog.Logger
+}
+
+func (a *giteaCodeLabelAdapter) AddLabel(ctx context.Context, owner, repo string, prNumber int64, label string) error {
+	allLabels, _, err := a.client.ListRepoLabels(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("列出仓库标签失败: %w", err)
+	}
+	for _, l := range allLabels {
+		if l.Name == label {
+			_, _, addErr := a.client.AddIssueLabels(ctx, owner, repo, prNumber, []int64{l.ID})
+			return addErr
+		}
+	}
+	a.logger.WarnContext(ctx, "code_from_doc 标签不存在，跳过添加",
+		"owner", owner, "repo", repo, "label", label)
+	return nil
+}
+
+// codeResultStoreAdapter 桥接 code.ResultStore（使用 code.CodeFromDocResultRecord）
+// 和 store.Store（使用 store.CodeFromDocResultRecord）之间的类型差异。
+type codeResultStoreAdapter struct {
+	inner store.Store
+}
+
+func (a *codeResultStoreAdapter) SaveCodeFromDocResult(ctx context.Context, record *code.CodeFromDocResultRecord) error {
+	return a.inner.SaveCodeFromDocResult(ctx, &store.CodeFromDocResultRecord{
+		TaskID:          record.TaskID,
+		Repo:            record.Repo,
+		Branch:          record.Branch,
+		DocPath:         record.DocPath,
+		Success:         record.Success,
+		PRNumber:        record.PRNumber,
+		PRURL:           record.PRURL,
+		FailureCategory: record.FailureCategory,
+		FailureReason:   record.FailureReason,
+		FilesCreated:    record.FilesCreated,
+		FilesModified:   record.FilesModified,
+		TestPassed:      record.TestPassed,
+		TestFailed:      record.TestFailed,
+		Implementation:  record.Implementation,
+		ReviewEnqueued:  record.ReviewEnqueued,
+	})
+}
+
+func (a *codeResultStoreAdapter) UpdateCodeFromDocReviewEnqueued(ctx context.Context, taskID string) error {
+	return a.inner.UpdateCodeFromDocReviewEnqueued(ctx, taskID)
 }

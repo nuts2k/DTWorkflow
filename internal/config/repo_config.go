@@ -6,8 +6,9 @@ type RepoConfig struct {
 	Review  *ReviewOverride  `mapstructure:"review"`
 	Notify  *NotifyOverride  `mapstructure:"notify"`
 	TestGen *TestGenOverride `mapstructure:"test_gen"` // M4.1
-	E2E     *E2EOverride     `mapstructure:"e2e"`      // M5.1
-	Iterate *IterateOverride `mapstructure:"iterate"`  // M6.1
+	E2E         *E2EOverride         `mapstructure:"e2e"`          // M5.1
+	Iterate     *IterateOverride     `mapstructure:"iterate"`      // M6.1
+	CodeFromDoc *CodeFromDocOverride `mapstructure:"code_from_doc"` // M6.2
 }
 
 // TestGenOverride 测试生成配置（全局或仓库级覆盖）。
@@ -266,6 +267,14 @@ type IterateOverride struct {
 	FixSeverityThreshold string `mapstructure:"fix_severity_threshold"`
 }
 
+// CodeFromDocOverride 仓库级文档驱动编码配置覆盖。
+type CodeFromDocOverride struct {
+	Enabled         *bool `mapstructure:"enabled"`
+	AutoIterate     *bool `mapstructure:"auto_iterate"`
+	MaxRetryRounds  int   `mapstructure:"max_retry_rounds"`
+	ReviewOnFailure *bool `mapstructure:"review_on_failure"`
+}
+
 // IsEnabled 返回回归自动化是否启用。nil 视为 false（默认关闭）。
 func (c RegressionConfig) IsEnabled() bool {
 	return c.Enabled != nil && *c.Enabled
@@ -286,6 +295,33 @@ func (c *Config) ResolveIterateConfig(repoFullName string) IterateConfig {
 		}
 		if repo.Iterate.FixSeverityThreshold != "" {
 			merged.FixSeverityThreshold = repo.Iterate.FixSeverityThreshold
+		}
+		break
+	}
+	return merged
+}
+
+// ResolveCodeFromDocConfig 解析指定仓库的最终 code_from_doc 配置。
+func (c *Config) ResolveCodeFromDocConfig(repoFullName string) CodeFromDocConfig {
+	if c == nil {
+		return CodeFromDocConfig{}
+	}
+	merged := c.CodeFromDoc
+	for _, repo := range c.Repos {
+		if repo.Name != repoFullName || repo.CodeFromDoc == nil {
+			continue
+		}
+		if repo.CodeFromDoc.Enabled != nil {
+			merged.Enabled = repo.CodeFromDoc.Enabled
+		}
+		if repo.CodeFromDoc.AutoIterate != nil {
+			merged.AutoIterate = repo.CodeFromDoc.AutoIterate
+		}
+		if repo.CodeFromDoc.MaxRetryRounds > 0 {
+			merged.MaxRetryRounds = repo.CodeFromDoc.MaxRetryRounds
+		}
+		if repo.CodeFromDoc.ReviewOnFailure != nil {
+			merged.ReviewOnFailure = repo.CodeFromDoc.ReviewOnFailure
 		}
 		break
 	}

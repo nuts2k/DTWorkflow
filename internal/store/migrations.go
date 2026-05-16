@@ -488,6 +488,69 @@ var migrations = []migration{
 		Version: 25,
 		SQL:     `ALTER TABLE iteration_rounds ADD COLUMN fix_summary TEXT NOT NULL DEFAULT '';`,
 	},
+	// M6.2: tasks 表重建（删除 task_type CHECK，追加 code_from_doc 等新类型无需再改表）+ code_from_doc_results 新表。
+	{
+		Version:            26,
+		DisableForeignKeys: true,
+		SQL: `-- 9a. tasks 表重建：删除 task_type CHECK，保留 status CHECK
+CREATE TABLE tasks_new (
+    id              TEXT PRIMARY KEY,
+    asynq_id        TEXT NOT NULL DEFAULT '',
+    task_type       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','queued','running','succeeded','failed','retrying','cancelled')),
+    priority        INTEGER NOT NULL DEFAULT 5,
+    payload         TEXT NOT NULL DEFAULT '{}',
+    repo_full_name  TEXT NOT NULL DEFAULT '',
+    pr_number       INTEGER,
+    result          TEXT,
+    error           TEXT,
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    max_retry       INTEGER NOT NULL DEFAULT 3,
+    worker_id       TEXT,
+    delivery_id     TEXT,
+    triggered_by    TEXT,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at      DATETIME,
+    completed_at    DATETIME
+);
+INSERT INTO tasks_new SELECT * FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_new RENAME TO tasks;
+CREATE INDEX idx_tasks_status ON tasks(status);
+CREATE INDEX idx_tasks_repo ON tasks(repo_full_name);
+CREATE INDEX idx_tasks_delivery ON tasks(delivery_id);
+CREATE INDEX idx_tasks_type_status ON tasks(task_type, status);
+CREATE INDEX idx_tasks_repo_pr ON tasks(repo_full_name, pr_number);
+CREATE INDEX idx_tasks_created_at ON tasks(created_at);
+CREATE UNIQUE INDEX idx_tasks_delivery_dedup ON tasks(delivery_id, task_type) WHERE delivery_id != '';
+CREATE INDEX idx_tasks_pending_created ON tasks(status, created_at) WHERE status = 'pending';
+
+-- 9b. code_from_doc_results 表
+CREATE TABLE code_from_doc_results (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id          TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+    repo             TEXT    NOT NULL,
+    branch           TEXT    NOT NULL,
+    doc_path         TEXT    NOT NULL,
+    success          BOOLEAN NOT NULL DEFAULT 0,
+    pr_number        INTEGER,
+    pr_url           TEXT,
+    failure_category TEXT    NOT NULL DEFAULT 'none',
+    failure_reason   TEXT,
+    files_created    INTEGER NOT NULL DEFAULT 0,
+    files_modified   INTEGER NOT NULL DEFAULT 0,
+    test_passed      INTEGER NOT NULL DEFAULT 0,
+    test_failed      INTEGER NOT NULL DEFAULT 0,
+    implementation   TEXT,
+    review_enqueued  BOOLEAN NOT NULL DEFAULT 0,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_code_results_repo ON code_from_doc_results(repo);
+CREATE INDEX idx_code_results_branch ON code_from_doc_results(branch);`,
+	},
 }
 
 // RunMigrations 执行版本化 Schema 迁移，跳过已执行的版本

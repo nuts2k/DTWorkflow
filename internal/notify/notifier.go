@@ -39,6 +39,10 @@ const (
 	EventIterationPassed    EventType = "iteration.passed"
 	EventIterationExhausted EventType = "iteration.exhausted"
 	EventIterationError     EventType = "iteration.error"
+	// M6.2：文档驱动编码通知事件。
+	EventCodeFromDocStarted EventType = "code_from_doc.started"
+	EventCodeFromDocDone    EventType = "code_from_doc.done"
+	EventCodeFromDocFailed  EventType = "code_from_doc.failed"
 )
 
 // Metadata key 常量，用于 Message.Metadata 的键名，确保生产端和消费端类型安全。
@@ -88,6 +92,15 @@ const (
 	MetaKeyIterationIssuesFound = "iteration_issues_found"
 	MetaKeyIterationIssuesFixed = "iteration_issues_fixed"
 	MetaKeyIterationSessionID   = "iteration_session_id"
+
+	// M6.2 code_from_doc 事件专用 metadata key。
+	MetaKeyDocPath        = "doc_path"
+	MetaKeyBranchName     = "branch_name"
+	MetaKeyFilesCreated   = "files_created"
+	MetaKeyFilesModified  = "files_modified"
+	MetaKeyTestPassed     = "test_passed"
+	MetaKeyTestFailed     = "test_failed"
+	MetaKeyImplementation = "implementation"
 )
 
 // Severity 通知紧急程度

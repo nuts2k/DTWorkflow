@@ -144,6 +144,15 @@ func Validate(cfg *Config) error {
 	// M6.1: iterate 校验
 	errs = append(errs, validateIterateConfig(cfg)...)
 
+	// M6.2: code_from_doc 配置校验
+	errs = append(errs, validateCodeFromDoc("code_from_doc", cfg.CodeFromDoc)...)
+	for _, repo := range cfg.Repos {
+		if repo.CodeFromDoc != nil {
+			field := fmt.Sprintf("repos[%s].code_from_doc", repo.Name)
+			errs = append(errs, validateCodeFromDocOverride(field, *repo.CodeFromDoc)...)
+		}
+	}
+
 	// worker.stream_monitor 校验（仅在 enabled 时校验 activity_timeout）
 	if cfg.Worker.StreamMonitor.Enabled {
 		if cfg.Worker.StreamMonitor.ActivityTimeout <= 0 {
@@ -624,6 +633,22 @@ func validateResolvedTestGen(field string, raw, resolved TestGenOverride) []erro
 		return []error{fmt.Errorf("%s 合并后 change_driven.enabled=true 但 test_gen.enabled=false，矛盾", field)}
 	}
 	return nil
+}
+
+func validateCodeFromDoc(field string, cfg CodeFromDocConfig) []error {
+	var errs []error
+	if cfg.MaxRetryRounds != 0 && (cfg.MaxRetryRounds < 1 || cfg.MaxRetryRounds > 10) {
+		errs = append(errs, fmt.Errorf("%s.max_retry_rounds 必须在 [1, 10] 范围内，当前值: %d", field, cfg.MaxRetryRounds))
+	}
+	return errs
+}
+
+func validateCodeFromDocOverride(field string, cfg CodeFromDocOverride) []error {
+	var errs []error
+	if cfg.MaxRetryRounds != 0 && (cfg.MaxRetryRounds < 1 || cfg.MaxRetryRounds > 10) {
+		errs = append(errs, fmt.Errorf("%s.max_retry_rounds 必须在 [1, 10] 范围内，当前值: %d", field, cfg.MaxRetryRounds))
+	}
+	return errs
 }
 
 // ValidationError 配置校验聚合错误。
