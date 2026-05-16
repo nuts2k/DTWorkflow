@@ -145,6 +145,9 @@ func runCodeFromDoc(cmd *cobra.Command, _ []string) error {
 	}
 
 	baseRef := strings.TrimSpace(codeFromDocRef)
+	if err := validation.ValidateBaseRef(baseRef); err != nil {
+		return &ExitCodeError{Code: 1, Err: fmt.Errorf("--ref %w", err)}
+	}
 	if baseRef == "" {
 		baseRef = repoInfo.DefaultBranch
 	}

@@ -46,27 +46,41 @@ func ValidateBranchRef(branch string) error {
 	if branch == "" {
 		return nil
 	}
-	if strings.HasPrefix(branch, "-") {
-		return fmt.Errorf("branch 不能以 '-' 开头: %s", branch)
+	return validateSafeGitRef("branch", branch)
+}
+
+// ValidateBaseRef 校验 code_from_doc 的基础 ref。
+// 空字符串表示调用方自行回落仓库默认分支，允许通过。
+func ValidateBaseRef(ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil
 	}
-	if strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") {
-		return fmt.Errorf("branch 不能以 '/' 开头或结尾: %s", branch)
+	return validateSafeGitRef("ref", ref)
+}
+
+func validateSafeGitRef(field, ref string) error {
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("%s 不能以 '-' 开头: %s", field, ref)
 	}
-	if strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, ".lock") {
-		return fmt.Errorf("branch 不能以 '.' 或 '.lock' 结尾: %s", branch)
+	if strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") {
+		return fmt.Errorf("%s 不能以 '/' 开头或结尾: %s", field, ref)
 	}
-	if !safeBranchRefPattern.MatchString(branch) {
-		return fmt.Errorf("branch 只能包含字母、数字、'.'、'_'、'-'、'/': %s", branch)
+	if strings.HasSuffix(ref, ".") || strings.HasSuffix(ref, ".lock") {
+		return fmt.Errorf("%s 不能以 '.' 或 '.lock' 结尾: %s", field, ref)
 	}
-	if strings.Contains(branch, "..") || strings.Contains(branch, "//") || strings.Contains(branch, "@{") {
-		return fmt.Errorf("branch 包含非法序列: %s", branch)
+	if !safeBranchRefPattern.MatchString(ref) {
+		return fmt.Errorf("%s 只能包含字母、数字、'.'、'_'、'-'、'/': %s", field, ref)
 	}
-	for _, part := range strings.Split(branch, "/") {
+	if strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.Contains(ref, "@{") {
+		return fmt.Errorf("%s 包含非法序列: %s", field, ref)
+	}
+	for _, part := range strings.Split(ref, "/") {
 		if part == "" || part == "." || part == ".." {
-			return fmt.Errorf("branch 包含非法路径段: %s", branch)
+			return fmt.Errorf("%s 包含非法路径段: %s", field, ref)
 		}
 		if strings.HasPrefix(part, ".") {
-			return fmt.Errorf("branch 路径段不能以 '.' 开头: %s", branch)
+			return fmt.Errorf("%s 路径段不能以 '.' 开头: %s", field, ref)
 		}
 	}
 	return nil

@@ -31,3 +31,31 @@ func TestValidateBranchRef(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateBaseRef(t *testing.T) {
+	valid := []string{
+		"",
+		"main",
+		"release/2026.05",
+		"7f3a9c1",
+	}
+	for _, ref := range valid {
+		if err := ValidateBaseRef(ref); err != nil {
+			t.Errorf("ValidateBaseRef(%q) 返回错误: %v", ref, err)
+		}
+	}
+
+	invalid := []string{
+		"main:refs/heads/pwn",
+		"main feature",
+		"../main",
+		"/main",
+		"main.lock",
+		"main@{1}",
+	}
+	for _, ref := range invalid {
+		if err := ValidateBaseRef(ref); err == nil {
+			t.Errorf("ValidateBaseRef(%q) 应返回错误", ref)
+		}
+	}
+}

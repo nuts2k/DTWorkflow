@@ -215,7 +215,11 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 	var prNumber int64
 	var prURL string
 	if output.BranchName != "" && s.prClient != nil {
-		prNumber, prURL = s.createOrReusePR(ctx, payload, output, branch)
+		if output.BranchName != branch {
+			return result, fmt.Errorf("%w: branch_name %q 与目标分支 %q 不一致",
+				ErrCodeFromDocParseFailure, output.BranchName, branch)
+		}
+		prNumber, prURL = s.createOrReusePR(ctx, payload, output, output.BranchName)
 		result.PRNumber = prNumber
 		result.PRURL = prURL
 	}
@@ -277,13 +281,13 @@ func (s *Service) createOrReusePR(ctx context.Context, payload model.TaskPayload
 		return 0, ""
 	}
 
-	// 路径 B：检查分支是否已有 open PR
-	if payload.HeadRef != "" {
+	// 检查目标分支是否已有 open PR。自动派生分支和显式分支都必须复用。
+	if branch != "" {
 		existing, err := s.prClient.ListRepoPullRequests(ctx, payload.RepoOwner, payload.RepoName,
-			ListPullRequestsOptions{State: "open", Head: payload.HeadRef})
+			ListPullRequestsOptions{State: "open", Head: branch})
 		if err == nil && len(existing) > 0 {
 			s.logger.InfoContext(ctx, "分支已有 open PR，跳过创建",
-				"repo", payload.RepoFullName, "branch", payload.HeadRef, "pr", existing[0].Number)
+				"repo", payload.RepoFullName, "branch", branch, "pr", existing[0].Number)
 			return existing[0].Number, existing[0].HTMLURL
 		}
 	}

@@ -337,12 +337,13 @@ HOOK
                 log "ERROR: code_from_doc 路径 A 缺少 BASE_REF"
                 exit 2
             fi
-            log "code_from_doc: 从 ${BASE_REF} 派生 auto-code/${DOC_SLUG:-unnamed}"
+            CODE_TARGET_BRANCH="auto-code/${DOC_SLUG:-unnamed}"
+            log "code_from_doc: 从 ${BASE_REF} 派生 ${CODE_TARGET_BRANCH}"
             git fetch origin "${BASE_REF}" >&2 2>&1
-            git checkout -B "auto-code/${DOC_SLUG:-unnamed}" "origin/${BASE_REF}" >&2 2>&1
+            git checkout -B "${CODE_TARGET_BRANCH}" "origin/${BASE_REF}" >&2 2>&1
         fi
 
-        # 安全加固：仅允许推送到 auto-code/* 或指定功能分支
+        # 安全加固：仅允许推送到本次任务的目标分支
         mkdir -p .git/hooks
         if [ -n "${CODE_BRANCH:-}" ]; then
             # 注意：heredoc 不带引号（<<HOOK 而非 <<'HOOK'），允许变量展开
@@ -361,15 +362,15 @@ do
 done
 HOOK
         else
-            cat > .git/hooks/pre-push <<'HOOK'
+            cat > .git/hooks/pre-push <<HOOK
 #!/bin/sh
 while read -r local_ref local_sha remote_ref remote_sha
 do
-    case "${remote_ref}" in
-        refs/heads/auto-code/*)
+    case "\${remote_ref}" in
+        refs/heads/${CODE_TARGET_BRANCH})
             ;;
         *)
-            echo "ERROR: code_from_doc may only push to refs/heads/auto-code/*" >&2
+            echo "ERROR: code_from_doc may only push to refs/heads/${CODE_TARGET_BRANCH}" >&2
             exit 1
             ;;
     esac

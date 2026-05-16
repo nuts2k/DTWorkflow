@@ -3823,6 +3823,27 @@ func TestEnqueueCodeFromDoc_DifferentDocSameBranchCancelsOld(t *testing.T) {
 	}
 }
 
+func TestEnqueueCodeFromDoc_InvalidBaseRef(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-code"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	_, err := h.EnqueueCodeFromDoc(context.Background(), model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.example.com/owner/repo.git",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec",
+		BaseRef:      "main:refs/heads/pwn",
+	}, "manual:test")
+	if err == nil {
+		t.Fatal("非法 base ref 应返回错误")
+	}
+	if s.createCalls != 0 || len(mc.payloads) != 0 {
+		t.Fatalf("非法 base ref 不应创建或入队，createCalls=%d payloads=%d", s.createCalls, len(mc.payloads))
+	}
+}
+
 // TestHandleMergedE2ERegression_PRFilesListerNil prFilesLister 未注入时静默跳过。
 func TestHandleMergedE2ERegression_PRFilesListerNil(t *testing.T) {
 	s := newMockStore()

@@ -64,6 +64,11 @@ func (h *handlers) triggerCodeFromDoc(c *gin.Context) {
 		Error(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		return
 	}
+	baseRef := strings.TrimSpace(req.Ref)
+	if err := validation.ValidateBaseRef(baseRef); err != nil {
+		Error(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
 
 	if h.deps.GiteaClient == nil {
 		Error(c, http.StatusBadGateway, ErrCodeBadGateway, "Gitea 客户端未配置")
@@ -91,7 +96,6 @@ func (h *handlers) triggerCodeFromDoc(c *gin.Context) {
 	docPath := validation.NormalizeDocPath(req.DocPath)
 	docSlug := code.DocSlug(docPath)
 
-	baseRef := req.Ref
 	if baseRef == "" {
 		baseRef = repoInfo.DefaultBranch
 	}
