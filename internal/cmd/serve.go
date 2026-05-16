@@ -298,9 +298,9 @@ func runServeWithConfig(cfg serveConfig, stopCh <-chan struct{}) error {
 
 		// M6.2: 装配 code.Service
 		var codeOpts []codesvc.ServiceOption
-		if deps.GiteaClient != nil {
+		if deps.GiteaFixClient != nil {
 			codeOpts = append(codeOpts, codesvc.WithLabelClient(
-				&giteaCodeLabelAdapter{client: deps.GiteaClient, logger: slog.Default()}))
+				&giteaCodeLabelAdapter{client: deps.GiteaFixClient, logger: slog.Default()}))
 		}
 		codeOpts = append(codeOpts, codesvc.WithResultStore(&codeResultStoreAdapter{inner: deps.Store}))
 		codeOpts = append(codeOpts, codesvc.WithReviewEnqueuer(deps.EnqueueHandler))

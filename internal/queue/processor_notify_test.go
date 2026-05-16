@@ -819,6 +819,9 @@ func TestBuildNotificationMessage_CodeFromDocDone(t *testing.T) {
 	if msg.EventType != notify.EventCodeFromDocDone {
 		t.Errorf("EventType = %q, want %q", msg.EventType, notify.EventCodeFromDocDone)
 	}
+	if !msg.Target.IsPR || msg.Target.Number != 12 {
+		t.Fatalf("code_from_doc 完成通知应指向 PR #12，target=%+v", msg.Target)
+	}
 	if msg.Metadata[notify.MetaKeyPRNumber] != "12" {
 		t.Errorf("pr_number = %q", msg.Metadata[notify.MetaKeyPRNumber])
 	}
@@ -862,6 +865,9 @@ func TestBuildNotificationMessage_CodeFromDocTestFailureUsesFailedEvent(t *testi
 	}
 	if msg.EventType != notify.EventCodeFromDocFailed {
 		t.Fatalf("EventType = %q, want %q", msg.EventType, notify.EventCodeFromDocFailed)
+	}
+	if !msg.Target.IsPR || msg.Target.Number != 12 {
+		t.Fatalf("code_from_doc test_failure 通知应指向 PR #12，target=%+v", msg.Target)
 	}
 	if msg.Severity != notify.SeverityWarning {
 		t.Fatalf("Severity = %q, want %q", msg.Severity, notify.SeverityWarning)

@@ -641,11 +641,7 @@ func (p *Processor) buildNotificationMessage(record *model.TaskRecord, reviewRes
 		if payload.RepoFullName == "" || payload.DocPath == "" {
 			return notify.Message{}, false
 		}
-		target := notify.Target{
-			Owner: payload.RepoOwner,
-			Repo:  payload.RepoName,
-			IsPR:  false,
-		}
+		target := buildCodeFromDocTarget(payload, codeResult)
 		metadata := buildCodeFromDocMetadata(payload, codeResult)
 		if record.Status == model.TaskStatusRetrying {
 			metadata[notify.MetaKeyRetryCount] = fmt.Sprintf("%d", record.RetryCount+1)
@@ -793,6 +789,19 @@ func buildCodeFromDocMetadata(payload model.TaskPayload, codeResult *code.CodeFr
 		metadata[notify.MetaKeyFailureCategory] = string(out.FailureCategory)
 	}
 	return metadata
+}
+
+func buildCodeFromDocTarget(payload model.TaskPayload, codeResult *code.CodeFromDocResult) notify.Target {
+	target := notify.Target{
+		Owner: payload.RepoOwner,
+		Repo:  payload.RepoName,
+		IsPR:  false,
+	}
+	if codeResult != nil && codeResult.PRNumber > 0 {
+		target.Number = codeResult.PRNumber
+		target.IsPR = true
+	}
+	return target
 }
 
 func countCodeFromDocFileActions(files []code.ModifiedFile) (created, modified int) {
