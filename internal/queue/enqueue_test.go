@@ -3859,6 +3859,43 @@ func TestEnqueueCodeFromDoc_DifferentDocSameBranchCancelsOld(t *testing.T) {
 	}
 }
 
+func TestEnqueueCodeFromDoc_BranchEqualBaseUsesAutoCodeBranch(t *testing.T) {
+	s := newMockStore()
+	mc := &mockEnqueuer{enqueuedID: "asynq-code"}
+	h := NewEnqueueHandler(mc, nil, s, slog.Default())
+
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoFullName: "owner/repo",
+		CloneURL:     "https://gitea.example.com/owner/repo.git",
+		DocPath:      "docs/spec.md",
+		DocSlug:      "spec-a1b2c3d4",
+		BaseRef:      "main",
+		HeadRef:      "main",
+	}
+	got, err := h.EnqueueCodeFromDoc(context.Background(), payload, "manual:test")
+	if err != nil {
+		t.Fatalf("EnqueueCodeFromDoc 返回错误: %v", err)
+	}
+	if got == "" {
+		t.Fatal("应返回新任务 ID")
+	}
+	if len(mc.payloads) != 1 {
+		t.Fatalf("应入队 1 个新任务，payloads=%d", len(mc.payloads))
+	}
+	enqueued := mc.payloads[0]
+	if enqueued.HeadRef != "" {
+		t.Fatalf("HeadRef = %q, want empty for path A", enqueued.HeadRef)
+	}
+	if enqueued.Module != "auto-code/spec-a1b2c3d4" {
+		t.Fatalf("Module = %q, want auto-code/spec-a1b2c3d4", enqueued.Module)
+	}
+	wantDeliveryID := buildCodeFromDocDeliveryID(payload.RepoFullName, "auto-code/spec-a1b2c3d4", payload.DocPath)
+	if enqueued.DeliveryID != wantDeliveryID {
+		t.Fatalf("DeliveryID = %q, want %q", enqueued.DeliveryID, wantDeliveryID)
+	}
+}
+
 func TestEnqueueCodeFromDoc_InvalidBaseRef(t *testing.T) {
 	s := newMockStore()
 	mc := &mockEnqueuer{enqueuedID: "asynq-code"}

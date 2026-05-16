@@ -1321,11 +1321,15 @@ func (h *EnqueueHandler) EnqueueCodeFromDoc(ctx context.Context, payload model.T
 
 	// 构造幂等 DeliveryID
 	branch := strings.TrimSpace(payload.HeadRef)
+	payload.BaseRef = strings.TrimSpace(payload.BaseRef)
+	if branch != "" && payload.BaseRef != "" && branch == payload.BaseRef {
+		// --branch 等于 base/default 分支时仍按路径 A 处理，避免直接推送默认分支。
+		branch = ""
+	}
 	if err := validation.ValidateBranchRef(branch); err != nil {
 		return "", fmt.Errorf("code_from_doc branch 非法: %w", err)
 	}
 	payload.HeadRef = branch
-	payload.BaseRef = strings.TrimSpace(payload.BaseRef)
 	if err := validation.ValidateBaseRef(payload.BaseRef); err != nil {
 		return "", fmt.Errorf("code_from_doc ref 非法: %w", err)
 	}
