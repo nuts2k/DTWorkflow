@@ -8,6 +8,6 @@ import (
 
 func main() {
 	if err := dtwcmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(dtwcmd.ExitCode(err))
 	}
 }

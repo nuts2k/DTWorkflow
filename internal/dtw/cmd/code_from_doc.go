@@ -92,13 +92,24 @@ var codeFromDocCmd = &cobra.Command{
 			return fmt.Errorf("等待任务失败: %w", err)
 		}
 
+		isTestFailure := isCodeFromDocTestFailureResult(status.Result)
 		if flagJSON {
-			return printer.PrintJSON(status)
+			if err := printer.PrintJSON(status); err != nil {
+				return err
+			}
+			if isTestFailure {
+				return &ExitCodeError{Code: 2, Err: fmt.Errorf("code_from_doc 测试未通过，已保留 PR 成果")}
+			}
+			return nil
 		}
 
 		printer.PrintHuman("task_id: %s  status: %s", status.ID, status.Status)
 		if status.Error != "" {
 			printer.PrintHuman("错误: %s", status.Error)
+		}
+		if isTestFailure {
+			printer.PrintHuman("结果: 已创建 PR，但测试未通过")
+			return &ExitCodeError{Code: 2, Err: fmt.Errorf("code_from_doc 测试未通过，已保留 PR 成果")}
 		}
 
 		if status.Status == "failed" {
@@ -120,4 +131,9 @@ func init() {
 	_ = codeFromDocCmd.MarkFlagRequired("doc")
 
 	rootCmd.AddCommand(codeFromDocCmd)
+}
+
+func isCodeFromDocTestFailureResult(raw string) bool {
+	output, err := code.ParseCodeFromDocOutput(raw)
+	return err == nil && output != nil && output.FailureCategory == code.FailureCategoryTestFailure
 }

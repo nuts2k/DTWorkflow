@@ -514,8 +514,27 @@ func renderCodeFromDocFields(msg Message) []string {
 		if v := msg.Metadata[MetaKeyFailureCategory]; v != "" {
 			parts = append(parts, fmt.Sprintf("**失败分类**: %s", v))
 		}
+		if v := msg.Metadata[MetaKeyFailureReason]; v != "" {
+			parts = append(parts, fmt.Sprintf("**失败原因**: %s", v))
+		}
+		if v := msg.Metadata[MetaKeyMissingInfo]; v != "" {
+			parts = append(parts, fmt.Sprintf("**缺失信息**:\n%s", formatMissingInfo(v)))
+		}
 	}
 	return parts
+}
+
+func formatMissingInfo(value string) string {
+	lines := strings.Split(value, "\n")
+	formatted := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		formatted = append(formatted, "- "+line)
+	}
+	return strings.Join(formatted, "\n")
 }
 
 // formatIssueNumbers 将逗号分隔的 Issue 编号字符串格式化为 "#42, #43" 形式。

@@ -360,6 +360,21 @@ func TestBuildContainerCmd_GenTests(t *testing.T) {
 	}
 }
 
+func TestBuildContainerCmd_CodeFromDocUsesDangerousSkipPermissions(t *testing.T) {
+	payload := model.TaskPayload{
+		TaskType:     model.TaskTypeCodeFromDoc,
+		RepoFullName: "owner/repo",
+	}
+	cmd := buildContainerCmd(payload)
+	joined := strings.Join(cmd, " ")
+	if !strings.Contains(joined, "--dangerously-skip-permissions") {
+		t.Fatalf("code_from_doc fallback 命令必须保留危险权限跳过参数: %s", joined)
+	}
+	if strings.Contains(joined, "--allowedTools") {
+		t.Fatalf("code_from_doc fallback 命令不应改用 allowedTools 白名单: %s", joined)
+	}
+}
+
 func TestParseCPULimit(t *testing.T) {
 	tests := []struct {
 		input    string

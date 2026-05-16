@@ -239,6 +239,9 @@ push_code_from_doc_result() {
         log "code_from_doc 未产生新提交，跳过受控 push"
         return 0
     fi
+    if ! scan_code_from_doc_secret_leak; then
+        return 12
+    fi
     local helper_script
     helper_script="${CRED_HELPER_SCRIPT:-/workspace/.git-credential-helper}"
     cat > "${helper_script}" <<HELPER
@@ -260,6 +263,63 @@ HELPER
     set -e
     rm -f "${helper_script}"
     return "${push_status}"
+}
+
+redact_anthropic_stream() {
+    local secret="${ANTHROPIC_API_KEY:-}"
+    if [ -z "${secret}" ]; then
+        cat
+        return
+    fi
+    local escaped
+    escaped="$(printf '%s' "${secret}" | sed -e 's/[\/&#\\]/\\&/g')"
+    sed "s#${escaped}#***#g"
+}
+
+run_code_from_doc_command() {
+    local stdout_file stderr_file
+    stdout_file="$(mktemp "${TMPDIR:-/tmp}/dtworkflow-code-from-doc-stdout.XXXXXX")"
+    stderr_file="$(mktemp "${TMPDIR:-/tmp}/dtworkflow-code-from-doc-stderr.XXXXXX")"
+    set +e
+    "$@" >"${stdout_file}" 2>"${stderr_file}"
+    local cmd_status=$?
+    set -e
+    redact_anthropic_stream <"${stdout_file}"
+    redact_anthropic_stream <"${stderr_file}" >&2
+    rm -f "${stdout_file}" "${stderr_file}"
+    return "${cmd_status}"
+}
+
+scan_code_from_doc_secret_leak() {
+    local secret="${ANTHROPIC_API_KEY:-}"
+    if [ -z "${secret}" ]; then
+        return 0
+    fi
+    local git_bin="${DTWORKFLOW_CODE_FROM_DOC_REAL_GIT_BIN}"
+    if "${git_bin}" grep -I -F -q -e "${secret}" HEAD -- . 2>/dev/null ||
+        "${git_bin}" grep -I -F -q -e "${secret}" -- . 2>/dev/null; then
+        log "ERROR: code_from_doc 检测到 Claude API Key 出现在仓库内容中，拒绝受控 push"
+        return 1
+    fi
+    local commits_file commit
+    commits_file="$(mktemp "${TMPDIR:-/tmp}/dtworkflow-code-from-doc-commits.XXXXXX")"
+    if ! "${git_bin}" rev-list "${DTWORKFLOW_CODE_FROM_DOC_BASE_SHA}..HEAD" >"${commits_file}" 2>/dev/null; then
+        rm -f "${commits_file}"
+        log "ERROR: code_from_doc 无法枚举待推送提交历史，拒绝受控 push"
+        return 1
+    fi
+    while IFS= read -r commit; do
+        if [ -z "${commit}" ]; then
+            continue
+        fi
+        if "${git_bin}" grep -I -F -q -e "${secret}" "${commit}" -- . 2>/dev/null; then
+            rm -f "${commits_file}"
+            log "ERROR: code_from_doc 检测到 Claude API Key 出现在待推送提交历史中，拒绝受控 push"
+            return 1
+        fi
+    done <"${commits_file}"
+    rm -f "${commits_file}"
+    return 0
 }
 
 append_autofix_override() {
@@ -424,9 +484,9 @@ HOOK
             git fetch origin "${CODE_BRANCH}:refs/remotes/origin/${CODE_BRANCH}" >&2 2>&1
             git checkout -B "${CODE_BRANCH}" "origin/${CODE_BRANCH}" >&2 2>&1
             CODE_TARGET_BRANCH="${CODE_BRANCH}"
-            CODE_BASE_REV="origin/${CODE_TARGET_BRANCH}"
         else
-            # 路径 A：从 BASE_REF 派生新分支
+            # 路径 A：从 BASE_REF 派生新分支。BASE_REF 允许分支、tag 或可 fetch 的 commit/ref；
+            # checkout 统一使用 FETCH_HEAD，避免把 --ref 误解释成 origin/<branch>。
             if [ -z "${BASE_REF:-}" ]; then
                 log "ERROR: code_from_doc 路径 A 缺少 BASE_REF"
                 exit 2
@@ -436,16 +496,14 @@ HOOK
             if git fetch origin "${CODE_TARGET_BRANCH}:refs/remotes/origin/${CODE_TARGET_BRANCH}" >&2 2>&1; then
                 log "code_from_doc: 复用已存在目标分支 ${CODE_TARGET_BRANCH}"
                 git checkout -B "${CODE_TARGET_BRANCH}" "origin/${CODE_TARGET_BRANCH}" >&2 2>&1
-                CODE_BASE_REV="origin/${CODE_TARGET_BRANCH}"
             else
                 log "code_from_doc: 未发现目标分支，从 ${BASE_REF} 派生 ${CODE_TARGET_BRANCH}"
                 git fetch origin "${BASE_REF}" >&2 2>&1
-                git checkout -B "${CODE_TARGET_BRANCH}" "origin/${BASE_REF}" >&2 2>&1
-                CODE_BASE_REV="origin/${BASE_REF}"
+                git checkout -B "${CODE_TARGET_BRANCH}" FETCH_HEAD >&2 2>&1
             fi
         fi
 
-        capture_trusted_code_from_doc_git_state "${CODE_BASE_REV}"
+        capture_trusted_code_from_doc_git_state "HEAD"
         enable_code_from_doc_git
         setup_build_cache
         append_autofix_override "code_from_doc"
@@ -717,7 +775,7 @@ if [ "${TASK_TYPE:-}" = "fix_review" ]; then
     push_fix_review_result
     exit $?
 elif [ "${TASK_TYPE:-}" = "code_from_doc" ]; then
-    "$@"
+    run_code_from_doc_command "$@"
     cmd_status=$?
     if [ "${cmd_status}" -ne 0 ]; then
         exit "${cmd_status}"

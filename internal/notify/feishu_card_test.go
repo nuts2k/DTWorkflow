@@ -588,6 +588,39 @@ func TestFormatFeishuCard_GenTestsFailed_Fallback(t *testing.T) {
 	}
 }
 
+func TestFormatFeishuCard_CodeFromDocFailedIncludesReasonAndMissingInfo(t *testing.T) {
+	msg := Message{
+		EventType: EventCodeFromDocFailed,
+		Severity:  SeverityInfo,
+		Target:    Target{Owner: "org", Repo: "repo", Number: 12, IsPR: true},
+		Metadata: map[string]string{
+			MetaKeyDocPath:         "docs/spec.md",
+			MetaKeyBranchName:      "auto-code/spec",
+			MetaKeyFailureCategory: "info_insufficient",
+			MetaKeyFailureReason:   "缺少接口错误码定义",
+			MetaKeyMissingInfo:     "补充错误码表\n提供鉴权流程",
+		},
+	}
+	result, err := FormatFeishuCard(msg)
+	if err != nil {
+		t.Fatalf("FormatFeishuCard error: %v", err)
+	}
+	card := result["card"].(map[string]any)
+	elements := card["elements"].([]any)
+	md := elements[0].(map[string]any)["content"].(string)
+	for _, want := range []string{
+		"**失败分类**: info_insufficient",
+		"**失败原因**: 缺少接口错误码定义",
+		"**缺失信息**:",
+		"- 补充错误码表",
+		"- 提供鉴权流程",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("markdown 缺少字段 %q: %s", want, md)
+		}
+	}
+}
+
 // TestFormatFeishuCard_IssueFixStarted_Blue 验证修复开始事件应蓝色卡片 + "查看 Issue" 按钮。
 func TestFormatFeishuCard_IssueFixStarted_Blue(t *testing.T) {
 	msg := Message{

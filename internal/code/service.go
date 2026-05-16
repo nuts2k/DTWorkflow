@@ -178,7 +178,7 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 	})
 
 	// 4. 容器执行
-	cmd := []string{"claude", "-p", "--output-format", "json", "--dangerously-skip-permissions", "-"}
+	cmd := buildCodeFromDocCommand()
 	execResult, err := s.pool.RunWithCommandAndStdin(ctx, payload, cmd, []byte(prompt))
 	if err != nil {
 		return &CodeFromDocResult{ExitCode: -1}, err
@@ -273,6 +273,10 @@ func (s *Service) Execute(ctx context.Context, payload model.TaskPayload) (*Code
 	}
 
 	return result, nil
+}
+
+func buildCodeFromDocCommand() []string {
+	return []string{"claude", "-p", "--output-format", "json", "--dangerously-skip-permissions", "-"}
 }
 
 func containerFailureMessage(execResult *worker.ExecutionResult) string {

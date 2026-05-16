@@ -855,6 +855,8 @@ func TestBuildNotificationMessage_CodeFromDocTestFailureUsesFailedEvent(t *testi
 			Success:         false,
 			BranchName:      "auto-code/spec",
 			FailureCategory: code.FailureCategoryTestFailure,
+			FailureReason:   "单元测试失败",
+			MissingInfo:     []string{"补充边界场景", "确认兼容性要求"},
 			TestResults:     code.TestRunResults{Passed: 3, Failed: 1},
 		},
 	}
@@ -874,6 +876,12 @@ func TestBuildNotificationMessage_CodeFromDocTestFailureUsesFailedEvent(t *testi
 	}
 	if msg.Metadata[notify.MetaKeyFailureCategory] != string(code.FailureCategoryTestFailure) {
 		t.Fatalf("failure_category = %q", msg.Metadata[notify.MetaKeyFailureCategory])
+	}
+	if msg.Metadata[notify.MetaKeyFailureReason] != "单元测试失败" {
+		t.Fatalf("failure_reason = %q", msg.Metadata[notify.MetaKeyFailureReason])
+	}
+	if msg.Metadata[notify.MetaKeyMissingInfo] != "补充边界场景\n确认兼容性要求" {
+		t.Fatalf("missing_info = %q", msg.Metadata[notify.MetaKeyMissingInfo])
 	}
 }
 

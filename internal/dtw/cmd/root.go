@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/signal"
 	"syscall"
@@ -64,6 +65,31 @@ var rootCmd = &cobra.Command{
 		return nil
 	},
 	SilenceUsage: true,
+}
+
+// ExitCodeError 携带 CLI 退出码：0 成功 / 1 失败 / 2 部分成功。
+type ExitCodeError struct {
+	Code int
+	Err  error
+}
+
+func (e *ExitCodeError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *ExitCodeError) Unwrap() error {
+	return e.Err
+}
+
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *ExitCodeError
+	if errors.As(err, &exitErr) {
+		return exitErr.Code
+	}
+	return 1
 }
 
 func init() {

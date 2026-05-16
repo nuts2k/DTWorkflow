@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -105,5 +106,56 @@ func TestCodeFromDocCmd_PostsExpectedPathAndBody(t *testing.T) {
 	}
 	if got := capturedBody["ref"]; got != "develop" {
 		t.Errorf("body.ref = %q，期望 develop", got)
+	}
+}
+
+func TestCodeFromDocCmd_TestFailureReturnsPartialSuccessExitCode(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		jsonMode bool
+	}{
+		{name: "human", jsonMode: false},
+		{name: "json", jsonMode: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resetCodeFromDocFlags(t)
+
+			result := `{"success":false,"info_sufficient":true,"branch_name":"auto-code/spec","commit_sha":"abc123","modified_files":[],"test_results":{"passed":3,"failed":1,"skipped":0,"all_passed":false},"failure_category":"test_failure","failure_reason":"go test failed"}`
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/alice/widgets/code-from-doc":
+					writeDataEnvelope(t, w, http.StatusAccepted, map[string]string{"task_id": "code-123"})
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/tasks/code-123":
+					writeDataEnvelope(t, w, http.StatusOK, map[string]any{
+						"id":     "code-123",
+						"type":   "code_from_doc",
+						"status": "succeeded",
+						"repo":   "alice/widgets",
+						"result": result,
+					})
+				default:
+					t.Fatalf("未预期请求: %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			restore := setupTestClient(t, srv.URL)
+			defer restore()
+			flagJSON = tt.jsonMode
+
+			codeFromDocRepo = "alice/widgets"
+			codeFromDocDocPath = "docs/spec.md"
+			codeFromDocTimeout = time.Second
+
+			codeFromDocCmd.SetContext(context.Background())
+			err := codeFromDocCmd.RunE(codeFromDocCmd, nil)
+			var exitErr *ExitCodeError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("RunE err = %v, want ExitCodeError", err)
+			}
+			if exitErr.Code != 2 {
+				t.Fatalf("ExitCode = %d, want 2", exitErr.Code)
+			}
+		})
 	}
 }

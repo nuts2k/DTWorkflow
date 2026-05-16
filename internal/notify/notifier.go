@@ -101,6 +101,8 @@ const (
 	MetaKeyTestPassed     = "test_passed"
 	MetaKeyTestFailed     = "test_failed"
 	MetaKeyImplementation = "implementation"
+	MetaKeyFailureReason  = "failure_reason"
+	MetaKeyMissingInfo    = "missing_info"
 )
 
 // Severity 通知紧急程度

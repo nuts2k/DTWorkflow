@@ -788,6 +788,12 @@ func buildCodeFromDocMetadata(payload model.TaskPayload, codeResult *code.CodeFr
 	if out.FailureCategory != "" && out.FailureCategory != code.FailureCategoryNone {
 		metadata[notify.MetaKeyFailureCategory] = string(out.FailureCategory)
 	}
+	if out.FailureReason != "" {
+		metadata[notify.MetaKeyFailureReason] = out.FailureReason
+	}
+	if len(out.MissingInfo) > 0 {
+		metadata[notify.MetaKeyMissingInfo] = strings.Join(out.MissingInfo, "\n")
+	}
 	return metadata
 }
 

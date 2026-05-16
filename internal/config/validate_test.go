@@ -321,6 +321,38 @@ func TestValidate_MissingClaudeAPIKey(t *testing.T) {
 	}
 }
 
+func TestValidate_ClaudeAPIKeysRejectsBlankEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiKeys map[string]string
+		want    string
+	}{
+		{
+			name:    "空任务类型",
+			apiKeys: map[string]string{" ": "sk-code"},
+			want:    "claude.api_keys 包含空键",
+		},
+		{
+			name:    "空 key 值",
+			apiKeys: map[string]string{"code_from_doc": " "},
+			want:    "claude.api_keys[code_from_doc] 的值不能为空",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			cfg.Claude.APIKeys = tt.apiKeys
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatal("claude.api_keys 非法项应返回错误")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("错误应包含 %q，实际: %v", tt.want, err)
+			}
+		})
+	}
+}
+
 func TestValidate_WorkerTimeoutZero(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.Worker.Timeout = 0

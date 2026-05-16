@@ -92,6 +92,14 @@ func Validate(cfg *Config) error {
 	if err := validateClaudeModel("claude.model", cfg.Claude.Model); err != nil {
 		errs = append(errs, err)
 	}
+	for k, v := range cfg.Claude.APIKeys {
+		if strings.TrimSpace(k) == "" {
+			errs = append(errs, fmt.Errorf("claude.api_keys 包含空键"))
+		}
+		if strings.TrimSpace(v) == "" {
+			errs = append(errs, fmt.Errorf("claude.api_keys[%s] 的值不能为空", k))
+		}
+	}
 
 	// webhook 必填
 	if strings.TrimSpace(cfg.Webhook.Secret) == "" {

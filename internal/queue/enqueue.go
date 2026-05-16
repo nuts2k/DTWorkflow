@@ -1359,8 +1359,11 @@ func (h *EnqueueHandler) EnqueueCodeFromDoc(ctx context.Context, payload model.T
 		}
 	}
 
-	// Cancel-and-Replace：按 (repo, branch) 聚合
-	activeTasks, _ := h.store.FindActiveTasksByModule(ctx, payload.RepoFullName, branch, model.TaskTypeCodeFromDoc)
+	// Cancel-and-Replace：按 (repo, branch) 聚合。查询失败时 fail-closed，避免同分支并发写远程分支。
+	activeTasks, err := h.store.FindActiveTasksByModule(ctx, payload.RepoFullName, branch, model.TaskTypeCodeFromDoc)
+	if err != nil {
+		return "", fmt.Errorf("查询活跃 code_from_doc 任务失败: %w", err)
+	}
 
 	record := &model.TaskRecord{
 		TaskType:     model.TaskTypeCodeFromDoc,

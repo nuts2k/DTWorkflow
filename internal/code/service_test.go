@@ -12,11 +12,13 @@ import (
 )
 
 type mockCodePool struct {
-	result *worker.ExecutionResult
+	result  *worker.ExecutionResult
+	lastCmd []string
 }
 
 func (m *mockCodePool) RunWithCommandAndStdin(_ context.Context, _ model.TaskPayload,
-	_ []string, _ []byte) (*worker.ExecutionResult, error) {
+	cmd []string, _ []byte) (*worker.ExecutionResult, error) {
+	m.lastCmd = append([]string(nil), cmd...)
 	return m.result, nil
 }
 
@@ -93,6 +95,17 @@ func TestExecute_ReusesExistingPRAutoBranch(t *testing.T) {
 	}
 	if pr.createCalls != 0 {
 		t.Fatalf("命中既有 PR 后不应创建新 PR，createCalls=%d", pr.createCalls)
+	}
+}
+
+func TestBuildCodeFromDocCommand_UsesDangerousSkipPermissions(t *testing.T) {
+	cmd := buildCodeFromDocCommand()
+	joined := strings.Join(cmd, " ")
+	if !strings.Contains(joined, "--dangerously-skip-permissions") {
+		t.Fatalf("code_from_doc 命令必须保留危险权限跳过参数: %s", joined)
+	}
+	if strings.Contains(joined, "--allowedTools") {
+		t.Fatalf("code_from_doc 命令不应改用 allowedTools 白名单: %s", joined)
 	}
 }
 

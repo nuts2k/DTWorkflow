@@ -54,20 +54,56 @@ case "${1:-}" in
     ;;
   remote|config)
     ;;
-	  rev-parse)
-	    case "${2:-}" in
-	      origin/auto-test/*)
-	        if [ "${MOCK_REV_PARSE_BRANCH_FAIL:-}" = "1" ]; then
-	          exit 1
-	        fi
-	        echo "branchsha"
-	        ;;
-	      origin/auto-code/*) echo "branchsha" ;;
-	      origin/*) echo "basesha" ;;
-	      HEAD)     echo "${MOCK_FIX_REVIEW_HEAD_SHA:-fixedsha}" ;;
-	      *)        echo "abc123" ;;
-	    esac
-	    ;;
+  rev-parse)
+    case "${2:-}" in
+      origin/auto-test/*)
+        if [ "${MOCK_REV_PARSE_BRANCH_FAIL:-}" = "1" ]; then
+          exit 1
+        fi
+        echo "branchsha"
+        ;;
+      origin/auto-code/*) echo "branchsha" ;;
+      origin/*) echo "basesha" ;;
+      HEAD)
+        if [ -n "${MOCK_HEAD_SHA_SEQUENCE:-}" ]; then
+          count_file="${GIT_LOG}.head-count"
+          count=0
+          if [ -f "${count_file}" ]; then
+            count="$(cat "${count_file}")"
+          fi
+          count=$((count + 1))
+          printf '%s' "${count}" > "${count_file}"
+          IFS=',' read -r -a head_shas <<< "${MOCK_HEAD_SHA_SEQUENCE}"
+          idx=$((count - 1))
+          if [ "${idx}" -ge "${#head_shas[@]}" ]; then
+            idx=$(("${#head_shas[@]}" - 1))
+          fi
+          echo "${head_shas[${idx}]}"
+        else
+          echo "${MOCK_FIX_REVIEW_HEAD_SHA:-fixedsha}"
+        fi
+        ;;
+      *) echo "abc123" ;;
+    esac
+    ;;
+  grep)
+    if [ "${MOCK_GIT_GREP_SECRET:-absent}" = "present" ]; then
+      exit 0
+    fi
+    if [ -n "${MOCK_GIT_GREP_SECRET_COMMIT:-}" ]; then
+      for arg in "$@"; do
+        if [ "${arg}" = "${MOCK_GIT_GREP_SECRET_COMMIT}" ]; then
+          exit 0
+        fi
+      done
+    fi
+    exit 1
+    ;;
+  rev-list)
+    if [ -n "${MOCK_GIT_REV_LIST_COMMITS:-}" ]; then
+      printf '%s\n' ${MOCK_GIT_REV_LIST_COMMITS}
+    fi
+    ;;
   merge-base)
     if [ "${2:-}" = "--is-ancestor" ]; then
       if [ "${MOCK_MERGE_BASE_RESULT:-ancestor}" = "not-ancestor" ]; then
@@ -512,6 +548,7 @@ run_code_from_doc_case() {
   local repo_dir="${TMPDIR}/repo-code-from-doc-$$-${RANDOM}"
   rm -rf "${repo_dir}"
   : > "${TMPDIR}/git.log"
+  rm -f "${TMPDIR}/git.log.head-count"
   local stdout_file="${TMPDIR}/code-from-doc.out"
   local stderr_file="${TMPDIR}/code-from-doc.err"
 
@@ -524,13 +561,14 @@ run_code_from_doc_case() {
   TASK_TYPE="code_from_doc" \
   BASE_REF="main" \
   DOC_SLUG="payment-spec-a1b2c3d4" \
+  MOCK_HEAD_SHA_SEQUENCE="basesha,codehead" \
   bash "${ENTRYPOINT}" bash -c 'git push origin should-not-run || true; printf "%s\n" "$MAVEN_OPTS"' >"${stdout_file}" 2>"${stderr_file}" || true
 
   local log
   log="$(cat "${TMPDIR}/git.log")"
 
   assert_contains "code_from_doc — 从 base 派生目标分支" \
-    "${log}" "git checkout -B auto-code/payment-spec-a1b2c3d4 origin/main"
+    "${log}" "git checkout -B auto-code/payment-spec-a1b2c3d4 FETCH_HEAD"
   assert_contains "code_from_doc — 全局 credential helper 已禁用" \
     "${log}" "git config --global credential.helper "
   assert_contains "code_from_doc — git identity name 已设置" \
@@ -566,6 +604,7 @@ run_code_from_doc_resume_existing_branch_case() {
   local repo_dir="${TMPDIR}/repo-code-from-doc-resume-$$-${RANDOM}"
   rm -rf "${repo_dir}"
   : > "${TMPDIR}/git.log"
+  rm -f "${TMPDIR}/git.log.head-count"
   local stdout_file="${TMPDIR}/code-from-doc-resume.out"
   local stderr_file="${TMPDIR}/code-from-doc-resume.err"
 
@@ -579,6 +618,7 @@ run_code_from_doc_resume_existing_branch_case() {
   TASK_TYPE="code_from_doc" \
   BASE_REF="main" \
   DOC_SLUG="payment-spec-a1b2c3d4" \
+  MOCK_HEAD_SHA_SEQUENCE="branchsha,codehead" \
   bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}" || true
 
   local log
@@ -592,6 +632,116 @@ run_code_from_doc_resume_existing_branch_case() {
     "${log}" "git checkout -B auto-code/payment-spec-a1b2c3d4 origin/main"
   assert_contains "code_from_doc — 复用分支后仍受控 push 到目标分支" \
     "${log}" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/auto-code/payment-spec-a1b2c3d4"
+}
+
+run_code_from_doc_redacts_anthropic_key_case() {
+  local repo_dir="${TMPDIR}/repo-code-from-doc-redact-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  rm -f "${TMPDIR}/git.log.head-count"
+  local stdout_file="${TMPDIR}/code-from-doc-redact.out"
+  local stderr_file="${TMPDIR}/code-from-doc-redact.err"
+
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="code_from_doc" \
+  BASE_REF="main" \
+  DOC_SLUG="payment-spec-a1b2c3d4" \
+  ANTHROPIC_API_KEY="sk-ant-test-secret" \
+  MOCK_HEAD_SHA_SEQUENCE="basesha,codehead" \
+  bash "${ENTRYPOINT}" bash -c 'printf "%s\n" "$ANTHROPIC_API_KEY"; printf "%s\n" "$ANTHROPIC_API_KEY" >&2' >"${stdout_file}" 2>"${stderr_file}" || true
+
+  assert_not_contains "code_from_doc — stdout 不泄漏 Claude API Key" \
+    "$(cat "${stdout_file}")" "sk-ant-test-secret"
+  assert_not_contains "code_from_doc — stderr 不泄漏 Claude API Key" \
+    "$(cat "${stderr_file}")" "sk-ant-test-secret"
+  assert_contains "code_from_doc — stdout 中 API Key 被脱敏" \
+    "$(cat "${stdout_file}")" "***"
+  assert_contains "code_from_doc — stderr 中 API Key 被脱敏" \
+    "$(cat "${stderr_file}")" "***"
+}
+
+run_code_from_doc_secret_leak_blocks_push_case() {
+  local repo_dir="${TMPDIR}/repo-code-from-doc-secret-leak-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  rm -f "${TMPDIR}/git.log.head-count"
+  local stdout_file="${TMPDIR}/code-from-doc-secret-leak.out"
+  local stderr_file="${TMPDIR}/code-from-doc-secret-leak.err"
+
+  set +e
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="code_from_doc" \
+  BASE_REF="main" \
+  DOC_SLUG="payment-spec-a1b2c3d4" \
+  ANTHROPIC_API_KEY="sk-ant-test-secret" \
+  MOCK_HEAD_SHA_SEQUENCE="basesha,codehead" \
+  MOCK_GIT_GREP_SECRET="present" \
+  bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}"
+  local code=$?
+  set -e
+
+  if [ "${code}" -eq 12 ]; then
+    echo "PASS: code_from_doc — 检测到 API Key 入仓时退出码 12"
+    (( PASS++ ))
+  else
+    echo "FAIL: code_from_doc — API Key 入仓应 exit 12，实际 ${code}"
+    cat "${stderr_file}"
+    (( FAIL++ ))
+  fi
+  assert_contains "code_from_doc — API Key 入仓时拒绝受控 push" \
+    "$(cat "${stderr_file}")" "拒绝受控 push"
+  assert_not_contains "code_from_doc — API Key 入仓时不执行 push" \
+    "$(cat "${TMPDIR}/git.log")" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/auto-code/payment-spec-a1b2c3d4"
+}
+
+run_code_from_doc_secret_history_blocks_push_case() {
+  local repo_dir="${TMPDIR}/repo-code-from-doc-secret-history-$$-${RANDOM}"
+  rm -rf "${repo_dir}"
+  : > "${TMPDIR}/git.log"
+  rm -f "${TMPDIR}/git.log.head-count"
+  local stdout_file="${TMPDIR}/code-from-doc-secret-history.out"
+  local stderr_file="${TMPDIR}/code-from-doc-secret-history.err"
+
+  set +e
+  PATH="${TMPDIR}/fakebin:/usr/bin:/bin" \
+  HOME="${TMPDIR}/home" \
+  GIT_LOG="${TMPDIR}/git.log" \
+  REPO_DIR="${repo_dir}" \
+  REPO_CLONE_URL="https://gitea.example.com/owner/repo.git" \
+  GITEA_TOKEN="token" \
+  TASK_TYPE="code_from_doc" \
+  BASE_REF="main" \
+  DOC_SLUG="payment-spec-a1b2c3d4" \
+  ANTHROPIC_API_KEY="sk-ant-test-secret" \
+  MOCK_HEAD_SHA_SEQUENCE="basesha,codehead" \
+  MOCK_GIT_REV_LIST_COMMITS="oldsecret cleanhead" \
+  MOCK_GIT_GREP_SECRET_COMMIT="oldsecret" \
+  bash "${ENTRYPOINT}" true >"${stdout_file}" 2>"${stderr_file}"
+  local code=$?
+  set -e
+
+  if [ "${code}" -eq 12 ]; then
+    echo "PASS: code_from_doc — 检测到 API Key 出现在待推送历史时退出码 12"
+    (( PASS++ ))
+  else
+    echo "FAIL: code_from_doc — API Key 出现在待推送历史应 exit 12，实际 ${code}"
+    cat "${stderr_file}"
+    (( FAIL++ ))
+  fi
+  assert_contains "code_from_doc — API Key 历史泄露时拒绝受控 push" \
+    "$(cat "${stderr_file}")" "待推送提交历史"
+  assert_not_contains "code_from_doc — API Key 历史泄露时不执行 push" \
+    "$(cat "${TMPDIR}/git.log")" "push https://gitea.example.com/owner/repo.git HEAD:refs/heads/auto-code/payment-spec-a1b2c3d4"
 }
 
 # ==================== 运行 M4.1 既有用例 ====================
@@ -613,6 +763,9 @@ run_fix_review_missing_head_case
 run_fix_review_invalid_head_case
 run_code_from_doc_case
 run_code_from_doc_resume_existing_branch_case
+run_code_from_doc_redacts_anthropic_key_case
+run_code_from_doc_secret_leak_blocks_push_case
+run_code_from_doc_secret_history_blocks_push_case
 
 # ==================== M4.2 新增：gen_tests 断点续传用例 ====================
 
